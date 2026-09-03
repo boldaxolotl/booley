@@ -925,6 +925,56 @@ class TestIssuedRuntimeDriftFix:
 
         assert "inspect ambiguous Session Runtime resource(s) 'malformed-runtime'" in fix
 
+    def test_reports_running_and_ambiguous_resources_together(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        states = {
+            "active-vscode": self._state(workspace, running=True),
+            "ambiguous-runtime": self._state(
+                workspace,
+                running=False,
+                exact_origin=False,
+            ),
+        }
+        monkeypatch.setattr(
+            sr,
+            "_docker_stdout",
+            lambda argv: json.dumps([states[argv[-1]]]),
+        )
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            list(states),
+        )
+
+        assert "inspect ambiguous Session Runtime resource(s) 'ambiguous-runtime'" in fix
+        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+
+    def test_windows_host_paths_identify_running_vscode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = Path(r"C:\workplace\picorv32")
+        state = self._state(workspace, running=True)
+        labels = state["Config"]["Labels"]
+        labels["devcontainer.local_folder"] = "c:/workplace/picorv32"
+        labels["devcontainer.config_file"] = (
+            "c:/workplace/picorv32/.devcontainer/devcontainer.json"
+        )
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+        monkeypatch.setattr(sr, "session_container_name", lambda _workspace: "canonical")
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["active-vscode"],
+        )
+
+        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+
 
 # ---------------------------------------------------------------------------
 # up() / down() / status()
@@ -1516,7 +1566,7 @@ class TestUp:
         hooks = [a for a in argvs if a[:2] == ["docker", "exec"]]
         assert len(hooks) == 2  # postCreate + postStart
 
-    def test_rebuild_removes_stopped_vscode_from_old_issuance_before_create(
+    def test_rebuild_removes_stopped_vscode_from_old_issuance_after_create(
         self,
         wired,
     ) -> None:
@@ -1542,10 +1592,75 @@ class TestUp:
             sr.up(workspace, rebuild=True)
 
         argvs = [_argv_of(call) for call in run.call_args_list]
-        assert argvs.index(["docker", "rm", stale]) < next(
+        assert argvs.index(["docker", "rm", stale]) > next(
             index for index, argv in enumerate(argvs) if argv[:2] == ["docker", "run"]
         )
         assert not any(argv[:2] == ["docker", "volume"] for argv in argvs)
+
+    def test_session_up_preserves_current_vscode_with_unavailable_bind(
+        self,
+        wired,
+    ) -> None:
+        workspace, run = wired
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        state = {
+            "State": {"Running": False},
+            "Config": {
+                "Labels": _vscode_labels(
+                    workspace,
+                    issuance,
+                    spec_digest=issuance.spec_sha256,
+                )
+            },
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": str(workspace / "missing-wayland-socket"),
+                    "Destination": "/tmp/vscode-wayland.sock",
+                }
+            ],
+        }
+        with patch.object(
+            sr,
+            "_strict_all_interactive_states",
+            return_value=[("current-vscode", json.dumps([state]))],
+        ):
+            sr.up(workspace)
+
+        assert ["docker", "rm", "current-vscode"] not in [
+            _argv_of(call) for call in run.call_args_list
+        ]
+
+    def test_session_up_rejects_running_stale_vscode_before_create(
+        self,
+        wired,
+    ) -> None:
+        workspace, run = wired
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        state = {
+            "State": {"Running": True},
+            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
+            "Mounts": [],
+        }
+        with (
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("active-vscode", json.dumps([state]))],
+            ),
+            pytest.raises(sr.SessionError, match=r"running Session Runtime.*older host issuance"),
+        ):
+            sr.up(workspace)
+
+        assert not any(_argv_of(call)[:2] == ["docker", "run"] for call in run.call_args_list)
 
     def test_existing_stopped_container_is_started_not_recreated(self, wired):
         workspace, run = wired
@@ -1656,7 +1771,7 @@ class TestUp:
             )
 
         argvs = [_argv_of(c) for c in run.call_args_list]
-        assert ["docker", "rm", "stale-vscode"] in argvs
+        assert ["docker", "rm", "stale-vscode"] not in argvs
         assert ["docker", "rename", name, backup] in argvs
         assert ["docker", "rm", "-f", name] in argvs
         assert ["docker", "rename", backup, name] in argvs

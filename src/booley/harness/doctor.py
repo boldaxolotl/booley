@@ -2816,6 +2816,8 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-close
                 f"label={identity}",
                 "--filter",
                 f"label={dc.INTERACTIVE_ROLE_LABEL}",
+                "--format",
+                "{{.Names}}",
             ],
             capture_output=True,
             text=True,

@@ -2350,7 +2350,14 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
+    calls: list[list[str]] = []
+    probe = _runtime_probe_subprocess("runtime-1\n")
+
+    def record_probe(argv, **kwargs):
+        calls.append(argv)
+        return probe(argv, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", record_probe)
 
     def inspect(argv):
         if argv[-1] == "{{json .Config.Labels}}":
@@ -2364,6 +2371,8 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
 
     assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
+    inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
+    assert inventory[-2:] == ["--format", "{{.Names}}"]
 
 
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:
