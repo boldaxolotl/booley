@@ -462,12 +462,16 @@ def test_workflow_scans_metadata_on_pr_edits() -> None:
     assert "pull-request --event" in workflow
 
 
-def test_workflow_trusts_mergify_identity_only_for_main_history() -> None:
+def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> None:
     workflow = (SCANNER.parent.parent / "workflows/confidential-content.yml").read_text(
         encoding="utf-8"
     )
+    pr_scan = workflow.split("- name: Scan pull-request commits", 1)[1].split(
+        "- name: Scan complete main history", 1
+    )[0]
     main_scan = workflow.split("- name: Scan complete main history", 1)[1].split(
         "- name: Publish scan status", 1
     )[0]
 
+    assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"' in pr_scan
     assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"' in main_scan
