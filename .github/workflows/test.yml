@@ -179,7 +179,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
     strategy:
@@ -198,17 +198,14 @@ jobs:
       - name: Install package with test dependencies
         run: pip install -e ".[test]"
 
-      # Linux keeps module/class affinity. Windows uses work stealing because
-      # real-Git integration modules are much slower there and otherwise leave
-      # one worker with a long serialized tail. pytest-cov combines worker and
-      # configured subprocess data.
+      # Every compatibility leg runs across four workers with module/class
+      # affinity. pytest-cov combines worker and configured subprocess data.
       - name: Run tests (parallel)
         if: env.COVERAGE_LEG != 'true'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
         run: >-
-          pytest tests/ -q --tb=short -n 4
-          --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
           --timeout=60
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"

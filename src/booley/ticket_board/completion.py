@@ -23,7 +23,9 @@ from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_journal import (
+    AcceptanceJournal,
     AcceptanceJournalError,
+    Candidate,
     JournalState,
     initial_journal,
     load_journal,
@@ -101,7 +103,7 @@ def _journal_path(root: Path, slug: str) -> Path:
     return directory / f"{slug}.json"
 
 
-def _write_journal(path: Path, journal: Mapping[str, Any]) -> None:
+def _write_journal(path: Path, journal: AcceptanceJournal) -> None:
     """Atomically persist and fsync a recovery checkpoint."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -130,7 +132,7 @@ def _initial_journal(
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     return initial_journal(
         slug,
         [item.as_dict() for item in contract.participants],
@@ -146,7 +148,7 @@ def _load_journal(
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     expected = [item.as_dict() for item in contract.participants]
     if not path.exists():
         return _initial_journal(slug, contract, cleanup=cleanup, removal_targets=removal_targets)
@@ -196,8 +198,18 @@ def _validate_participant(
 
 @dataclass(frozen=True)
 class _CandidatePlan:
-    details: dict[str, str | None]
+    prepared_sha: str
+    staging_ref: str
+    expected_destination_sha: str
     source_repository: Path | None
+
+    def journal_candidate(self) -> Candidate:
+        return {
+            "prepared_sha": self.prepared_sha,
+            "finalized_sha": None,
+            "staging_ref": self.staging_ref,
+            "expected_destination_sha": self.expected_destination_sha,
+        }
 
 
 def _clone_checkout(repository: Path, destination: Path, commit: str) -> None:
@@ -248,13 +260,7 @@ def _plan_candidate(
             f"merge({slug}): sealed Ticket completed",
         )
         candidate = _commit(candidate_repository, "HEAD")
-    details = {
-        "prepared_sha": candidate,
-        "finalized_sha": None,
-        "staging_ref": staging_ref,
-        "expected_destination_sha": destination,
-    }
-    return _CandidatePlan(details, candidate_repository)
+    return _CandidatePlan(candidate, staging_ref, destination, candidate_repository)
 
 
 def _validate_source_surface(
@@ -364,7 +370,7 @@ def _validate_cleanup_participant(
     repository: Path,
     participant: ContractParticipant,
     source: str,
-    candidate: Mapping[str, Any],
+    candidate: Candidate,
 ) -> None:
     if participant.ticket_ref == participant.destination_ref:
         raise CompletionError(
@@ -373,7 +379,7 @@ def _validate_cleanup_participant(
     _validate_ticket_worktree(repository, participant, source)
     _validate_ref_at(repository, participant.ticket_ref, source)
     finalized = _required_finalized_sha(candidate)
-    _validate_ref_at(repository, str(candidate["staging_ref"]), finalized)
+    _validate_ref_at(repository, candidate["staging_ref"], finalized)
 
 
 def _remove_ticket_worktree(
@@ -393,14 +399,14 @@ def _cleanup_participant(
     repository: Path,
     participant: ContractParticipant,
     source: str,
-    candidate: Mapping[str, Any],
+    candidate: Candidate,
 ) -> None:
     _validate_cleanup_participant(repository, participant, source, candidate)
     _remove_ticket_worktree(repository, participant, source)
     _delete_ref_at(repository, participant.ticket_ref, source)
     _delete_ref_at(
         repository,
-        str(candidate["staging_ref"]),
+        candidate["staging_ref"],
         _required_finalized_sha(candidate),
     )
 
@@ -408,11 +414,11 @@ def _cleanup_participant(
 def _publish_candidate(
     repository: Path,
     participant: ContractParticipant,
-    candidate: Mapping[str, Any],
+    candidate: Candidate,
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
     desired = _required_finalized_sha(candidate)
-    staging_ref = str(candidate["staging_ref"])
+    staging_ref = candidate["staging_ref"]
     staging = _direct_ref_identity(repository, staging_ref)
     if staging != desired:
         raise CompletionError(
@@ -470,7 +476,7 @@ def _plan_missing_candidates(
     project_repository: Path | None,
     slug: str,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     plan_directory: Path,
     project_prefix: str,
 ) -> dict[str, _CandidatePlan]:
@@ -492,31 +498,26 @@ def _plan_missing_candidates(
 
 
 def _import_candidate(repository: Path, plan: _CandidatePlan) -> None:
-    prepared = plan.details["prepared_sha"]
-    if not isinstance(prepared, str):
-        raise CompletionError("planned acceptance candidate has no prepared identity")
     if plan.source_repository is not None:
         _require_git(
             repository,
             "fetch",
             "--no-write-fetch-head",
             str(plan.source_repository),
-            prepared,
+            plan.prepared_sha,
         )
-    _commit(repository, prepared)
+    _commit(repository, plan.prepared_sha)
 
 
-def _required_prepared_sha(candidate: Mapping[str, Any]) -> str:
-    prepared = candidate.get("prepared_sha")
-    if not isinstance(prepared, str):
-        raise CompletionError("acceptance journal does not retain the prepared candidate identity")
+def _required_prepared_sha(candidate: Candidate) -> str:
+    prepared = candidate["prepared_sha"]
+    assert prepared is not None, "prepared acceptance candidate must retain its identity"
     return prepared
 
 
-def _required_finalized_sha(candidate: Mapping[str, Any]) -> str:
-    finalized = candidate.get("finalized_sha")
-    if not isinstance(finalized, str):
-        raise CompletionError("acceptance candidate is not finalized")
+def _required_finalized_sha(candidate: Candidate) -> str:
+    finalized = candidate["finalized_sha"]
+    assert finalized is not None, "published acceptance candidate must be finalized"
     return finalized
 
 
@@ -541,7 +542,7 @@ def _cas_ref(repository: Path, ref: str, desired: str, expected: str | None) -> 
     )
 
 
-def _finalized_keepalive_ref(journal: Mapping[str, Any], role: str) -> str:
+def _finalized_keepalive_ref(journal: AcceptanceJournal, role: str) -> str:
     return f"refs/booley/acceptance/{journal['transaction']}/finalized-{role}"
 
 
@@ -573,7 +574,7 @@ def _protect_finalized_candidates(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> None:
     plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
@@ -596,7 +597,7 @@ def _reject_unjournaled_keepalives(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> None:
     for role, participant in participants.items():
         repository = _repository_for(root, project_repository, participant)
@@ -612,14 +613,14 @@ def _reconcile_prepared_refs(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> None:
     by_role = {item.role: item for item in contract.participants}
     plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, by_role[role])
         prepared = _required_prepared_sha(candidate)
-        ref = str(candidate["staging_ref"])
+        ref = candidate["staging_ref"]
         plans.append(
             _RefReconciliation(
                 repository,
@@ -632,21 +633,49 @@ def _reconcile_prepared_refs(
     _reconcile_refs(plans)
 
 
+def _legacy_prepared_identity(
+    repository: Path,
+    candidate: Candidate,
+    ticket: str,
+) -> str | None:
+    """Recover the parent recorded implicitly by a legacy finalization commit."""
+    finalized = _required_finalized_sha(candidate)
+    current = _direct_ref_identity(repository, candidate["staging_ref"])
+    if current is None or current == finalized:
+        return None
+    metadata = _require_git(repository, "show", "-s", "--format=%P%n%s", finalized).splitlines()
+    parents = metadata[0].split()
+    subject = metadata[1] if len(metadata) > 1 else ""
+    expected_subject = f"chore({ticket}): remove completed Ticket Targets"
+    if parents == [current] and subject == expected_subject:
+        return current
+    raise CompletionError(
+        f"acceptance ref {candidate['staging_ref']} has unknown legacy identity {current}; "
+        f"expected absent, the exact parent of finalized {finalized}, or the finalized candidate"
+    )
+
+
 def _reconcile_finalized_refs(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
+    journal_path: Path,
 ) -> None:
     plans: list[_RefReconciliation] = []
+    recovered: dict[str, str] = {}
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, participants[role])
         finalized = _required_finalized_sha(candidate)
-        prepared = candidate.get("prepared_sha")
-        ref = str(candidate["staging_ref"])
+        prepared = candidate["prepared_sha"]
+        if prepared is None:
+            prepared = _legacy_prepared_identity(repository, candidate, journal["ticket"])
+            if prepared is not None:
+                recovered[role] = prepared
+        ref = candidate["staging_ref"]
         _commit(repository, finalized)
         allowed = {None, finalized}
-        if isinstance(prepared, str):
+        if prepared is not None:
             allowed.add(prepared)
         plans.append(
             _RefReconciliation(
@@ -657,6 +686,10 @@ def _reconcile_finalized_refs(
                 "expected absent, its exact prepared candidate, or its finalized candidate",
             )
         )
+    for role, prepared in recovered.items():
+        journal["candidates"][role]["prepared_sha"] = prepared
+    if recovered:
+        _write_journal(journal_path, journal)
     _reconcile_refs(plans)
 
 
@@ -664,7 +697,7 @@ def _validate_ticket_refs(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> None:
     for participant in contract.participants:
         repository = _repository_for(root, project_repository, participant)
@@ -682,7 +715,7 @@ def _persist_candidate_plans(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     path: Path,
     plans: dict[str, _CandidatePlan],
 ) -> None:
@@ -690,7 +723,7 @@ def _persist_candidate_plans(
     for role, plan in plans.items():
         repository = _repository_for(root, project_repository, by_role[role])
         _import_candidate(repository, plan)
-        journal["candidates"][role] = plan.details
+        journal["candidates"][role] = plan.journal_candidate()
     if not journal["removal_targets"]:
         for candidate in journal["candidates"].values():
             candidate["finalized_sha"] = candidate["prepared_sha"]
@@ -705,7 +738,7 @@ def _prepare_all(
     project_repository: Path | None,
     slug: str,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
     try:
@@ -751,7 +784,7 @@ def _add_finalization_worktrees(
     temporary: Path,
     project_repository: Path | None,
     has_project: bool,
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> Path | None:
     _require_git(
         root,
@@ -782,7 +815,7 @@ def _add_finalization_worktrees(
 
 
 def _planned_finalization_paths(
-    temporary: Path, contract: TargetContract, journal: Mapping[str, Any]
+    temporary: Path, contract: TargetContract, journal: AcceptanceJournal
 ) -> list[Path]:
     try:
         plan = plan_target_removals(
@@ -830,9 +863,10 @@ def _update_finalized_refs(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
+    journal_path: Path,
 ) -> None:
-    _reconcile_finalized_refs(root, project_repository, participants, journal)
+    _reconcile_finalized_refs(root, project_repository, participants, journal, journal_path)
 
 
 def _remove_finalization_worktrees(
@@ -848,7 +882,7 @@ def _remove_finalization_worktrees(
         temporary.rmdir()
 
 
-def _finalization_directory(root: Path, journal: Mapping[str, Any]) -> Path:
+def _finalization_directory(root: Path, journal: AcceptanceJournal) -> Path:
     return runtime_dir(root) / "acceptance-worktrees" / str(journal["transaction"])
 
 
@@ -866,7 +900,7 @@ def _finalize_all(
     project_repository: Path | None,
     slug: str,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
     """Apply removals to a composite candidate before either ref is published."""
@@ -906,7 +940,7 @@ def _publish_all(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     journal_path: Path,
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
@@ -952,7 +986,7 @@ def _ensure_sources(
     slug: str,
     destination_branch: str,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     path: Path,
 ) -> None:
     try:
@@ -983,7 +1017,7 @@ def _finish_approval(
     tio: Any,
     slug: str,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     path: Path,
 ) -> None:
     expected = {item.role for item in contract.participants}
@@ -1007,7 +1041,7 @@ def _retire_finalized_keepalives(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: Mapping[str, Any],
+    journal: AcceptanceJournal,
 ) -> None:
     by_role = {item.role: item for item in contract.participants}
     refs: list[tuple[Path, str, str]] = []
@@ -1036,7 +1070,7 @@ def _cleanup_all(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: dict[str, Any],
+    journal: AcceptanceJournal,
     path: Path,
 ) -> None:
     if not journal["policy"]["cleanup"]:
@@ -1045,6 +1079,7 @@ def _cleanup_all(
             project_repository,
             {item.role: item for item in contract.participants},
             journal,
+            path,
         )
         _validate_ticket_refs(root, project_repository, contract, journal)
         journal["state"] = JournalState.DONE
@@ -1081,56 +1116,97 @@ def _cleanup_all(
     _write_journal(path, journal)
 
 
+@dataclass(frozen=True)
+class _AcceptanceTransaction:
+    root: Path
+    project_repository: Path | None
+    slug: str
+    contract: TargetContract
+    journal: AcceptanceJournal
+    path: Path
+
+    @property
+    def participants(self) -> dict[str, ContractParticipant]:
+        return {item.role: item for item in self.contract.participants}
+
+
 def _prepare_pending_publication(
-    root: Path,
-    project_repository: Path | None,
-    slug: str,
-    destination_branch: str,
-    contract: TargetContract,
-    journal: dict[str, Any],
-    path: Path,
-    *,
-    cleanup: bool,
+    transaction: _AcceptanceTransaction, destination_branch: str, *, cleanup: bool
 ) -> None:
     _ensure_sources(
-        root,
-        project_repository,
-        slug,
+        transaction.root,
+        transaction.project_repository,
+        transaction.slug,
         destination_branch,
-        contract,
-        journal,
-        path,
+        transaction.contract,
+        transaction.journal,
+        transaction.path,
     )
-    _validate_source_surface(root, project_repository, contract, journal["sources"])
-    _prepare_all(root, project_repository, slug, contract, journal, path)
-    _finalize_all(root, project_repository, slug, contract, journal, path)
-    participants = {item.role: item for item in contract.participants}
-    _update_finalized_refs(root, project_repository, participants, journal)
+    _validate_source_surface(
+        transaction.root,
+        transaction.project_repository,
+        transaction.contract,
+        transaction.journal["sources"],
+    )
+    _prepare_all(
+        transaction.root,
+        transaction.project_repository,
+        transaction.slug,
+        transaction.contract,
+        transaction.journal,
+        transaction.path,
+    )
+    _finalize_all(
+        transaction.root,
+        transaction.project_repository,
+        transaction.slug,
+        transaction.contract,
+        transaction.journal,
+        transaction.path,
+    )
+    _update_finalized_refs(
+        transaction.root,
+        transaction.project_repository,
+        transaction.participants,
+        transaction.journal,
+        transaction.path,
+    )
     if not cleanup:
-        _validate_ticket_refs(root, project_repository, contract, journal)
+        _validate_ticket_refs(
+            transaction.root,
+            transaction.project_repository,
+            transaction.contract,
+            transaction.journal,
+        )
 
 
 def _publish_pending_candidates(
-    root: Path,
-    project_repository: Path | None,
+    transaction: _AcceptanceTransaction,
     tio: Any,
-    slug: str,
-    contract: TargetContract,
-    journal: dict[str, Any],
-    path: Path,
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
     _publish_all(
-        root,
-        project_repository,
-        contract,
-        journal,
-        path,
+        transaction.root,
+        transaction.project_repository,
+        transaction.contract,
+        transaction.journal,
+        transaction.path,
         allowed_board_rename,
     )
-    participants = {item.role: item for item in contract.participants}
-    _update_finalized_refs(root, project_repository, participants, journal)
-    _finish_approval(tio, slug, contract, journal, path)
+    _update_finalized_refs(
+        transaction.root,
+        transaction.project_repository,
+        transaction.participants,
+        transaction.journal,
+        transaction.path,
+    )
+    _finish_approval(
+        tio,
+        transaction.slug,
+        transaction.contract,
+        transaction.journal,
+        transaction.path,
+    )
 
 
 def _destination_branch(entry: Mapping[str, Any]) -> str:
@@ -1165,26 +1241,17 @@ def _execute_completion(
         raise CompletionError("acceptance journal is done but the Ticket is not")
     root = Path(tio._project_root).resolve()
     project_repository = resolve_inner_project_repo(root)
+    transaction = _AcceptanceTransaction(root, project_repository, slug, contract, journal, path)
     destination_branch = _destination_branch(entry)
     if state.publication_pending:
         _prepare_pending_publication(
-            root,
-            project_repository,
-            slug,
+            transaction,
             destination_branch,
-            contract,
-            journal,
-            path,
             cleanup=cleanup,
         )
         _publish_pending_candidates(
-            root,
-            project_repository,
+            transaction,
             tio,
-            slug,
-            contract,
-            journal,
-            path,
             allowed_board_rename,
         )
     if JournalState(journal["state"]) is not JournalState.DONE:

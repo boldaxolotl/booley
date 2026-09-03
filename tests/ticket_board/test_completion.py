@@ -865,7 +865,7 @@ def test_cleanup_validates_every_identity_before_removing_any_ref(
     )
 
 
-def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path) -> None:
+def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, str]:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -905,6 +905,11 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
         surface_entries=surface_entries(root),
     )
     tio = _TicketIO(root, contract)
+    return root, tio, canonical
+
+
+def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path) -> None:
+    root, tio, canonical = _single_target_removal_completion(tmp_path)
 
     assert (
         complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
@@ -1092,6 +1097,24 @@ def _acceptance_journal(root: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _downgrade_to_finalization_schema_two(root: Path, journal: dict[str, Any]) -> None:
+    legacy = dict(journal)
+    legacy["schema"] = 2
+    legacy["finalized"] = True
+    legacy.pop("policy")
+    legacy.pop("cleaned")
+    legacy["candidates"] = {
+        role: {
+            "sha": candidate["finalized_sha"],
+            "staging_ref": candidate["staging_ref"],
+            "expected_destination_sha": candidate["expected_destination_sha"],
+        }
+        for role, candidate in journal["candidates"].items()
+    }
+    path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+
 def _interrupt_finalized_ref_updates(monkeypatch: pytest.MonkeyPatch, message: str) -> Any:
     update_finalized_refs = completion._update_finalized_refs
 
@@ -1100,6 +1123,65 @@ def _interrupt_finalized_ref_updates(monkeypatch: pytest.MonkeyPatch, message: s
 
     monkeypatch.setattr(completion, "_update_finalized_refs", interrupt)
     return update_finalized_refs
+
+
+def test_schema_two_retry_recovers_exact_prepared_staging_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    update_finalized_refs = _interrupt_finalized_ref_updates(
+        monkeypatch, "interrupted after finalized journal write"
+    )
+    policy = _Policy(remove_targets=(canonical,))
+    assert complete_review_ticket(tio, "change-target", policy) is False
+    journal = _acceptance_journal(root)
+    prepared = {
+        role: candidate["prepared_sha"] for role, candidate in journal["candidates"].items()
+    }
+    _downgrade_to_finalization_schema_two(root, journal)
+    monkeypatch.setattr(completion, "_update_finalized_refs", update_finalized_refs)
+
+    assert complete_review_ticket(tio, "change-target", policy) is True
+
+    recovered = _acceptance_journal(root)
+    repositories = {"outer": root, "project": project}
+    for role, candidate in recovered["candidates"].items():
+        assert candidate["prepared_sha"] == prepared[role]
+        assert (
+            completion._ref_commit(repositories[role], candidate["staging_ref"])
+            == candidate["finalized_sha"]
+        )
+
+
+def test_schema_two_retry_rejects_unrelated_staging_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    update_finalized_refs = _interrupt_finalized_ref_updates(
+        monkeypatch, "interrupted after finalized journal write"
+    )
+    policy = _Policy(remove_targets=(canonical,))
+    assert complete_review_ticket(tio, "change-target", policy) is False
+    journal = _acceptance_journal(root)
+    project_candidate = journal["candidates"]["project"]
+    _git(
+        project,
+        "update-ref",
+        project_candidate["staging_ref"],
+        participants[1].destination_sha,
+        project_candidate["prepared_sha"],
+    )
+    _downgrade_to_finalization_schema_two(root, journal)
+    monkeypatch.setattr(completion, "_update_finalized_refs", update_finalized_refs)
+
+    assert complete_review_ticket(tio, "change-target", policy) is False
+    _assert_destinations_unchanged(root, project, participants)
 
 
 def _assert_destinations_unchanged(
