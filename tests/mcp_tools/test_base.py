@@ -372,6 +372,39 @@ class TestMcpToolGateBehavior:
         assert endpoint.ran is True
         assert DevelopmentState.load(state_file).criteria["lint_clean_lint_uart"].met is True
 
+    def test_sealed_binding_rejects_inconsistent_callable_selector(self, tmp_path: Path):
+        (tmp_path / "uart.core").write_text(
+            "CAPI=2:\n"
+            "name: acme:ip:uart:1.0\n"
+            "targets:\n"
+            "  lint_uart:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator}\n"
+            "    toplevel: uart\n",
+            encoding="utf-8",
+        )
+        key = "lint_clean_acme:ip:uart:1.0#lint_uart"
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria(
+            {key: True},
+            criterion_params={
+                key: {
+                    "target": "acme:ip:uart:1.0#lint_uart",
+                    "_target_selector": "wrong#lint_uart",
+                }
+            },
+            strict=True,
+        )
+        state.save()
+        endpoint = LintLikeMcpTool()
+
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            exit_code = endpoint.main(["--work-dir", str(tmp_path), "--target", "lint_uart"])
+
+        assert exit_code == EXIT_ERROR
+        assert endpoint.ran is False
+
     def test_diagnostic_wrong_target_runs_without_evidence(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         state = DevelopmentState.load(state_file)

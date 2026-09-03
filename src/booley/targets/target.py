@@ -17,9 +17,24 @@ from booley.fusesoc.fusesoc_registry import TargetRef
 from booley.targets import target_naming
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
+TARGET_IDENTITY_PARAM = "target"
+TARGET_SELECTOR_PARAM = "_target_selector"
 
 _SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
 _LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
+
+
+def criterion_matches_target(
+    params: Mapping[str, object],
+    *,
+    identity: str,
+    selector: str,
+) -> bool:
+    """Match criterion metadata to one canonical Target identity/selector pair."""
+    expected_identity = params.get(TARGET_IDENTITY_PARAM)
+    if TARGET_SELECTOR_PARAM in params:
+        return expected_identity == identity and params.get(TARGET_SELECTOR_PARAM) == selector
+    return expected_identity in {identity, selector}
 
 
 def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
