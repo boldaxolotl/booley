@@ -1,15 +1,16 @@
-"""Cross-process pins for the bwave exit-code / stderr-marker contract.
+"""Cross-process pins for the native B-Wave/Python contract.
 
 ``booley.bwave.contract`` documents what the Rust binary promises;
 these tests run the *built binary* and assert the promise holds, so a
-reworded Rust diagnostic or a reshuffled exit code fails here instead of
-silently breaking a Python consumer (coverage_analyst's discovery fallback,
-bwave_sessions' identity probe). The Rust side pins the same markers in
-``crates/bwave/src/cache.rs`` (contract tests at the bottom of its test mod).
+metadata or diagnostic change fails here instead of silently breaking a Python
+consumer (TraceSession, coverage_analyst's discovery fallback, bwave_sessions'
+identity probe). The Rust side pins the same markers in ``crates/bwave/src/cache.rs``
+(contract tests at the bottom of its test mod).
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -23,10 +24,14 @@ from booley.bwave.contract import (
     NO_MATCH_MARKER,
     NO_SIGNALS_IN_STORE_MARKER,
     SCOPE_LINE_PREFIX,
+    BWaveListMetadata,
+    decode_list_metadata,
 )
+from booley.flows.sim.trace_session import TraceSession
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
+PYTHON_FIXTURE_DIR = Path(__file__).with_name("fixtures")
 pytestmark = pytest.mark.native_bwave
 
 # A VCD that declares no signals — the header-only shape a Verilator sim
@@ -60,16 +65,87 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _build_store(vcd: Path, out: Path) -> Path:
+    result = _run("build", str(vcd), "-o", str(out))
+    assert result.returncode == EXIT_OK, result.stderr
+    assert out.exists(), "successful build did not create an FST store"
+    return out
+
+
+def _list_metadata(store: Path) -> tuple[BWaveListMetadata, list[object]]:
+    result = _run("list", str(store), "--format", "json", "--limit", "1")
+    assert result.returncode == EXIT_OK, result.stderr
+    payload = json.loads(result.stdout)
+    return decode_list_metadata(result.stdout), payload["data"]["signals"]
+
+
 @pytest.fixture(scope="module")
 def store(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A small real store built from a fixture VCD."""
     vcd = FIXTURE_DIR / "test_basic.vcd"
-    if not vcd.exists():
-        pytest.skip("test_basic.vcd fixture missing")
     out = tmp_path_factory.mktemp("contract") / "basic.fst"
-    result = _run("build", str(vcd), "-o", str(out))
-    assert result.returncode == EXIT_OK, result.stderr
-    return out
+    return _build_store(vcd, out)
+
+
+@pytest.fixture(scope="module")
+def multi_root_store(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real store with two independent root scopes."""
+    vcd = PYTHON_FIXTURE_DIR / "test_multi_root.vcd"
+    out = tmp_path_factory.mktemp("contract-multi-root") / "multi-root.fst"
+    return _build_store(vcd, out)
+
+
+def test_native_list_metadata_crosses_single_root_python_decoder(store: Path) -> None:
+    metadata, signals = _list_metadata(store)
+
+    assert metadata.scope_prefix == "tb"
+    assert metadata.root_scopes == ("tb",)
+    assert metadata.signal_count == 3
+    assert metadata.total_ticks == 185
+    assert len(signals) == 1
+
+
+def test_native_list_metadata_crosses_multi_root_python_decoder(
+    multi_root_store: Path,
+) -> None:
+    """Regression for 7146fc1d: multiple roots are not an empty store."""
+    metadata, signals = _list_metadata(multi_root_store)
+
+    assert metadata.scope_prefix == ""
+    assert metadata.root_scopes == ("$rootio", "uart16550")
+    assert metadata.signal_count == 3
+    assert metadata.total_ticks == 5
+    assert len(signals) == 1
+
+
+def test_trace_session_accepts_native_multi_root_store(
+    multi_root_store: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_dir = tmp_path / "run"
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        "booley.flows.sim.bwave_fifo._find_bwave_bin",
+        lambda: str(_native_bwave_binary()),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.trace_session._bwave_cache_root",
+        lambda: cache_root,
+    )
+
+    inspection = TraceSession(work_dir, trace_scope="uart16550").inspect(multi_root_store)
+
+    assert inspection.usable is True
+    assert inspection.artifact is not None
+    assert inspection.artifact.top_scope == "$rootio, uart16550"
+    assert inspection.artifact.signal_count == 3
+    assert inspection.artifact.total_ticks == 5
+    status = json.loads((work_dir / "trace_status.json").read_text(encoding="utf-8"))
+    assert status["current_status"] == "usable"
+    assert status["trace_metadata"]["top_scope"] == "$rootio, uart16550"
+    assert status["trace_metadata"]["signal_count"] == 3
+    assert status["trace_metadata"]["total_ticks"] == 5
 
 
 def test_total_miss_is_exit_usage_plus_marker(store: Path) -> None:
