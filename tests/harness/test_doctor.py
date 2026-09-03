@@ -1116,6 +1116,30 @@ def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
     assert "sim_top" in rec.fails()[0]
 
 
+def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    matrix = MagicMock(seed_targets=("removed_target",))
+    monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
+    monkeypatch.setattr(
+        doctor.fusesoc_registry,
+        "resolve_ref",
+        lambda _root, _selector: (_ for _ in ()).throw(
+            fusesoc_registry.UnknownTargetError("Target disappeared")
+        ),
+    )
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert rec.kinds() == {"fail"}
+    assert "removed_target" in rec.fails()[0]
+
+
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     tmp_path,
     monkeypatch,
