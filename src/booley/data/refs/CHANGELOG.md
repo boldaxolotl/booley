@@ -32,6 +32,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Flow entry points now validate Target compatibility and identity before EDA
   setup, and implementation comparison evidence retains durable Target
   identities instead of relying on checkout-local objects.
+- Schema-4 Cycle Count criteria now join simulation and baseline evidence by
+  durable Target identity while retaining the callable selector. This closes a
+  later uncovered Simulation consumer of the Target representation fixed in
+  [#131](https://github.com/boldaxolotl/booley/issues/131). ([#267](https://github.com/boldaxolotl/booley/issues/267))
 - Session Runtime issuance now finds trusted Booley executables installed in
   Python's per-user scripts directory even when that directory is absent from
   `PATH`.

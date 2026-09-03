@@ -19,6 +19,7 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     find_retired_criteria,
 )
+from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import (
     existing_runtime_file,
@@ -508,13 +509,13 @@ def _apply_contract_selectors(
             if key != binding.criterion and not key.startswith(prefix):
                 continue
             params = criterion_params.setdefault(key, {})
-            authored = params.get("target")
+            authored = params.get(TARGET_IDENTITY_PARAM)
             if not isinstance(authored, str) and key.startswith(prefix):
                 authored = key.removeprefix(prefix)
             if authored not in accepted:
                 continue
-            params["target"] = binding.candidate
-            params["_target_selector"] = binding.candidate_selector
+            params[TARGET_IDENTITY_PARAM] = binding.candidate
+            params[TARGET_SELECTOR_PARAM] = binding.candidate_selector
 
 
 def _freeze_synthesis_recipe_fingerprints(
