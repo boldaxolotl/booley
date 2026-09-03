@@ -9,6 +9,9 @@ Two tiers:
 
 from __future__ import annotations
 
+import multiprocessing
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,14 +22,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.flows.edam import (
     EdamSecurityError,
+    WorkRootLeaseError,
     build_edam,
     configure,
     file_type_for,
     make_command,
     relpath_for_make,
+    try_work_root_lease,
     work_root_for,
+    work_root_lease,
 )
 from tests.conftest import symlink_or_skip
+
+
+def _hold_work_root(path: str, acquired, release) -> None:
+    with work_root_lease(path, timeout_s=5.0):
+        acquired.set()
+        if not release.wait(5.0):
+            raise TimeoutError("test did not release held work root")
+
+
+def _wait_for_work_root(path: str, waiting, acquired) -> None:
+    with work_root_lease(path, timeout_s=5.0, on_wait=waiting.set):
+        acquired.set()
+
 
 # ---------------------------------------------------------------------------
 # file_type_for
@@ -348,6 +367,161 @@ class TestRelativePaths:
         assert str(ws) not in vc
         assert "../" in vc
         assert "--lint-only" in vc  # added by the Lint flow itself
+
+
+# ---------------------------------------------------------------------------
+# Work-root ownership
+# ---------------------------------------------------------------------------
+
+
+class TestWorkRootLease:
+    def test_open_failure_is_an_infrastructure_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def fail_open(*_args, **_kwargs):
+            raise OSError("cannot open lock")
+
+        monkeypatch.setattr(Path, "open", fail_open)
+
+        with (
+            pytest.raises(WorkRootLeaseError, match="cannot open lock"),
+            try_work_root_lease(tmp_path / "synth" / "toy"),
+        ):
+            pytest.fail("unreachable")
+
+    def test_acquisition_failure_is_an_infrastructure_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def fail_acquire(_handle):
+            raise OSError("cannot acquire lock")
+
+        monkeypatch.setattr("booley.flows.edam.acquire_file_lock", fail_acquire)
+
+        with (
+            pytest.raises(WorkRootLeaseError, match="cannot acquire lock"),
+            try_work_root_lease(tmp_path / "synth" / "toy"),
+        ):
+            pytest.fail("unreachable")
+
+    def test_same_root_is_exclusive_across_processes(self, tmp_path: Path):
+        work_root = tmp_path / "synth" / "toy"
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(source_root), env.get("PYTHONPATH", "")) if part
+        )
+        probe = (
+            "from pathlib import Path; import sys; "
+            "from booley.flows.edam import try_work_root_lease; "
+            "ctx = try_work_root_lease(Path(sys.argv[1])); "
+            "leased = ctx.__enter__(); "
+            "print('acquired' if leased is not None else 'busy'); "
+            "ctx.__exit__(None, None, None)"
+        )
+
+        with work_root_lease(work_root, timeout_s=1.0):
+            result = subprocess.run(
+                [sys.executable, "-c", probe, str(work_root)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+                env=env,
+            )
+
+        assert result.stdout.strip() == "busy"
+
+    def test_different_roots_remain_independent(self, tmp_path: Path):
+        first = tmp_path / "synth" / "first"
+        second = tmp_path / "synth" / "second"
+
+        with (
+            work_root_lease(first, timeout_s=1.0),
+            try_work_root_lease(second) as leased,
+        ):
+            assert leased == second.resolve()
+
+    def test_sanitized_target_collision_uses_one_lease(self, ws: Path):
+        slash = work_root_for(ws, "synth", "toy/target")
+        colon = work_root_for(ws, "synth", "toy:target")
+        assert slash == colon
+
+        with (
+            work_root_lease(slash, timeout_s=1.0),
+            try_work_root_lease(colon) as leased,
+        ):
+            assert leased is None
+
+    def test_waiter_acquires_after_holder_releases(self, tmp_path: Path):
+        ctx = multiprocessing.get_context("spawn")
+        holder_acquired = ctx.Event()
+        release_holder = ctx.Event()
+        waiter_blocked = ctx.Event()
+        waiter_acquired = ctx.Event()
+        work_root = str(tmp_path / "synth" / "toy")
+        holder = ctx.Process(
+            target=_hold_work_root,
+            args=(work_root, holder_acquired, release_holder),
+        )
+        waiter = ctx.Process(
+            target=_wait_for_work_root,
+            args=(work_root, waiter_blocked, waiter_acquired),
+        )
+        holder.start()
+        try:
+            assert holder_acquired.wait(5.0)
+            waiter.start()
+            assert waiter_blocked.wait(5.0)
+            assert not waiter_acquired.is_set()
+            release_holder.set()
+            assert waiter_acquired.wait(5.0)
+        finally:
+            release_holder.set()
+            holder.join(5.0)
+            waiter.join(5.0)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(5.0)
+            if waiter.is_alive():
+                waiter.terminate()
+                waiter.join(5.0)
+
+        assert holder.exitcode == 0
+        assert waiter.exitcode == 0
+
+    def test_owner_exit_releases_lease(self, tmp_path: Path):
+        ctx = multiprocessing.get_context("spawn")
+        acquired = ctx.Event()
+        never_release = ctx.Event()
+        work_root = tmp_path / "synth" / "toy"
+        holder = ctx.Process(
+            target=_hold_work_root,
+            args=(str(work_root), acquired, never_release),
+        )
+        holder.start()
+        assert acquired.wait(5.0)
+        holder.terminate()
+        holder.join(5.0)
+        assert not holder.is_alive()
+
+        with work_root_lease(work_root, timeout_s=1.0) as leased:
+            assert leased == work_root.resolve()
+
+    def test_body_exception_releases_lease(self, tmp_path: Path):
+        work_root = tmp_path / "synth" / "toy"
+
+        with (
+            pytest.raises(RuntimeError, match="body failed"),
+            work_root_lease(work_root, timeout_s=1.0),
+        ):
+            raise RuntimeError("body failed")
+
+        with try_work_root_lease(work_root) as leased:
+            assert leased == work_root.resolve()
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,6 @@ merge_queue:
 
 queue_rules:
   - name: default
-    update_bot_account: "{{ author }}"
-    merge_bot_account: "{{ author }}"
     batch_size: 1
     max_checks_retries: 0
     branch_protection_injection_mode: queue

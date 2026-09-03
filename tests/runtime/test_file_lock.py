@@ -72,3 +72,26 @@ def test_try_lock_does_not_swallow_errors_from_the_protected_body(tmp_path) -> N
     ):
         assert acquired
         raise file_lock.LockContentionError("body failure")
+
+
+@pytest.mark.parametrize("timeout_s", [-1.0, float("inf"), float("nan")])
+def test_wait_rejects_invalid_timeout(timeout_s: float) -> None:
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        file_lock.wait_for_file_lock(_MemoryFile("x"), timeout_s=timeout_s)
+
+
+def test_wait_timeout_reports_contention(monkeypatch: pytest.MonkeyPatch) -> None:
+    def contend(_handle) -> None:
+        raise file_lock.LockContentionError("busy")
+
+    monotonic = iter((0.0, 0.0, 0.0))
+    reports: list[bool] = []
+    monkeypatch.setattr(file_lock, "acquire_file_lock", contend)
+    monkeypatch.setattr(file_lock.time, "monotonic", lambda: next(monotonic))
+
+    with pytest.raises(file_lock.LockTimeoutError, match="remained busy"):
+        file_lock.wait_for_file_lock(
+            _MemoryFile("x"), timeout_s=0.0, on_wait=lambda: reports.append(True)
+        )
+
+    assert reports == [True]

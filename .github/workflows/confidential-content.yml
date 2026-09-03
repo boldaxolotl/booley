@@ -39,6 +39,10 @@ jobs:
         continue-on-error: true
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Mergify authors the in-place merge commits used to update queued
+          # branches. Trust that integration identity while scanning all
+          # candidate content and every other commit identity normally.
+          BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"
           BOOLEY_LEAK_GUARD_CONFIG_B64: ${{ secrets.BOOLEY_LEAK_GUARD_CONFIG_B64 }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -55,9 +59,9 @@ jobs:
         continue-on-error: true
         env:
           # Mergify is the sole actor allowed to update main outside a human PR
-          # merge. Keep this exception scoped to immutable main-history audits;
-          # PR candidate commits still require the configured author identities.
-          BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[bot]"
+          # merge. Trust that integration identity while retaining content and
+          # identity checks for every other commit in the immutable history.
+          BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"
           BOOLEY_LEAK_GUARD_CONFIG_B64: ${{ secrets.BOOLEY_LEAK_GUARD_CONFIG_B64 }}
         run: >-
           python .github/scripts/confidential_content_guard.py
