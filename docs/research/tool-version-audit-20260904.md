@@ -2,7 +2,7 @@
 
 This audit covers every executable, compiler, runtime, immutable image, and
 build or publication tool that `origin/main` at
-`3a18354f3aa0f8859ca41ad54905e8a2b1bbe480` pins or invokes. Publisher
+`507f0e7ee99823a7bbac9ec829f77a2740708366` pins or invokes. Publisher
 production channels were queried on 2026-09-04. Prereleases were excluded.
 
 Three compatible publisher artifact updates appeared after the 2026-09-02
