@@ -330,9 +330,10 @@ def _patch_environment(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
             # The deep .core-resolvability snippet (docker-wrapped): report the
-            # fixture's Target as resolvable via the marker line it scrapes.
+            # selected Targets as resolvable via the marker line it scrapes.
+            selected = json.loads(cmd[-1])
             verdicts = json.dumps(
-                [{"name": name, "ok": True} for name in ("sim_fast", "lint_fast", "synth_fast")]
+                [{"selector": item["selector"], "ok": True} for item in selected]
             )
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
@@ -970,15 +971,151 @@ def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
         project,
         "doc" + "ker",
         "img",
-        {"sim": object()},
-        lambda name, vlnv: True,
+        {
+            "sim": fusesoc_registry.TargetRef(
+                name="sim",
+                vlnv="::sim:0",
+                core_file=tmp_path / "sim.core",
+            )
+        },
         rec.p,
-        rec.w,
         rec.f,
     )
 
     assert rec.kinds() == {"fail"}
     assert "executed OUTSIDE it" in rec.fails()[0]
+
+
+def test_deep_core_resolution_only_runs_doctor_selected_targets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    targets = [
+        "  sim_selected:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        "  fpga_selected:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
+    ]
+    targets.extend(
+        f"  vendored_{index:03d}:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n"
+        for index in range(200)
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
+    monkeypatch.setattr(
+        doctor.fusesoc_registry,
+        "resolve_target",
+        lambda name, **kwargs: calls.append((name, kwargs.get("vlnv"))),
+    )
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(
+        project,
+        None,
+        rec.p,
+        rec.s,
+        rec.f,
+    )
+
+    assert calls == [("fpga_selected", "::design:0"), ("sim_selected", "::design:0")]
+    assert rec.kinds() == {"pass"}
+    assert len(rec.events) == 2
+
+
+def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "first.core").write_text(
+        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "second.core").write_text(
+        "CAPI=2:\nname: acme:ip:second:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
+        "  unused:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    seen: list[dict[str, str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        payload = json.loads(cmd[-1]) if len(cmd) == 4 else []
+        seen.extend(payload)
+        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
+
+    assert [(item["selector"], item["name"], item["vlnv"]) for item in seen] == [
+        ("first#smoke", "smoke", "acme:ip:first:1"),
+        ("second#smoke", "smoke", "acme:ip:second:1"),
+    ]
+    assert rec.kinds() == {"pass"}
+
+
+def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
+        "  rtl: {depend: [acme:ip:missing]}\n"
+        "targets:\n"
+        "  sim_top:\n"
+        "    flow: sim\n"
+        "    filesets: [rtl]\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
+
+    def fail_resolution(name, **kwargs):
+        assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
+        raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
+
+    monkeypatch.setattr(doctor.fusesoc_registry, "resolve_target", fail_resolution)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert rec.kinds() == {"fail"}
+    assert "sim_top" in rec.fails()[0]
 
 
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
