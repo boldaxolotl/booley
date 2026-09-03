@@ -156,6 +156,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim._write_target_report(
         TargetResult(
             target="sim_demo",
+            target_identity="vendor:library:demo:1.0#sim_demo",
             tb_top="tb",
             eda_tool="verilator",
             passed=True,

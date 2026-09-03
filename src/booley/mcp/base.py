@@ -781,12 +781,14 @@ class McpTool(ABC):
         """Return sealed criteria this endpoint/Target invocation can update."""
         criterion_target = target
         target_identity: str | None = None
+        target_selector: str | None = None
         try:
             from booley.targets.target import select_target
 
             selected = select_target(Path(self.args.work_dir), target)
             criterion_target = selected.name
             target_identity = selected.identity
+            target_selector = selected.selector
         except FuseSocError:
             pass
         selector = getattr(self.args, "test", None)
@@ -811,7 +813,10 @@ class McpTool(ABC):
                 if key.startswith(f"{family}_")
                 and isinstance(entry.params, dict)
                 and self._criterion_target_matches(
-                    entry.params.get("target"), target, target_identity
+                    entry.params,
+                    target,
+                    target_identity,
+                    target_selector,
                 )
                 and key not in bound
             )
@@ -819,13 +824,31 @@ class McpTool(ABC):
 
     def _criterion_target_matches(
         self,
-        authored: Any,
+        params: dict[str, Any],
         invoked: str,
         invoked_identity: str | None,
+        invoked_selector: str | None,
     ) -> bool:
         """Compare criterion and invocation Targets by identity when resolvable."""
+        from booley.targets.target import (
+            TARGET_IDENTITY_PARAM,
+            TARGET_SELECTOR_PARAM,
+            criterion_matches_target,
+        )
+
+        authored = params.get(TARGET_IDENTITY_PARAM)
         if not isinstance(authored, str):
             return False
+        if TARGET_SELECTOR_PARAM in params:
+            return (
+                invoked_identity is not None
+                and invoked_selector is not None
+                and criterion_matches_target(
+                    params,
+                    identity=invoked_identity,
+                    selector=invoked_selector,
+                )
+            )
         if authored == invoked:
             return True
         if invoked_identity is None:

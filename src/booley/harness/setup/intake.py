@@ -19,6 +19,7 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     find_retired_criteria,
 )
+from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import (
     existing_runtime_file,
@@ -507,7 +508,7 @@ def _apply_contract_selectors(
         unique = _matching_contract_bindings(
             contract.bindings,
             criterion_key=key,
-            authored=criterion_params.get(key, {}).get("target"),
+            authored=criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM),
         )
         if len(unique) > 1:
             choices = ", ".join(sorted(selector for _, selector in unique))
@@ -518,8 +519,8 @@ def _apply_contract_selectors(
         if unique:
             binding = next(iter(unique.values()))
             params = criterion_params.setdefault(key, {})
-            params["target"] = binding.candidate
-            params["_target_selector"] = binding.candidate_selector
+            params[TARGET_IDENTITY_PARAM] = binding.candidate
+            params[TARGET_SELECTOR_PARAM] = binding.candidate_selector
 
     _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
 
@@ -557,15 +558,17 @@ def _derive_scalar_tb_review_binding(
     contract = ctx.target_contract
     assert contract is not None
     review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
-    if not review_keys or all(criterion_params.get(key, {}).get("target") for key in review_keys):
+    if not review_keys or all(
+        criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM) for key in review_keys
+    ):
         return
 
     authored_targets = {
-        str(spec.params["target"])
+        str(spec.params[TARGET_IDENTITY_PARAM])
         for spec in template.specs
         if spec.name.startswith("sim_pass_")
         and isinstance(spec.params.get("tb_path"), str)
-        and isinstance(spec.params.get("target"), str)
+        and isinstance(spec.params.get(TARGET_IDENTITY_PARAM), str)
     }
     owners: dict[tuple[str, str], ContractTargetBinding] = {}
     for authored in sorted(authored_targets):
@@ -582,10 +585,10 @@ def _derive_scalar_tb_review_binding(
     owner = next(iter(owners.values()))
     for key in review_keys:
         params = criterion_params.setdefault(key, {})
-        if params.get("target"):
+        if params.get(TARGET_IDENTITY_PARAM):
             continue
-        params["target"] = owner.candidate
-        params["_target_selector"] = owner.candidate_selector
+        params[TARGET_IDENTITY_PARAM] = owner.candidate
+        params[TARGET_SELECTOR_PARAM] = owner.candidate_selector
 
 
 def _freeze_synthesis_recipe_fingerprints(

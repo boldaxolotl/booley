@@ -53,6 +53,45 @@ def test_qualified_target_uses_declared_icarus_tool(tmp_path: Path) -> None:
     select.assert_called_once_with(tmp_path, "::fifo:0#sim", for_flow="sim")
 
 
+@pytest.mark.parametrize("invocation", ["sim", "::sim_demo:0#sim"])
+def test_run_target_stamps_identity_for_selector_or_qualified_invocation(
+    tmp_path: Path,
+    invocation: str,
+) -> None:
+    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
+    flow = _make_flow(
+        tmp_path,
+        config=invocation,
+        seed_core=False,
+    )
+    targets = flow._resolve_requested_targets()
+    assert targets == ["sim"]
+    flow.is_cocotb_target = MagicMock(return_value=True)
+    flow._run_target_cocotb = MagicMock(return_value=TargetResult(target="sim"))
+
+    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
+
+    assert result.target == "sim"
+    assert result.target_identity == "::sim_demo:0#sim"
+
+
+def test_native_run_target_stamps_selected_identity(tmp_path: Path) -> None:
+    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
+    flow = _make_flow(tmp_path, config="sim", seed_core=False)
+    assert flow._resolve_requested_targets() == ["sim"]
+    flow.is_cocotb_target = MagicMock(return_value=False)
+    flow._resolve_tests_to_run = MagicMock(return_value=["smoke"])
+    flow._skipped_tests = MagicMock(return_value=[])
+    flow._run_single_test = MagicMock(return_value=SimTestResult(name="smoke", passed=True))
+    flow._drain_pre_run_lines = MagicMock(return_value=[])
+    flow._run_log_is_fresh = MagicMock(return_value=False)
+    flow._eda_tool_for = MagicMock(return_value="verilator")
+
+    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
+
+    assert result.target_identity == "::sim_demo:0#sim"
+
+
 def test_human_display_caps_targets_at_three():
     results = [
         TargetResult(target=f"config_{index}", passed=True, elapsed_s=1.0) for index in range(10)
@@ -2731,6 +2770,7 @@ class TestBuildContextReporting:
         flow._test_names_map = {}
         tr = TargetResult(
             target="sim",
+            target_identity="::sim_demo:0#sim",
             tb_top="tb_counter",
             passed=False,
             elapsed_s=1.0,
@@ -2740,6 +2780,8 @@ class TestBuildContextReporting:
         flow._write_target_report(tr)
 
         report = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())
+        assert report["target"] == "sim"
+        assert report["target_identity"] == "::sim_demo:0#sim"
         # The composed sh -c script: fusesoc setup chained to the edalize make.
         assert "--setup" in report["compile_command"]
         assert "make -C" in report["compile_command"]
