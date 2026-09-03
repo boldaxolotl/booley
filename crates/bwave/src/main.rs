@@ -21,7 +21,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use bwave::cache::{
     diff_from_cache, distance_from_cache, find_stuck_from_cache, find_value_from_cache,
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
-    trace_from_cache, virtual_def_error_seen, wave_from_cache, ColumnCache,
+    trace_from_cache, wave_from_cache, ColumnCache,
 };
 use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal};
 use bwave::parser::try_parse_header;
@@ -152,15 +152,18 @@ impl Default for GlobalOpts {
     }
 }
 
-/// Options scoped to subcommands that *consume* virtual signals and markers:
+/// Options scoped to subcommands that consume virtual signals:
 /// `wave`, `find`, `sample`, `distance`, `value`.
 #[derive(Args, Debug, Clone, Default)]
-struct ConsumerOpts {
+struct VirtualOpts {
     /// Virtual signal: boolean predicate over existing signals (repeatable).
     /// Format: "name = expr". Verilog-subset syntax: &, |, ^, ~, ==, !=, >, etc.
     #[arg(long = "virtual", action = clap::ArgAction::Append, value_name = "DEF")]
     virtual_defs: Vec<String>,
+}
 
+#[derive(Args, Debug, Clone, Default)]
+struct MarkerOpts {
     /// Named marker for output: --marker NAME CYCLE (repeatable)
     #[arg(long = "marker", num_args = 2, action = clap::ArgAction::Append,
           value_names = &["NAME", "CYCLE"])]
@@ -261,7 +264,7 @@ struct SignalArgs {
     time: Option<String>,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -287,7 +290,10 @@ struct WaveArgs {
     rle: bool,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    virtuals: VirtualOpts,
+
+    #[command(flatten)]
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -312,7 +318,10 @@ struct ValueArgs {
     signals: Vec<String>,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    virtuals: VirtualOpts,
+
+    #[command(flatten)]
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -357,7 +366,10 @@ struct FindArgs {
     count: bool,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    virtuals: VirtualOpts,
+
+    #[command(flatten)]
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -396,7 +408,10 @@ struct SampleArgs {
     count: bool,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    virtuals: VirtualOpts,
+
+    #[command(flatten)]
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -421,7 +436,7 @@ struct DiffArgs {
     signals: Vec<String>,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -456,7 +471,10 @@ struct DistanceArgs {
     time: Option<String>,
 
     #[command(flatten)]
-    consumer: ConsumerOpts,
+    virtuals: VirtualOpts,
+
+    #[command(flatten)]
+    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -929,8 +947,7 @@ fn run_signal(args: SignalArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -954,8 +971,8 @@ fn run_wave(args: WaveArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
+        virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -979,8 +996,8 @@ fn run_value(args: ValueArgs) {
         reset_pattern: g.reset,
         with_reset: g.with_reset,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
+        virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1051,8 +1068,8 @@ fn run_find(args: FindArgs) {
         time_max,
         time_str,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
+        virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1120,8 +1137,8 @@ fn run_sample(args: SampleArgs) {
         time_max,
         time_str,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
+        virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1143,8 +1160,7 @@ fn run_diff(args: DiffArgs) {
         reset_pattern: g.reset,
         with_reset: g.with_reset,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1177,8 +1193,8 @@ fn run_distance(args: DistanceArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.consumer.markers),
-        virtual_defs: args.consumer.virtual_defs,
+        markers: parse_markers(&args.marker.markers),
+        virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1298,13 +1314,6 @@ fn main() {
         Command::Schema => run_schema(),
         Command::Docs(a) => run_docs(a),
         Command::Skill => run_skill(),
-    }
-
-    // Exit non-zero if any --virtual def failed to parse or resolve. The
-    // query already ran (so partial results may be on stdout) but callers
-    // (CI, scripts) need a reliable signal that input was bad.
-    if virtual_def_error_seen() {
-        process::exit(2);
     }
 }
 

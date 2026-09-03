@@ -1,5 +1,5 @@
 //! Virtual signal definitions: boolean predicates over existing signals.
-//! Syntax: Verilog-subset (ADR 0001).
+//! Syntax: a Verilog subset documented in the bundled B-Wave reference.
 
 use crate::format::{hex_slice, hex_to_u128, parse_verilog_literal, slice_bits, values_match};
 use crate::signal::{compile_patterns, match_signal};
@@ -127,6 +127,59 @@ pub enum ResolvedExpr {
 pub struct ResolvedVirtual {
     pub name: String,
     pub expr: ResolvedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualDefinitionError {
+    pub definition: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualValue {
+    pub name: String,
+    pub value: String,
+}
+
+fn collect_rhs_signal_indices(rhs: &ResolvedRhs, out: &mut std::collections::BTreeSet<usize>) {
+    if let ResolvedRhs::Signal(idx, _, _) = rhs {
+        out.insert(*idx);
+    }
+}
+
+fn collect_expr_signal_indices(expr: &ResolvedExpr, out: &mut std::collections::BTreeSet<usize>) {
+    match expr {
+        ResolvedExpr::Atom(atom) => match atom {
+            ResolvedAtom::NonZero(idx, _, _) => {
+                out.insert(*idx);
+            }
+            ResolvedAtom::Equal(idx, _, _, rhs)
+            | ResolvedAtom::NotEqual(idx, _, _, rhs)
+            | ResolvedAtom::Gt(idx, _, _, rhs)
+            | ResolvedAtom::Gte(idx, _, _, rhs)
+            | ResolvedAtom::Lt(idx, _, _, rhs)
+            | ResolvedAtom::Lte(idx, _, _, rhs) => {
+                out.insert(*idx);
+                collect_rhs_signal_indices(rhs, out);
+            }
+            ResolvedAtom::VirtualRef(_) => {}
+        },
+        ResolvedExpr::Not(inner) => collect_expr_signal_indices(inner, out),
+        ResolvedExpr::Combine(_, children) => {
+            for child in children {
+                collect_expr_signal_indices(child, out);
+            }
+        }
+    }
+}
+
+impl ResolvedVirtual {
+    /// Store-signal indices referenced directly by this definition.
+    pub fn referenced_signal_indices(&self) -> Vec<usize> {
+        let mut indices = std::collections::BTreeSet::new();
+        collect_expr_signal_indices(&self.expr, &mut indices);
+        indices.into_iter().collect()
+    }
 }
 
 // -- Tokenizer ----------------------------------------------------------------
@@ -896,6 +949,36 @@ pub fn resolve_virtual(
     })
 }
 
+/// Parse and resolve an ordered set of virtual definitions.
+///
+/// Resolution happens for the complete set before callers evaluate or render
+/// anything, so a bad later definition cannot leave plausible partial output.
+pub fn resolve_virtual_definitions(
+    definitions: &[String],
+    signal_names: &[String],
+    signal_widths: &[u32],
+) -> Result<Vec<ResolvedVirtual>, VirtualDefinitionError> {
+    let mut prior_names = Vec::new();
+    let mut resolved = Vec::with_capacity(definitions.len());
+
+    for definition in definitions {
+        let parsed = parse_virtual_def(definition).map_err(|message| VirtualDefinitionError {
+            definition: definition.clone(),
+            message,
+        })?;
+        let entry = resolve_virtual(&parsed, signal_names, signal_widths, &prior_names).map_err(
+            |message| VirtualDefinitionError {
+                definition: definition.clone(),
+                message,
+            },
+        )?;
+        prior_names.push(entry.name.clone());
+        resolved.push(entry);
+    }
+
+    Ok(resolved)
+}
+
 // -- Evaluation ---------------------------------------------------------------
 
 fn get_numeric_val(hex: &str, slice: Option<BitSlice>) -> Option<u128> {
@@ -1012,6 +1095,26 @@ pub fn evaluate_virtual(
 ) -> bool {
     let get_virtual = |vi: usize| -> bool { virtual_values[vi] };
     eval_expr(&rv.expr, get_val, &get_virtual)
+}
+
+/// Evaluate an ordered resolved set at one timepoint.
+pub fn evaluate_virtual_values(
+    resolved: &[ResolvedVirtual],
+    get_val: &dyn Fn(usize) -> String,
+) -> Vec<VirtualValue> {
+    let mut prior_values = Vec::with_capacity(resolved.len());
+    let mut values = Vec::with_capacity(resolved.len());
+
+    for entry in resolved {
+        let value = evaluate_virtual(entry, get_val, &prior_values);
+        prior_values.push(value);
+        values.push(VirtualValue {
+            name: entry.name.clone(),
+            value: if value { "1" } else { "0" }.to_string(),
+        });
+    }
+
+    values
 }
 
 // -- Synthetic transition list ------------------------------------------------
