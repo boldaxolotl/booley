@@ -61,10 +61,12 @@ criteria:
       lut_count_max: 100000                  # FPGA LUT budget (optional)
       ff_count_max: 100000                   # FPGA flip-flop budget (optional)
 
-    # --- Review (global) ---------------------------------------------------
-    # Each review focus is a separate criterion. --focus is required.
+    # --- Review ------------------------------------------------------------
+    # Each review focus is a separate criterion. Bind TB review explicitly
+    # when more than one structured sim_pass Target is present.
     review_rtl_bugs: true              # -> corrective _clean review
-    review_tb_quality: true            # -> corrective _clean review
+    review_tb_quality: true            # -> corrective _clean review; unique sim owner derived
+    # review_tb_quality: {target: target1}  # multi-Target ticket: bind explicitly
 
   optional:
     # --- More review focuses (opt-in per ticket) ---------------------------

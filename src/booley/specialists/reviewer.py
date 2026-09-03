@@ -1297,6 +1297,20 @@ class ReviewerSpecialist(Specialist):
         focus = next(iter(self._parse_focus()), "")
         return f"review_{self.args.category}_{focus}"
 
+    def _default_target_args(self) -> None:
+        """Default a Target from the active sealed TB-review criterion."""
+        super()._default_target_args()
+        if self.args.target or self._state is None:
+            return
+        try:
+            entry = self.state.criteria.get(self._criterion_key())
+        except ValueError:
+            return
+        params = entry.params if entry is not None else {}
+        selector = params.get("_target_selector") or params.get("target")
+        if isinstance(selector, str) and selector:
+            self.args.target = selector
+
     def _resolve_target_contract(self) -> str | None:
         """Resolve Target-specific review behavior once per invocation."""
         if self._target_contract is not None:

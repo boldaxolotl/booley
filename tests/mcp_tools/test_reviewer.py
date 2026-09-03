@@ -71,6 +71,89 @@ def test_verify_statuses_compatibility_view() -> None:
     }
 
 
+def test_sealed_tb_review_defaults_target_before_binding_gate(
+    state_file: Path,
+) -> None:
+    root = state_file.parent
+    (root / "tb").mkdir()
+    (root / "tb" / "uart_tb.sv").write_text("module uart_tb; endmodule\n", encoding="utf-8")
+    (root / "uart.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:uart:1.0\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files:\n"
+        "      - tb/uart_tb.sv: {tags: [tb]}\n"
+        "targets:\n"
+        "  sim_uart:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: uart_tb\n",
+        encoding="utf-8",
+    )
+    state = DevelopmentState.load(state_file)
+    state.init_criteria(
+        {"review_tb_quality_clean": True},
+        criterion_params={
+            "review_tb_quality_clean": {
+                "target": "acme:ip:uart:1.0#sim_uart",
+                "_target_selector": "uart#sim_uart",
+            }
+        },
+        strict=True,
+    )
+    state.save()
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(root),
+            "--scope",
+            "tb/uart_tb.sv",
+            "--category",
+            "tb",
+            "--focus",
+            "quality",
+        ]
+    )
+    endpoint.read_state()
+
+    endpoint._default_target_args()
+
+    assert endpoint.args.target == "uart#sim_uart"
+    assert endpoint._criterion_binding_gate() is None
+
+
+def test_sealed_tb_review_rejects_different_explicit_target(state_file: Path) -> None:
+    state = DevelopmentState.load(state_file)
+    state.init_criteria(
+        {"review_tb_quality_clean": True},
+        criterion_params={"review_tb_quality_clean": {"target": "sim_uart"}},
+        strict=True,
+    )
+    state.save()
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--scope",
+            "tb/uart_tb.sv",
+            "--category",
+            "tb",
+            "--focus",
+            "quality",
+            "--target",
+            "sim_other",
+        ]
+    )
+    endpoint.read_state()
+
+    rejection = endpoint._criterion_binding_gate()
+
+    assert rejection is not None
+    assert rejection.detail["unbound_targets"] == ["sim_other"]
+
+
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Create a minimal state file and set env vars."""

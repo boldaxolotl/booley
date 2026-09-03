@@ -55,7 +55,7 @@ category    = "none"
 group       = "review"
 
 [review_tb_quality]
-description = "TB review: false-pass detection, coverage gaps, and TB code quality"
+description = "TB review within one simulation Target: false-pass detection, coverage gaps, and TB code quality"
 workflow_region = "pre_sim"
 per_target  = false
 category    = "none"

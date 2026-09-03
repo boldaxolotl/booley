@@ -47,7 +47,9 @@ def criterion_target(  # noqa: PLR0911 - ordered ownership and evidence fallback
         _command, per_target = _endpoint_contracts()[family]
     except (KeyError, TypeError):
         return None
-    if not per_target:
+    from booley.criteria.templates import TARGET_BOUND_CRITERION_FLOWS
+
+    if not per_target and family not in TARGET_BOUND_CRITERION_FLOWS:
         return None
 
     params = getattr(entry, "params", {}) or {}
