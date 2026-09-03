@@ -598,8 +598,9 @@ jobs:
           path: ${{ runner.temp }}/stable-base-build.log
           if-no-files-found: warn
 
-      # Load into the local docker store (not push) so `docker run` below works;
-      # GHA layer cache keeps rebuilds fast when the Dockerfile didn't change.
+      # Load into the local docker store (not push) so `docker run` below works.
+      # Every validation context may restore the trusted main-branch cache, but
+      # only a push to main may replace that shared scope.
       - name: Build candidate from published stable base
         if: steps.runtime-base.outputs.build != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -613,9 +614,9 @@ jobs:
           load: true
           tags: booley-test
           cache-from: type=gha,scope=sandbox
-          # ignore-error: a failed cache upload must not fail the job — the
-          # image is already built and the smoke test can still run.
-          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+          cache-to: >-
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+            'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}
 
       - name: Capture Docker cache and layer evidence
         shell: bash
