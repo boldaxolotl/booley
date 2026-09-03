@@ -834,6 +834,53 @@ def test_finder_uses_current_absolute_entry_point_before_path(
     assert runtime_spec._find_trusted_validator(project) == invoked
 
 
+def test_finder_restores_windows_console_launcher_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prefix = tmp_path / "Python313"
+    scripts = prefix / "Scripts"
+    executable = scripts / "booley.exe"
+    scripts.mkdir(parents=True)
+    executable.write_text("launcher", encoding="utf-8")
+    executable.chmod(0o755)
+    invoked = executable.with_suffix("")
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {scripts.resolve(): prefix.resolve()},
+    )
+
+    assert not invoked.exists()
+    assert runtime_spec._resolve_trusted_validator(executable, project) == executable
+    assert runtime_spec._find_trusted_validator(project) == executable
+
+
+def test_normalized_project_launcher_does_not_fall_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    poisoned = project / ".venv" / "Scripts" / "booley.exe"
+    poisoned.parent.mkdir(parents=True)
+    poisoned.write_text("launcher", encoding="utf-8")
+    poisoned.chmod(0o755)
+    invoked = poisoned.with_suffix("")
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setenv("PATH", str(trusted.parent))
+
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    assert runtime_spec._find_trusted_validator(project) == trusted
+
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    assert not invoked.exists()
+    assert runtime_spec._find_trusted_validator(project) is None
+
+
 def test_finder_uses_trusted_interpreter_scripts_directory_off_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
