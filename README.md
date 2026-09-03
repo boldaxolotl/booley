@@ -56,10 +56,21 @@ supported. You need:
   See the
   [exact baseline evidence and metric definitions](docs/internals/SESSION-RUNTIME-CONTRACT.md#evidence-and-size-policy).
 
-Install and verify the CLI on the host:
+Install the CLI on the host:
 
 ```bash
 pipx install booley-rtl # or: pip install booley-rtl
+```
+
+If Booley is already installed, upgrade it instead:
+
+```bash
+pipx upgrade booley-rtl # or: pip install --upgrade booley-rtl
+```
+
+Then verify the installed version and prepare the host resources:
+
+```bash
 booley --version
 booley bootstrap
 ```

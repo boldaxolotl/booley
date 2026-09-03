@@ -26,6 +26,21 @@ queue_rules:
       - check-success = @github-actions/ci-required
       - check-success = @github-actions/confidential-content
 
+# Urgent incident fixes and CI fixes share one elevated tier ahead of ordinary
+# work. Running checks are deliberately allowed to finish so an expedited PR
+# does not discard CI time that the serial queue has already spent.
+priority_rules:
+  - name: urgent incident fix
+    conditions:
+      - label = urgent
+    priority: high
+    allow_checks_interruption: false
+  - name: CI fix
+    conditions:
+      - label = ci
+    priority: high
+    allow_checks_interruption: false
+
 # Agents act through an authenticated repository writer. External contributors
 # submit ready PRs; a maintainer or repository agent queues them.
 commands_restrictions:

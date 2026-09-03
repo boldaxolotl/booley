@@ -17,15 +17,45 @@ gh pr comment <number> --body '@mergifyio queue default'
 Confirm that the `Mergify Merge Queue` check or status comment says queued.
 GitHub's merge button, auto-merge, and `gh pr merge` do not queue a PR.
 
-## Own the queued PR
+## Own one queued PR
 
-The PR's agent remains responsible until Mergify reports it merged or dequeued.
-Monitor its checks and comments:
+Exactly one agent owns a queued PR until Mergify reports it merged or dequeued.
+Queue and dequeue commands belong to that owner. If another session is already
+managing the PR, leave its queue state unchanged and coordinate the handoff.
+Treat an unexpected queue or dequeue comment as evidence of another owner;
+pause state-changing commands until ownership is clear.
+
+After Mergify accepts the queue command, read that PR's status once:
 
 ```bash
-gh pr checks <number> --watch
-gh pr view <number> --comments
+gh pr view <number> --json state,mergedAt,labels,statusCheckRollup,comments
 ```
+
+A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery.
+Waiting ownership is otherwise passive. Trust Mergify to enforce the configured
+serial priority queue and leave predecessor PRs to their owners. Sleep until
+Mergify's reported merge estimate; when no future estimate is available, wait
+ten minutes. Then check only the owned PR once. An unchanged status starts
+another quiet wait at the same cadence. Each waiting interval contains no
+GitHub status queries.
+
+Mergify gives PRs with either of these labels the same high-priority tier:
+
+- `urgent`: an incident or regression whose delay is actively blocking or
+  degrading repository development or a release.
+- `ci`: a change whose primary purpose is to restore or materially improve
+  required CI or merge infrastructure.
+
+Apply a priority label before queueing. Use `urgent` only for active impact, not
+for ordinary importance or deadlines. High-priority PRs are FIFO relative to
+each other and lead unlabelled, ordinary work. Priority changes do not interrupt
+checks already running; an expedited PR goes immediately after that work,
+preserving the CI time already spent.
+
+Use a one-shot `gh pr checks <number>` to inspect job details only after the
+owned PR reports a failed required check or Mergify dequeues it. A predecessor's
+failure needs no action from waiting agents: Mergify advances the queue, and
+that PR's owner handles recovery.
 
 Never change a queued branch. To add a commit, dequeue first:
 
@@ -34,8 +64,8 @@ gh pr comment <number> --body '@mergifyio dequeue'
 ```
 
 After Mergify confirms the dequeue, push the change, wait for ordinary PR CI to
-pass, and use the queue command above. The queue is FIFO; agents do not
-prioritize or reorder entries.
+pass, and use the queue command above. Agents do not manually reorder entries;
+the configured labels are the only priority mechanism.
 
 ## Recover a dequeued PR
 

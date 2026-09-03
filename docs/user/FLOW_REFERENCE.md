@@ -137,7 +137,7 @@ Structured output (`sim_<target>.json`):
 
 | Field | Contents |
 |---|---|
-| `target`, `tb_top`, `eda_tool` | Resolved simulation identity. |
+| `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
 | `passed`, `elapsed_s` | Target-level verdict and duration. |
 | `tests[]` | Per-test `name`, `passed`, `verdict`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, and `test_validated`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |

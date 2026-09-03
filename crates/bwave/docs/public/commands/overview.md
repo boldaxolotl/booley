@@ -17,7 +17,8 @@ opens directly in GTKWave and VaporView.
 ## Query (consumers of values)
 
 These commands answer questions about signal values over
-time. All of them accept `--virtual` and `--marker`.
+time. Their command-specific options differ; consult each
+command's live `--help`.
 
 | Command | One-line |
 |---|---|
@@ -60,12 +61,17 @@ Available on every query/introspect subcommand:
 - `--format text|json`: output format. Default `text`.
 - `--limit N`: max output lines. Default 2000.
 
-## Consumer-only options
+## Query-specific options
 
-Available on `wave`, `find`, `sample`, `distance`, `value`:
+`--virtual` is available on `wave`, `find`, `sample`,
+`distance`, and `value` only:
 
 - `--virtual "name = expr"`: define a boolean predicate
   over existing signals; usable like any other signal.
+
+Marker availability is documented separately in
+`reference/markers`:
+
 - `--marker NAME CYCLE`: pin a named cycle for display
   (especially in `wave`).
 

@@ -115,6 +115,23 @@ def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
     assert "verif/ directory" not in prompt
 
 
+def test_vsc_prompt_queries_virtual_values_through_supported_find_json(tmp_path):
+    endpoint = _make_endpoint_with_args(work_dir=tmp_path)
+
+    prompt = endpoint._build_vsc_prompt(
+        tmp_path,
+        [_sig("top.dut.state", width=2)],
+        need_branch=True,
+        need_expression=False,
+    )
+
+    assert "bwave find TRACE_FILE br_name 0 --count --format json" in prompt
+    assert "bwave find TRACE_FILE br_name 1 --count --format json" in prompt
+    assert '--virtual "br_name = *signal >= \'d16"' in prompt
+    assert "bwave --stats" not in prompt
+    assert "combined counts" in prompt
+
+
 def test_flat_repo_boundary_names_testbench_file_not_directory(tmp_path):
     (tmp_path / "picorv32.v").write_text("module picorv32; endmodule\n")
     (tmp_path / "testbench.v").write_text("module testbench; endmodule\n")
