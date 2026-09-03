@@ -17,6 +17,7 @@ CATEGORIES = (
     "python_source",
     "python_tests",
     "image_tests",
+    "riscv_image",
     "sidecar",
     "native_bwave",
     "rust",
@@ -54,6 +55,15 @@ _PACKAGING_FILES = {
 }
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/flows/sim/backends/test_bwave_fifo_pipeline.py"}
+_RISCV_IMAGE_PREFIXES = (".github/actions/prepare-picorv32-demo/", "demo/")
+_RISCV_IMAGE_FILES = {
+    ".github/contracts/session-runtime.toml",
+    ".github/scripts/ci_changes.py",
+    ".github/scripts/image_contract.py",
+    ".github/scripts/image_size_report.py",
+    ".github/scripts/verify_picorv32_demo.sh",
+    ".github/workflows/test.yml",
+}
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
 _SIDECAR_PREFIXES = (
     "src/booley/docker/",
@@ -76,6 +86,12 @@ _SIDECAR_FILES = {
 def _sidecar_categories(path: str) -> tuple[str, ...]:
     if path.startswith(_SIDECAR_PREFIXES) or path in _SIDECAR_FILES:
         return ("sidecar",)
+    return ()
+
+
+def _riscv_image_categories(path: str) -> tuple[str, ...]:
+    if path.startswith(_RISCV_IMAGE_PREFIXES) or path in _RISCV_IMAGE_FILES:
+        return ("riscv_image",)
     return ()
 
 
@@ -120,6 +136,7 @@ def _path_categories(path: str) -> set[str]:
         categories.add("python_tests")
     if path.startswith(_IMAGE_TEST_PREFIXES) or path in _IMAGE_TEST_FILES:
         categories.add("image_tests")
+    categories.update(_riscv_image_categories(path))
     if path.startswith(_NATIVE_BWAVE_PREFIXES):
         categories.add("native_bwave")
     categories.update(_sidecar_categories(path))
@@ -133,6 +150,7 @@ def _path_categories(path: str) -> set[str]:
         or Path(path).name.startswith("Dockerfile")
     ):
         categories.add("docker_toolchain")
+        categories.add("riscv_image")
     if path in _STABLE_BASE_FILES | _STABLE_BASE_ORCHESTRATION_FILES:
         categories.add("stable_base")
     if path.startswith((".github/workflows/", ".github/actions/", ".github/scripts/")):
@@ -158,8 +176,9 @@ def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
         categories.add("full")
     if force_all:
         # Main/manual runs execute every conditional job, but only rebuild the
-        # 57-minute runtime base when its actual compatibility inputs changed.
-        categories.update(set(CATEGORIES) - {"stable_base"})
+        # 57-minute runtime base or its 9-minute RISC-V extension when their
+        # actual compatibility inputs changed.
+        categories.update(set(CATEGORIES) - {"stable_base", "riscv_image"})
     return categories
 
 
@@ -178,6 +197,8 @@ def required_jobs(categories: set[str]) -> set[str]:
     if "python_source" in categories:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if categories & {"docker_toolchain", "image_tests"}:
+        jobs.update({"package-artifacts", "bwave-smoke"})
+    if "riscv_image" in categories:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if "sidecar" in categories:
         jobs.add("sidecar-smoke")
