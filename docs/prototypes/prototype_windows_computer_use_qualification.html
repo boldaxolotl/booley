@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Windows Computer Use qualification</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1b2430;
+      --muted: #68717d;
+      --paper: #f3f5f7;
+      --card: #ffffff;
+      --line: #d9dee5;
+      --blue: #2457d6;
+      --blue-soft: #e9efff;
+      --good: #16704a;
+      --good-soft: #e3f3eb;
+      --warn: #94610c;
+      --warn-soft: #fff1cf;
+      --bad: #a62d38;
+      --bad-soft: #fae3e6;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 Inter, system-ui, sans-serif; }
+    main { width: min(1240px, calc(100% - 32px)); margin: 34px auto 72px; }
+    h1, h2, h3 { line-height: 1.16; margin: 0; }
+    h1 { font-size: clamp(29px, 4.8vw, 48px); letter-spacing: -.035em; }
+    h2 { font-size: 20px; margin-bottom: 14px; }
+    h3 { font-size: 15px; margin-bottom: 8px; }
+    p { margin: 10px 0 0; }
+    code, pre { font-family: var(--mono); }
+    code { font-size: .88em; }
+    .eyebrow { color: var(--blue); font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    .intro { max-width: 960px; font-size: 17px; }
+    .notice { margin-top: 18px; padding: 13px 16px; border-left: 4px solid var(--warn); background: var(--warn-soft); }
+    .grid { display: grid; grid-template-columns: 1.08fr .92fr; gap: 18px; margin-top: 22px; }
+    .card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 20px; box-shadow: 0 8px 30px rgba(24, 36, 55, .05); }
+    .span { grid-column: 1 / -1; }
+    .tabs { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
+    button { border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--ink); padding: 9px 11px; cursor: pointer; font: inherit; text-align: left; }
+    button:hover { border-color: var(--blue); }
+    button.primary { background: var(--blue); border-color: var(--blue); color: white; }
+    button.danger { color: var(--bad); }
+    button:disabled { cursor: default; opacity: .48; }
+    .tabs button[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: white; }
+    .scenario-copy { min-height: 74px; }
+    .steps { margin-top: 15px; display: grid; gap: 8px; }
+    .step { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 9px; }
+    .step.current { border-color: var(--blue); background: var(--blue-soft); }
+    .step.done { opacity: .62; }
+    .step-number { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--ink); color: white; font-weight: 800; }
+    .verdicts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .verdict { border-radius: 9px; padding: 13px; background: #f6f7f9; }
+    .verdict strong { display: block; margin-top: 3px; font-size: 17px; }
+    .verdict.good { background: var(--good-soft); color: var(--good); }
+    .verdict.warn { background: var(--warn-soft); color: var(--warn); }
+    .verdict.bad { background: var(--bad-soft); color: var(--bad); }
+    .label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+    .fact { margin: 0; padding: 11px; background: #f6f7f9; border-radius: 8px; min-width: 0; }
+    .fact.wide { grid-column: 1 / -1; }
+    dt { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+    dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+    .good-text { color: var(--good); font-weight: 800; }
+    .warn-text { color: var(--warn); font-weight: 800; }
+    .bad-text { color: var(--bad); font-weight: 800; }
+    .muted { color: var(--muted); }
+    .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .finding { border-left: 4px solid var(--line); padding: 10px 12px; margin-top: 8px; background: #f6f7f9; }
+    .finding.error { border-color: var(--bad); background: var(--bad-soft); }
+    .finding.warning { border-color: var(--warn); background: var(--warn-soft); }
+    .finding.ok { border-color: var(--good); background: var(--good-soft); }
+    .matrix { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .matrix th, .matrix td { border-bottom: 1px solid var(--line); padding: 9px 7px; text-align: left; vertical-align: top; }
+    .matrix th { color: var(--muted); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; }
+    .pill { display: inline-block; border-radius: 999px; padding: 3px 8px; background: #edf0f4; font-size: 12px; font-weight: 800; }
+    .pill.good { background: var(--good-soft); color: var(--good); }
+    .pill.warn { background: var(--warn-soft); color: var(--warn); }
+    .pill.bad { background: var(--bad-soft); color: var(--bad); }
+    pre { max-height: 540px; overflow: auto; border-radius: 8px; background: #17202c; color: #edf3fb; padding: 16px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    textarea { width: 100%; min-height: 170px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 11px; font: 12px/1.45 var(--mono); }
+    .file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    input[type="file"] { max-width: 100%; }
+    .small { font-size: 13px; }
+    ul { margin: 7px 0 0; padding-left: 20px; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .span { grid-column: auto; } }
+    @media (max-width: 580px) { .facts, .actions, .verdicts { grid-template-columns: 1fr; } .fact.wide { grid-column: auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway decision prototype</div>
+  <h1>Windows Computer Use qualification</h1>
+  <p class="intro">Question: can first-party ChatGPT desktop Computer Use control the intended VS Code surface unattended and produce visual evidence strong enough for Booley’s public QA Scenario Protocol?</p>
+  <div class="notice"><strong>This is not a runner and records nothing persistently.</strong> It is a state-machine exercise for the real Windows qualification. The official capability’s internal screenshot is not evidence unless the exact bytes used for the assertion can be exported and retained.</div>
+
+  <section class="grid">
+    <article class="card span">
+      <h2>Guided walkthroughs</h2>
+      <div id="tabs" class="tabs" role="tablist"></div>
+      <div class="scenario-copy">
+        <p id="scenario-intro"></p>
+        <p id="scenario-verdict" class="muted"></p>
+      </div>
+      <div id="steps" class="steps"></div>
+    </article>
+
+    <article class="card">
+      <h2>Two results, kept separate</h2>
+      <div id="verdicts" class="verdicts"></div>
+      <div id="facts" class="facts"></div>
+    </article>
+
+    <article class="card">
+      <h2>Free play</h2>
+      <div id="actions" class="actions"></div>
+    </article>
+
+    <article class="card">
+      <h2>Diagnostics</h2>
+      <div id="findings"></div>
+    </article>
+
+    <article class="card">
+      <h2>Qualification matrix</h2>
+      <p class="muted small">A passing attempt may be recorded only after asynchronous human audit. All three surfaces and one prompt-free unattended soak must pass before Windows Computer Use becomes a qualified mandatory observer.</p>
+      <table class="matrix">
+        <thead><tr><th>Gate</th><th>Status</th><th>Meaning</th></tr></thead>
+        <tbody id="matrix"></tbody>
+      </table>
+    </article>
+
+    <article class="card span">
+      <h2>Real Windows task prompt</h2>
+      <p class="muted small">Replace bracketed values. Start this manually in the ChatGPT desktop app with the Computer Use plugin enabled. Its inability to perform or export a requested observation is a result—do not work around it during qualification.</p>
+      <textarea id="prompt" readonly></textarea>
+      <p><button id="copy-prompt">Copy prompt</button> <span id="copy-status" class="muted small"></span></p>
+    </article>
+
+    <article class="card">
+      <h2>Load the exported PNG</h2>
+      <p class="muted small">Select the exact original PNG that Computer Use claims it used for the GUI assertion. This page computes its real SHA-256 and dimensions in memory. Selecting a later substitute capture does not pass the export gate.</p>
+      <div class="file-row"><input id="png-file" type="file" accept="image/png"><button id="clear-file">Clear</button></div>
+      <div id="file-facts" class="facts"></div>
+    </article>
+
+    <article class="card">
+      <h2>Proposed evidence sidecar</h2>
+      <p class="muted small">The image bytes and this sidecar are one evidence unit. Machine artifacts remain authoritative for semantic claims; the image is authoritative only for the named visual assertion.</p>
+      <pre id="sidecar"></pre>
+    </article>
+
+    <article class="card span">
+      <h2>Provisional contract under test</h2>
+      <ul>
+        <li>Capability is frozen before execution. Missing Windows support is unexpected <code>not runnable</code>; current Linux absence is expected <code>not runnable</code>.</li>
+        <li>After declaration, lost focus, wrong-window ambiguity, an unexpected approval, or inaccessible screenshot bytes cannot be downgraded to <code>not runnable</code>.</li>
+        <li>Observer failures make affected mandatory assertions <code>not reached</code> and the aggregate QA verdict <code>inconclusive</code>; they are not Booley product failures.</li>
+        <li>A visually wrong product state with trustworthy evidence is a <code>fail</code>, yet it may still prove the observer can capture failures correctly.</li>
+        <li>The target frame contains only the named VS Code window. Credentials, account identity, billing, notifications, and unrelated desktop content are excluded before capture, not redacted later.</li>
+        <li>Human review is asynchronous. It validates the observer qualification and audits the original artifact; it never repairs a missing runtime capture or changes the automated Scenario outcome.</li>
+      </ul>
+    </article>
+  </section>
+</main>
+
+<script>
+const QualificationModel = (() => {
+  const SURFACES = {
+    codex: {label: "Codex VS Code extension", semantic: "fresh Booley log/report/artifact in the nonce-bounded interval"},
+    claude: {label: "Claude Code VS Code extension", semantic: "fresh Booley log/report/artifact in the nonce-bounded interval"},
+    vaporview: {label: "VaporView Waveform Viewer", semantic: "live WCP state plus Trace Artifact and B-Wave cross-check"}
+  };
+
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+  function baseState() {
+    return {
+      platform: "windows",
+      prerequisites: {plugin: true, dedicated: true, unlocked: true, online: true, clean: true, allowlisted: true},
+      declaration: "pending",
+      surface: "codex",
+      targetWindow: "pending",
+      focus: "pending",
+      action: "pending",
+      approval: "none",
+      semantic: "pending",
+      visual: "pending",
+      export: "pending",
+      metadata: "pending",
+      frame: "safe",
+      hash: "pending",
+      audit: "pending",
+      cleanup: "pending",
+      image: null,
+      recorded: {codex: "pending", claude: "pending", vaporview: "pending", soak: "pending"}
+    };
+  }
+
+  function preflight(state) {
+    if (state.platform === "linux") return {ready: false, expected: true, reason: "GUI_OBSERVER_UNAVAILABLE_LINUX"};
+    const missing = Object.entries(state.prerequisites).filter(([, value]) => !value).map(([key]) => key);
+    if (missing.length) return {ready: false, expected: false, reason: `GUI_QUALIFICATION_PREREQUISITE_MISSING:${missing.join(",")}`};
+    return {ready: true, expected: false, reason: "GUI_OBSERVER_READY"};
+  }
+
+  function derive(input) {
+    const state = clone(input);
+    const gate = preflight(state);
+    const diagnostics = [];
+    let assertion = "not reached";
+    let aggregate = "inconclusive";
+    let qualification = "not exercised";
+    let operational = "in progress";
+
+    if (state.declaration === "pending") {
+      diagnostics.push(["GUI_DECLARATION_PENDING", "Freeze the capability probe and evidence pointer before the first GUI action.", "warning"]);
+    } else if (state.declaration === "unavailable") {
+      assertion = "not runnable";
+      aggregate = "not runnable";
+      qualification = gate.expected ? "not applicable on current Linux" : "blocked by prerequisite";
+      operational = "complete";
+      diagnostics.push([gate.reason, gate.expected ? "This omission is expected on Linux until first-party support is separately qualified." : "Windows qualification is not satisfied by a missing prerequisite.", gate.expected ? "ok" : "warning"]);
+    } else if (!gate.ready) {
+      diagnostics.push(["GUI_DECLARATION_CONTRADICTION", "The run declared the observer available although its preflight prerequisites do not support that declaration.", "error"]);
+      qualification = "rejected";
+      operational = "operator failure";
+    } else if (state.action === "pending") {
+      qualification = "ready to exercise";
+      diagnostics.push(["GUI_ACTION_PENDING", "Run the real, bounded action against the selected VS Code surface.", "warning"]);
+    } else {
+      operational = "complete";
+      const observerErrors = [];
+      if (state.targetWindow !== "verified") observerErrors.push(["GUI_WINDOW_IDENTITY_LOST", "The intended VS Code window was not verified at the assertion boundary."]);
+      if (state.focus !== "stable") observerErrors.push(["GUI_FOCUS_LOST", "Foreground focus was lost or became ambiguous after capability declaration."]);
+      if (state.approval !== "none") observerErrors.push(["GUI_UNEXPECTED_APPROVAL", "An app or sensitive-action approval interrupted unattended execution."]);
+      if (state.export !== "original_png") observerErrors.push(["GUI_ORIGINAL_IMAGE_UNAVAILABLE", "The exact screenshot bytes used for the assertion were not retained as an original PNG."]);
+      if (state.metadata !== "complete") observerErrors.push(["GUI_EVIDENCE_IDENTITY_INCOMPLETE", "The image is not bound to the run, step, assertion, time, frame, target window, and paired semantic evidence."]);
+      if (state.hash !== "verified") observerErrors.push(["GUI_IMAGE_HASH_UNVERIFIED", "The retained image bytes do not have a verified SHA-256."]);
+      if (state.frame !== "safe") observerErrors.push(["GUI_FRAME_UNSAFE", "The captured frame contains sensitive or unrelated desktop content; post-capture redaction is not accepted."]);
+      if (state.visual === "pending" || state.visual === "ambiguous") observerErrors.push(["GUI_VISUAL_OBSERVATION_AMBIGUOUS", "The automated visual observation did not reach an unambiguous expected or unexpected state."]);
+      if (state.semantic === "pending" || state.semantic === "missing") observerErrors.push(["GUI_SEMANTIC_EVIDENCE_MISSING", "The paired authoritative Booley/WCP evidence is absent."]);
+      if (state.cleanup !== "pass") observerErrors.push(["GUI_CLEANUP_INCOMPLETE", "The qualification environment did not prove its required terminal cleanup/baseline state."]);
+
+      if (observerErrors.length) {
+        observerErrors.forEach(([code, message]) => diagnostics.push([code, message, "error"]));
+        qualification = "rejected";
+        assertion = "not reached";
+        aggregate = "inconclusive";
+      } else {
+        qualification = state.audit === "pass" ? "qualified for this surface" : state.audit === "fail" ? "rejected by audit" : "valid capture; audit pending";
+        if (state.visual === "unexpected" || state.semantic === "mismatch") {
+          assertion = "fail";
+          aggregate = "fail";
+          diagnostics.push(["GUI_PRODUCT_OBSERVATION_FAILED", "Trustworthy layered evidence shows the expected product state was not reached.", "error"]);
+        } else {
+          assertion = "pass";
+          aggregate = "pass";
+          diagnostics.push(["GUI_EVIDENCE_COMPLETE", "The automated assertion has an original visual artifact and its paired semantic oracle.", "ok"]);
+        }
+        if (state.audit === "pending") diagnostics.push(["GUI_ASYNC_AUDIT_PENDING", "The Scenario outcome stands; observer qualification waits for later human comparison against the original image.", "warning"]);
+        if (state.audit === "fail") diagnostics.push(["GUI_AUDIT_REJECTED_OBSERVER", "The image did not faithfully support the recorded visual conclusion. Do not change the run outcome; reject the observer qualification.", "error"]);
+      }
+    }
+
+    return {state, gate, diagnostics, assertion, aggregate, qualification, operational};
+  }
+
+  function reduce(input, action) {
+    const state = clone(input);
+    switch (action.type) {
+      case "RESET_ALL": return baseState();
+      case "RESET_ATTEMPT": {
+        const reset = baseState();
+        reset.recorded = clone(state.recorded);
+        reset.surface = state.surface;
+        return reset;
+      }
+      case "WINDOWS": state.platform = "windows"; break;
+      case "LINUX": state.platform = "linux"; break;
+      case "PLUGIN_MISSING": state.prerequisites.plugin = false; break;
+      case "DIRTY_DESKTOP": state.prerequisites.clean = false; break;
+      case "NOT_ALLOWLISTED": state.prerequisites.allowlisted = false; break;
+      case "DECLARE": state.declaration = preflight(state).ready ? "available" : "unavailable"; break;
+      case "FORCE_DECLARE": state.declaration = "available"; break;
+      case "SURFACE": state.surface = action.value; break;
+      case "VERIFY_WINDOW": state.targetWindow = "verified"; state.focus = "stable"; break;
+      case "WRONG_WINDOW": state.targetWindow = "wrong"; state.focus = "lost"; break;
+      case "RUN": state.action = "complete"; break;
+      case "APPROVAL": state.approval = "unexpected"; break;
+      case "SEMANTIC_PASS": state.semantic = "pass"; break;
+      case "SEMANTIC_MISSING": state.semantic = "missing"; break;
+      case "SEMANTIC_MISMATCH": state.semantic = "mismatch"; break;
+      case "VISUAL_PASS": state.visual = "expected"; break;
+      case "VISUAL_FAIL": state.visual = "unexpected"; break;
+      case "VISUAL_AMBIGUOUS": state.visual = "ambiguous"; break;
+      case "EXPORT": state.export = "original_png"; break;
+      case "INTERNAL_ONLY": state.export = "internal_only"; state.image = null; state.hash = "pending"; break;
+      case "METADATA": state.metadata = "complete"; break;
+      case "UNSAFE_FRAME": state.frame = "unsafe"; break;
+      case "HASH": state.hash = "verified"; break;
+      case "HASH_BAD": state.hash = "mismatch"; break;
+      case "AUDIT_PASS": state.audit = "pass"; break;
+      case "AUDIT_FAIL": state.audit = "fail"; break;
+      case "CLEANUP": state.cleanup = "pass"; break;
+      case "CLEANUP_FAIL": state.cleanup = "fail"; break;
+      case "RECORD": {
+        const result = derive(state);
+        if (result.qualification === "qualified for this surface") state.recorded[state.surface] = "pass";
+        break;
+      }
+      case "SOAK_PASS": state.recorded.soak = "pass"; break;
+      case "IMAGE": state.image = clone(action.value); state.export = "original_png"; state.hash = "verified"; break;
+      case "CLEAR_IMAGE": state.image = null; state.export = "pending"; state.hash = "pending"; break;
+    }
+    return state;
+  }
+
+  return {SURFACES, baseState, derive, reduce};
+})();
+
+const actionDefinitions = [
+  ["Reset everything", {type: "RESET_ALL"}, "primary"],
+  ["Reset attempt; keep matrix", {type: "RESET_ATTEMPT"}],
+  ["Use Windows", {type: "WINDOWS"}],
+  ["Use Linux", {type: "LINUX"}],
+  ["Plugin missing", {type: "PLUGIN_MISSING"}, "danger"],
+  ["Desktop not clean", {type: "DIRTY_DESKTOP"}, "danger"],
+  ["VS Code not allowlisted", {type: "NOT_ALLOWLISTED"}, "danger"],
+  ["Freeze honest declaration", {type: "DECLARE"}, "primary"],
+  ["Falsely declare available", {type: "FORCE_DECLARE"}, "danger"],
+  ["Select Codex", {type: "SURFACE", value: "codex"}],
+  ["Select Claude Code", {type: "SURFACE", value: "claude"}],
+  ["Select VaporView", {type: "SURFACE", value: "vaporview"}],
+  ["Verify window + focus", {type: "VERIFY_WINDOW"}],
+  ["Lose focus / wrong window", {type: "WRONG_WINDOW"}, "danger"],
+  ["Complete GUI action", {type: "RUN"}],
+  ["Unexpected approval appears", {type: "APPROVAL"}, "danger"],
+  ["Semantic evidence passes", {type: "SEMANTIC_PASS"}],
+  ["Semantic evidence missing", {type: "SEMANTIC_MISSING"}, "danger"],
+  ["Semantic evidence mismatches", {type: "SEMANTIC_MISMATCH"}, "danger"],
+  ["Visual state expected", {type: "VISUAL_PASS"}],
+  ["Visual state visibly wrong", {type: "VISUAL_FAIL"}, "danger"],
+  ["Visual state ambiguous", {type: "VISUAL_AMBIGUOUS"}, "danger"],
+  ["Retain original PNG", {type: "EXPORT"}],
+  ["Internal screenshot only", {type: "INTERNAL_ONLY"}, "danger"],
+  ["Bind complete metadata", {type: "METADATA"}],
+  ["Capture unsafe frame", {type: "UNSAFE_FRAME"}, "danger"],
+  ["Verify image SHA-256", {type: "HASH"}],
+  ["Image hash mismatches", {type: "HASH_BAD"}, "danger"],
+  ["Cleanup passes", {type: "CLEANUP"}],
+  ["Cleanup fails", {type: "CLEANUP_FAIL"}, "danger"],
+  ["Async audit passes", {type: "AUDIT_PASS"}],
+  ["Async audit rejects", {type: "AUDIT_FAIL"}, "danger"],
+  ["Record qualified surface", {type: "RECORD"}],
+  ["Record prompt-free soak", {type: "SOAK_PASS"}]
+];
+
+const fullPass = [
+  ["Freeze the ready capability", {type: "DECLARE"}],
+  ["Verify the intended window and foreground focus", {type: "VERIFY_WINDOW"}],
+  ["Complete the prescribed GUI action", {type: "RUN"}],
+  ["Pair authoritative semantic evidence", {type: "SEMANTIC_PASS"}],
+  ["Observe the expected visual state", {type: "VISUAL_PASS"}],
+  ["Retain the exact original PNG", {type: "EXPORT"}],
+  ["Bind complete evidence identity", {type: "METADATA"}],
+  ["Verify the image digest", {type: "HASH"}],
+  ["Prove cleanup", {type: "CLEANUP"}],
+  ["Complete asynchronous human audit", {type: "AUDIT_PASS"}]
+];
+
+const scenarios = [
+  {
+    name: "Qualified capture",
+    intro: "Exercise one supported VS Code surface on a clean, dedicated Windows desktop with app permission provisioned before the run.",
+    verdict: "Expected: the Scenario assertion passes; after later human audit, the observer qualifies for this surface.",
+    setup: [], steps: fullPass
+  },
+  {
+    name: "Linux gate",
+    intro: "The same platform-neutral Scenario reaches a Linux host before first-party Linux Computer Use has been qualified.",
+    verdict: "Expected: the GUI assertion is expected not runnable. No Windows adapter conclusion is inferred.",
+    setup: [["Switch to Linux", {type: "LINUX"}]], steps: [["Freeze the honest capability declaration", {type: "DECLARE"}]]
+  },
+  {
+    name: "Focus loss",
+    intro: "Computer Use was available at preflight, but foreground identity became ambiguous after the action began.",
+    verdict: "Expected: fail closed. Assertion not reached, aggregate inconclusive, observer rejected; never retroactive not runnable.",
+    setup: [], steps: [["Declare available", {type: "DECLARE"}], ["Start against the correct window", {type: "VERIFY_WINDOW"}], ["Complete the GUI action", {type: "RUN"}], ["Lose focus before capture", {type: "WRONG_WINDOW"}]]
+  },
+  {
+    name: "Approval interruption",
+    intro: "VS Code was allowlisted, but Computer Use requests an unexpected app or sensitive-action approval during the unattended task.",
+    verdict: "Expected: operator failure and inconclusive QA evidence; the prompt-free qualification gate fails.",
+    setup: [], steps: [["Declare available", {type: "DECLARE"}], ["Verify target", {type: "VERIFY_WINDOW"}], ["Begin the action", {type: "RUN"}], ["Surface the unexpected approval", {type: "APPROVAL"}]]
+  },
+  {
+    name: "Screenshot trapped",
+    intro: "Computer Use sees a correct rendered state but exposes only an internal screenshot that the Scenario cannot retain as exact bytes.",
+    verdict: "Expected: the visual claim remains unproven, aggregate is inconclusive, and Computer Use is not qualified as the mandatory evidence mechanism.",
+    setup: [], steps: [["Declare available", {type: "DECLARE"}], ["Verify target", {type: "VERIFY_WINDOW"}], ["Complete action", {type: "RUN"}], ["Verify semantic state", {type: "SEMANTIC_PASS"}], ["See expected pixels", {type: "VISUAL_PASS"}], ["Discover screenshot is internal only", {type: "INTERNAL_ONLY"}]]
+  },
+  {
+    name: "Trustworthy product fail",
+    intro: "The observer works and preserves complete evidence, but the product visibly renders the wrong state.",
+    verdict: "Expected: Scenario fail and still a valid observer capture. Product quality and observer qualification do not share a verdict.",
+    setup: [], steps: [...fullPass.slice(0, 4), ["Observe a visibly wrong state", {type: "VISUAL_FAIL"}], ...fullPass.slice(5)]
+  },
+  {
+    name: "VaporView layers",
+    intro: "Select VaporView and require both readable pixels and the WCP/Trace Artifact/B-Wave semantic oracle.",
+    verdict: "Expected: neither a plausible screenshot nor healthy WCP alone passes; both layers and complete identity are required.",
+    setup: [["Select VaporView", {type: "SURFACE", value: "vaporview"}]], steps: fullPass
+  }
+];
+
+let state = QualificationModel.baseState();
+let activeScenario = 0;
+let scenarioStep = 0;
+let renderGeneration = 0;
+
+function esc(value) { return String(value).replace(/[&<>\"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[char])); }
+function verdictClass(value) {
+  if (["pass", "complete", "qualified for this surface"].includes(value)) return "good";
+  if (["fail", "operator failure", "rejected", "rejected by audit"].includes(value)) return "bad";
+  return "warn";
+}
+function statusPill(value) {
+  const style = value === "pass" ? "good" : value === "pending" ? "warn" : "bad";
+  return `<span class="pill ${style}">${esc(value)}</span>`;
+}
+function imagePointer(current) {
+  return current.image ? `evidence/visual/${current.image.name}` : "evidence/visual/<original-png>";
+}
+function sidecar(current, result) {
+  const surface = QualificationModel.SURFACES[current.surface];
+  return {
+    schema: "booley.qa.visual-evidence/v1",
+    artifact_id: "visual:QUAL-WIN-CU-001:gui-observe:surface-visible",
+    run_id: "QUAL-WIN-CU-001",
+    scenario_id: "windows-computer-use-qualification",
+    step_id: "gui-observe",
+    assertion_id: `${current.surface}-surface-visible`,
+    captured_at: "<second-resolution UTC RFC 3339 Z>",
+    image: {
+      pointer: imagePointer(current),
+      media_type: "image/png",
+      byte_length: current.image?.bytes ?? "<from original bytes>",
+      width_px: current.image?.width ?? "<from original bytes>",
+      height_px: current.image?.height ?? "<from original bytes>",
+      sha256: current.image?.sha256 ?? "<sha256 of exact original bytes>"
+    },
+    capture: {
+      mechanism: "chatgpt-desktop-computer-use",
+      mechanism_version: "<desktop and plugin versions>",
+      host_platform: current.platform,
+      session_mode: "foreground-unlocked-dedicated",
+      target_app_id: "<Windows app id reported by Computer Use>",
+      target_window_identity: "<stable title/workspace identity observed before and after>",
+      target_surface: surface.label,
+      frame_bounds_px: "<captured rectangle>",
+      display_scale: "<Windows scale>",
+      focus_before_and_after: current.focus === "stable"
+    },
+    assertion: {
+      automated_outcome: result.assertion,
+      visual_observation: current.visual,
+      reason_code: result.diagnostics[0]?.[0] ?? "GUI_EVIDENCE_COMPLETE"
+    },
+    paired_semantic_evidence: [{kind: current.surface === "vaporview" ? "wcp-trace-bwave" : "booley-operation", pointer: `<${surface.semantic}>`, sha256: "<digest where available>"}],
+    framing: {sensitive_content_absent: current.frame === "safe", redaction_applied: false},
+    asynchronous_audit: {status: current.audit, reviewer: "<record after run>", reviewed_at: "<record after run>"}
+  };
+}
+
+function taskPrompt(current) {
+  const surface = QualificationModel.SURFACES[current.surface].label;
+  return `@Computer Run the bounded Booley GUI qualification against only the visible Visual Studio Code window whose title contains [WORKSPACE MARKER]. Target surface: ${surface}.
+
+Authority and safety:
+- Operate only Visual Studio Code. Do not open ChatGPT, a terminal application, account/billing/settings pages, credentials, notifications, or any unrelated app.
+- Do not approve any app, security, privacy, administrator, sensitive, or disruptive-action prompt. If one appears, stop and report GUI_UNEXPECTED_APPROVAL.
+- If the intended VS Code window is not uniquely identifiable, foreground focus is lost, or another window obscures the assertion frame, stop and report GUI_WINDOW_IDENTITY_LOST. Do not guess and do not switch to coordinate-only control.
+
+Action:
+1. Report the Windows app id and exact VS Code window/workspace identity you selected.
+2. Open ${surface} using its stable VS Code command or named UI entry.
+3. Perform [PRESCRIBED NON-SENSITIVE ACTION]. Wait for [NAMED OBSERVABLE COMPLETION STATE].
+4. Re-verify the same target window and surface at the assertion boundary.
+5. Take the screenshot used for the visual conclusion, framed to the target VS Code window with credentials, account identity, billing, notifications, and unrelated desktop content absent.
+6. Export the exact original PNG bytes used for that conclusion to [RUN EVIDENCE DIRECTORY]/visual/[ASSERTION ID].png. Do not substitute a later screenshot, transcription, thumbnail, or prose description. If exact export is unsupported, stop and report GUI_ORIGINAL_IMAGE_UNAVAILABLE.
+7. Report: captured-at UTC time, PNG path, pixel dimensions, SHA-256, frame bounds, display scale, app id, target window identity, surface, focus verification before/after, visual observation, and paired semantic-evidence pointer.
+
+No live human approval is available. A human may audit the retained artifact only after the task ends.`;
+}
+
+async function render() {
+  const generation = ++renderGeneration;
+  const result = QualificationModel.derive(state);
+  if (generation !== renderGeneration) return;
+  const surface = QualificationModel.SURFACES[state.surface];
+  document.getElementById("verdicts").innerHTML = `
+    <div class="verdict ${verdictClass(result.aggregate)}"><span class="label">Aggregate QA verdict</span><strong>${esc(result.aggregate)}</strong><span class="small">Assertion: ${esc(result.assertion)}</span></div>
+    <div class="verdict ${verdictClass(result.qualification)}"><span class="label">Observer qualification</span><strong>${esc(result.qualification)}</strong><span class="small">Audit: ${esc(state.audit)}</span></div>`;
+  document.getElementById("facts").innerHTML = `
+    <dl class="fact"><dt>Platform</dt><dd>${esc(state.platform)}</dd></dl>
+    <dl class="fact"><dt>Operational completion</dt><dd>${esc(result.operational)}</dd></dl>
+    <dl class="fact wide"><dt>Active surface</dt><dd>${esc(surface.label)}</dd></dl>
+    <dl class="fact"><dt>Capability declaration</dt><dd>${esc(state.declaration)}</dd></dl>
+    <dl class="fact"><dt>Window / focus</dt><dd>${esc(state.targetWindow)} / ${esc(state.focus)}</dd></dl>
+    <dl class="fact"><dt>Visual / semantic</dt><dd>${esc(state.visual)} / ${esc(state.semantic)}</dd></dl>
+    <dl class="fact"><dt>Image / identity</dt><dd>${esc(state.export)} / ${esc(state.metadata)}</dd></dl>`;
+  document.getElementById("findings").innerHTML = result.diagnostics.length
+    ? result.diagnostics.map(([code, message, kind]) => `<div class="finding ${esc(kind)}"><strong>${esc(code)}</strong><br>${esc(message)}</div>`).join("")
+    : '<div class="finding ok"><strong>No diagnostics.</strong></div>';
+  const matrixRows = [
+    ["Codex VS Code extension", state.recorded.codex, "Control, capture, exact export, identity, paired Booley evidence, audit"],
+    ["Claude Code VS Code extension", state.recorded.claude, "Control, capture, exact export, identity, paired Booley evidence, audit"],
+    ["VaporView", state.recorded.vaporview, "Control and readable pixels paired with WCP, Trace Artifact, and B-Wave"],
+    ["Unattended soak", state.recorded.soak, "Dedicated unlocked online Windows session completes without an unexpected prompt"]
+  ];
+  document.getElementById("matrix").innerHTML = matrixRows.map(([gate, value, meaning]) => `<tr><td>${esc(gate)}</td><td>${statusPill(value)}</td><td>${esc(meaning)}</td></tr>`).join("");
+  document.getElementById("sidecar").textContent = JSON.stringify(sidecar(state, result), null, 2);
+  document.getElementById("prompt").value = taskPrompt(state);
+  document.getElementById("file-facts").innerHTML = state.image ? `
+    <dl class="fact wide"><dt>Name</dt><dd>${esc(state.image.name)}</dd></dl>
+    <dl class="fact"><dt>Dimensions</dt><dd>${esc(state.image.width)} × ${esc(state.image.height)}</dd></dl>
+    <dl class="fact"><dt>Bytes</dt><dd>${esc(state.image.bytes)}</dd></dl>
+    <dl class="fact wide"><dt>SHA-256</dt><dd><code>${esc(state.image.sha256)}</code></dd></dl>`
+    : '<p class="muted small">No PNG loaded.</p>';
+}
+
+async function dispatch(action) { state = QualificationModel.reduce(state, action); await render(); }
+function renderActions() {
+  const root = document.getElementById("actions");
+  actionDefinitions.forEach(([label, action, style]) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (style) button.className = style;
+    button.addEventListener("click", () => dispatch(action));
+    root.appendChild(button);
+  });
+}
+async function startScenario(index) {
+  activeScenario = index;
+  scenarioStep = 0;
+  state = QualificationModel.baseState();
+  for (const [, action] of scenarios[index].setup) state = QualificationModel.reduce(state, action);
+  renderScenarios();
+  await render();
+}
+async function takeStep(index) {
+  if (index !== scenarioStep) return;
+  await dispatch(scenarios[activeScenario].steps[index][1]);
+  scenarioStep += 1;
+  renderScenarios();
+}
+function renderScenarios() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  scenarios.forEach((scenario, index) => {
+    const button = document.createElement("button");
+    button.textContent = scenario.name;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === activeScenario));
+    button.addEventListener("click", () => startScenario(index));
+    tabs.appendChild(button);
+  });
+  const scenario = scenarios[activeScenario];
+  document.getElementById("scenario-intro").textContent = scenario.intro;
+  document.getElementById("scenario-verdict").textContent = scenario.verdict;
+  const steps = document.getElementById("steps");
+  steps.innerHTML = "";
+  scenario.steps.forEach(([label], index) => {
+    const row = document.createElement("div");
+    row.className = `step ${index < scenarioStep ? "done" : index === scenarioStep ? "current" : ""}`;
+    row.innerHTML = `<span class="step-number">${index + 1}</span><span>${esc(label)}</span>`;
+    const button = document.createElement("button");
+    button.textContent = index < scenarioStep ? "Done" : "Run step";
+    button.disabled = index !== scenarioStep;
+    button.addEventListener("click", () => takeStep(index));
+    row.appendChild(button);
+    steps.appendChild(row);
+  });
+}
+
+document.getElementById("copy-prompt").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(document.getElementById("prompt").value);
+    document.getElementById("copy-status").textContent = "Copied.";
+  } catch (_) {
+    document.getElementById("prompt").select();
+    document.getElementById("copy-status").textContent = "Clipboard unavailable; prompt selected for manual copy.";
+  }
+});
+document.getElementById("png-file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const bytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const url = URL.createObjectURL(file);
+  const dimensions = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({width: img.naturalWidth, height: img.naturalHeight});
+    img.onerror = reject;
+    img.src = url;
+  });
+  URL.revokeObjectURL(url);
+  await dispatch({type: "IMAGE", value: {name: file.name, bytes: file.size, width: dimensions.width, height: dimensions.height, sha256}});
+});
+document.getElementById("clear-file").addEventListener("click", async () => {
+  document.getElementById("png-file").value = "";
+  await dispatch({type: "CLEAR_IMAGE"});
+});
+
+renderActions();
+startScenario(0);
+</script>
+</body>
+</html>
