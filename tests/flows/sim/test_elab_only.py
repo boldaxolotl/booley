@@ -269,6 +269,40 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
         assert '"mode": "elab_only"' in report.read_text(encoding="utf-8")
 
 
+def test_missing_executable_is_typed_in_elab_only_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_dut"])
+    monkeypatch.setattr(flow, "_validate_interactive_args", lambda selected: None)
+    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
+    monkeypatch.setattr(
+        flow,
+        "_run_one_elab_only",
+        lambda target: ElabOnlyTargetResult(
+            target=target,
+            outcome=BuildOutcome(
+                False,
+                None,
+                "infrastructure",
+                output=(
+                    "/bin/sh: 1: verilator: not found\nmake: *** [Makefile:8: Vtop.mk] Error 127\n"
+                ),
+                reason="nonzero build exit without a recognized design diagnostic",
+            ),
+        ),
+    )
+
+    result = flow._run_elab_only()
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.detail["mode"] == "elab_only"
+    assert result.detail["eda_tool_error"] == "missing_executable"
+    assert result.detail["missing_executable"] == "verilator"
+    assert "required executable 'verilator'" in result.report_text
+
+
 @pytest.mark.parametrize(
     ("outcomes", "expected"),
     [
