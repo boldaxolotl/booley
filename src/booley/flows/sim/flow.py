@@ -2441,7 +2441,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             )
             scripts = [item[2] for item in preview.commands if item[:2] == ("sh", "-c")]
             command = "\n".join(scripts) or None
-        except Exception:  # noqa: BLE001 — optional report metadata is best-effort
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -2465,7 +2465,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # noqa: BLE001 — optional report metadata is best-effort
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
