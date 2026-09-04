@@ -16,7 +16,9 @@ def _current(resource: str) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, bootstrap.BootstrapState.CURRENT, "current")
 
 
-def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _wire_current(
+    monkeypatch: pytest.MonkeyPatch, *, stub_vscode_extension: bool = True
+) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
     monkeypatch.setattr(
@@ -24,11 +26,14 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         "_prerequisite_findings",
         lambda: (_current("git"), _current("docker"), _current("vscode")),
     )
-    monkeypatch.setattr(
-        bootstrap,
-        "_reconcile_vscode_dev_containers",
-        lambda _intent: calls.append("vscode-dev-containers") or _current("vscode-dev-containers"),
-    )
+    if stub_vscode_extension:
+        monkeypatch.setattr(
+            bootstrap,
+            "_reconcile_vscode_dev_containers",
+            lambda _intent: (
+                calls.append("vscode-dev-containers") or _current("vscode-dev-containers")
+            ),
+        )
     monkeypatch.setattr(
         bootstrap,
         "_reconcile_skills",
@@ -139,7 +144,7 @@ def test_vscode_requires_an_executable_or_installed_application(
     from booley.config import editor
 
     (tmp_path / ".config" / "Code").mkdir(parents=True)
-    monkeypatch.setattr(editor, "resolve_editor_command", lambda: None)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
     monkeypatch.setattr(editor, "resolve_editor_install", lambda: None)
 
     finding = bootstrap._vscode_finding()
@@ -157,7 +162,7 @@ def test_vscode_accepts_a_proven_gui_application(
     executable = application / "Contents" / "MacOS" / "Electron"
     executable.parent.mkdir(parents=True)
     executable.touch()
-    monkeypatch.setattr(editor, "resolve_editor_command", lambda: None)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
     monkeypatch.setattr(editor, "resolve_editor_install", lambda: application)
 
     finding = bootstrap._vscode_finding()
@@ -415,12 +420,120 @@ def test_docker_daemon_reports_success_and_failure(monkeypatch: pytest.MonkeyPat
 def test_vscode_accepts_a_path_command(monkeypatch: pytest.MonkeyPatch) -> None:
     from booley.config import editor
 
-    monkeypatch.setattr(editor, "resolve_editor_command", lambda: "/usr/bin/codium")
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/codium")
 
     finding = bootstrap._vscode_finding()
 
     assert finding.state is bootstrap.BootstrapState.CURRENT
     assert finding.detail == "codium available"
+
+
+def test_public_bootstrap_rejects_an_editor_without_a_management_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    calls = _wire_current(monkeypatch, stub_vscode_extension=False)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.findings[-1].resource == "vscode-dev-containers"
+    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
+    assert "management command" in result.findings[-1].detail
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (subprocess.TimeoutExpired("code", 30), "within 30 seconds"),
+        (OSError("denied"), "cannot inspect"),
+    ],
+)
+def test_public_bootstrap_reports_extension_probe_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    expected: str,
+) -> None:
+    from booley.config import editor
+
+    _wire_current(monkeypatch, stub_vscode_extension=False)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
+    assert expected in result.findings[-1].detail
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (subprocess.TimeoutExpired("code", 120), "within 120 seconds"),
+        (OSError("denied"), "cannot install"),
+    ],
+)
+def test_public_bootstrap_reports_extension_install_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    expected: str,
+) -> None:
+    from booley.config import editor
+
+    _wire_current(monkeypatch, stub_vscode_extension=False)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+    calls = 0
+
+    def fail_after_probe(argv, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
+        raise failure
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fail_after_probe)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
+    assert expected in result.findings[-1].detail
+
+
+@pytest.mark.parametrize("verification_error", [False, True])
+def test_public_bootstrap_rejects_an_unverified_install(
+    monkeypatch: pytest.MonkeyPatch,
+    verification_error: bool,
+) -> None:
+    from booley.config import editor
+
+    _wire_current(monkeypatch, stub_vscode_extension=False)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+    calls = 0
+
+    def run(argv, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if calls == 3 and verification_error:
+            raise OSError("verification denied")
+        return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.findings[-1].state is bootstrap.BootstrapState.ERROR
+    if verification_error:
+        assert "verification denied" in result.findings[-1].detail
+    else:
+        assert "did not report the extension" in result.findings[-1].detail
 
 
 def test_vscode_dev_containers_accepts_an_existing_install(

@@ -209,9 +209,9 @@ def _docker_daemon_error() -> str | None:
 
 
 def _vscode_finding() -> BootstrapFinding:
-    from booley.config.editor import resolve_editor_command, resolve_editor_install
+    from booley.config.editor import resolve_editor_install, resolve_editor_management_command
 
-    command = resolve_editor_command()
+    command = resolve_editor_management_command()
     if command:
         return BootstrapFinding(
             "vscode", BootstrapState.CURRENT, f"{Path(command).name} available"
