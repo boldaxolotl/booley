@@ -203,13 +203,15 @@ def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
     assert "Node.js, Rust" not in setup
 
 
-def test_readme_uses_measured_registry_baseline_instead_of_rough_estimate() -> None:
+def test_readme_uses_current_slim_image_measurements() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "roughly 6 GB" not in readme
-    assert "4.33 GB of compressed" in readme
-    assert "5.53 GB for RISC-V" in readme
-    assert "adds 1.21 GB" in readme
+    assert "15 GB of Docker storage" not in readme
+    assert "21 GB" not in readme
+    assert "4 GB of Docker storage" in readme
+    assert "6 GB" in readme
+    assert "1.58/2.02 GB" in readme
+    assert "2.82/4.48 GB" in readme
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
