@@ -131,6 +131,51 @@ def test_adapter_pass_cannot_contradict_per_test_failure(tmp_path) -> None:
         read_adapter_result(identity)
 
 
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"adapter": "other"}, "adapter identity"),
+        ({"target_identity": "other"}, "Target identity"),
+        ({"selected_tests": ["other"]}, "selected tests"),
+        ({"selected_tests": "reset"}, "string list"),
+        ({"failure_kind": "mystery"}, "failure_kind"),
+        ({"detail": 3}, "detail"),
+        ({"failure_kind": "design"}, "failure kind"),
+        ({"diagnostics": "bad"}, "string list"),
+        ({"trace": {"status": "bad"}}, "trace status"),
+        ({"trace": {"status": "ok", "path": 3}}, "text fields"),
+        ({"trace": {"status": "ok", "path": "wave.fst", "signal_count": -1}}, "non-negative"),
+        ({"trace": {"status": "ok"}}, "requires a path"),
+        ({"trace": {"status": "incident"}}, "requires detail"),
+        ({"trace": {"status": "ok", "path": "wave.fst", "signal_count": "bad"}}, "signal_count"),
+    ],
+)
+def test_adapter_result_rejects_invalid_authenticated_fields(
+    tmp_path,
+    override,
+    message,
+) -> None:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=True,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("reset",),
+            test_results=(AdapterTestResult("reset", "pass"),),
+            diagnostics=("note",),
+            trace=AdapterTraceResult("ok", path="wave.fst"),
+        ),
+    )
+    payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
+    payload.update(override)
+    identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AdapterTransportError, match=message):
+        read_adapter_result(identity)
+
+
 @pytest.mark.parametrize("adapter", [verilator, icarus])
 def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adapter) -> None:
     identity = _identity(tmp_path)
