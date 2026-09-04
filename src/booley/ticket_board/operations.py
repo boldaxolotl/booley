@@ -739,6 +739,16 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
     )
 
 
+def _acceptance_failure_detail(tio: Any, slug: str) -> str:
+    try:
+        current = tio.find_ticket(slug)
+    except (OSError, ValueError):
+        current = None
+    if current is not None and current.get("status") == "review":
+        return "ticket stays in review"
+    return "inspect the Ticket and Acceptance Journal before retrying"
+
+
 def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     """Refuse destructive terminal actions when durable acceptance is broken."""
     from booley.criteria.state import DevelopmentState
@@ -833,10 +843,12 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         return False
 
     if on_success.merge:
-        from .completion import cleanup_finished, complete_review_ticket
+        from .acceptance_journal import cleanup_finished
+        from .completion import complete_review_ticket
 
         if not complete_review_ticket(tio, slug, on_success):
-            print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+            detail = _acceptance_failure_detail(tio, slug)
+            print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
             return False
         finished_cleanup = on_success.cleanup and cleanup_finished(
             Path(tio._project_root).resolve(), slug

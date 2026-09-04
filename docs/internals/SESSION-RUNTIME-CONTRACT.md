@@ -80,6 +80,13 @@ The RISC-V RootFS DiffIDs must begin with the exact standard-image DiffID list.
 This proves that the derived image shares the standard layers and does not copy
 or rebuild them.
 
+The promotion path also checks out Ibex at commit
+`34b0705760ef3dfa00e99637432473d2be8f22f3` and runs its real `ibex_core` lint
+target with FuseSoC and Verilator while container networking is disabled. The
+contract's Spike probe runs an independently checked RV32 arithmetic program
+and loads a temporary native extension library; this covers both ISA execution
+and the installed extension-loading interface.
+
 ## Evidence and size policy
 
 [`image_size_report.py`](../../.github/scripts/image_size_report.py) records
@@ -96,23 +103,43 @@ these metrics independently as exact integer bytes:
 The report also records the platform manifest digest, local image ID, OS,
 architecture, runtime user, DiffIDs, timestamp, Docker client/server and
 containerd versions, Buildx and BuildKit versions, and storage driver. Do not add
-the metrics together; they measure different storage views. PR 1 records
-baselines but intentionally sets no hard size ceiling. Candidate-derived limits
-belong to the promotion stage after the optimized images exist.
+the metrics together; they measure different storage views.
+
+[`image-size-limits.toml`](../../.github/contracts/image-size-limits.toml) sets
+exact-byte ceilings for all four storage views. Local PR builds enforce the
+three locally measurable views; release builds additionally enforce compressed
+registry-layer bytes after pushing the selected platform manifest. Missing
+images and breached limits fail closed.
 
 The committed [0.2.10 Linux/AMD64 baseline](../../.github/evidence/docker-image-baseline-0.2.10-amd64.json)
 controls the staged image work. Workflow reports retain the complete per-layer
 and DiffID arrays. The committed control keeps the plan's exact totals, digests,
 environment, counts, and largest-directory inventory.
 
-The proposed 3.1 to 3.4 GB standard and 4.6 to 4.9 GB RISC-V visible-filesystem
-endpoints remain design targets, not measured results or CI limits, until the
-candidate images prove them.
+The clean-runtime candidates measured on the containerd image store on
+2026-09-04 produced these local results. They are measurements, not limits;
+Docker Engine's overlay2 store reports `.Size` closer to the unpacked layer
+total, so that backend-dependent ceiling matches the unpacked-history ceiling.
 
-This first contract stage establishes exact storage evidence, image identity,
-command/file invariants, representative compiler and Spike execution, and a real
-PicoRV32 lint/simulation run. The complete optimization-promotion gate must also
-cover the Ibex demo, Spike differential and extension-loading behavior,
-agent-client signal and exit propagation, OpenROAD physical execution, cold start
-time, and representative peak RSS specified by the image-size audit before a PR
-changes the shipped runtime payload.
+| Image | Docker local (containerd) | Unpacked history | Visible filesystem |
+| --- | ---: | ---: | ---: |
+| standard | 1,577,191,573 B | 3,180,724,224 B | 2,821,029,888 B |
+| RISC-V | 2,022,419,977 B | 4,841,689,088 B | 4,480,544,768 B |
+
+The promotion gate now covers the standard and RISC-V command/file contracts,
+compiler and simulation paths, PicoRV32 lint/simulation, the pinned offline
+Ibex lint demo, Spike execution and extension loading, agent-client signal and
+exit propagation, OpenROAD physical placement/timing repair and offscreen GUI
+loading, and repeated cold-start and representative peak-RSS measurements.
+
+## Provenance and redistribution evidence
+
+Release builds generate SPDX SBOM attestations for the stable base, standard,
+and RISC-V images. OpenROAD is copied from the pinned upstream builder without
+its development checkout; the runtime instead carries a deterministic compact
+source archive and a machine-readable manifest containing the exact root and
+recursive submodule revisions. Required license material remains in the image.
+
+These artifacts provide engineering evidence for source correspondence and
+review. They do not replace a human legal review of redistribution obligations
+before a release is published.

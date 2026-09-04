@@ -73,7 +73,11 @@ from booley.flows.sim.backends.cocotb_results import (
     recover_timeout_progress,
     results_payload,
 )
-from booley.flows.sim.backends.shared import find_icarus_image
+from booley.flows.sim.backends.shared import (
+    append_child_cpu_marker,
+    child_cpu_snapshot,
+    find_icarus_image,
+)
 from booley.flows.sim.result import (
     count_sva_errors,
     format_infra_error,
@@ -238,7 +242,7 @@ def _build_run_cmd(
     return cmd
 
 
-def _stream_output(
+def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeline
     cmd: list[str],
     run_cwd: Path,
     env: dict[str, str],
@@ -265,6 +269,7 @@ def _stream_output(
     from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
     lines: deque[str] = deque(maxlen=5_000)
+    cpu_started = child_cpu_snapshot()
     # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
     # this budget exists for, and anything the sim dumps during that walk would
     # otherwise land in the baseline free of charge (fpu F-23).
@@ -319,6 +324,7 @@ def _stream_output(
         timer.cancel()
         guard.stop()
         stall_guard.stop()
+        append_child_cpu_marker(lines, cpu_started)
 
     _append_abort_reason(
         lines,

@@ -36,6 +36,8 @@ from booley.flows.sim.backends.shared import (
     RunLogProgress,
     TraceFileSnapshot,
     adopt_declared_trace_files,
+    append_child_cpu_marker,
+    child_cpu_snapshot,
     format_idle_note,
     snapshot_declared_trace_files,
     trace_file_stamp,
@@ -254,6 +256,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
     lines: deque[str] = deque(maxlen=5_000)
+    cpu_started = child_cpu_snapshot()
     # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
     # this budget exists for, and anything the sim dumps during that walk would
     # otherwise land in the baseline free of charge (fpu F-23).
@@ -355,6 +358,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         watchdog.cancel()
         guard.stop()
         progress.final_flush(lines)
+        append_child_cpu_marker(lines, cpu_started)
 
 
 def _evaluate_verdict(

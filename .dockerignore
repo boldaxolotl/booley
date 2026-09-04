@@ -21,6 +21,7 @@
 !src/booley/data/docker/claude-managed-settings.json
 !src/booley/data/docker/agent-clis-package.json
 !src/booley/data/docker/agent-clis-package-lock.json
+!src/booley/data/docker/openroad-source-manifest.json
 !src/booley/data/docker/vivado-wrapper
 
 # bwave Rust source (built inside container for offline use)
