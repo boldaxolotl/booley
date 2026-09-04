@@ -36,7 +36,10 @@ See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEAT
 ## Installation
 
 Booley supports Windows and Linux (Ubuntu 24.04 tested); macOS is not
-supported. You need:
+supported. On Windows, the native host CLI and Docker Desktop workflow are
+functionally supported from a normal Windows checkout. Filesystem-heavy EDA
+performance across Windows bind mounts is still being qualified, so it should
+not yet be assumed equivalent to Linux-native performance. You need:
 
 - Python 3.11+
 - [Git 2.37.2+](https://git-scm.com/downloads)
