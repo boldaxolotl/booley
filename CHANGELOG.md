@@ -141,7 +141,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Custom MCP clients must negotiate protocol version `2026-07-28`. Booley's
   built-in Claude Code and Codex configurations are updated automatically.
 - Host bootstrap now requires Git 2.37.2 or newer. The complete demo stack
-  requires at least 21 GB of free storage.
+  requires about 6 GB of free Docker storage, plus Project artifacts and
+  temporary upgrade/build data.
 
 ## 0.2.10 - 01 SEP 2026
 
