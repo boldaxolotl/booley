@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import (
+    BoundaryError,
     as_dict,
     as_int,
     require_dict,
@@ -213,6 +214,9 @@ def measure(
     os_name = require_str(inspected, "Os")
     rootfs = require_dict(inspected.get("RootFS"), field="image RootFS")
     config = require_dict(inspected.get("Config"), field="image Config")
+    runtime_user = config.get("User", "")
+    if not isinstance(runtime_user, str):
+        raise BoundaryError("User must be a string")
     diff_ids = tuple(
         require_str({"value": value}, "value")
         for value in require_list(rootfs.get("Layers"), field="image RootFS layers")
@@ -228,7 +232,7 @@ def measure(
         image_id=require_str(inspected, "Id"),
         os=os_name,
         architecture=architecture,
-        runtime_user=require_str(config, "User"),
+        runtime_user=runtime_user,
         repository_digests=tuple(
             require_str({"value": value}, "value")
             for value in require_list(
