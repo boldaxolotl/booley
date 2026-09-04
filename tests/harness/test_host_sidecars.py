@@ -649,6 +649,18 @@ def test_inspect_container_handles_missing_failure_valid_and_incomplete(
         sidecars._inspect_container("name", FakeDocker(_cp(stdout="{}")))
 
 
+def test_project_root_prefers_label_and_requires_a_workspace_mount() -> None:
+    assert (
+        sidecars._project_root_from_inspection(
+            {"Mounts": []},
+            {"devcontainer.local_folder": "/projects/from-label"},
+            "session",
+        )
+        == "/projects/from-label"
+    )
+    assert sidecars._project_root_from_inspection({"Mounts": []}, {}, "session") is None
+
+
 def test_active_session_enumeration_validates_rows_and_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

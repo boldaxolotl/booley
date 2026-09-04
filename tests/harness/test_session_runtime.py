@@ -1146,6 +1146,43 @@ class TestInitReconciliation:
         assert changed
         remove_relay.assert_called_once_with(relay)
 
+    def test_missing_relay_container_is_not_current(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        with patch.object(sr, "_strict_refresh_container", return_value=None):
+            assert not sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_foreign_relay_container_is_preserved(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.session-id": relay.session_id,
+                }
+            }
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match="not owned by this Project"),
+        ):
+            sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_relay_issuance_labels_determine_currency(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        issuance = _test_issuance(workspace)
+        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+        labels.update(
+            {
+                "booley.role": "license-relay",
+                "booley.session-id": relay.session_id,
+            }
+        )
+        state = {"Config": {"Labels": labels}}
+        with patch.object(sr, "_strict_refresh_container", return_value=state):
+            assert sr._relay_matches_issuance(relay, issuance)
+            labels["booley.spec-digest"] = "older-spec"
+            assert not sr._relay_matches_issuance(relay, issuance)
+
     def test_preserves_foreign_container(self, workspace: Path) -> None:
         issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
         state = _refresh_state(labels={"booley.role": "interactive"})
