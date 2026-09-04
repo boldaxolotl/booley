@@ -949,8 +949,8 @@ jobs:
             --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work \
             -w /work \
             booley-riscv-test bash -euo pipefail -c \
-              'test -f /work/rtl/ibex_core.sv &&
-              fusesoc --cores-root=/work run --target=lint
+              'test -f /work/rtl/ibex_core.sv && \
+              fusesoc --cores-root=/work run --target=lint \
               lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal"'
 
       - name: Clean up image validation containers

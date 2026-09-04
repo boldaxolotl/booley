@@ -670,15 +670,29 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
-    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    jobs = _workflow(".github/workflows/test.yml")["jobs"]
+    smoke_job = jobs["bwave-smoke"]
+    checkout = _named_step(smoke_job, "Prepare exact reviewed Ibex candidate")
+    lint_command = _named_step(smoke_job, "Run pinned Ibex lint demo")["run"]
+    command_argv = shlex.split(lint_command)
+    inner_script = next(
+        token for token in command_argv[command_argv.index("-c") + 1 :] if token.strip()
+    )
+    script_lines = inner_script.splitlines()
 
-    assert "Prepare exact reviewed Ibex candidate" in workflow
-    assert "repository: lowRISC/ibex" in workflow
-    assert "ref: 34b0705760ef3dfa00e99637432473d2be8f22f3" in workflow
-    assert "Run pinned Ibex lint demo" in workflow
-    assert "--network none" in workflow
-    assert "lowrisc:ibex:ibex_core" in workflow
-    assert '--verilator_options="--Wno-fatal"' in workflow
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {
+        "path": "ibex-demo",
+        "persist-credentials": False,
+        "ref": "34b0705760ef3dfa00e99637432473d2be8f22f3",
+        "repository": "lowRISC/ibex",
+    }
+    network_index = command_argv.index("--network")
+    assert command_argv[network_index + 1] == "none"
+    assert script_lines[0].rstrip().endswith("&& \\")
+    assert script_lines[1].rstrip().endswith("--target=lint \\")
+    assert "lowrisc:ibex:ibex_core" in script_lines[2]
+    assert '--verilator_options="--Wno-fatal"' in script_lines[2]
 
 
 def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:
