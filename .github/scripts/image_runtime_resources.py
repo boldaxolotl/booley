@@ -88,7 +88,9 @@ def measure_image(name: str, reference: str, runs: int) -> dict[str, object]:
     commands = dict(_COMMON_COMMANDS)
     if name == "riscv":
         commands["spike_diagnostics"] = "spike --help >/dev/null 2>&1"
-    peak_rss = {command_name: measure_rss(reference, command) for command_name, command in commands.items()}
+    peak_rss = {
+        command_name: measure_rss(reference, command) for command_name, command in commands.items()
+    }
     return {
         "reference": reference,
         "cold_container_start": measure_startup(reference, runs),
@@ -134,6 +136,15 @@ def _named_reference(value: str) -> tuple[str, str]:
     return name, reference
 
 
+def _unique_references(values: list[tuple[str, str]]) -> dict[str, str]:
+    references: dict[str, str] = {}
+    for name, reference in values:
+        if name in references:
+            raise ValueError(f"duplicate image name: {name}")
+        references[name] = reference
+    return references
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", action="append", required=True, type=_named_reference)
@@ -141,10 +152,12 @@ def main() -> int:
     parser.add_argument("--json", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     args = parser.parse_args()
+    references = _unique_references(args.image)
     payload = {
         "schema": 1,
         "images": {
-            name: measure_image(name, reference, args.runs) for name, reference in args.image
+            name: measure_image(name, reference, args.runs)
+            for name, reference in references.items()
         },
     }
     args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

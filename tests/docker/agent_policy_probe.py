@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,75 @@ def _assert_diagnostics() -> None:
     assert report["checks"]["config.load"]["summary"] == "config loaded"
 
 
+def _descendant_pids(root_pid: int) -> set[int]:
+    descendants: set[int] = set()
+    pending = [root_pid]
+    while pending:
+        parent = pending.pop()
+        try:
+            text = Path(f"/proc/{parent}/task/{parent}/children").read_text()
+        except FileNotFoundError:
+            continue
+        children = {int(value) for value in text.split()}
+        descendants.update(children)
+        pending.extend(children)
+    return descendants
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    _, separator, suffix = stat.rpartition(")")
+    return bool(separator) and suffix.split()[0] != "Z"
+
+
+def _wait_for_exit(pids: set[int], timeout: float) -> set[int]:
+    deadline = time.monotonic() + timeout
+    running = {pid for pid in pids if _pid_is_running(pid)}
+    while running and time.monotonic() < deadline:
+        time.sleep(0.05)
+        running = {pid for pid in running if _pid_is_running(pid)}
+    return running
+
+
+def _probe_signal(name: str, command: list[str], env: dict[str, str]) -> int:
+    process = subprocess.Popen(
+        command,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    descendants: set[int] = set()
+    try:
+        time.sleep(0.5)
+        assert process.poll() is None, f"{name} stdio server exited before signal"
+        descendants = _descendant_pids(process.pid)
+        os.kill(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=10)
+        survivors = _wait_for_exit(descendants, timeout=10)
+        assert not survivors, f"{name} left descendants running after SIGTERM: {survivors}"
+        expected_terminations = {0, -signal.SIGTERM, 128 + signal.SIGTERM}
+        assert process.returncode in expected_terminations, (
+            f"{name} did not terminate after SIGTERM: {process.returncode}; "
+            f"stdout={stdout[-1000:]!r}; stderr={stderr[-1000:]!r}"
+        )
+        return process.returncode
+    finally:
+        if process.poll() is None or _wait_for_exit(descendants, timeout=0):
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            for pid in _wait_for_exit(descendants, timeout=0):
+                with suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            if process.poll() is None:
+                process.wait(timeout=5)
+
+
 def _assert_signal_propagation(root: Path) -> dict[str, int]:
     commands = {
         "claude": ["claude", "mcp", "serve"],
@@ -88,25 +158,7 @@ def _assert_signal_propagation(root: Path) -> dict[str, int]:
         codex_home.mkdir(parents=True)
         env = os.environ.copy()
         env.update({"HOME": str(home), "CODEX_HOME": str(codex_home)})
-        process = subprocess.Popen(
-            command,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        time.sleep(0.5)
-        assert process.poll() is None, f"{name} stdio server exited before signal"
-        os.killpg(process.pid, signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=10)
-        expected_terminations = {0, -signal.SIGTERM, 128 + signal.SIGTERM}
-        assert process.returncode in expected_terminations, (
-            f"{name} did not propagate SIGTERM: {process.returncode}; "
-            f"stdout={stdout[-1000:]!r}; stderr={stderr[-1000:]!r}"
-        )
-        exit_codes[name] = process.returncode
+        exit_codes[name] = _probe_signal(name, command, env)
     return exit_codes
 
 

@@ -331,13 +331,13 @@ def test_size_limits_cover_local_and_registry_storage_views() -> None:
 
     errors = image_size_report.apply_size_limits(payload, limits)
 
-    assert errors == [
-        "riscv unpacked_layer_history_bytes is 20 bytes over its 80-byte ceiling"
-    ]
+    assert errors == ["riscv unpacked_layer_history_bytes is 20 bytes over its 80-byte ceiling"]
     assert payload["size_limits"]["passed"] is False
-    assert payload["size_limits"]["images"]["sandbox"][
-        "merged_visible_filesystem_bytes"
-    ] == {"actual_bytes": 90, "max_bytes": 90, "passed": True}
+    assert payload["size_limits"]["images"]["sandbox"]["merged_visible_filesystem_bytes"] == {
+        "actual_bytes": 90,
+        "max_bytes": 90,
+        "passed": True,
+    }
 
 
 def test_size_limits_fail_closed_when_a_named_image_is_not_measured() -> None:
@@ -364,9 +364,10 @@ def test_runtime_measurement_skips_registry_only_limit() -> None:
     )
 
     assert errors == []
-    assert payload["size_limits"]["images"]["sandbox"][
-        "registry_compressed_layer_bytes"
-    ]["status"] == "not-measured"
+    assert (
+        payload["size_limits"]["images"]["sandbox"]["registry_compressed_layer_bytes"]["status"]
+        == "not-measured"
+    )
 
 
 def test_committed_size_limits_bound_both_runtime_images_below_baseline() -> None:
@@ -382,9 +383,10 @@ def test_committed_size_limits_bound_both_runtime_images_below_baseline() -> Non
             "merged_visible_filesystem_bytes",
         }
         baseline_image = baseline["images"][name]
-        assert image_limits["registry_compressed_layer_bytes"] < baseline_image["registry"][
-            "compressed_layer_bytes"
-        ]
+        assert (
+            image_limits["registry_compressed_layer_bytes"]
+            < baseline_image["registry"]["compressed_layer_bytes"]
+        )
         for metric in (
             "docker_local_size_bytes",
             "unpacked_layer_history_bytes",

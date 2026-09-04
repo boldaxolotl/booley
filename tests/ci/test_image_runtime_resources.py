@@ -29,8 +29,7 @@ def test_parse_max_rss_kib_rejects_missing_or_ambiguous_output() -> None:
         image_runtime_resources.parse_max_rss_kib("no measurement")
     with pytest.raises(ValueError, match="exactly one"):
         image_runtime_resources.parse_max_rss_kib(
-            "Maximum resident set size (kbytes): 1\n"
-            "Maximum resident set size (kbytes): 2\n"
+            "Maximum resident set size (kbytes): 1\nMaximum resident set size (kbytes): 2\n"
         )
 
 
@@ -41,3 +40,10 @@ def test_summarize_startup_keeps_every_sample_and_median() -> None:
         "median_ms": 20.0,
         "max_ms": 30.0,
     }
+
+
+def test_unique_references_rejects_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="duplicate image name: sandbox"):
+        image_runtime_resources._unique_references(
+            [("sandbox", "image:first"), ("sandbox", "image:second")]
+        )

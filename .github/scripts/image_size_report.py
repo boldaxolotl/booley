@@ -376,9 +376,7 @@ def report(
     }
 
 
-def apply_size_limits(
-    payload: dict[str, object], limits: dict[str, dict[str, int]]
-) -> list[str]:
+def apply_size_limits(payload: dict[str, object], limits: dict[str, dict[str, int]]) -> list[str]:
     """Attach and enforce exact-byte ceilings for every named runtime image."""
     images = require_dict(payload.get("images"), field="report images")
     results: dict[str, dict[str, object]] = {}

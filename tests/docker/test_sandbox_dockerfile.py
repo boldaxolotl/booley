@@ -67,7 +67,9 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     ) in base
     assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
     assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
-    assert "COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/" in base
+    assert (
+        "COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/" in base
+    )
     assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
     assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
     assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
@@ -150,7 +152,7 @@ def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
 
     assert "RUN --mount=type=bind,from=bwave-builder" in bwave_region
     assert "COPY --from=bwave-builder" not in bwave_region
-    assert 'install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave' in bwave_region
+    assert "install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave" in bwave_region
     assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
 
 
@@ -166,9 +168,7 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
 
 def test_published_runtime_images_include_sbom_attestations() -> None:
     release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-    base_release = Path(".github/workflows/docker-base-publish.yml").read_text(
-        encoding="utf-8"
-    )
+    base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
     assert release.count("sbom: true") == 2
     assert base_release.count("sbom: true") == 1
@@ -353,7 +353,10 @@ def test_openroad_uses_verified_26q3_oci_artifact() -> None:
         "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
     ) in dockerfile
     assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
-    assert "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad" in dockerfile
+    assert (
+        "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
+        in dockerfile
+    )
     assert "--exclude='./build'" in dockerfile
     assert "OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
@@ -391,6 +394,8 @@ def test_agent_runtime_uses_validated_node24_and_executable_policy_probe() -> No
     assert '"signal_exit_codes": _assert_signal_propagation(root)' in probe
     assert '["claude", "mcp", "serve"]' in probe
     assert '["codex", "mcp-server"]' in probe
+    assert "os.kill(process.pid, signal.SIGTERM)" in probe
+    assert "left descendants running after SIGTERM" in probe
 
 
 def test_source_builds_fetch_immutable_commits() -> None:
@@ -644,15 +649,19 @@ def test_release_reports_registry_and_sidecar_image_sizes_after_initialization()
     assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
     assert '--local-image "proxy=booley-egress-proxy"' in workflow
     assert '--local-image "reaper=booley-reaper"' in workflow
-    assert '--limits .github/contracts/image-size-limits.toml' in workflow
+    assert "--limits .github/contracts/image-size-limits.toml" in workflow
     assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
     assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
     assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
     assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
 
     pr_workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    assert '--limits .github/contracts/image-size-limits.toml' in pr_workflow
+    assert "--limits .github/contracts/image-size-limits.toml" in pr_workflow
     assert ".github/scripts/image_runtime_resources.py" in pr_workflow
+    standard_measure = "      - name: Record standard runtime resource observations\n"
+    evidence_upload = "      - name: Upload Docker build evidence\n"
+    assert pr_workflow.index(standard_measure) < pr_workflow.index(evidence_upload)
+    assert "--image sandbox=booley-test" in pr_workflow
 
 
 def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
@@ -661,17 +670,17 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
 
     assert "Run OpenROAD physical runtime probe" in workflow
     assert "verify_openroad_runtime.sh" in workflow
-    assert "--mount type=bind,src=\"${{ steps.nangate.outputs.root }}\",dst=/opt/pdk,readonly" in workflow
+    assert (
+        '--mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly'
+        in workflow
+    )
     assert "global_placement" in probe
     assert "detailed_placement" in probe
     assert 'run_openroad "repair-off" 0' in probe
     assert 'run_openroad "repair-on" 1' in probe
     assert "repair_timing -setup" in probe
     assert "report_design_area" in probe
-    assert (
-        "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null"
-        in probe
-    )
+    assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:

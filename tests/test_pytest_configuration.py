@@ -282,9 +282,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
     ibex_prepare = next(
         step for step in steps if step.get("name") == "Prepare exact reviewed Ibex candidate"
     )
-    ibex_run = next(
-        step for step in steps if step.get("name") == "Run pinned Ibex lint demo"
-    )
+    ibex_run = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
     restore = next(
         step for step in steps if step.get("name") == "Restore RISC-V demo checkout ownership"
     )
@@ -408,6 +406,10 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "trap cleanup EXIT" in wrapper
     assert "docker rm -f" in wrapper
 
+
+def test_image_validation_parallel_group_has_cleanup() -> None:
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
     cleanup = next(
         step for step in steps if step.get("name") == "Clean up image validation containers"
     )

@@ -75,9 +75,7 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
         "/opt/riscv/lib/libriscv.so",
     ):
         assert path in riscv["stripped_elf"]
-    assert any(
-        probe["name"] == "xPack duplicate files share storage" for probe in riscv["probes"]
-    )
+    assert any(probe["name"] == "xPack duplicate files share storage" for probe in riscv["probes"])
     spike_probe = next(
         probe
         for probe in riscv["probes"]
