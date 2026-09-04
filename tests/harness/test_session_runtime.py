@@ -1061,6 +1061,142 @@ def _refresh_state(
     }
 
 
+class TestInitReconciliation:
+    def test_removes_only_a_stopped_owned_runtime_from_an_old_issuance(
+        self, workspace: Path
+    ) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert changed
+        remove.assert_called_once_with(sr.session_container_name(workspace))
+
+    @pytest.mark.parametrize("running", [True, False])
+    def test_preserves_current_runtime(self, workspace: Path, running: bool) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=running)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert not changed
+        remove.assert_not_called()
+
+    def test_stale_running_runtime_requires_shutdown(self, workspace: Path) -> None:
+        state = _refresh_state(running=True)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            pytest.raises(sr.SessionError, match=r"running.*older host issuance"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        remove.assert_not_called()
+
+    def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("vscode-session", "state")],
+            ),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_remove_license_relay") as remove_relay,
+            pytest.raises(sr.SessionError, match="other Project Sessions"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        remove.assert_not_called()
+        remove_relay.assert_not_called()
+
+    def test_retry_finishes_stale_relay_cleanup_after_container_is_gone(
+        self, workspace: Path
+    ) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=None),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_resources", return_value=relay),
+            patch.object(sr, "_relay_objects_exist", return_value=True),
+            patch.object(sr, "_relay_matches_issuance", return_value=False),
+            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_remove_license_relay") as remove_relay,
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        assert changed
+        remove_relay.assert_called_once_with(relay)
+
+    def test_missing_relay_container_is_not_current(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        with patch.object(sr, "_strict_refresh_container", return_value=None):
+            assert not sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_foreign_relay_container_is_preserved(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.session-id": relay.session_id,
+                }
+            }
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match="not owned by this Project"),
+        ):
+            sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_relay_issuance_labels_determine_currency(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        issuance = _test_issuance(workspace)
+        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+        labels.update(
+            {
+                "booley.role": "license-relay",
+                "booley.session-id": relay.session_id,
+            }
+        )
+        state = {"Config": {"Labels": labels}}
+        with patch.object(sr, "_strict_refresh_container", return_value=state):
+            assert sr._relay_matches_issuance(relay, issuance)
+            labels["booley.spec-digest"] = "older-spec"
+            assert not sr._relay_matches_issuance(relay, issuance)
+
+    def test_preserves_foreign_container(self, workspace: Path) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(labels={"booley.role": "interactive"})
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            pytest.raises(sr.SessionError, match="was not modified"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        remove.assert_not_called()
+
+
 def _recorded_parked(**overrides) -> sr.ParkedSession:
     values = {
         "name": "session",

@@ -57,6 +57,10 @@ def _container_spec(
     )
 
 
+def _active_session(name: str, project: str = "/projects/test") -> sidecars._ActiveSession:
+    return sidecars._ActiveSession(name, project)
+
+
 def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
     first = InteractiveHostPolicy(600, 2, ("example.com",))
     same = InteractiveHostPolicy(
@@ -162,7 +166,7 @@ def test_missing_container_is_created_without_enumerating_sessions(
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:current", {}))
     monkeypatch.setattr(
         sidecars,
-        "_active_session_names",
+        "_active_sessions",
         lambda _docker: (_ for _ in ()).throw(AssertionError("must not enumerate")),
     )
 
@@ -198,7 +202,11 @@ def test_active_sessions_block_stale_container_replacement(
     )
     monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: state)
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:new", {}))
-    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ("booley-session-a",))
+    monkeypatch.setattr(
+        sidecars,
+        "_active_sessions",
+        lambda _docker: (_active_session("booley-session-a"),),
+    )
     finding = sidecars._reconcile_container(
         _container_spec("reaper", "booley-reaper", "reaper-image", "reaper"),
         "new-policy",
@@ -210,10 +218,30 @@ def test_active_sessions_block_stale_container_replacement(
     assert not any(call[:2] == ["rm", "-f"] for call in docker.calls)
 
 
+def test_active_session_blocker_names_project_and_scoped_shutdown_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDocker()
+    project = "/projects/acme cpu"
+    monkeypatch.setattr(
+        sidecars,
+        "_active_sessions",
+        lambda _docker: (_active_session("session-a", project),),
+    )
+
+    with pytest.raises(sidecars.SidecarError) as raised:
+        sidecars._replace_stale_container("booley-reaper", ["run"], docker)
+
+    detail = str(raised.value)
+    assert project in detail
+    assert "booley session down --project-root" in detail
+    assert docker.calls == []
+
+
 def test_session_enumeration_failure_is_not_treated_as_empty() -> None:
     docker = FakeDocker(_cp(1, stderr="daemon unavailable"))
     with pytest.raises(sidecars.SidecarError, match="cannot enumerate"):
-        sidecars._active_session_names(docker)
+        sidecars._active_sessions(docker)
 
 
 def test_foreign_sidecar_image_collision_is_never_retagged(
@@ -249,7 +277,7 @@ def test_stale_network_is_recreated_when_no_sessions_are_active(
         {sidecars.ROLE_LABEL: "egress-proxy"},
     )
     monkeypatch.setattr(sidecars, "_inspect_network", lambda _docker: state)
-    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ())
+    monkeypatch.setattr(sidecars, "_active_sessions", lambda _docker: ())
     monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: proxy)
 
     finding = sidecars._reconcile_network(Intent.REFRESH, docker)
@@ -269,13 +297,17 @@ def test_active_sessions_block_stale_network_replacement(
         "_inspect_network",
         lambda _docker: sidecars._NetworkState(True, False),
     )
-    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ("session-a",))
+    monkeypatch.setattr(
+        sidecars,
+        "_active_sessions",
+        lambda _docker: (_active_session("session-a"),),
+    )
 
     finding = sidecars._reconcile_network(Intent.ENSURE, docker)
 
     assert finding.state is sidecars.SidecarState.ERROR
     assert "session-a" in finding.detail
-    assert docker.calls == []
+    assert not any(call[0] in {"rm", "start", "run"} for call in docker.calls)
 
 
 def test_reconcile_sidecars_returns_early_for_image_network_and_proxy_errors(
@@ -458,7 +490,7 @@ def test_network_reconciliation_current_pending_create_and_create_failure(
 def test_stale_network_refuses_foreign_attachment_and_failed_removals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ())
+    monkeypatch.setattr(sidecars, "_active_sessions", lambda _docker: ())
     with pytest.raises(sidecars.SidecarError, match="foreign containers"):
         sidecars._replace_stale_network(
             sidecars._NetworkState(True, False, ("foreign",)), FakeDocker()
@@ -562,7 +594,7 @@ def test_apply_container_starts_stopped_current_and_reports_failure() -> None:
 def test_replace_stale_container_removes_then_runs_and_wraps_remove_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ())
+    monkeypatch.setattr(sidecars, "_active_sessions", lambda _docker: ())
     docker = SequenceDocker(_cp(), _cp())
     sidecars._replace_stale_container("name", ["run", "image"], docker)
     assert docker.calls == [["rm", "-f", "name"], ["run", "image"]]
@@ -583,7 +615,9 @@ def test_ensure_network_accepts_already_connected_and_rejects_other_failures(
         sidecars._ensure_container_network("name", "network", FakeDocker(_cp(1, stderr="denied")))
 
 
-def test_inspect_container_handles_missing_failure_valid_and_incomplete() -> None:
+def test_inspect_container_handles_missing_failure_valid_and_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert not sidecars._inspect_container(
         "name", FakeDocker(_cp(1, stderr="No such container"))
     ).exists
@@ -591,14 +625,40 @@ def test_inspect_container_handles_missing_failure_valid_and_incomplete() -> Non
         sidecars._inspect_container("name", FakeDocker(_cp(1, stderr="daemon down")))
     document = (
         '{"Image":"sha","Config":{"Labels":{"booley.role":"role"}},'
-        '"State":{"Running":true},"NetworkSettings":{"Networks":{"network":{}}}}'
+        '"State":{"Running":true},"NetworkSettings":{"Networks":{"network":{}}},'
+        '"Mounts":[{"Type":"bind","Source":"/projects/acme",'
+        '"Destination":"/work","RW":true}]}'
+    )
+    monkeypatch.setattr(
+        sidecars,
+        "host_path_from_docker_mount",
+        lambda _source: "/projects/acme",
     )
     state = sidecars._inspect_container("name", FakeDocker(_cp(stdout=document)))
     assert state.image_id == "sha"
     assert state.running
     assert state.networks == frozenset({"network"})
+    assert state.project_root == "/projects/acme"
+    invalid_mounts = (
+        '{"Image":"sha","Config":{"Labels":{"booley.role":"role"}},'
+        '"State":{"Running":true},"NetworkSettings":{"Networks":{}},"Mounts":{}}'
+    )
+    with pytest.raises(sidecars.SidecarError, match="incomplete inspection"):
+        sidecars._inspect_container("name", FakeDocker(_cp(stdout=invalid_mounts)))
     with pytest.raises(sidecars.SidecarError, match="incomplete inspection"):
         sidecars._inspect_container("name", FakeDocker(_cp(stdout="{}")))
+
+
+def test_project_root_prefers_label_and_requires_a_workspace_mount() -> None:
+    assert (
+        sidecars._project_root_from_inspection(
+            {"Mounts": []},
+            {"devcontainer.local_folder": "/projects/from-label"},
+            "session",
+        )
+        == "/projects/from-label"
+    )
+    assert sidecars._project_root_from_inspection({"Mounts": []}, {}, "session") is None
 
 
 def test_active_session_enumeration_validates_rows_and_ownership(
@@ -606,13 +666,18 @@ def test_active_session_enumeration_validates_rows_and_ownership(
 ) -> None:
     docker = FakeDocker(_cp(stdout="id\tsession-b\n"))
     valid = sidecars._ContainerState(
-        True, running=True, labels={sidecars.ROLE_LABEL: sidecars.SESSION_ROLE}
+        True,
+        running=True,
+        labels={sidecars.ROLE_LABEL: sidecars.SESSION_ROLE},
+        project_root="/projects/b",
     )
     monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: valid)
-    assert sidecars._active_session_names(docker) == ("session-b",)
+    assert sidecars._active_sessions(docker) == (
+        sidecars._ActiveSession("session-b", "/projects/b"),
+    )
 
     with pytest.raises(sidecars.SidecarError, match="incomplete active Session"):
-        sidecars._active_session_names(FakeDocker(_cp(stdout="malformed")))
+        sidecars._active_sessions(FakeDocker(_cp(stdout="malformed")))
 
     monkeypatch.setattr(
         sidecars,
@@ -620,7 +685,19 @@ def test_active_session_enumeration_validates_rows_and_ownership(
         lambda *_args: sidecars._ContainerState(True, running=False),
     )
     with pytest.raises(sidecars.SidecarError, match="cannot prove"):
-        sidecars._active_session_names(FakeDocker(_cp(stdout="id\tsession\n")))
+        sidecars._active_sessions(FakeDocker(_cp(stdout="id\tsession\n")))
+
+    monkeypatch.setattr(
+        sidecars,
+        "_inspect_container",
+        lambda *_args: sidecars._ContainerState(
+            True,
+            running=True,
+            labels={sidecars.ROLE_LABEL: sidecars.SESSION_ROLE},
+        ),
+    )
+    with pytest.raises(sidecars.SidecarError, match="cannot identify owning Project"):
+        sidecars._active_sessions(FakeDocker(_cp(stdout="id\tsession\n")))
 
 
 def test_run_arguments_include_policy_and_optional_allowlist() -> None:

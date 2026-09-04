@@ -1520,6 +1520,27 @@ def _cleanup_unlicensed_relay(project_root: Path) -> bool:
 _NANGATE_PDK_NOT_REQUESTED = object()
 
 
+def _reconcile_issued_headless_runtime(
+    ctx: InitContext,
+    issuance: object,
+) -> bool:
+    """Reconcile prior stopped runtime state and translate errors into init results."""
+    from booley.harness import session_runtime
+
+    try:
+        reconciled = session_runtime.reconcile_stopped_headless_runtime(
+            ctx.project_root,
+            issuance,
+        )
+    except session_runtime.SessionError as exc:
+        err(f"could not reconcile stopped Session Runtime: {exc}")
+        ctx.record("interactive", "err", str(exc))
+        return False
+    if reconciled:
+        ok("reconciled stopped Session Runtime resources from their prior issuance")
+    return True
+
+
 def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ctx: InitContext,
     *,
@@ -1679,11 +1700,13 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     # Write the untracked spec and hide it (+ .booley_project, .claude) from git history.
     path = dc.write_devcontainer(ctx.project_root, spec)
     try:
-        eda_runtime_spec.issue(ctx.project_root, spec, path)
+        issuance = eda_runtime_spec.issue(ctx.project_root, spec, path)
     except eda_runtime_spec.RuntimeSpecError as exc:
         path.unlink(missing_ok=True)
         err(f"could not issue Session Runtime specification: {exc}")
         ctx.record("interactive", "err", str(exc))
+        return
+    if not _reconcile_issued_headless_runtime(ctx, issuance):
         return
     ok(f"wrote {path.relative_to(ctx.project_root)} (app={app})")
     _report_seeded_mounts(app, bool(auth_source), bool(config_seed), host_skills, mask_paths)
