@@ -169,6 +169,15 @@ def test_pull_request_rejects_a_non_merge_head(tmp_path: Path) -> None:
     assert "pull_request head must be a two-parent merge commit" in result.stderr
 
 
+def test_rejects_an_unknown_event_name(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+
+    result, _output = _run_classifier(repo, base, base, event_name="pull_requset")
+
+    assert result.returncode == 2
+    assert "invalid choice: 'pull_requset'" in result.stderr
+
+
 def test_push_ending_in_merge_still_uses_event_base(tmp_path: Path) -> None:
     repo, before = _repository(tmp_path)
     _git(repo, "switch", "-c", "side-branch")

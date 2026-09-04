@@ -325,7 +325,11 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--force-all", type=_boolean, default=False)
-    parser.add_argument("--event-name", default="")
+    parser.add_argument(
+        "--event-name",
+        choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
+        default="",
+    )
     args = parser.parse_args()
     try:
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
