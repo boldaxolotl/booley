@@ -187,7 +187,10 @@ class TestAdvisorySendOff:
 
         out = capsys.readouterr().out
         assert "Booley demo setup complete" in out
-        assert '"Reopen in Container"' in out
+        assert "popup notification" in out
+        assert "F1" in out
+        assert "Ctrl+Shift+P" in out
+        assert '"Dev Containers: Reopen in Container"' in out
         assert "Run the booley-setup skill" not in out
         assert ctx.results[-1].detail == "demo"
 

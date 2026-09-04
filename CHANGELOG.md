@@ -19,6 +19,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
+- Host bootstrap now installs and verifies VS Code's Dev Containers extension.
+  The PicoRV32 demo guidance identifies the automatic reopen prompt as a popup
+  notification and gives the Command Palette (`F1` or `Ctrl+Shift+P`) fallback
+  when it is absent.
 - `booley auth` now mints Claude credentials inside the validated Session
   Runtime while credential storage and runtime-spec reseeding remain on the
   host. It safely reuses running runtimes and recovers interrupted refreshes.
