@@ -52,6 +52,7 @@ required_paths = [
   "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz",
   "/usr/local/share/doc/openroad/source-manifest.json",
   "/usr/local/include/iverilog/vpi_user.h",
+  "/usr/include/zlib.h",
   "/usr/local/lib/ivl/blif-s.conf",
   "/usr/local/lib/ivl/blif.conf",
   "/usr/local/lib/ivl/blif.tgt",
