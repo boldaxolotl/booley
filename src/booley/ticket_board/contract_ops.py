@@ -954,6 +954,7 @@ def pin_basis_refs(
     slug: str,
     destination_branch: str,
     exact_ticket_heads: bool = False,
+    exact_destination_heads: bool = False,
 ) -> dict[str, str]:
     """Validate canonical routing and resolve mutable Ticket refs once."""
     root = Path(project_root).resolve()
@@ -973,6 +974,7 @@ def pin_basis_refs(
             slug=slug,
             destination_branch=destination_branch,
             exact_ticket_head=exact_ticket_heads,
+            exact_destination_head=exact_destination_heads,
         )
     return sources
 
@@ -984,6 +986,7 @@ def _validate_basis_participant(
     slug: str,
     destination_branch: str,
     exact_ticket_head: bool,
+    exact_destination_head: bool,
 ) -> str:
     role = participant.role
     ticket_ref = participant.ticket_ref
@@ -998,6 +1001,10 @@ def _validate_basis_participant(
     source_sha = _full_commit(repository, ticket_ref)
     if exact_ticket_head and source_sha != authoring:
         raise ContractOperationError(f"ticket ref {ticket_ref!r} moved after enqueue preparation")
+    if exact_destination_head and destination != destination_identity:
+        raise ContractOperationError(
+            f"destination ref {destination_ref!r} moved after enqueue preparation"
+        )
     _require_ancestor(
         repository,
         authoring,
@@ -1026,6 +1033,7 @@ def validate_basis_refs(
     slug: str,
     destination_branch: str,
     exact_ticket_heads: bool = False,
+    exact_destination_heads: bool = False,
 ) -> list[str]:
     """Verify canonical Acceptance Basis refs without materialized worktrees."""
     try:
@@ -1035,6 +1043,7 @@ def validate_basis_refs(
             slug=slug,
             destination_branch=destination_branch,
             exact_ticket_heads=exact_ticket_heads,
+            exact_destination_heads=exact_destination_heads,
         )
     except (ContractOperationError, ValueError) as exc:
         return [str(exc)]

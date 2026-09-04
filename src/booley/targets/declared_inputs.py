@@ -44,7 +44,8 @@ def referenced_program_paths(
                 continue
             matched = False
             for search_root in search_roots:
-                resolved = (search_root / candidate).resolve()
+                lexical = search_root / candidate
+                resolved = lexical.resolve()
                 if not resolved.is_relative_to(root):
                     if strict:
                         raise ValueError(
@@ -53,11 +54,21 @@ def referenced_program_paths(
                     continue
                 if resolved.is_relative_to(root) and resolved.is_file():
                     candidates.add(resolved)
+                    candidates.update(_redirecting_entries(root, lexical))
                     matched = True
                     break
             if strict and not matched:
                 raise ValueError(f"referenced program is unavailable: {candidate}")
     return tuple(sorted(candidates))
+
+
+def _redirecting_entries(root: Path, path: Path) -> Iterator[Path]:
+    """Yield symlink and nested-repository entries on a referenced path."""
+    current = path
+    while current != root and current.is_relative_to(root):
+        if current.is_symlink() or (current.is_dir() and (current / ".git").exists()):
+            yield current
+        current = current.parent
 
 
 def _looks_like_program_path(path: PurePosixPath, token: str) -> bool:

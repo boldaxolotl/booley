@@ -1507,13 +1507,13 @@ class TestOpHandoff:
         )
         assert binding["snapshot_digest"] == accepted.snapshot.digest
 
-    def test_moves_and_updates(self, tmp_path):
+    def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        op_handoff(tio, "t1")
-        assert (tio.tickets_dir / "board" / "review" / "t1.md").exists()
+        assert op_handoff(tio, "t1") is False
+        assert not (tio.tickets_dir / "board" / "review" / "t1.md").exists()
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
-        assert status == "review"
+        assert status == "running"
 
     def test_rejects_stale_execution_generation(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
@@ -1531,10 +1531,13 @@ class TestOpHandoff:
         assert "execution changed concurrently" in capsys.readouterr().err
         assert not (tio.logs_dir / "t1" / "acceptance" / "accepted.json").exists()
 
-    def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys):
+    def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys, monkeypatch):
         """cleanup:true + destination:review keeps the worktree — say so (F-55)."""
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         assert op_handoff(tio, "t1") is True
 
         out = capsys.readouterr().out
@@ -1592,15 +1595,18 @@ class TestOpHandoff:
         result = op_handoff(tio, "t3")
         assert result is False
 
-    def test_handoff_passes_with_valid_transitions(self, tmp_path):
+    def test_handoff_passes_with_valid_transitions(self, tmp_path, monkeypatch):
         """Handoff succeeds when transitions.log matches steps_completed."""
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t4")
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         result = op_handoff(tio, "t4")
         assert result is True
         assert (tio.tickets_dir / "board" / "review" / "t4.md").exists()
 
-    def test_handoff_with_extra_stages_in_transitions(self, tmp_path):
+    def test_handoff_with_extra_stages_in_transitions(self, tmp_path, monkeypatch):
         """Handoff succeeds when transitions.log has all steps_completed covered."""
         tio = make_tio(tmp_path)
         stages = ["setup", "planning", "implementation", "sim-debug-loop", "summary"]
@@ -1624,6 +1630,9 @@ class TestOpHandoff:
             )
             prev = s
         _write_transitions_log(tio, "t5", lines)
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         result = op_handoff(tio, "t5")
         assert result is True
 
@@ -5484,9 +5493,9 @@ class TestOpBoardMove:
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
         result = op_board_move(tio, "my-ticket", "done")
-        assert result is True
+        assert result is False
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "done"
+        assert status == "review"
 
     def test_running_to_queue(self, tmp_path):
         """running -> queue is a valid transition (requeue)."""
@@ -5522,6 +5531,12 @@ class TestBoardMoveTerminalActionOverrides:
     dropped: the worktree was destroyed anyway. These pin the wiring end to
     end plus the two coupling traps (the merge step tears the worktree down
     itself; the cleanup step branches on the merge decision)."""
+
+    @pytest.fixture(autouse=True)
+    def _accepted_snapshot(self, monkeypatch):
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._completion_acceptance_valid", lambda *_: True
+        )
 
     @staticmethod
     def _acceptance_basis():

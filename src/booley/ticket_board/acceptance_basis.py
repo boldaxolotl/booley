@@ -179,11 +179,6 @@ class AcceptanceBasis:
         project = next((row for row in self.participants if row.role == "project"), None)
         return project.authoring_sha if project is not None else ""
 
-    @property
-    def surface_digest(self) -> str:
-        """Stable identity for versioned evidence that still names a digest field."""
-        return self.basis_id
-
     def participant(self, role: str) -> BasisParticipant:
         try:
             return next(row for row in self.participants if row.role == role)
@@ -459,7 +454,12 @@ def write_basis_receipt(
     record = load_basis_record(root, slug, basis)
     path = _receipt_path(root, slug, basis)
     if path.exists():
-        return _validate_receipt(root, slug, basis, record)
+        receipt = _validate_receipt(root, slug, basis, record)
+        if receipt["source_sha256"] != source_sha256:
+            raise AcceptanceBasisError(
+                "existing Acceptance Basis receipt names a different source draft"
+            )
+        return receipt
     receipt = _receipt_payload(
         root,
         slug,

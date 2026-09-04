@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.runtime.project_dir import resolve_project_dir, runtime_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .persistence import atomic_replace_bytes
@@ -95,7 +95,7 @@ def _validate_journal(project_root: Path, slug: str, journal: EnqueueJournal) ->
 
 
 def _validate_board_paths(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
-    board = resolve_project_dir(project_root) / "tickets" / "board"
+    board = resolve_checkout_project_dir(project_root) / "tickets" / "board"
     source = Path(journal.source).resolve()
     destination = Path(journal.destination).resolve()
     if source != (board / "drafts" / f"{slug}.md").resolve():
@@ -169,6 +169,7 @@ def prepare_enqueue(
         basis,
         receipt,
     )
+    _validate_journal(project_root, slug, journal)
     write_enqueue_journal(project_root, journal)
     return journal
 

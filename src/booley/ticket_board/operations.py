@@ -417,34 +417,39 @@ def _handoff_to_review(
     return ok
 
 
-def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gates
+def _prepare_handoff_snapshot(
     tio: Any,
     slug: str,
     entry: dict | None,
     expected_execution_id: str | None,
 ) -> bool:
     """Fence Jobs and freeze live acceptance before a review transition."""
-    from booley.criteria.state import DevelopmentState
+    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    if not _handoff_jobs_clear(log_dir, slug):
+        return False
+    existing = _bind_existing_handoff_snapshot(log_dir, slug)
+    if existing is not None:
+        return existing
+    return _freeze_handoff_snapshot(tio, slug, entry, expected_execution_id, log_dir)
+
+
+def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
     from booley.harness.job_fence import active_ticket_jobs
 
-    from .acceptance_basis import AcceptanceBasisError
-    from .acceptance_ledger import (
-        AcceptanceLedgerError,
-        bind_review_package,
-        freeze_acceptance,
-        read_acceptance,
-    )
-    from .criteria_acceptance import check_criteria_acceptance
-
-    log_dir = ticket_log_dir(tio.logs_dir, slug)
     active = active_ticket_jobs(log_dir)
-    if active:
-        names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
-        print(
-            f"Error: cannot hand off '{slug}' while endpoint Jobs are active: {names}",
-            file=sys.stderr,
-        )
-        return False
+    if not active:
+        return True
+    names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
+    print(
+        f"Error: cannot hand off '{slug}' while endpoint Jobs are active: {names}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _bind_existing_handoff_snapshot(log_dir: Path, slug: str) -> bool | None:
+    from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, read_acceptance
+
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
@@ -462,10 +467,29 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
     if accepted.kind == "corrupt":
         print(f"Error: cannot hand off '{slug}': {accepted.reason}", file=sys.stderr)
         return False
+    return None
+
+
+def _freeze_handoff_snapshot(
+    tio: Any,
+    slug: str,
+    entry: dict | None,
+    expected_execution_id: str | None,
+    log_dir: Path,
+) -> bool:
+    from booley.criteria.state import DevelopmentState
+
+    from .acceptance_basis import AcceptanceBasisError
+    from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, freeze_acceptance
+    from .criteria_acceptance import check_criteria_acceptance
 
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     if not state_path.exists():
-        return True  # Legacy Ticket: no durable snapshot can be reconstructed honestly.
+        print(
+            f"Error: cannot hand off '{slug}': durable criteria state is unavailable",
+            file=sys.stderr,
+        )
+        return False
     state = DevelopmentState.load(state_path)
     work_dir = Path(state.work_dir) if state.work_dir else None
     verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
@@ -752,8 +776,6 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
 
 def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     """Refuse destructive terminal actions when durable acceptance is broken."""
-    from booley.criteria.state import DevelopmentState
-
     from .acceptance_ledger import (
         AcceptanceLedgerError,
         read_acceptance,
@@ -767,7 +789,10 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
             return False
         try:
+            from booley.runtime.project_dir import resolve_checkout_project_dir
+
             from .acceptance_basis import load_basis_receipt
+            from .acceptance_targets import validate_binding_selectors
 
             validate_review_package_binding(log_dir, accepted.snapshot)
             basis = tio.load_basis(slug)
@@ -775,6 +800,12 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             if accepted.snapshot.acceptance_basis != current_receipt:
                 raise AcceptanceLedgerError(
                     "Acceptance Snapshot names a different Board Acceptance Basis"
+                )
+            authoring = resolve_checkout_project_dir(tio._project_root) / "worktrees" / slug
+            selector_errors = validate_binding_selectors(authoring, basis.bindings)
+            if selector_errors:
+                raise AcceptanceLedgerError(
+                    "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
                 )
         except (AcceptanceLedgerError, ValueError, OSError) as exc:
             print(
@@ -789,11 +820,8 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             file=sys.stderr,
         )
         return False
-    state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
-    if state_path.exists() and DevelopmentState.load(state_path).strict_criteria:
-        print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
-        return False
-    return True  # Legacy review Ticket created before durable acceptance.
+    print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
+    return False
 
 
 def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths

@@ -13,16 +13,11 @@ import pytest
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.acceptance_targets import (
-    SCHEMA_VERSION,
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-    surface_digest,
-    surface_entries,
-)
+from booley.ticket_board.acceptance_targets import ContractTargetBinding
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.frontmatter import format_frontmatter
+
+ContractParticipant = BasisParticipant
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +71,7 @@ class _Policy:
 class _TicketIO:
     _contracts: dict[Path, AcceptanceBasis]
 
-    def __init__(self, root: Path, contract: TargetContract) -> None:
+    def __init__(self, root: Path, contract: AcceptanceBasis) -> None:
         self._project_root = root
         self.tickets_dir = root / ".booley_project" / "tickets"
         self.logs_dir = self.tickets_dir / "logs"
@@ -86,20 +81,7 @@ class _TicketIO:
             "branch": "main",
             "acceptance_basis": {"schema": 1, "participants": []},
         }
-        self._contracts[root.resolve()] = AcceptanceBasis(
-            participants=tuple(
-                BasisParticipant(
-                    role=item.role,
-                    authoring_sha=item.sealed_sha,
-                    ticket_ref=item.ticket_ref,
-                    destination_ref=item.destination_ref,
-                    destination_sha=item.destination_sha,
-                )
-                for item in contract.participants
-            ),
-            bindings=contract.bindings,
-            removal_targets=contract.removal_targets,
-        )
+        self._contracts[root.resolve()] = contract
         ticket = self.tickets_dir / str(self.entry["file"])
         ticket.parent.mkdir(parents=True, exist_ok=True)
         ticket.write_text(
@@ -141,43 +123,28 @@ class _BoundaryTicketIO:
 
 def _contract(
     root: Path,
-    participants: tuple[ContractParticipant, ...],
-    *,
-    schema: int = SCHEMA_VERSION,
-) -> TargetContract:
-    outer = next(item for item in participants if item.role == "outer")
-    project = next((item for item in participants if item.role == "project"), None)
-    return TargetContract(
-        outer_sha=outer.sealed_sha,
-        project_sha=project.sealed_sha if project else "",
-        surface_digest=surface_digest(root, schema=schema),
-        targets=(),
+    participants: tuple[BasisParticipant, ...],
+) -> AcceptanceBasis:
+    del root
+    return AcceptanceBasis(
         participants=participants,
-        surface_entries=surface_entries(root),
-        schema=schema,
     )
 
 
-def _boundary_contract() -> TargetContract:
-    participant = ContractParticipant(
+def _boundary_contract() -> AcceptanceBasis:
+    participant = BasisParticipant(
         role="outer",
-        sealed_sha="a" * 40,
+        authoring_sha="a" * 40,
         ticket_ref="refs/heads/ticket",
         destination_ref="refs/heads/main",
         destination_sha="b" * 40,
     )
-    return TargetContract(
-        outer_sha=participant.sealed_sha,
-        project_sha="",
-        surface_digest="c" * 64,
-        targets=(),
-        participants=(participant,),
-    )
+    return AcceptanceBasis(participants=(participant,))
 
 
 def _paired_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, Path, _TicketIO, tuple[ContractParticipant, ...]]:
+) -> tuple[Path, Path, _TicketIO, tuple[BasisParticipant, ...]]:
     root = tmp_path / "rtl"
     outer_base = _repository(root)
     outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
@@ -453,15 +420,11 @@ def test_complete_rejects_destination_ref_as_cleanup_target(
     root = tmp_path / "rtl"
     base = _repository(root)
     (root / ".booley_project").mkdir()
-    unsafe = TargetContract(
-        outer_sha=base,
-        project_sha="",
-        surface_digest="c" * 64,
-        targets=(),
+    unsafe = AcceptanceBasis(
         participants=(
             ContractParticipant(
                 role="outer",
-                sealed_sha=base,
+                authoring_sha=base,
                 ticket_ref="refs/heads/main",
                 destination_ref="refs/heads/main",
                 destination_sha=base,
@@ -481,7 +444,7 @@ def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> No
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
@@ -506,7 +469,7 @@ def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_p
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
@@ -559,13 +522,7 @@ def test_complete_rejects_destination_change_to_dynamically_referenced_hook(
         "refs/heads/main",
         base,
     )
-    contract = TargetContract(
-        outer_sha=basis_sha,
-        project_sha="",
-        surface_digest="c" * 64,
-        targets=(),
-        participants=(participant,),
-    )
+    contract = AcceptanceBasis(participants=(participant,))
     tio = _TicketIO(root, contract)
 
     assert ticket_sha != basis_sha
@@ -580,7 +537,7 @@ def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) ->
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
@@ -869,9 +826,12 @@ def test_cleanup_validates_every_identity_before_removing_any_ref(
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
 
     assert "cleanup is pending" in capsys.readouterr().err
-    assert completion._ref_commit(root, participants[0].ticket_ref) == participants[0].sealed_sha
     assert (
-        completion._ref_commit(project, participants[1].ticket_ref) == participants[1].sealed_sha
+        completion._ref_commit(root, participants[0].ticket_ref) == participants[0].authoring_sha
+    )
+    assert (
+        completion._ref_commit(project, participants[1].ticket_ref)
+        == participants[1].authoring_sha
     )
 
 
@@ -895,11 +855,7 @@ def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, 
         "outer", ticket_sha, "refs/heads/change-target", "refs/heads/main", base
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    contract = TargetContract(
-        outer_sha=ticket_sha,
-        project_sha="",
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+    contract = AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
             ContractTargetBinding(
@@ -912,7 +868,6 @@ def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, 
             ),
         ),
         participants=(participant,),
-        surface_entries=surface_entries(root),
     )
     tio = _TicketIO(root, contract)
     return root, tio, canonical
@@ -977,11 +932,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         ),
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    contract = TargetContract(
-        outer_sha=outer_ticket,
-        project_sha=project_ticket,
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+    contract = AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
             ContractTargetBinding(
@@ -994,7 +945,6 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
             ),
         ),
         participants=participants,
-        surface_entries=surface_entries(root),
     )
     tio = _TicketIO(root, contract)
 
@@ -1049,15 +999,11 @@ def _project_target_removal_repository(
 
 def _target_removal_contract(
     root: Path,
-    participants: tuple[ContractParticipant, ...],
+    participants: tuple[BasisParticipant, ...],
     canonical: str,
-) -> TargetContract:
-    outer, project = participants
-    return TargetContract(
-        outer_sha=outer.sealed_sha,
-        project_sha=project.sealed_sha,
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+) -> AcceptanceBasis:
+    del root
+    return AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
             ContractTargetBinding(
@@ -1070,7 +1016,6 @@ def _target_removal_contract(
             ),
         ),
         participants=participants,
-        surface_entries=surface_entries(root),
     )
 
 
@@ -1779,7 +1724,7 @@ def test_ticket_ref_move_after_pinning_prevents_retained_ref_mismatch(
     assert tio.entry["status"] == "review"
 
 
-def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:
+def test_complete_rejects_target_control_drift_after_basis_publication(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -1796,7 +1741,7 @@ def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: 
         "refs/heads/main",
         base,
     )
-    contract = _contract(root, (participant,), schema=3)
+    contract = _contract(root, (participant,))
     (root / ".booley_project").mkdir()
     _git(root, "switch", "change-target")
     (root / "toy.core").write_text(

@@ -17,11 +17,8 @@ from booley.flows.implementation_comparison import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import select_target
-from booley.ticket_board.acceptance_targets import (
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_targets import ContractTargetBinding
 
 
 def test_missing_metadata_preserves_equal_target_behavior() -> None:
@@ -48,7 +45,8 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _sealed_project(tmp_path: Path, *, schema: int = 4) -> TargetContract:
+def _sealed_project(tmp_path: Path, *, schema: int = 4) -> AcceptanceBasis:
+    assert schema == 4
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
 name: acme:lib:toy:1.0
@@ -65,23 +63,19 @@ targets:
 """,
         encoding="utf-8",
     )
-    return TargetContract(
-        outer_sha="a" * 40,
-        project_sha="",
-        surface_digest="b" * 64,
-        targets=("synth_after", "synth_before"),
+    return AcceptanceBasis(
         bindings=(
             ContractTargetBinding(
                 flow="synth",
                 criterion="synthesis_ok",
                 baseline="acme:lib:toy:1.0#synth_before",
                 candidate="acme:lib:toy:1.0#synth_after",
-                baseline_selector="synth_before" if schema >= 4 else "",
-                candidate_selector="synth_after" if schema >= 4 else "",
+                baseline_selector="synth_before",
+                candidate_selector="synth_after",
             ),
         ),
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 "outer",
                 "a" * 40,
                 "refs/heads/ticket",
@@ -89,7 +83,6 @@ targets:
                 "c" * 40,
             ),
         ),
-        schema=schema,
     )
 
 
@@ -266,17 +259,12 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
 
 
 def _contract_with_binding(
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     binding: ContractTargetBinding,
-) -> TargetContract:
-    return TargetContract(
-        outer_sha=contract.outer_sha,
-        project_sha=contract.project_sha,
-        surface_digest=contract.surface_digest,
-        targets=contract.targets,
+) -> AcceptanceBasis:
+    return AcceptanceBasis(
         bindings=(binding,),
         participants=contract.participants,
-        schema=contract.schema,
     )
 
 
@@ -295,14 +283,9 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
         baseline_selector="",
         candidate_selector="synth_after",
     )
-    contract = TargetContract(
-        outer_sha=contract.outer_sha,
-        project_sha=contract.project_sha,
-        surface_digest=contract.surface_digest,
-        targets=contract.targets,
+    contract = AcceptanceBasis(
         bindings=(empty_selector_binding,),
         participants=contract.participants,
-        schema=contract.schema,
     )
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
@@ -321,14 +304,9 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
 
 def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path, schema=4)
-    contract = TargetContract(
-        outer_sha=contract.outer_sha,
-        project_sha=contract.project_sha,
-        surface_digest=contract.surface_digest,
-        targets=contract.targets,
+    contract = AcceptanceBasis(
         bindings=(*contract.bindings, *contract.bindings),
         participants=contract.participants,
-        schema=contract.schema,
     )
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
@@ -347,14 +325,9 @@ def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
 
 def test_sealed_plan_rejects_missing_binding(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path, schema=4)
-    contract = TargetContract(
-        outer_sha=contract.outer_sha,
-        project_sha=contract.project_sha,
-        surface_digest=contract.surface_digest,
-        targets=contract.targets,
+    contract = AcceptanceBasis(
         bindings=(),
         participants=contract.participants,
-        schema=contract.schema,
     )
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})

@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -371,6 +370,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     action = _detect_and_apply_resume(ctx, fields)
 
     _verify_acceptance_basis(ctx, action)
+    _validate_retired_criteria(ctx)
 
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
     if ctx.acceptance_basis is None:
@@ -387,10 +387,7 @@ def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
     del action
     basis = ctx.acceptance_basis
     if basis is None:
-        if _is_git_checkout(ctx.project_root):
-            raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
-        logger.warning("Filesystem-only Ticket %s has no Acceptance Basis", ctx.slug)
-        return
+        raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
     from booley.ticket_board.contract_ops import validate_basis_refs
 
     try:
@@ -404,18 +401,6 @@ def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
         errors = [str(exc)]
     if errors:
         raise FatalError(f"acceptance-input-change-required: {'; '.join(errors)}", slug=ctx.slug)
-
-
-def _is_git_checkout(path: Path) -> bool:
-    result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=path,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
@@ -487,14 +472,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     # essential: without it the developer's FatalError handler skips ticket_cli.fail(),
     # so this specific, actionable error never reaches any ticket-scoped log and the
     # ticket is left orphaned in active/ (later swept as a bogus "SIGINT" crash).
-    stale = find_retired_criteria(expanded)
-    if stale:
-        keys = ", ".join(k for k, _ in stale)
-        details = "; ".join(f"{k} -> {hint}" for k, hint in stale)
-        raise FatalError(
-            f"Retired criterion key(s) in ticket YAML: {keys}. {details}.",
-            slug=ctx.slug,
-        )
+    _reject_retired_criteria(ctx, expanded)
 
     _seed_project_criteria(ctx.work_dir, expanded, category_overrides, targets)
     # Internal mandatory criterion (hidden from users via `_` prefix) -- the
@@ -527,6 +505,26 @@ def _init_criteria_state(ctx: TicketContext) -> None:
         len(expanded),
         sum(1 for v in expanded.values() if v),
     )
+
+
+def _validate_retired_criteria(ctx: TicketContext) -> None:
+    template = (
+        CriteriaTemplate.from_yaml(ctx.criteria)
+        if ctx.criteria
+        else CriteriaTemplate.for_ticket_type(ctx.ticket_type)
+    )
+    _reject_retired_criteria(ctx, template.expand(ctx.sim_targets))
+
+
+def _reject_retired_criteria(ctx: TicketContext, expanded: dict[str, bool]) -> None:
+    stale = find_retired_criteria(expanded)
+    if stale:
+        keys = ", ".join(k for k, _ in stale)
+        details = "; ".join(f"{k} -> {hint}" for k, hint in stale)
+        raise FatalError(
+            f"Retired criterion key(s) in ticket YAML: {keys}. {details}.",
+            slug=ctx.slug,
+        )
 
 
 def _apply_contract_selectors(

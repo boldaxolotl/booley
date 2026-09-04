@@ -748,6 +748,7 @@ class TicketIO:
             slug=journal.slug,
             destination_branch=outer.destination_ref.removeprefix("refs/heads/"),
             exact_ticket_heads=True,
+            exact_destination_heads=True,
         )
         if errors:
             raise RuntimeError("enqueue journal Acceptance Basis is invalid: " + "; ".join(errors))
@@ -790,11 +791,13 @@ class TicketIO:
             prepared = self._prepare_enqueue_fields(slug, ticket_path, on_success)
             if prepared is None:
                 return False
-            fields, body = prepared
+            fields, body, receipt = prepared
             has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
             if dep_error:
                 return False
-            journal = self._prepare_enqueue_publication(slug, ticket_path, fields, body, has_unmet)
+            journal = self._prepare_enqueue_publication(
+                slug, ticket_path, fields, body, has_unmet, receipt
+            )
             return self._finish_enqueue_publication(journal)
 
     @staticmethod
@@ -810,7 +813,7 @@ class TicketIO:
 
     def _prepare_enqueue_fields(
         self, slug: str, ticket_path: Path, on_success: dict[str, Any] | None
-    ) -> tuple[dict[str, Any], str] | None:
+    ) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
         authored = self._draft_enqueue_fields(ticket_path, on_success)
         if authored is None:
             return None
@@ -827,7 +830,7 @@ class TicketIO:
                 slug,
                 effective_fields=effective_fields,
             )
-            write_basis_receipt(
+            receipt = write_basis_receipt(
                 self._project_root,
                 slug,
                 basis,
@@ -842,7 +845,7 @@ class TicketIO:
         if contract_errors:
             self._print_enqueue_errors("ticket Acceptance Basis is invalid", contract_errors)
             return None
-        return effective_fields, body
+        return effective_fields, body, receipt
 
     def _draft_enqueue_fields(
         self, ticket_path: Path, on_success: dict[str, Any] | None
@@ -913,12 +916,12 @@ class TicketIO:
         fields: dict[str, Any],
         body: str,
         has_unmet: bool,
+        receipt: dict[str, Any],
     ):
-        from .acceptance_basis import AcceptanceBasis, load_basis_receipt
+        from .acceptance_basis import AcceptanceBasis
         from .enqueue_publication import prepare_enqueue
 
         basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
-        receipt = load_basis_receipt(self._project_root, slug, basis.as_dict())
         created = now_iso()
         candidate_fields = {**fields, "created": created}
         destination_dir = "waiting" if has_unmet else "queue"
@@ -984,9 +987,9 @@ class TicketIO:
         pending = transition_pending(self._project_root, slug)
         if (ticket_path is None or status is None) and not pending:
             raise FileNotFoundError(f"ticket {slug!r} does not exist")
-        self._validate_return_to_draft_preconditions(slug)
+        self._validate_return_to_draft_preconditions(slug, check_owner=not pending)
         with self._ticket_lock(slug):
-            self._validate_return_to_draft_preconditions(slug)
+            self._validate_return_to_draft_preconditions(slug, check_owner=False)
             current_path, current_status = find_ticket_file(self.tickets_dir, slug)
             result = return_to_draft(
                 self._project_root,
@@ -998,7 +1001,9 @@ class TicketIO:
             )
         return result.as_dict()
 
-    def _validate_return_to_draft_preconditions(self, slug: str) -> None:
+    def _validate_return_to_draft_preconditions(
+        self, slug: str, *, check_owner: bool = True
+    ) -> None:
         from booley.harness.job_fence import active_ticket_jobs
         from booley.runtime.pid import is_pid_alive
 
@@ -1006,8 +1011,7 @@ class TicketIO:
 
         lock = existing_runtime_file(self.logs_dir, slug, "ticket.lock")
         owner = read_lock_pid(lock)
-        caller = str(self._resolve_developer_pid())
-        if owner is not None and str(owner) != caller and is_pid_alive(owner):
+        if check_owner and owner is not None and is_pid_alive(owner):
             raise RuntimeError(f"ticket {slug!r} is owned by live process {owner}")
         active = active_ticket_jobs(ticket_log_dir(self.logs_dir, slug))
         if active:

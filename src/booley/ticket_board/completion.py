@@ -9,7 +9,6 @@ subsequent roll-forward publication.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -39,6 +38,7 @@ from .acceptance_journal import (
 )
 from .contract_ops import ContractOperationError, pin_basis_refs
 from .git_ops import worktree_is_clean
+from .persistence import atomic_replace_bytes
 from .target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
@@ -105,25 +105,8 @@ def _journal_path(root: Path, slug: str) -> Path:
 
 def _write_journal(path: Path, journal: AcceptanceJournal) -> None:
     """Atomically persist and fsync a recovery checkpoint."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(journal, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary_path.replace(path)
-        if os.name != "nt":
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+    payload = (json.dumps(journal, indent=2, sort_keys=True) + "\n").encode()
+    atomic_replace_bytes(path, payload)
 
 
 def _initial_journal(
@@ -271,6 +254,13 @@ def _validate_source_surface(
             _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
             assert_inputs_unchanged(contract, temporary)
+            from .acceptance_targets import validate_binding_selectors
+
+            selector_errors = validate_binding_selectors(temporary, contract.bindings)
+            if selector_errors:
+                raise AcceptanceBasisError(
+                    "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
+                )
         except AcceptanceBasisError as exc:
             raise CompletionError(str(exc)) from exc
 

@@ -14,7 +14,11 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.runtime.project_dir import resolve_project_dir, runtime_dir
+from booley.runtime.project_dir import (
+    resolve_checkout_project_dir,
+    resolve_project_dir,
+    runtime_dir,
+)
 from booley.runtime.ticket_repositories import resolve_inner_project_repo, ticket_project_worktree
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis
@@ -89,7 +93,7 @@ def _write_journal(root: Path, journal: DraftTransitionJournal) -> None:
     atomic_replace_bytes(_journal_path(root, journal.slug), payload)
 
 
-def _load_journal(root: Path, slug: str) -> DraftTransitionJournal | None:
+def _load_journal(root: Path, logs_dir: Path, slug: str) -> DraftTransitionJournal | None:
     path = _journal_path(root, slug)
     if not path.exists():
         return None
@@ -97,7 +101,7 @@ def _load_journal(root: Path, slug: str) -> DraftTransitionJournal | None:
         journal = DraftTransitionJournal(**json.loads(path.read_text(encoding="utf-8")))
     except (OSError, TypeError, json.JSONDecodeError) as exc:
         raise DraftTransitionError(f"return-to-draft journal is unreadable: {path}") from exc
-    _validate_journal(root, slug, journal)
+    _validate_journal(root, logs_dir, slug, journal)
     return journal
 
 
@@ -106,7 +110,9 @@ def transition_pending(project_root: Path | str, slug: str) -> bool:
     return _journal_path(Path(project_root).resolve(), slug).exists()
 
 
-def _validate_journal(root: Path, slug: str, journal: DraftTransitionJournal) -> None:
+def _validate_journal(
+    root: Path, logs_dir: Path, slug: str, journal: DraftTransitionJournal
+) -> None:
     if journal.schema != 1 or journal.slug != slug or journal.state not in _STATES:
         raise DraftTransitionError("return-to-draft journal identity or schema is invalid")
     if not _OPERATION_RE.fullmatch(journal.operation_id):
@@ -117,8 +123,9 @@ def _validate_journal(root: Path, slug: str, journal: DraftTransitionJournal) ->
         raise DraftTransitionError(str(exc)) from exc
     if journal.basis_id != basis.basis_id:
         raise DraftTransitionError("return-to-draft journal basis identity changed")
-    draft = Path(journal.draft_ticket)
-    if draft.name != f"{slug}.md" or draft.parent.name != "drafts":
+    board = resolve_checkout_project_dir(root) / "tickets" / "board"
+    draft = Path(journal.draft_ticket).resolve()
+    if draft != (board / "drafts" / f"{slug}.md").resolve():
         raise DraftTransitionError("return-to-draft destination path is invalid")
     if not re.fullmatch(r"[0-9a-f]{16}", journal.generation):
         raise DraftTransitionError("return-to-draft generation token is invalid")
@@ -131,10 +138,19 @@ def _validate_journal(root: Path, slug: str, journal: DraftTransitionJournal) ->
         isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in digests
     ):
         raise DraftTransitionError("return-to-draft content identity is invalid")
-    blocked = Path(journal.blocked_ticket)
-    if blocked.name != f"{slug}.md" or blocked.parent.name != "blocked":
+    blocked = Path(journal.blocked_ticket).resolve()
+    if blocked != (board / "blocked" / f"{slug}.md").resolve():
         raise DraftTransitionError("return-to-draft blocked Ticket path is invalid")
-    if not isinstance(journal.has_project, bool) or not Path(journal.archive_dir).name.isdigit():
+    archive = Path(journal.archive_dir).resolve()
+    archive_root = (logs_dir / slug / "runs").resolve()
+    operation = _operation_dir(root, journal.operation_id).resolve()
+    if operation.parent != _transition_root(root).resolve():
+        raise DraftTransitionError("return-to-draft operation path is invalid")
+    if (
+        not isinstance(journal.has_project, bool)
+        or archive.parent != archive_root
+        or re.fullmatch(r"[0-9]{3}", archive.name) is None
+    ):
         raise DraftTransitionError("return-to-draft publication metadata is invalid")
 
 
@@ -181,13 +197,13 @@ def _new_journal(
         "initializing",
         basis.as_dict(),
         basis.basis_id,
-        str(ticket),
+        str(ticket.resolve()),
         _digest(ticket.read_bytes()),
-        str(draft_destination),
+        str(draft_destination.resolve()),
         _digest(draft_content),
         generation,
         _digest(generation_content),
-        str(_next_archive(logs_dir / slug)),
+        str(_next_archive(logs_dir / slug).resolve()),
         False,
     )
     _write_journal(root, journal)
@@ -420,7 +436,7 @@ def return_to_draft(
     """Prepare and recoverably publish a new authoring generation."""
     root = Path(project_root).resolve()
     logs = Path(logs_dir)
-    journal = _load_journal(root, slug)
+    journal = _load_journal(root, logs.resolve(), slug)
     if journal is None:
         journal = _new_journal(root, Path(ticket_path), slug, status, logs)
     if journal.state == "initializing":

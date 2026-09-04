@@ -227,6 +227,9 @@ def test_json_shaped_criterion_string_round_trips_as_a_string() -> None:
 def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        "booley.ticket_board.operations._completion_acceptance_valid", lambda *_: True
+    )
     root, tio = _project(tmp_path, monkeypatch)
     draft = _ticket(tio, merge=True)
     worktree = root / ".booley_project" / "worktrees" / "change-target"

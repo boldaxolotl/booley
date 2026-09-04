@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 CONTROL_SUFFIXES = frozenset({".core", ".sdc", ".xdc"})
-PROJECT_CONTROL_FILES = frozenset({".booley_project/tests.toml", ".booley_project/booley.toml"})
+PROJECT_CONTROL_FILES = frozenset(
+    {"booley.toml", ".booley_project/tests.toml", ".booley_project/booley.toml"}
+)
 PROJECT_CONTROL_PREFIXES = (".booley_project/hooks/", ".booley_project/generators/")
 
 

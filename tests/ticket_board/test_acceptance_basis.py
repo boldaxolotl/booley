@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board import contract_ops, enqueue_publication
+from booley.targets.declared_inputs import referenced_program_paths
+from booley.ticket_board import contract_ops, draft_transition, enqueue_publication
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
@@ -21,6 +23,10 @@ from booley.ticket_board.acceptance_basis import (
     load_basis_record,
 )
 from booley.ticket_board.acceptance_journal import JournalState
+from booley.ticket_board.acceptance_targets import (
+    ContractTargetBinding,
+    validate_binding_selectors,
+)
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 
@@ -221,7 +227,7 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     assert len(evidence["operation_id"]) == 32
 
 
-def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
+def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(  # noqa: PLR0915
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "project"
@@ -251,6 +257,7 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     )
     assert ticket is not None
     assert tio.enqueue_ticket("new-generation")
+    (tio.logs_dir / "new-generation/.runtime/ticket.lock").unlink(missing_ok=True)
     queued = project_dir / "tickets" / "board" / "queue" / "new-generation.md"
     fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
     old_basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
@@ -272,6 +279,7 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     assert old_basis.participant("outer").ticket_ref in archived_worktree
 
     assert tio.enqueue_ticket("new-generation")
+    (tio.logs_dir / "new-generation/.runtime/ticket.lock").unlink(missing_ok=True)
     queued_again = project_dir / "tickets/board/queue/new-generation.md"
     blocked_again = project_dir / "tickets/board/blocked/new-generation.md"
     queued_again.replace(blocked_again)
@@ -312,6 +320,7 @@ def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, P
 def _blocked_ticket(tmp_path: Path, slug: str = "blocked-again") -> tuple[Path, Path, TicketIO]:
     root, project_dir, tio = _prepared_ticket(tmp_path, slug)
     assert tio.enqueue_ticket(slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
     queued = project_dir / "tickets" / "board" / "queue" / f"{slug}.md"
     blocked = queued.parent.parent / "blocked" / queued.name
     blocked.parent.mkdir(parents=True)
@@ -392,6 +401,52 @@ def test_enqueue_recovery_rejects_advanced_ticket_ref(
         tio.enqueue_ticket("transaction")
     assert (project_dir / "tickets/board/drafts/transaction.md").exists()
     assert _git(root, "branch", "--show-current") == "main"
+
+
+def test_enqueue_rejects_destination_movement_after_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    prepare = tio._prepare_enqueue_publication
+
+    def advance_destination(*args, **kwargs):
+        journal = prepare(*args, **kwargs)
+        (root / "concurrent.txt").write_text("advanced\n", encoding="utf-8")
+        _git(root, "add", "concurrent.txt")
+        _git(root, "commit", "-m", "advance destination")
+        return journal
+
+    monkeypatch.setattr(tio, "_prepare_enqueue_publication", advance_destination)
+
+    with pytest.raises(RuntimeError, match=r"destination ref .* moved after enqueue preparation"):
+        tio.enqueue_ticket("transaction")
+    assert (project_dir / "tickets/board/drafts/transaction.md").exists()
+
+
+def test_enqueue_rejects_stale_receipt_after_source_only_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
+    prepare = tio._prepare_enqueue_publication
+
+    def interrupt(*_args, **_kwargs):
+        raise OSError("after receipt")
+
+    monkeypatch.setattr(tio, "_prepare_enqueue_publication", interrupt)
+    with pytest.raises(OSError, match="after receipt"):
+        tio.enqueue_ticket("transaction")
+
+    draft = project_dir / "tickets/board/drafts/transaction.md"
+    draft.write_text(
+        draft.read_text(encoding="utf-8").replace(
+            "summary: Recover publication", 'summary: "Recover publication"'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tio, "_prepare_enqueue_publication", prepare)
+
+    assert tio.enqueue_ticket("transaction") is False
+    assert draft.exists()
 
 
 def test_partial_keepalive_creation_rolls_back(
@@ -484,12 +539,102 @@ def test_protected_parent_symlink_change_is_rejected(tmp_path: Path) -> None:
         assert_inputs_unchanged(basis, root)
 
 
+def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    project = root / ".booley_project"
+    project.mkdir(parents=True)
+    (root / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", "booley.toml")
+    _git(root, "commit", "-m", "route project")
+    sha = _git(root, "rev-parse", "HEAD")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                sha,
+                "refs/heads/booley-generation/0123456789abcdef/routing",
+                "refs/heads/main",
+                sha,
+            ),
+        )
+    )
+    (root / "booley.toml").write_text('[project]\ndir = "other"\n', encoding="utf-8")
+
+    with pytest.raises(AcceptanceBasisError, match="protected path"):
+        assert_inputs_unchanged(basis, root)
+
+
+def test_referenced_program_paths_include_redirecting_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    real = root / "real-hooks"
+    real.mkdir(parents=True)
+    (real / "run.py").write_text("print('run')\n", encoding="utf-8")
+    (root / "hooks").symlink_to(real, target_is_directory=True)
+
+    paths = referenced_program_paths(
+        {"pre_run": "hooks/run.py"},
+        search_roots=(root,),
+        project_root=root,
+        strict=True,
+    )
+
+    assert root / "hooks" in paths
+    assert real / "run.py" in paths
+
+
+def test_binding_selector_validation_rejects_changed_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = ContractTargetBinding(
+        "sim", "sim_pass", "acme:lib:old#sim", "acme:lib:old#sim", "sim", "sim"
+    )
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_targets.select_target",
+        lambda *_args, **_kwargs: SimpleNamespace(identity="acme:lib:new#sim"),
+    )
+
+    errors = validate_binding_selectors(tmp_path, (binding,))
+
+    assert errors and "expected 'acme:lib:old#sim'" in errors[0]
+
+
+def test_return_to_draft_journal_rejects_noncanonical_paths(tmp_path: Path) -> None:
+    root, blocked, tio = _blocked_ticket(tmp_path)
+    journal = draft_transition._new_journal(
+        root, blocked, "blocked-again", "blocked", tio.logs_dir
+    )
+    impostor = tmp_path / "other" / "drafts" / "blocked-again.md"
+
+    with pytest.raises(draft_transition.DraftTransitionError, match="destination path"):
+        draft_transition._validate_journal(
+            root,
+            tio.logs_dir,
+            "blocked-again",
+            replace(journal, draft_ticket=str(impostor)),
+        )
+
+
 def test_return_to_draft_rejects_live_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _root, _blocked, tio = _blocked_ticket(tmp_path)
     lock = tio.logs_dir / "blocked-again/.runtime/ticket.lock"
     lock.write_text("424242", encoding="utf-8")
+    monkeypatch.setattr("booley.runtime.pid.is_pid_alive", lambda _pid: True)
+
+    with pytest.raises(RuntimeError, match="owned by live process"):
+        tio.return_to_draft("blocked-again")
+
+
+def test_return_to_draft_rejects_callers_live_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, _blocked, tio = _blocked_ticket(tmp_path)
+    lock = tio.logs_dir / "blocked-again/.runtime/ticket.lock"
+    lock.write_text(str(tio._resolve_developer_pid()), encoding="utf-8")
     monkeypatch.setattr("booley.runtime.pid.is_pid_alive", lambda _pid: True)
 
     with pytest.raises(RuntimeError, match="owned by live process"):
