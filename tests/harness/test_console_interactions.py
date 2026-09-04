@@ -282,7 +282,7 @@ async def test_resize_preserves_follow_mode_or_paused_neighborhood() -> None:
         assert main.scroll_y == main.max_scroll_y
 
         await pilot.press("pageup")
-        await pilot.pause()
+        await pilot.wait_for_scheduled_animations()
         assert main._auto_scroll is False
         await pilot.resize_terminal(100, 30)
         await pilot.pause()
