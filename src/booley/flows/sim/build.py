@@ -12,7 +12,7 @@ import re
 import secrets
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +38,8 @@ class SimulationBuildPreparationError(RuntimeError):
 
 
 _TERMINAL_RECORD_RE = re.compile(
-    r"^BOOLEY_BUILD_STAGE token=(?P<token>[0-9a-f]+) rc=(?P<rc>-?\d+)$",
+    r"^BOOLEY_BUILD_STAGE token=(?P<token>[0-9a-f]+) rc=(?P<rc>-?\d+)"
+    r"(?: duration_ms=(?P<duration_ms>\d+))?$",
     re.MULTILINE,
 )
 _VERILATOR_DESIGN_ERROR_RE = re.compile(r"^%Error(?:-[A-Z0-9_]+)?:", re.MULTILINE)
@@ -206,16 +207,31 @@ def build_stage_script(
     exports = "".join(
         f"export {name}={shlex.quote(value)}\n" for name, value in (environment or {}).items()
     )
-    suffix = f"\n{run_line}" if run_line else ""
-    return (
+    build = (
         f"{exports}"
-        "_booley_build_start=$(date +%s)\n"
+        "_booley_build_start_ns=$(date +%s%N)\n"
         f"{shlex.join(build_argv)}\n"
         "_booley_build_rc=$?\n"
-        f'echo "BOOLEY_BUILD_STAGE token={token} rc=$_booley_build_rc"\n'
+        "_booley_build_end_ns=$(date +%s%N)\n"
+        "_booley_build_ms=$(((_booley_build_end_ns - _booley_build_start_ns) / 1000000))\n"
+        f'echo "BOOLEY_BUILD_STAGE token={token} rc=$_booley_build_rc '
+        'duration_ms=$_booley_build_ms"\n'
+        'echo "BOOLEY_BUILD_MILLISECONDS: $_booley_build_ms"\n'
+        'echo "BOOLEY_BUILD_SECONDS: $((_booley_build_ms / 1000))"\n'
         'if [ "$_booley_build_rc" -ne 0 ]; then exit "$_booley_build_rc"; fi\n'
-        'echo "BOOLEY_BUILD_SECONDS: $(( $(date +%s) - _booley_build_start ))"'
-        f"{suffix}"
+    )
+    if not run_line:
+        return build.rstrip()
+    return (
+        f"{build}"
+        "_booley_run_start_ns=$(date +%s%N)\n"
+        f"{run_line}\n"
+        "_booley_run_rc=$?\n"
+        "_booley_run_end_ns=$(date +%s%N)\n"
+        "_booley_run_ms=$(((_booley_run_end_ns - _booley_run_start_ns) / 1000000))\n"
+        f'echo "BOOLEY_RUN_STAGE token={token} rc=$_booley_run_rc '
+        'duration_ms=$_booley_run_ms"\n'
+        'exit "$_booley_run_rc"'
     )
 
 
@@ -235,12 +251,18 @@ def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome
         )
     record = records[0]
     build_rc = int(record["rc"])
+    duration_ms = record["duration_ms"]
+    build_result = (
+        replace(result, duration_s=int(duration_ms) / 1000)
+        if duration_ms is not None
+        else result
+    )
     build_output = result.stdout[: record.start()]
     if result.stderr:
         build_output += "\n" + result.stderr
     if build_rc == 0:
-        return _successful_build_outcome(result, output, build_rc)
-    return _failed_build_outcome(result, output, build_output, build_rc)
+        return _successful_build_outcome(build_result, output, build_rc)
+    return _failed_build_outcome(build_result, output, build_output, build_rc)
 
 
 def _successful_build_outcome(

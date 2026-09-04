@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -120,6 +121,29 @@ def test_build_stage_script_emits_record_before_run_half() -> None:
     assert "ERROR: Verilator elaboration failed" not in script
 
 
+def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> None:
+    script = build_stage_script(["true"], "abc123", run_line="sh -c 'exit 7'")
+
+    completed = subprocess.run(
+        ["sh", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 7
+    assert re.search(
+        r"^BOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=\d+$",
+        completed.stdout,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^BOOLEY_RUN_STAGE token=abc123 rc=7 duration_ms=\d+$",
+        completed.stdout,
+        re.MULTILINE,
+    )
+
+
 def test_classifier_accepts_one_matching_success_record() -> None:
     outcome = classify_build_outcome(
         _result("compiler output\nBOOLEY_BUILD_STAGE token=abc123 rc=0\nruntime failed", rc=1),
@@ -128,6 +152,21 @@ def test_classifier_accepts_one_matching_success_record() -> None:
 
     assert outcome.passed
     assert outcome.failure_kind is None
+
+
+def test_classifier_uses_authenticated_build_duration() -> None:
+    outcome = classify_build_outcome(
+        _result(
+            "compiler output\n"
+            "BOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=17\n"
+            "runtime output",
+            rc=0,
+            duration_s=4.0,
+        ),
+        "abc123",
+    )
+
+    assert outcome.elapsed_s == 0.017
 
 
 def test_classifier_rejects_spoofed_or_duplicate_records() -> None:

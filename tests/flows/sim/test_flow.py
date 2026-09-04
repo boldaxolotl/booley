@@ -23,6 +23,7 @@ from booley.flows.sim.flow import (
     _append_batch_output_lines,
     _append_error_excerpt,
     _artifact_path_component,
+    _attach_process_telemetry,
     _build_display_lines,
     _build_run_script,
     _filter_tests,
@@ -30,6 +31,8 @@ from booley.flows.sim.flow import (
     _test_status_line,
     parse_build_seconds,
     parse_cycles,
+    parse_run_seconds,
+    parse_sim_cpu_seconds,
     parse_sva_errors,
 )
 from booley.flows.sim.flow import (
@@ -364,6 +367,59 @@ class TestBuildTimeAttribution:
         output = "make stuff\nBOOLEY_BUILD_SECONDS: 5\n[SIM_RESULT] PASSED"
         assert parse_build_seconds(output) == 5.0
 
+    def test_parse_build_seconds_prefers_millisecond_marker(self):
+        output = "BOOLEY_BUILD_MILLISECONDS: 17\nBOOLEY_BUILD_SECONDS: 0"
+        assert parse_build_seconds(output) == 0.017
+
+    def test_parse_run_seconds_extracts_authenticated_wrapper_record(self):
+        output = "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=19"
+        assert parse_run_seconds(output) == 0.019
+
+    def test_parse_sim_cpu_seconds_extracts_user_and_system_time(self):
+        output = "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.125000"
+        assert parse_sim_cpu_seconds(output) == (1.25, 0.125)
+
+    def test_process_telemetry_normalizes_phases_and_resources(self):
+        from booley.flows.sim.build import BuildOutcome
+
+        result = SimTestResult(name="smoke", passed=True)
+        proc = SubprocessResult(
+            returncode=0,
+            stdout="",
+            duration_s=2.0,
+            peak_rss_mb=128.5,
+            oom_kill_delta=0,
+        )
+        output = (
+            "BOOLEY_BUILD_MILLISECONDS: 250\n"
+            "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=1750\n"
+            "BOOLEY_SIM_CPU_SECONDS: user=1.500000 system=0.250000"
+        )
+
+        _attach_process_telemetry(
+            result,
+            output,
+            proc,
+            BuildOutcome(ran=True, verdict="pass", failure_kind=None),
+            setup_s=0.01,
+            pre_run_s=0.02,
+            result_processing_s=0.03,
+        )
+
+        assert result.phase_timings_s == {
+            "setup": 0.01,
+            "pre_run": 0.02,
+            "build": 0.25,
+            "run": 1.75,
+            "result_processing": 0.03,
+        }
+        assert result.resources == {
+            "command_peak_rss_mb": 128.5,
+            "command_oom_kill_delta": 0,
+            "simulation_user_cpu_s": 1.5,
+            "simulation_system_cpu_s": 0.25,
+        }
+
     def test_parse_build_seconds_absent_marker_is_zero(self):
         assert parse_build_seconds("no marker here") == 0.0
         assert parse_build_seconds("") == 0.0
@@ -378,13 +434,13 @@ class TestBuildTimeAttribution:
             ["make", "-C", "bld"], "Verilator elaboration failed", "python3 -m run"
         )
         lines = script.splitlines()
-        assert lines[0] == "_booley_build_start=$(date +%s)"
+        assert lines[0] == "_booley_build_start_ns=$(date +%s%N)"
         assert lines[1] == "make -C bld"
         assert lines[2] == "_booley_build_rc=$?"
-        assert "BOOLEY_BUILD_STAGE token=" in lines[3]
-        assert 'if [ "$_booley_build_rc" -ne 0 ]' in lines[4]
-        assert 'echo "BOOLEY_BUILD_SECONDS:' in lines[5]
-        assert lines[6] == "python3 -m run"
+        assert "BOOLEY_BUILD_MILLISECONDS:" in script
+        assert script.index("BOOLEY_BUILD_STAGE token=") < script.index("python3 -m run")
+        assert "BOOLEY_RUN_STAGE token=" in script
+        assert script.endswith('exit "$_booley_run_rc"')
 
     def test_status_line_annotates_a_real_build(self):
         tr = SimTestResult(name="reset", passed=True, elapsed_s=5.0, build_s=5.0)
@@ -3028,7 +3084,9 @@ class TestPerTargetSimEnv:
         assert "export OPTS='a b; rm -rf /'" in script
 
     def test_build_run_script_without_env_is_unchanged(self):
-        assert _build_run_script(["make"], "m", "./Vtb").startswith("_booley_build_start=")
+        assert _build_run_script(["make"], "m", "./Vtb").startswith(
+            "_booley_build_start_ns="
+        )
 
     def test_sandbox_command_carries_the_targets_env(self, tmp_path: Path):
         from booley.fusesoc import fusesoc_registry
@@ -3383,8 +3441,20 @@ class TestSubSecondDurations:
     def test_report_entry_keeps_millisecond_resolution(self):
         from booley.flows.sim.flow import _test_report_entry
 
-        entry = _test_report_entry(SimTestResult(name="a", passed=True, elapsed_s=0.012))
+        entry = _test_report_entry(
+            SimTestResult(
+                name="a",
+                passed=True,
+                elapsed_s=0.012,
+                build_s=0.007,
+                phase_timings_s={"build": 0.007, "run": 0.005},
+                resources={"command_peak_rss_mb": 12.5},
+            )
+        )
         assert entry["elapsed_s"] == 0.012
+        assert entry["build_s"] == 0.007
+        assert entry["phase_timings_s"] == {"build": 0.007, "run": 0.005}
+        assert entry["resources"] == {"command_peak_rss_mb": 12.5}
 
 
 # ---------------------------------------------------------------------------

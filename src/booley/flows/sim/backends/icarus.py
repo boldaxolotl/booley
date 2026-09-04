@@ -53,6 +53,8 @@ from booley.flows.run_log import write_run_log
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
     adopt_declared_trace_files,
+    append_child_cpu_marker,
+    child_cpu_snapshot,
     find_icarus_image,
     format_idle_note,
 )
@@ -140,6 +142,7 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
     lines: deque[str] = deque(maxlen=5_000)
+    cpu_started = child_cpu_snapshot()
     # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
     # this budget exists for, and anything vvp dumps during that walk would
     # otherwise land in the baseline free of charge (fpu F-23).
@@ -192,6 +195,7 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
         timer.cancel()
         guard.stop()
         progress.final_flush(lines)
+        append_child_cpu_marker(lines, cpu_started)
 
     # Precedence: an explicit fatal (readmemh) over the disk runaway over the
     # wall-clock timeout — the first is the most specific cause of death.
