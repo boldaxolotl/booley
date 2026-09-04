@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,6 +130,7 @@ from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
 from booley.runtime.project_dir import (
+    init_project_dir_scope,
     project_dir_for_init,
     reset_cache,
     resolve_checkout_project_dir,
@@ -2351,10 +2353,8 @@ def _run_init_unlocked(
     if bootstrap_result is None:
         return _print_summary(ctx)
 
-    agent_config_path = _agent_config_path(
-        ctx.project_root,
-        seed=getattr(args, "seed", False),
-    )
+    seed = getattr(args, "seed", False)
+    agent_config_path = _agent_config_path(ctx.project_root, seed=seed)
     migration_ready = _project_config_migration_preflight(ctx, agent_config_path)
     if not migration_ready and not ctx.check_only:
         return _print_summary(ctx)
@@ -2366,14 +2366,16 @@ def _run_init_unlocked(
     guidance_plan, may_proceed = _plan_existing_guidance(ctx)
     if not may_proceed:
         return _print_summary(ctx)
-    return _run_project_init_steps(
-        ctx,
-        args,
-        selection,
-        agent_config_path,
-        guidance_plan,
-        bootstrap_result,
-    )
+    project_scope = nullcontext() if seed else init_project_dir_scope(ctx.project_root)
+    with project_scope:
+        return _run_project_init_steps(
+            ctx,
+            args,
+            selection,
+            agent_config_path,
+            guidance_plan,
+            bootstrap_result,
+        )
 
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:

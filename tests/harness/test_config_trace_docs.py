@@ -3,9 +3,11 @@
 from pathlib import Path
 
 CONFIG_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "CONFIG.md"
-DESIGN_SECTION = CONFIG_MD.read_text(encoding="utf-8").split(
-    "## Design description (`.core`) and tests (`tests.toml`)", 1
-)[1].split("\n## ", 1)[0]
+DESIGN_SECTION = (
+    CONFIG_MD.read_text(encoding="utf-8")
+    .split("## Design description (`.core`) and tests (`tests.toml`)", 1)[1]
+    .split("\n## ", 1)[0]
+)
 CORE_EXAMPLE = DESIGN_SECTION.split("```yaml", 1)[1].split("```", 1)[0]
 
 

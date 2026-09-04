@@ -81,8 +81,9 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
     assert parent_config.read_text(encoding="utf-8") == original
 
 
-def test_nested_child_run_init_writes_only_child_config(tmp_path, monkeypatch):
-    parent_config = tmp_path / ".booley_project" / "booley.toml"
+def test_nested_child_run_init_isolates_every_project_write(tmp_path, monkeypatch):
+    parent_project_dir = tmp_path / ".booley_project"
+    parent_config = parent_project_dir / "booley.toml"
     parent_config.parent.mkdir()
     original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
     parent_config.write_text(original, encoding="utf-8")
@@ -127,7 +128,10 @@ def test_nested_child_run_init_writes_only_child_config(tmp_path, monkeypatch):
     content = child_config.read_text(encoding="utf-8")
     assert 'provider = "codex"' in content
     assert 'auth = "subscription"' in content
+    assert (child_config.parent / "tickets").is_dir()
     assert parent_config.read_text(encoding="utf-8") == original
+    assert set(parent_project_dir.iterdir()) == {parent_config}
+    assert init_cmd.resolve_project_dir() == parent_project_dir.resolve()
 
 
 def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
@@ -143,9 +147,7 @@ def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
     init_cmd.reset_cache()
     config = init_cmd._agent_config_path(child, seed=False)
 
-    assert init_cmd._project_config_migration_preflight(
-        InitContext(project_root=child), config
-    )
+    assert init_cmd._project_config_migration_preflight(InitContext(project_root=child), config)
 
 
 def test_init_resolves_config_path_once_for_preflight_read_and_write(tmp_path, monkeypatch):

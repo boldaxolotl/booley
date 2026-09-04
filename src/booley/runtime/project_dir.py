@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from booley.runtime.checkout_role import require_project_checkout
@@ -41,6 +43,31 @@ def project_dir_for_init(project_root: Path) -> Path:
     may not exist yet; this is the path initialization will create.
     """
     return require_project_checkout(project_root) / PROJECT_DIR_NAME
+
+
+@contextmanager
+def init_project_dir_scope(project_root: Path) -> Iterator[Path]:
+    """Keep every full-init lookup bound to the selected checkout.
+
+    Init calls helpers that use the normal runtime resolver. Temporarily publish
+    its checkout-local directory through that resolver's trusted environment
+    boundary, then restore the caller's selection and invalidate both cached
+    views. ``booley init --seed`` deliberately does not use this scope.
+    """
+    target = project_dir_for_init(project_root)
+    env_name = "BOOLEY_PROJECT_DIR"
+    had_original = env_name in os.environ
+    original = os.environ.get(env_name, "")
+    os.environ[env_name] = str(target)
+    reset_cache()
+    try:
+        yield target
+    finally:
+        if had_original:
+            os.environ[env_name] = original
+        else:
+            os.environ.pop(env_name, None)
+        reset_cache()
 
 
 def _resolve_from_toml(current: Path) -> Path | None:
