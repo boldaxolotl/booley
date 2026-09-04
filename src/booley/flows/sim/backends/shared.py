@@ -14,6 +14,37 @@ from booley.flows.sim.trace_session import TraceSession
 RUN_LOG_PROGRESS_INTERVAL_S = 5.0
 MAX_ADOPTED_VCD_BYTES = 2 * 1024**3
 TraceFileSnapshot = dict[Path, tuple[int, int, int]]
+ChildCpuSnapshot = tuple[float, float]
+
+
+def child_cpu_snapshot() -> ChildCpuSnapshot | None:
+    """Return cumulative child user/system CPU seconds when the OS exposes it."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - unavailable on native Windows
+        return None
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return float(usage.ru_utime), float(usage.ru_stime)
+
+
+def child_cpu_marker(
+    started: ChildCpuSnapshot | None,
+    finished: ChildCpuSnapshot | None,
+) -> str:
+    """Format the stable simulator CPU marker for one supervised child run."""
+    if started is None or finished is None:
+        return ""
+    user_s = max(0.0, finished[0] - started[0])
+    system_s = max(0.0, finished[1] - started[1])
+    return f"BOOLEY_SIM_CPU_SECONDS: user={user_s:.6f} system={system_s:.6f}"
+
+
+def append_child_cpu_marker(lines: deque[str], started: ChildCpuSnapshot | None) -> None:
+    """Print and retain CPU usage accumulated by a completed simulator child."""
+    marker = child_cpu_marker(started, child_cpu_snapshot())
+    if marker:
+        print(marker)
+        lines.append(marker + "\n")
 
 
 def find_icarus_image(build_dir: Path) -> str | None:

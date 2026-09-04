@@ -168,12 +168,25 @@ class TestCocotbVerdictMatrix:
                 ("test_count", "pass", ""),
                 ("test_fail_assert", "pass", ""),
             ]
+        ) + (
+            "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=1500\n"
+            "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.250000\n"
         )
         with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_key == "sim_pass_ccfg"
         assert result.criterion_met is True
+        report = json.loads((tmp_path / "reports/sim_ccfg.json").read_text())
+        telemetry = report["tests"][0]
+        assert report["complete"] is True
+        assert telemetry["phase_timings_s"]["run"] == 1.5
+        assert telemetry["resources"] == {
+            "command_peak_rss_mb": None,
+            "command_oom_kill_delta": 0,
+            "simulation_user_cpu_s": 1.25,
+            "simulation_system_cpu_s": 0.25,
+        }
 
     def test_build_infrastructure_error_stops_before_result_interpretation(
         self, tmp_path: Path

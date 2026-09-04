@@ -166,6 +166,14 @@ The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
 from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
 first-run traps:
 
+This supported layout prioritizes normal Windows editor and Git access. The
+checkout is bind-mounted into the Linux Session Runtime, so metadata-heavy EDA
+builds may perform differently from Linux-native storage. That performance is
+still being qualified; a slow simulation should be reported with its phase
+timings rather than attributed to the bind mount from total elapsed time alone.
+A checkout hosted inside a user WSL distribution is an optional performance
+experiment, not a setup requirement.
+
 - **Git is older than 2.37.2.** Upgrade Git for Windows from
   [git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
   rerun `booley init`. Older releases can exhaust their small pool of temporary

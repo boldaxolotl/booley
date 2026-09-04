@@ -166,11 +166,19 @@ Concurrency is safe by design, not by luck. Each running ticket operates in its 
 ## Windows Support
 
 Because every EDA tool and agent runs inside the Docker sandbox, Booley's
-standard image-provisioned toolchain works on Windows just as it does on Linux:
-you don't need to build Verilator, Yosys, or the rest natively. Host-provisioned
-commercial EDA is Linux x86-64 only. Docker Desktop runs Linux containers, and
-a native Windows EDA installation cannot execute merely because its directory
-is mounted into one. See [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+standard image-provisioned toolchain is functionally available from a native
+Windows checkout: you don't need to build Verilator, Yosys, or the rest
+natively, and you do not need to install a user-facing Ubuntu distribution.
+The normal Docker Desktop workflow bind-mounts that checkout into a Linux
+container. Filesystem-heavy EDA performance across that boundary is still
+being qualified and should not yet be assumed equivalent to Linux-native
+performance. A WSL-hosted checkout can be used as an optional advanced
+workflow, but is not a prerequisite for Windows support.
+
+Host-provisioned commercial EDA is Linux x86-64 only. Docker Desktop runs Linux
+containers, and a native Windows EDA installation cannot execute merely because
+its directory is mounted into one. See
+[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
 
 ## Firmware-in-the-Loop Debug
 
