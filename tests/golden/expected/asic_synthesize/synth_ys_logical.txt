@@ -10,6 +10,7 @@ synth -top dut -noabc -flatten
 dfflibmap -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib
 tee -o ./log_abc_dut.txt abc -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats
 opt
+tee -q -o ./check_dut.txt check
 write_verilog ./synth_dut.v
 setundef -zero
 splitnets

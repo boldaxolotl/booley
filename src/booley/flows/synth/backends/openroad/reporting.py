@@ -52,7 +52,7 @@ def reg2reg_timing_tcl(report_path: str | None = None) -> str:
         )
     return (
         "if {![catch {set _r2r [find_timing_paths -path_delay max "
-        "-sort_by_slack -group_count 1 -from [all_registers] "
+        "-sort_by_slack -group_path_count 1 -from [all_registers] "
         "-to [all_registers]]}] && [llength $_r2r] > 0} {\n"
         "  foreach _p $_r2r {\n"
         '    puts [format "STA_REG2REG_SLACK_NS: %.6f" [get_property $_p slack]]\n'
@@ -145,12 +145,12 @@ def perclock_timing_tcl() -> str:
         "    set _per [get_property $_clk period]\n"
         '    set _wns "NA"\n'
         "    if {![catch {set _sp [find_timing_paths -path_delay max "
-        "-sort_by_slack -group_count 1 -to $_clk]}] && [llength $_sp] > 0} {\n"
+        "-sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_sp] > 0} {\n"
         '      set _wns [format "%.6f" [get_property [lindex $_sp 0] slack]]\n'
         "    }\n"
         '    set _whs "NA"\n'
         "    if {![catch {set _hp [find_timing_paths -path_delay min "
-        "-sort_by_slack -group_count 1 -to $_clk]}] && [llength $_hp] > 0} {\n"
+        "-sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_hp] > 0} {\n"
         '      set _whs [format "%.6f" [get_property [lindex $_hp 0] slack]]\n'
         "    }\n"
         '    puts [format "STA_PERCLOCK: name=%s period_ns=%.6f wns_ns=%s '

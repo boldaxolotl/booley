@@ -225,9 +225,11 @@ An explicit per-call PPA profile starts from that clean built-in profile rather
 than inheriting the Target's backend-specific advanced settings. Expert
 per-call flags then apply on top.
 
-The Flow reports area, timing/Fmax, inferred latches, and the measurement
-basis. It satisfies `synthesis_ok_<target>` only when synthesis
-completes and every configured threshold and latch policy passes.
+The Flow reports area, timing/Fmax, inferred latches, final-netlist structural
+conditions, EDA warning counts, and the measurement basis. It satisfies
+`synthesis_ok_<target>` only when synthesis completes, the dedicated final
+Yosys structural check is present, and every configured threshold and
+structural policy passes.
 
 Structured output (`synth_<target>.json`; qualified selectors use a sanitized,
 hash-suffixed filename):
@@ -240,12 +242,19 @@ hash-suffixed filename):
 | `area_um2`, `area_source`, `area_kge`, `cells` | Canonical area and cell metrics. |
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`; logical mode instead adds `estimated_fmax_mhz`. |
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical` verdict. |
+| `total_warnings`, `warning_summary` | Total warning-record occurrences plus unique and grouped counts by EDA tool, category, and disposition, with bounded representative diagnostics. Repeated warnings remain visible in the total; `unique_warnings` groups identical records. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | Optional baseline metrics and deltas; `baseline.ref` identifies the compared revision. |
 | `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
 | `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
 | `run_evidence`, `baseline_run_evidence` | Current and optional baseline source/recipe provenance. |
 | `failure_output`, `io_bound_critical` | Optional failure excerpt and I/O-bound timing indicator. |
 | `artifacts` | The durable report, complete run log, build directory, and physical-mode timing directory. |
+
+Final combinational loops and multiple drivers are separate fatal structural
+conditions. Other actionable warnings produce `grade: "warn"` while keeping
+`passed: true` and exit zero. Explicitly benign warnings remain counted with a
+rationale and do not downgrade the grade. Open `artifacts.log` for every raw
+diagnostic when the bounded representatives are insufficient.
 
 ## `fpga`
 

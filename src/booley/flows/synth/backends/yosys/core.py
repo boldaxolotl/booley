@@ -403,7 +403,15 @@ def _build_yosys_script(
         abc_delay_ps=abc_delay_ps,
     )
 
-    # Step 6: Write final netlists and statistics. The sta_* netlist keeps
+    # Step 6: run one authoritative structural check on the final mapped
+    # netlist. ``synth`` runs CHECK internally more than once, so its log can
+    # contain repeated or transient loop/driver warnings.  Keeping this pass
+    # quiet and in its own artifact gives result interpretation one exact
+    # source of truth without duplicating it in yosys.log.
+    check_out = q(out_dir + "/check_" + design_name + ".txt")
+    final_check = f"tee -q -o {check_out} check"
+
+    # Step 7: Write final netlists and statistics. The sta_* netlist keeps
     # OpenROAD on a plain structural dialect while the regular netlist preserves
     # the historical artifact name.
     synth_out = q(out_dir + "/synth_" + design_name + ".v")
@@ -416,7 +424,7 @@ def _build_yosys_script(
         f"tee -o {stat_out} stat -liberty {lib_path}"
     )
 
-    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {wout}"
+    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {final_check}; {wout}"
 
 
 def _build_abc_command(

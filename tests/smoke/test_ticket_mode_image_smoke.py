@@ -112,7 +112,7 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
 
     output = f"{result.stdout}\n{result.stderr}"
     assert result.returncode == 0, output
-    assert "RESULT: PASS" in output
+    assert "RESULT: WARN" in output
     report = json.loads((report_dir / "synth_synth.json").read_text(encoding="utf-8"))
     assert report["whs_ns"] >= 0
     log = Path(report["artifacts"]["log"])

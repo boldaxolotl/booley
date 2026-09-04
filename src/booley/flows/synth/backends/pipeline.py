@@ -44,6 +44,7 @@ from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import runs_openroad
 from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.synth.warnings import SynthDiagnostics, parse_synth_diagnostics
 from booley.runtime.platform_paths import posix_relpath
 
 # Bounded log tail echoed by a failing make recipe so the actionable
@@ -105,6 +106,7 @@ class BoundaryOutcome:
     """
 
     text: str
+    diagnostics: SynthDiagnostics
     forced_failure: str | None = None
     # A fresh final ``stat_<design>.txt`` is the durable proof that the Yosys
     # stage reached its contractual statistics/check boundary.
@@ -173,6 +175,7 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
         syn_core.SV2V_OUTPUT_NAME,
         syn_core.effective_params_filename(design),
         f"stat_{design}.txt",
+        f"check_{design}.txt",
         f"log_abc_{design}.txt",
         # No longer emitted (the pre-mapping write_verilog is gone), but still
         # swept so a leftover from an older build dir can't be mistaken for
@@ -493,6 +496,11 @@ def boundary_output(
     parts, have_yosys_log, parameter_failure, stat_text = _collect_yosys_sections(plan, fresh_text)
     if runs_openroad(spec.timing.mode):
         parts.extend(_timing_sections(plan, fresh_text))
+    diagnostic_sources = _diagnostic_sources(plan, fresh_text)
+    final_check = diagnostic_sources.get("final_check")
+    if final_check is not None:
+        parts.append(f"--- check_{spec.design_name}.txt ---\n{final_check}")
+    diagnostics = parse_synth_diagnostics(diagnostic_sources)
     forced_failure = _false_pass_failure(build_dir, returncode, have_yosys_log, parameter_failure)
     if forced_failure and forced_failure != parameter_failure:
         parts.append("ERROR: synthesis log reports an error despite exit 0:\n  " + forced_failure)
@@ -503,9 +511,29 @@ def boundary_output(
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
+        diagnostics=diagnostics,
         forced_failure=forced_failure,
         yosys_complete=stat_text is not None,
     )
+
+
+def _diagnostic_sources(
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
+) -> dict[str, str]:
+    """Return fresh, stage-labelled EDA text for warning interpretation."""
+    names = {
+        "sv2v": "sv2v.log",
+        "yosys": "yosys.log",
+        "openroad": "openroad.log",
+        "final_check": f"check_{plan.spec.design_name}.txt",
+    }
+    sources: dict[str, str] = {}
+    for source, name in names.items():
+        text = fresh_text(name)
+        if text is not None:
+            sources[source] = text
+    return sources
 
 
 def _abc_delay_marker(

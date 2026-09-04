@@ -52,6 +52,7 @@ from booley.flows.synth.flow import (
 )
 from booley.flows.synth.recipe import BASELINE_REF_PARAM
 from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.synth.warnings import parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
@@ -1797,8 +1798,13 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
                 encoding="utf-8",
             )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 12345\n", encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             fresh = time.time() + 1
-            os.utime(build_dir / "yosys.log", (fresh, fresh))
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
             return SubprocessResult(
                 returncode=0, stdout="BOOLEY_STAGE: yosys\n", stderr="", duration_s=1.0
             )
@@ -1810,6 +1816,109 @@ class TestFileBasedInterpretation:
         assert "12,345 cells" in result.report_text
         st = DevelopmentState.load(state_file)
         assert st.is_met("synthesis_ok_lite")
+
+    def test_final_check_structural_findings_fail_and_reach_every_report_surface(
+        self, flow_and_state, tmp_path: Path
+    ):
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+                encoding="utf-8",
+            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Warning: found logic loop in module dut:\n    wire \\feedback\n"
+                "Warning: multiple conflicting drivers for dut.sig:\n"
+                "    port Q[0] of cell $procdff$1 ($dff)\n"
+                "Found and reported 2 problems.\n",
+                encoding="utf-8",
+            )
+            fresh = time.time() + 1
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with patch.object(flow, "_execute", side_effect=mock_execute):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "1 comb loop" in result.report_text
+        assert "1 multi-driven" in result.report_text
+        target = result.detail["lite"]
+        assert target["total_warnings"] == 2
+        assert target["warning_summary"]["by_disposition"] == {"structural": 2}
+        assert target["comb_loops"] == 1
+        assert target["multi_driven"] == 1
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        assert report["total_warnings"] == 2
+        assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
+        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+        assert criterion.met is False
+        assert criterion.detail["total_warnings"] == 2
+
+    def test_advisory_warning_yields_warn_grade_without_failing(
+        self, flow_and_state, tmp_path: Path
+    ):
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Chip area for top module '\\dut': 6400.0\n"
+                "Number of cells: 100\n"
+                "ABC: Warning: The network has multiple outputs.\n",
+                encoding="utf-8",
+            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
+            fresh = time.time() + 1
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with patch.object(flow, "_execute", side_effect=mock_execute):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert "RESULT: WARN" in result.report_text
+        assert "1 EDA warning" in result.report_text
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        assert report["passed"] is True
+        assert report["total_warnings"] == 1
+        assert report["implementation"]["status"]["grade"] == "warn"
+        assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
+
+    def test_missing_final_check_cannot_be_a_clean_file_based_pass(
+        self, flow_and_state, tmp_path: Path
+    ):
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+                encoding="utf-8",
+            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            fresh = time.time() + 1
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with patch.object(flow, "_execute", side_effect=mock_execute):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert result.detail["lite"]["structural_checks_complete"] is False
+        assert not DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
 
     def test_stale_artifacts_are_not_parsed(self, flow_and_state, tmp_path: Path):
         """A leftover log predating the dispatch must never read as a fresh
@@ -1894,9 +2003,13 @@ class TestFileBasedInterpretation:
                 "Design area 7000 u^2 50% utilization.\n",
                 encoding="utf-8",
             )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             fresh = time.time() + 1
-            for stage_log in (build_dir / "yosys.log", build_dir / "openroad.log"):
-                os.utime(stage_log, (fresh, fresh))
+            for artifact in build_dir.iterdir():
+                os.utime(artifact, (fresh, fresh))
             return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
 
         with (
@@ -3749,6 +3862,47 @@ class TestAggregateDetailIsSelfContained:
             result = flow._aggregate_results(["asic_a"], {"asic_a": self._metrics()}, {}, None)
         assert result.detail["targets"] == ["asic_a"]
         assert result.detail["asic_a"]["area_um2"] == 500.0
+
+    def test_benign_eda_warning_remains_visible_without_downgrading_pass(self, flow_and_state):
+        flow, _ = flow_and_state
+        summary = parse_synth_diagnostics(
+            {
+                "openroad": (
+                    "[WARNING STA-0503] find_timing_paths -group_count is deprecated. "
+                    "Use -group_path_count instead.\n"
+                ),
+                "final_check": "Found and reported 0 problems.\n",
+            }
+        ).warnings
+        metrics = self._metrics(warning_summary=summary, log_path="build/lite/run.log")
+
+        result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert "RESULT: PASS" in result.report_text
+        assert "NOTE -- 1 EDA warning" in result.report_text
+        implementation = result.detail["implementation"]["results"]["lite"]
+        assert implementation["status"]["grade"] == "pass"
+        assert implementation["conditions"]["warning_summary"]["by_disposition"] == {"benign": 1}
+
+    def test_baseline_warning_summary_is_preserved(self, flow_and_state):
+        flow, _ = flow_and_state
+        baseline_summary = parse_synth_diagnostics(
+            {
+                "yosys": "ABC: Warning: The network has multiple outputs.\n",
+                "final_check": "Found and reported 0 problems.\n",
+            }
+        ).warnings
+        current = self._metrics()
+        baseline = self._metrics(warning_summary=baseline_summary)
+
+        result = flow._aggregate_results(
+            ["lite"], {"lite": current}, {"lite": baseline}, "deadbee"
+        )
+
+        assert result.detail["lite"]["baseline_metrics"]["total_warnings"] == 1
+        comparison = result.detail["implementation"]["results"]["lite"]["comparison"]
+        assert comparison["baseline"]["conditions"]["warning_summary"]["total_warnings"] == 1
 
 
 class TestIncompleteResourceResults:

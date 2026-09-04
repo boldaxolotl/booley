@@ -424,6 +424,7 @@ class TestInitInteractive:
     def _pin_runtime_image(self, monkeypatch):
         """Unit tests pin deterministically without requiring a local image."""
         from booley.eda.provisioning import runtime_spec
+        from booley.harness import init_cmd
 
         def pin_image(spec):
             spec["image"] = "sha256:" + "a" * 64
@@ -432,6 +433,11 @@ class TestInitInteractive:
         monkeypatch.setattr(runtime_spec, "pin_image", pin_image)
         monkeypatch.setattr(runtime_spec, "seal", lambda _project, _spec: None)
         monkeypatch.setattr(runtime_spec, "issue", lambda _project, _spec, _path: None)
+        monkeypatch.setattr(
+            init_cmd,
+            "_reconcile_issued_headless_runtime",
+            lambda _ctx, _issuance: True,
+        )
 
     def _ctx(self, root):
         from booley.harness import init_cmd

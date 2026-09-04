@@ -49,8 +49,19 @@ def _io_bound(metrics: SynthMetrics) -> bool:
     return worst is not None and register is not None and worst < register - 1e-3
 
 
+def _eda_warning_reasons(metrics: SynthMetrics) -> tuple[str, ...]:
+    summary = metrics.warning_summary
+    if not summary.actionable_warnings:
+        return ()
+    return (
+        f"{summary.actionable_warnings} actionable EDA warning occurrence(s) "
+        f"across {summary.unique_warnings} unique diagnostic(s)",
+    )
+
+
 def _run(metrics: SynthMetrics, *, fatal_timing: bool) -> ImplementationRun:
     warnings, failures = _timing_reasons(metrics, fatal=fatal_timing)
+    warnings = (*warnings, *_eda_warning_reasons(metrics))
     conditions = {
         **metrics.structural_detail(),
         "process_count": metrics.process_count,
