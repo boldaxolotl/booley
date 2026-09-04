@@ -492,6 +492,9 @@ def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 """
     assert trusted_cli_setup in workflow
+    assert (
+        'sudo install -o root -g root -m 0755 "${HOME}/.local/bin/booley" "/usr/bin/booley"'
+    ) in workflow
 
 
 def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
@@ -513,10 +516,30 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
     assert "set -o pipefail" in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
-    assert 'sudo chown -R 1000:"$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
-    assert 'sudo chmod -R u+rwX,g+rwX,o-rwx "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    ownership_fragments = (
+        'doctor_gid="$(getent passwd 1000 | cut -d: -f4)"',
+        'echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"',
+        'sudo chown -R "1000:${doctor_gid}" "${HOME}/.config/booley"',
+        'sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-picorv32-demo"',
+        'sudo chmod -R u+rwX "${RUNNER_TEMP}/booley-picorv32-demo"',
+    )
+    assert all(fragment in workflow for fragment in ownership_fragments)
+    host_doctor_section = workflow[
+        workflow.index(host_doctor) : workflow.index(
+            "      - name: Measure release image storage contract\n"
+        )
+    ]
+    identity_fragments = (
+        "runner_groups=\"$(id -G | tr ' ' ',')\"",
+        "/usr/bin/setpriv",
+        '--reuid=1000 --regid="${DOCTOR_GID}"',
+        '--groups="${DOCTOR_GID},${runner_groups}"',
+        '"/usr/bin/booley" doctor --deep --skip-agent-checks',
+        "      - name: Restore runner ownership after host Doctor\n        if: always()",
+    )
+    assert all(fragment in host_doctor_section for fragment in identity_fragments)
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
-    assert workflow.count('booley doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
+    assert workflow.count('doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
     assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
     assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
