@@ -17,6 +17,7 @@ from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
+    AdapterTraceResult,
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb_results
@@ -30,6 +31,7 @@ from booley.flows.sim.execution.telemetry import (
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
+    _TRACE_OK_RE,
     TargetResult,
     _append_batch_output_lines,
     _append_error_excerpt,
@@ -39,6 +41,7 @@ from booley.flows.sim.flow import (
     _filter_tests,
     _resolve_sim_campaign_work_units,
     _test_status_line,
+    _trace_metadata,
     parse_cycles,
     parse_sva_errors,
 )
@@ -424,7 +427,15 @@ def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterRe
         and tests
         and all(test.verdict == "pass" for test in tests)
     )
-    return _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics)
+    return _test_adapter_result(
+        names,
+        tests,
+        passed,
+        inconclusive,
+        sva_errors,
+        diagnostics,
+        _test_trace_result(output),
+    )
 
 
 def _native_adapter_result(names, process, output, summary) -> AdapterResult:
@@ -445,10 +456,26 @@ def _native_adapter_result(names, process, output, summary) -> AdapterResult:
     )
     tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
     sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-    return _test_adapter_result(names, tests, passed, inconclusive, sva_errors, ())
+    return _test_adapter_result(
+        names, tests, passed, inconclusive, sva_errors, (), _test_trace_result(output)
+    )
 
 
-def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics):
+def _test_trace_result(output: str) -> AdapterTraceResult | None:
+    paths = _TRACE_OK_RE.findall(output)
+    if not paths:
+        return None
+    top_scope, signal_count, total_ticks = _trace_metadata(output)
+    return AdapterTraceResult(
+        "ok",
+        path=paths[-1],
+        top_scope=top_scope,
+        signal_count=signal_count,
+        total_ticks=total_ticks,
+    )
+
+
+def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics, trace=None):
     timed_out = any(test.verdict == "timeout" for test in tests)
     return AdapterResult(
         passed=passed,
@@ -466,6 +493,7 @@ def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnos
         ),
         test_results=tests,
         diagnostics=diagnostics,
+        trace=trace,
     )
 
 

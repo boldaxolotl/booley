@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -13,9 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
-from booley.core.boundary import BoundaryError
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
@@ -49,11 +46,11 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.flows.sim.workload import build_workload_snapshot
+from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import TargetHandle, inspect_target
 
-from .artifacts import artifact_path_component, configured_trace_path
+from .artifacts import TraceArtifactPolicy, artifact_path_component
 from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invocation
 from .contract import (
     DefaultSelection,
@@ -68,13 +65,16 @@ from .contract import (
     SimulationTestOutcome,
 )
 from .failures import find_missing_executable
-from .freshness import ArtifactValidationError, validate_fresh_artifact
+from .freshness import (
+    ArtifactStamp,
+    ArtifactValidationError,
+    snapshot_artifact,
+    validate_fresh_artifact,
+)
 from .pre_run import run_pre_run_commands
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 ProcessInvoker = Callable[..., SubprocessResult]
-_TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
-_TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
@@ -89,7 +89,19 @@ class _Attempt:
     test_names: tuple[str, ...]
     adapter: str
     trace_requested: bool
+    work: PreparedSimulationWork
+    wrapper_timeout_s: int
+    pre_run_commands: tuple[str, ...]
+    simulator_environment: tuple[tuple[str, str], ...]
+    cycle_sentinels: tuple[str, ...]
+    workload_inputs: tuple[Mapping[str, Any], ...]
     setup_s: float
+
+
+@dataclass(frozen=True)
+class _AdapterResultStamps:
+    terminal: ArtifactStamp | None
+    partial: ArtifactStamp | None
 
 
 class SimulationArtifactPersistenceError(RuntimeError):
@@ -174,6 +186,7 @@ class SimulationExecution:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
         pre_run = self._run_pre_run(handle, attempt)
+        attempt = _with_workload_inputs(handle, attempt)
         if pre_run is not None and pre_run.status != "passed":
             failure = (
                 _pre_run_infrastructure_failure
@@ -181,14 +194,16 @@ class SimulationExecution:
                 else _pre_run_failure
             )
             return failure(handle, attempt, pre_run, started)
+        trace_policy = _trace_artifact_policy(handle, attempt)
+        adapter_before = _adapter_result_stamps(attempt)
         dispatched_ns = time.time_ns()
-        process = self._invoke(list(attempt.command), timeout=self._wrapper_timeout_s(handle))
+        process = self._invoke(list(attempt.command), timeout=attempt.wrapper_timeout_s)
         processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
         if build.failure_kind == "infrastructure":
             return _infrastructure_failure(handle, attempt, build, pre_run, started)
         try:
-            adapter = self._read_adapter_result(attempt, process, build, dispatched_ns)
+            adapter = self._read_adapter_result(attempt, process, build, adapter_before)
         except (AdapterTransportError, ArtifactValidationError) as exc:
             return _transport_failure(handle, attempt, build, pre_run, str(exc), started)
         try:
@@ -199,6 +214,7 @@ class SimulationExecution:
                 build,
                 adapter,
                 pre_run,
+                trace_policy,
                 dispatched_ns,
                 processing_started,
                 started,
@@ -218,7 +234,10 @@ class SimulationExecution:
             selected_tests=test_names,
             result_path=prepared.build_root / f".booley-adapter-{token}.json",
         )
-        work = self._prepared_work(handle, prepared, identity, trace_mode)
+        trace_files = tuple(resolve_trace_files(handle.project_root))
+        work = self._prepared_work(handle, prepared, identity, trace_mode, trace_files)
+        pre_run_commands = tuple(resolve_pre_run_commands(handle.project_root))
+        simulator_environment = tuple(_target_environment(handle).items())
         try:
             invocation = prepare_adapter_invocation(work)
         except UnsupportedSimulationAdapterError as exc:
@@ -227,7 +246,7 @@ class SimulationExecution:
             prepared.make_argv,
             token,
             run_line=shlex.join(invocation),
-            environment=_target_environment(handle),
+            environment=dict(simulator_environment),
         )
         return _Attempt(
             prepared=prepared,
@@ -236,6 +255,13 @@ class SimulationExecution:
             test_names=test_names,
             adapter=adapter,
             trace_requested=self._options.trace,
+            work=work,
+            wrapper_timeout_s=work.timeout_s
+            + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
+            pre_run_commands=pre_run_commands,
+            simulator_environment=simulator_environment,
+            cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
+            workload_inputs=(),
             setup_s=time.monotonic() - started,
         )
 
@@ -270,6 +296,7 @@ class SimulationExecution:
         prepared: PreparedSimulationBuild,
         identity: AdapterTransportIdentity,
         trace_mode: TraceMode,
+        trace_files: tuple[str, ...],
     ) -> PreparedSimulationWork:
         root = handle.project_root
         rel = edam_layer.relpath_for_make(prepared.build_root, root)
@@ -290,7 +317,7 @@ class SimulationExecution:
             trace_mode=trace_mode.value,
             trace_scope=prepared.toplevel,
             trace_args=tuple(resolve_trace_args(root)),
-            trace_files=tuple(resolve_trace_files(root)),
+            trace_files=trace_files,
             pass_sentinels=tuple(passes),
             fail_sentinels=tuple(fails),
             top=prepared.toplevel,
@@ -309,8 +336,10 @@ class SimulationExecution:
             test_names=attempt.test_names,
             build_root=attempt.prepared.build_root,
             eda_tool=attempt.prepared.eda_tool,
-            timeout_s=self._wrapper_timeout_s(handle),
-            simulator_environment=_target_environment(handle),
+            timeout_s=attempt.wrapper_timeout_s,
+            simulator_environment=dict(attempt.simulator_environment),
+            commands=attempt.pre_run_commands,
+            run_cwd=attempt.work.run_cwd,
         )
 
     @staticmethod
@@ -318,14 +347,16 @@ class SimulationExecution:
         attempt: _Attempt,
         process: SubprocessResult,
         build: BuildOutcome,
-        dispatched_ns: int,
+        before: _AdapterResultStamps,
     ) -> AdapterResult | None:
         if build.design_failed:
             return None
         identity = attempt.identity
+        result_before = before.terminal
         if not identity.result_path.exists():
             if process.timed_out:
                 identity = partial_result_identity(identity)
+                result_before = before.partial
                 if not identity.result_path.exists():
                     return None
             else:
@@ -335,8 +366,7 @@ class SimulationExecution:
         validate_fresh_artifact(
             identity.result_path,
             roots=(attempt.prepared.build_root,),
-            before=None,
-            not_before_ns=dispatched_ns,
+            before=result_before,
         )
         result = read_adapter_result(identity)
         if result.passed and (process.returncode != 0 or not build.passed):
@@ -353,13 +383,14 @@ class SimulationExecution:
         build: BuildOutcome,
         adapter: AdapterResult | None,
         pre_run: PreRunEvidence | None,
+        trace_policy: TraceArtifactPolicy,
         dispatched_ns: int,
         processing_started: float,
         started: float,
     ) -> SimulationTargetOutcome:
         output = process.stdout + ("\n" + process.stderr if process.stderr else "")
         logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
-        trace = _trace_artifact(handle, attempt, output, dispatched_ns)
+        trace = _trace_artifact(attempt, adapter, trace_policy, dispatched_ns)
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
         tests = _test_outcomes(
@@ -424,10 +455,6 @@ class SimulationExecution:
 
     def _effective_timeout_ms(self, handle: TargetHandle) -> int:
         return self._options.timeout_ms or resolve_sim_timeout_ms(handle.project_root)
-
-    def _wrapper_timeout_s(self, handle: TargetHandle) -> int:
-        timeout = max(1, self._effective_timeout_ms(handle) // 1000)
-        return timeout + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0)
 
     def _reset_trace_root(self, build_root: Path) -> None:
         if not self._options.trace:
@@ -813,7 +840,7 @@ def _test_outcomes(
         verdict = (
             item.verdict if item else "timeout" if process.timed_out else _adapter_verdict(adapter)
         )
-        cycle_status, cycles = _cycle_observation(output, name, handle.project_root)
+        cycle_status, cycles = _cycle_observation(output, name, attempt.cycle_sentinels)
         results.append(
             _test_outcome(
                 handle,
@@ -920,20 +947,29 @@ def _build_failure_test(
     )
 
 
-def _workload_snapshot(handle: TargetHandle, attempt: _Attempt, name: str) -> Mapping[str, Any]:
-    root = handle.project_root
+def _with_workload_inputs(handle: TargetHandle, attempt: _Attempt) -> _Attempt:
+    inputs = capture_workload_inputs(handle.project_root, attempt.prepared.resolved)
+    return replace(attempt, workload_inputs=inputs)
+
+
+def _workload_snapshot(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    name: str,
+) -> Mapping[str, Any]:
     controls = {
-        "cycle_sentinels": resolve_cycle_sentinels(root),
-        "pre_run_commands": resolve_pre_run_commands(root),
-        "run_cwd": resolve_run_cwd(root),
-        "environment": _target_environment(handle),
+        "cycle_sentinels": list(attempt.cycle_sentinels),
+        "pre_run_commands": list(attempt.pre_run_commands),
+        "run_cwd": attempt.work.run_cwd,
+        "environment": dict(attempt.simulator_environment),
     }
     return build_workload_snapshot(
-        root,
+        handle.project_root,
         handle.selector,
         name,
         attempt.prepared.resolved,
         controls=controls,
+        inputs=attempt.workload_inputs,
     )
 
 
@@ -996,43 +1032,49 @@ def _archive_run_logs(
 
 
 def _trace_artifact(
-    handle: TargetHandle,
     attempt: _Attempt,
-    output: str,
+    adapter: AdapterResult | None,
+    trace_policy: TraceArtifactPolicy,
     dispatched_ns: int,
 ) -> SimulationArtifactEvidence | None:
-    matches = _TRACE_OK_RE.findall(output)
-    if not matches:
+    trace = adapter.trace if adapter is not None else None
+    if trace is None or trace.status != "ok":
         return None
-    path = Path(matches[-1])
-    run_cwd = Path(resolve_run_cwd(handle.project_root))
-    if not run_cwd.is_absolute():
-        run_cwd = handle.project_root / run_cwd
-    if not path.is_absolute():
-        path = run_cwd / path
-    search_roots = (run_cwd.resolve(), attempt.prepared.build_root.resolve())
-    patterns = tuple(resolve_trace_files(handle.project_root))
-    allowed = (path,) if configured_trace_path(path, patterns, search_roots) else ()
     try:
-        evidence = validate_fresh_artifact(
-            path,
-            roots=search_roots,
-            before=None,
-            explicitly_allowed=allowed,
-            not_before_ns=dispatched_ns,
-        )
+        evidence = trace_policy.validate_reported(trace.path, dispatched_ns=dispatched_ns)
     except ArtifactValidationError:
         return None
-    scope, signals, ticks = _trace_metadata(output)
     return SimulationArtifactEvidence(
         "trace",
         str(evidence.path),
         evidence.size,
         attempt.test_names,
-        scope,
-        signals,
-        ticks,
+        trace.top_scope,
+        trace.signal_count,
+        trace.total_ticks,
     )
+
+
+def _trace_artifact_policy(
+    handle: TargetHandle,
+    attempt: _Attempt,
+) -> TraceArtifactPolicy:
+    run_cwd = Path(attempt.work.run_cwd)
+    if not run_cwd.is_absolute():
+        run_cwd = handle.project_root / run_cwd
+    return TraceArtifactPolicy.capture(
+        run_cwd=run_cwd,
+        build_root=attempt.prepared.build_root,
+        patterns=attempt.work.trace_files,
+    )
+
+
+def _adapter_result_stamps(
+    attempt: _Attempt,
+) -> _AdapterResultStamps:
+    terminal = attempt.identity.result_path
+    partial = partial_result_identity(attempt.identity).result_path
+    return _AdapterResultStamps(snapshot_artifact(terminal), snapshot_artifact(partial))
 
 
 def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:
@@ -1052,19 +1094,12 @@ def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:
     )
 
 
-def _trace_metadata(output: str) -> tuple[str, int, int]:
-    matches = _TRACE_METADATA_RE.findall(output)
-    if not matches:
-        return "", 0, 0
-    try:
-        metadata = decode_trace_metadata(matches[-1])
-    except (BoundaryError, json.JSONDecodeError):
-        return "", 0, 0
-    return metadata.display_scope, metadata.signal_count, metadata.total_ticks
-
-
-def _cycle_observation(output: str, name: str, root: Path) -> tuple[str, int | None]:
-    sentinels = resolve_cycle_sentinels(root) or [_DEFAULT_CYCLE_SENTINEL]
+def _cycle_observation(
+    output: str,
+    name: str,
+    configured_sentinels: tuple[str, ...],
+) -> tuple[str, int | None]:
+    sentinels = configured_sentinels or (_DEFAULT_CYCLE_SENTINEL,)
     records = _cycle_records(output, sentinels)
     named = [parts for parts in records if len(parts) >= 2 and " ".join(parts[:-1]) == name]
     legacy = [parts[0] for parts in records if len(parts) == 1]
@@ -1077,7 +1112,7 @@ def _cycle_observation(output: str, name: str, root: Path) -> tuple[str, int | N
     return ("wrong_test" if records else "missing"), None
 
 
-def _cycle_records(output: str, sentinels: list[str]) -> list[list[str]]:
+def _cycle_records(output: str, sentinels: tuple[str, ...]) -> list[list[str]]:
     records = []
     for line in output.splitlines():
         sentinel = next((value for value in sentinels if value in line), None)

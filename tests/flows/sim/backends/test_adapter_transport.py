@@ -10,6 +10,7 @@ import pytest
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
+    AdapterTraceResult,
     AdapterTransportError,
     AdapterTransportIdentity,
     partial_result_identity,
@@ -17,6 +18,12 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb, icarus, verilator
+from booley.flows.sim.backends.cocotb_results import (
+    STATE_OK,
+    CocotbResults,
+    CocotbTest,
+    format_results_line,
+)
 
 
 def _identity(tmp_path) -> AdapterTransportIdentity:
@@ -37,6 +44,13 @@ def test_adapter_result_round_trips_with_expected_identity(tmp_path) -> None:
         sva_errors=0,
         tests=("reset",),
         test_results=(AdapterTestResult("reset", "pass"),),
+        trace=AdapterTraceResult(
+            "ok",
+            path="build/wave.fst",
+            top_scope="tb",
+            signal_count=2,
+            total_ticks=3,
+        ),
     )
 
     write_adapter_result(identity, result)
@@ -147,6 +161,46 @@ def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) ->
     assert result.passed is False
     assert result.inconclusive is True
     assert result.failure_kind == "artifact"
+
+
+@pytest.mark.parametrize(
+    "test_status, extra_output, failure_kind, expected_verdict, expected_kind",
+    [
+        ("pass", "", "", "inconclusive", "artifact"),
+        ("fail", "", "", "fail", "design"),
+        ("pass", "\n$error assertion", "", "fail", "design"),
+        ("pass", "", "design", "fail", "design"),
+    ],
+)
+def test_cocotb_trace_incident_preserves_functional_verdicts(
+    tmp_path,
+    test_status,
+    extra_output,
+    failure_kind,
+    expected_verdict,
+    expected_kind,
+) -> None:
+    identity = replace(_identity(tmp_path), adapter="cocotb")
+    output = (
+        format_results_line(
+            CocotbResults(
+                state=STATE_OK,
+                tests=(CocotbTest("reset", "test_demo", test_status),),
+            )
+        )
+        + extra_output
+    )
+    cocotb._publish_adapter_result(
+        identity,
+        output,
+        False,
+        failure_kind=failure_kind,
+        trace=AdapterTraceResult("incident", detail="waveform missing"),
+    )
+
+    result = read_adapter_result(identity)
+    assert result.test_results[0].verdict == expected_verdict
+    assert result.failure_kind == expected_kind
 
 
 def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:

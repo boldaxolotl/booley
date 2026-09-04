@@ -67,6 +67,7 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
+    AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
     partial_result_identity,
@@ -140,6 +141,7 @@ def _publish_adapter_result(
     *,
     failure_kind: str = "",
     detail: str = "",
+    trace: AdapterTraceResult | None = None,
 ) -> None:
     if identity is None:
         return
@@ -149,6 +151,12 @@ def _publish_adapter_result(
     extras = tuple(name for name in discovered if name not in names)
     sva_errors = count_sva_errors(output)
     test_results = _adapter_test_results(results, names)
+    test_results = _apply_design_evidence(test_results, sva_errors, failure_kind, detail)
+    functional_failed = any(test.verdict == "fail" for test in test_results)
+    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
+    test_results, detail, trace_failed = _apply_trace_evidence(
+        test_results, trace, detail, preserve_failure=preserve_failure
+    )
     inconclusive = any(test.verdict == "inconclusive" for test in test_results) or (
         not passed and (results is None or results.state != STATE_OK)
     )
@@ -156,6 +164,7 @@ def _publish_adapter_result(
     normalized_passed = (
         passed
         and sva_errors == 0
+        and not trace_failed
         and bool(test_results)
         and all(test.verdict == "pass" for test in test_results)
     )
@@ -167,17 +176,74 @@ def _publish_adapter_result(
             sva_errors=sva_errors,
             tests=tuple(names),
             failure_kind=failure_kind
-            or ("timeout" if timed_out else "inconclusive" if inconclusive else ""),
+            or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
             detail=detail,
             test_results=test_results,
-            diagnostics=(
-                "results.xml reports extra non-selected test(s): "
-                f"{', '.join(extras)} — logged, not verdict-bearing",
-            )
-            if extras
-            else (),
+            diagnostics=_extra_test_diagnostics(extras),
+            trace=trace,
         ),
     )
+
+
+def _extra_test_diagnostics(extras: tuple[str, ...]) -> tuple[str, ...]:
+    if not extras:
+        return ()
+    return (
+        "results.xml reports extra non-selected test(s): "
+        f"{', '.join(extras)} — logged, not verdict-bearing",
+    )
+
+
+def _apply_design_evidence(
+    tests: tuple[AdapterTestResult, ...],
+    sva_errors: int,
+    failure_kind: str,
+    detail: str,
+) -> tuple[AdapterTestResult, ...]:
+    if sva_errors:
+        reason = f"{sva_errors} SVA assertion error(s)"
+    elif failure_kind == "design":
+        reason = detail or "simulator process failed outside Cocotb results"
+    else:
+        return tests
+    return tuple(
+        replace(test, verdict="fail", detail=reason) if test.verdict == "pass" else test
+        for test in tests
+    )
+
+
+def _apply_trace_evidence(
+    tests: tuple[AdapterTestResult, ...],
+    trace: AdapterTraceResult | None,
+    detail: str,
+    *,
+    preserve_failure: bool,
+) -> tuple[tuple[AdapterTestResult, ...], str, bool]:
+    trace_failed = trace is not None and trace.status == "incident"
+    if not trace_failed or preserve_failure:
+        return tests, detail, trace_failed
+    normalized = tuple(
+        replace(test, verdict="inconclusive", detail=trace.detail)
+        if test.verdict == "pass"
+        else test
+        for test in tests
+    )
+    return normalized, detail or trace.detail, True
+
+
+def _cocotb_failure_kind(
+    timed_out: bool,
+    functional_failed: bool,
+    trace_failed: bool,
+    inconclusive: bool,
+) -> str:
+    if timed_out:
+        return "timeout"
+    if functional_failed:
+        return "design"
+    if trace_failed:
+        return "artifact"
+    return "inconclusive" if inconclusive else ""
 
 
 def _adapter_test_results(
@@ -553,6 +619,7 @@ class _TraceFinalization:
 
     output: str = ""
     failure_reason: str = ""
+    evidence: AdapterTraceResult | None = None
 
 
 @dataclass(frozen=True)
@@ -917,7 +984,20 @@ def _complete_cocotb_run(
         result_verbosity,
         trace_result.failure_reason,
     )
-    _publish_adapter_result(transport, output, passed)
+    failure_kind = (
+        "timeout"
+        if timed_out
+        else "design"
+        if proc.returncode != 0 or count_sva_errors(output)
+        else ""
+    )
+    _publish_adapter_result(
+        transport,
+        output,
+        passed,
+        failure_kind=failure_kind,
+        trace=trace_result.evidence,
+    )
     return 0 if passed else 1
 
 
@@ -983,10 +1063,20 @@ def _finalize_cocotb_trace(
         return _TraceFinalization(
             output=f"ERROR: {reason}\nTRACE_INCIDENT: {incident}",
             failure_reason=reason,
+            evidence=AdapterTraceResult("incident", path=str(incident), detail=reason),
         )
     artifact = inspection.artifact
     assert artifact is not None
-    return _TraceFinalization(output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}")
+    return _TraceFinalization(
+        output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}",
+        evidence=AdapterTraceResult(
+            "ok",
+            path=str(artifact.path),
+            top_scope=artifact.top_scope,
+            signal_count=artifact.signal_count,
+            total_ticks=artifact.total_ticks,
+        ),
+    )
 
 
 def _positive_int(value: str) -> int:

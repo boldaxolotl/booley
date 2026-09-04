@@ -34,6 +34,7 @@ from pathlib import Path
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
+    AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
     publish_native_adapter_result,
@@ -59,7 +60,7 @@ from booley.flows.sim.result import (
     write_result_json,
 )
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.flows.sim.trace_session import TraceSession
+from booley.flows.sim.trace_session import TraceArtifact, TraceSession
 
 
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
@@ -544,6 +545,36 @@ def _missing_trace_reason(trace_files: list[str] | None) -> str:
     )
 
 
+def _trace_incident_result(
+    trace: TraceSession,
+    reason: str,
+    proc: subprocess.Popen | None,
+    bwave_proc: subprocess.Popen | None,
+) -> tuple[str, AdapterTraceResult]:
+    incident = trace.write_incident(reason, sim_proc=proc, bwave_proc=bwave_proc)
+    print(f"ERROR: {reason}")
+    print(f"TRACE_INCIDENT: {incident}")
+    return (
+        f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
+        AdapterTraceResult("incident", path=str(incident), detail=reason),
+    )
+
+
+def _trace_success_result(artifact: TraceArtifact) -> tuple[str, AdapterTraceResult]:
+    output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
+    print(output)
+    return (
+        f"\n{output}",
+        AdapterTraceResult(
+            "ok",
+            path=str(artifact.path),
+            top_scope=artifact.top_scope,
+            signal_count=artifact.signal_count,
+            total_ticks=artifact.total_ticks,
+        ),
+    )
+
+
 def _finalize_trace(
     trace: TraceSession,
     proc: subprocess.Popen | None,
@@ -551,7 +582,7 @@ def _finalize_trace(
     trace_files: list[str] | None = None,
     search_dirs: list[Path] | None = None,
     trace_files_before: TraceFileSnapshot | None = None,
-) -> str:
+) -> tuple[str, AdapterTraceResult]:
     """Locate the produced waveform and emit the TRACE_OK / TRACE_INCIDENT line.
 
     Returns the text to append to the run's captured output.
@@ -575,19 +606,10 @@ def _finalize_trace(
             )
         )
     if failure_reason:
-        incident = trace.write_incident(
-            failure_reason,
-            sim_proc=proc,
-            bwave_proc=bwave_proc,
-        )
-        print(f"ERROR: {failure_reason}")
-        print(f"TRACE_INCIDENT: {incident}")
-        return f"\nERROR: {failure_reason}\nTRACE_INCIDENT: {incident}"
+        return _trace_incident_result(trace, failure_reason, proc, bwave_proc)
     artifact = inspection.artifact
     assert artifact is not None
-    output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
-    print(output)
-    return f"\n{output}"
+    return _trace_success_result(artifact)
 
 
 def _resolve_run_paths(
@@ -688,7 +710,7 @@ def _finalize_verilated_run(
     trace_files: list[str] | None,
     pass_sentinels: list[str] | None,
     fail_sentinels: list[str] | None,
-) -> str:
+) -> tuple[str, AdapterTraceResult | None]:
     """Persist the verdict and validate any trace produced by the current run."""
     output = "".join(lines)
     if trace.session is not None and trace.session.stall_killed:
@@ -701,10 +723,10 @@ def _finalize_verilated_run(
         fail_sentinels=fail_sentinels,
     )
     if trace.session is None:
-        return output
+        return output, None
     if trace.mode is TraceMode.VCD_FIFO and not trace.use_fifo:
         trace.session.postprocess(paths.work_dir / "trace.vcd")
-    output += _finalize_trace(
+    trace_output, trace_result = _finalize_trace(
         trace.session,
         proc,
         trace.bwave_proc,
@@ -712,7 +734,7 @@ def _finalize_verilated_run(
         search_dirs=trace.search_dirs,
         trace_files_before=trace.files_before,
     )
-    return output
+    return output + trace_output, trace_result
 
 
 def _missing_binary_result(
@@ -784,7 +806,7 @@ def run_verilated_binary(
         lines, proc = _execute_with_heartbeat(cmd, paths, env, timeout, trace, max_rundir_bytes)
     except subprocess.TimeoutExpired as exc:
         return _timeout_transport_result(exc, timeout, paths.work_dir, transport)
-    output = _finalize_verilated_run(
+    output, trace_result = _finalize_verilated_run(
         lines, proc, paths, trace, trace_files, pass_sentinels, fail_sentinels
     )
     _publish_adapter_result(
@@ -794,6 +816,7 @@ def run_verilated_binary(
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
         trace_required=vcd,
+        trace=trace_result,
     )
     return output
 

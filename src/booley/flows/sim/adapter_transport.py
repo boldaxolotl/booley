@@ -23,6 +23,7 @@ from booley.flows.sim.result import count_sva_errors, parse_sim_verdict
 ADAPTER_RESULT_SCHEMA = 1
 AdapterVerdict = Literal["pass", "fail", "timeout", "inconclusive"]
 AdapterFailureKind = Literal["", "design", "infrastructure", "timeout", "inconclusive", "artifact"]
+AdapterTraceStatus = Literal["ok", "incident"]
 
 
 class AdapterTransportError(RuntimeError):
@@ -51,6 +52,18 @@ class AdapterTestResult:
 
 
 @dataclass(frozen=True)
+class AdapterTraceResult:
+    """Authenticated trace success or incident evidence from one adapter."""
+
+    status: AdapterTraceStatus
+    path: str = ""
+    detail: str = ""
+    top_scope: str = ""
+    signal_count: int = 0
+    total_ticks: int = 0
+
+
+@dataclass(frozen=True)
 class AdapterResult:
     """Common terminal evidence emitted by every Simulation adapter."""
 
@@ -62,6 +75,7 @@ class AdapterResult:
     detail: str = ""
     test_results: tuple[AdapterTestResult, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    trace: AdapterTraceResult | None = None
 
 
 def partial_result_identity(identity: AdapterTransportIdentity) -> AdapterTransportIdentity:
@@ -93,6 +107,18 @@ def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[
             for test in result.test_results
         ],
         "diagnostics": list(result.diagnostics),
+        "trace": (
+            {
+                "status": result.trace.status,
+                "path": result.trace.path,
+                "detail": result.trace.detail,
+                "top_scope": result.trace.top_scope,
+                "signal_count": result.trace.signal_count,
+                "total_ticks": result.trace.total_ticks,
+            }
+            if result.trace is not None
+            else None
+        ),
     }
 
 
@@ -230,6 +256,7 @@ def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
     tests, failure_kind, detail = _validated_result_fields(payload, identity, passed)
     test_results = _validated_test_results(payload)
     diagnostics = _optional_string_tuple(payload, "diagnostics")
+    trace = _validated_trace(payload)
     if test_results and tuple(test.name for test in test_results) != tests:
         raise AdapterTransportError("adapter per-test results do not match result tests")
     if tests and not test_results:
@@ -247,7 +274,35 @@ def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
         detail=detail,
         test_results=test_results,
         diagnostics=diagnostics,
+        trace=trace,
     )
+
+
+def _validated_trace(payload: dict[str, Any]) -> AdapterTraceResult | None:
+    raw = payload.get("trace")
+    if raw is None:
+        return None
+    try:
+        trace = require_dict(raw, field="trace")
+        signal_count = require_int(trace.get("signal_count", 0), field="trace.signal_count")
+        total_ticks = require_int(trace.get("total_ticks", 0), field="trace.total_ticks")
+    except BoundaryError as exc:
+        raise AdapterTransportError(str(exc)) from exc
+    status = trace.get("status")
+    path = trace.get("path", "")
+    detail = trace.get("detail", "")
+    top_scope = trace.get("top_scope", "")
+    if status not in {"ok", "incident"}:
+        raise AdapterTransportError("adapter trace status is invalid")
+    if any(not isinstance(value, str) for value in (path, detail, top_scope)):
+        raise AdapterTransportError("adapter trace text fields must be strings")
+    if signal_count < 0 or total_ticks < 0:
+        raise AdapterTransportError("adapter trace metadata must be non-negative")
+    if status == "ok" and not path:
+        raise AdapterTransportError("adapter trace success requires a path")
+    if status == "incident" and not detail:
+        raise AdapterTransportError("adapter trace incident requires detail")
+    return AdapterTraceResult(status, path, detail, top_scope, signal_count, total_ticks)
 
 
 def _optional_string_tuple(payload: dict[str, Any], field: str) -> tuple[str, ...]:
@@ -296,6 +351,7 @@ def publish_native_adapter_result(
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     trace_required: bool = False,
+    trace: AdapterTraceResult | None = None,
     detail: str = "",
 ) -> None:
     """Normalize and publish terminal evidence for a native adapter."""
@@ -308,7 +364,9 @@ def publish_native_adapter_result(
     )
     sva_errors = count_sva_errors(output)
     timed_out = "simulation timed out" in output.lower()
-    trace_missing = trace_required and "TRACE_OK:" not in output
+    trace_missing = trace_required and (trace is None or trace.status != "ok")
+    if trace_missing and not detail and trace is not None:
+        detail = trace.detail
     inconclusive = (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
     kind = failure_kind or _native_failure_kind(timed_out, trace_missing, inconclusive)
     test_results = _native_test_results(
@@ -330,6 +388,7 @@ def publish_native_adapter_result(
             failure_kind=kind,
             detail=detail,
             test_results=test_results,
+            trace=trace,
         ),
     )
 
@@ -398,6 +457,8 @@ __all__ = [
     "AdapterFailureKind",
     "AdapterResult",
     "AdapterTestResult",
+    "AdapterTraceResult",
+    "AdapterTraceStatus",
     "AdapterTransportError",
     "AdapterTransportIdentity",
     "AdapterVerdict",

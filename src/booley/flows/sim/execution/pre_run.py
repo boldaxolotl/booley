@@ -26,11 +26,13 @@ def run_pre_run_commands(
     eda_tool: str,
     timeout_s: int,
     simulator_environment: Mapping[str, str] | None = None,
+    commands: tuple[str, ...] | None = None,
+    run_cwd: str | None = None,
 ) -> PreRunEvidence | None:
     """Run the hook once for a native test or once for a Cocotb batch."""
     root = handle.project_root
-    commands = tuple(resolve_pre_run_commands(root))
-    if not commands:
+    resolved_commands = tuple(resolve_pre_run_commands(root)) if commands is None else commands
+    if not resolved_commands:
         return None
     environment = _pre_run_environment(
         handle,
@@ -38,8 +40,9 @@ def run_pre_run_commands(
         build_root=build_root,
         eda_tool=eda_tool,
         simulator_environment=simulator_environment,
+        run_cwd=run_cwd,
     )
-    return _invoke_pre_run(commands, test_names, root, environment, timeout_s)
+    return _invoke_pre_run(resolved_commands, test_names, root, environment, timeout_s)
 
 
 def _pre_run_environment(
@@ -49,10 +52,11 @@ def _pre_run_environment(
     build_root: Path,
     eda_tool: str,
     simulator_environment: Mapping[str, str] | None,
+    run_cwd: str | None,
 ) -> dict[str, str]:
     """Build the Project-scoped environment for one hook firing."""
     root = handle.project_root
-    run_cwd = (root / resolve_run_cwd(root)).resolve()
+    resolved_run_cwd = (root / (run_cwd or resolve_run_cwd(root))).resolve()
     environment = os.environ.copy()
     environment.update(simulator_environment or {})
     environment.update(
@@ -60,7 +64,7 @@ def _pre_run_environment(
             "BOOLEY_TARGET": handle.selector,
             "BOOLEY_TEST_NAMES": " ".join(test_names),
             "BOOLEY_PROJECT_ROOT": str(root),
-            "BOOLEY_RUN_CWD": str(run_cwd),
+            "BOOLEY_RUN_CWD": str(resolved_run_cwd),
             "BOOLEY_BUILD_ROOT": str(build_root),
             "BOOLEY_SIM_EDA_TOOL": eda_tool,
         }

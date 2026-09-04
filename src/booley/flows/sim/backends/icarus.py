@@ -53,6 +53,7 @@ from pathlib import Path
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
+    AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
     publish_native_adapter_result,
@@ -374,9 +375,9 @@ def _finalize_icarus_trace(
     run: _IcarusRun,
     proc,
     trace_files: list[str],
-) -> str:
+) -> tuple[str, AdapterTraceResult | None]:
     if run.trace is None:
-        return ""
+        return "", None
     run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
     found = run.trace.find()
     if found is None and trace_files:
@@ -384,7 +385,7 @@ def _finalize_icarus_trace(
         found = adopt_declared_trace_files(run.trace, trace_files, roots)
     if found is not None:
         print(f"TRACE_OK: {found}")
-        return f"\nTRACE_OK: {found}"
+        return f"\nTRACE_OK: {found}", AdapterTraceResult("ok", path=str(found))
     reason = "trace requested but no queryable .fst store or .vcd was produced"
     if not trace_files:
         reason += (
@@ -394,7 +395,10 @@ def _finalize_icarus_trace(
     incident = run.trace.write_incident(reason, sim_proc=proc)
     print(f"ERROR: {reason}")
     print(f"TRACE_INCIDENT: {incident}")
-    return f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}"
+    return (
+        f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
+        AdapterTraceResult("incident", path=str(incident), detail=reason),
+    )
 
 
 def _icarus_setup_failure(
@@ -447,7 +451,8 @@ def run_icarus_image(
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
     )
-    output += _finalize_icarus_trace(run, proc, list(trace_files or []))
+    trace_output, trace_result = _finalize_icarus_trace(run, proc, list(trace_files or []))
+    output += trace_output
     _publish_adapter_result(
         transport,
         output,
@@ -455,6 +460,7 @@ def run_icarus_image(
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
         trace_required=vcd,
+        trace=trace_result,
     )
     return output
 

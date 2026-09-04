@@ -81,6 +81,24 @@ def test_batch_environment_has_selected_set_without_single_test_name(tmp_path: P
     assert environment["BOOLEY_TEST_NAMES"] == "reset count"
 
 
+def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    run = MagicMock(return_value=_completed())
+
+    with patch("booley.flows.sim.execution.pre_run.subprocess.run", run):
+        evidence = run_pre_run_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build" / "lite",
+            eda_tool="icarus",
+            timeout_s=5,
+            run_cwd="frozen/sim",
+        )
+
+    assert evidence is not None and evidence.status == "passed"
+    assert run.call_args.kwargs["env"]["BOOLEY_RUN_CWD"] == str(tmp_path / "frozen" / "sim")
+
+
 def test_nonzero_pre_run_is_a_design_stage_failure(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     with patch(

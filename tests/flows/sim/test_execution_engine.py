@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -14,12 +16,14 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
+    AdapterTraceResult,
     AdapterTransportIdentity,
     partial_result_identity,
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.execution import (
+    DefaultSelection,
     NamedTests,
     PreRunEvidence,
     SimulationExecution,
@@ -28,7 +32,7 @@ from booley.flows.sim.execution import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.fusesoc.fusesoc_registry import ResolvedTarget
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.targets.target import TargetHandle
 
 
@@ -84,7 +88,7 @@ def _run_execution(
     handle: TargetHandle,
     prepared: PreparedSimulationBuild,
     invoke,
-    names: tuple[str, ...],
+    names: tuple[str, ...] | None,
     *,
     cocotb: bool,
     options: SimulationOptions | None = None,
@@ -117,7 +121,8 @@ def _run_execution(
         stack.enter_context(
             patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123")
         )
-        return execution.run(handle, NamedTests(names))
+        selection = DefaultSelection() if names is None else NamedTests(names)
+        return execution.run(handle, selection)
 
 
 def _write_transport(
@@ -138,7 +143,12 @@ def _write_transport(
     write_adapter_result(identity, result)
 
 
-def _write_partial_timeout_transport(handle, prepared) -> None:
+def _write_partial_timeout_transport(
+    handle,
+    prepared,
+    *,
+    modified_ns: int | None = None,
+) -> None:
     identity = AdapterTransportIdentity(
         "cocotb",
         "abc123",
@@ -158,14 +168,27 @@ def _write_partial_timeout_transport(handle, prepared) -> None:
             AdapterTestResult("later", "inconclusive"),
         ),
     )
-    write_adapter_result(partial_result_identity(identity), result)
+    partial_identity = partial_result_identity(identity)
+    write_adapter_result(partial_identity, result)
+    if modified_ns is not None:
+        os.utime(partial_identity.result_path, ns=(modified_ns, modified_ns))
 
 
-def _passing_trace_invoker(handle, prepared, trace: Path, *, fresh: bool):
+def _passing_trace_invoker(
+    handle,
+    prepared,
+    trace: Path,
+    *,
+    fresh: bool,
+    modified_ns: int | None = None,
+    transport_modified_ns: int | None = None,
+):
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
         if fresh:
             trace.write_bytes(b"fresh waveform")
+            if modified_ns is not None:
+                os.utime(trace, ns=(modified_ns, modified_ns))
         _write_transport(
             handle,
             prepared,
@@ -176,14 +199,79 @@ def _passing_trace_invoker(handle, prepared, trace: Path, *, fresh: bool):
                 0,
                 ("smoke",),
                 test_results=(AdapterTestResult("smoke", "pass"),),
+                trace=AdapterTraceResult("ok", path=str(trace)),
             ),
         )
+        if transport_modified_ns is not None:
+            result_path = prepared.build_root / ".booley-adapter-abc123.json"
+            os.utime(result_path, ns=(transport_modified_ns, transport_modified_ns))
         return SubprocessResult(
             returncode=0,
             stdout=f"BOOLEY_BUILD_STAGE token=abc123 rc=0\nTRACE_OK: {trace}\n",
         )
 
     return invoke
+
+
+class _ChangingTraceRun:
+    def __init__(
+        self,
+        handle: TargetHandle,
+        prepared: PreparedSimulationBuild,
+        config: Path,
+        traces: tuple[Path, Path],
+    ) -> None:
+        self.handle = handle
+        self.prepared = prepared
+        self.config = config
+        self.traces = traces
+        self.commands: list[str] = []
+        self.pre_run_timeouts: list[int] = []
+        self.invocation_timeouts: list[int] = []
+
+    def pre_run(self, _handle, attempt) -> PreRunEvidence:
+        self.pre_run_timeouts.append(attempt.wrapper_timeout_s)
+        (self.prepared.build_root / "firmware.hex").write_text("generated\n", encoding="utf-8")
+        if not self.commands:
+            self.config.write_text(
+                "[flows.sim]\n"
+                'run_cwd = "other-run"\n'
+                'trace_files = ["../second/*.fst"]\n'
+                "timeout_ms = 2000\n"
+                'cycle_sentinels = ["[NEW]"]\n'
+                'pre_run_commands = ["new"]\n',
+                encoding="utf-8",
+            )
+        return PreRunEvidence((), ("smoke",), "passed", 0.0, "")
+
+    def invoke(self, command: list[str], *, timeout: int) -> SubprocessResult:
+        self.invocation_timeouts.append(timeout)
+        self.commands.append(command[-1])
+        trace = self.traces[len(self.commands) - 1]
+        trace.parent.mkdir(exist_ok=True)
+        trace.write_bytes(b"fresh waveform")
+        _write_transport(
+            self.handle,
+            self.prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+                trace=AdapterTraceResult("ok", path=str(trace)),
+            ),
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout=(
+                f"BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                f"{'[OLD]' if len(self.commands) == 1 else '[NEW]'} smoke "
+                f"{17 if len(self.commands) == 1 else 23}\n"
+                f"TRACE_OK: {trace}\n"
+            ),
+        )
 
 
 def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> None:
@@ -244,6 +332,37 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     )
 
     _assert_authoritative_cocotb_outcome(outcome)
+
+
+def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=True)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            (),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("discovered",),
+                test_results=(AdapterTestResult("discovered", "pass"),),
+            ),
+            adapter="cocotb",
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, None, cocotb=True)
+
+    assert [test.name for test in outcome.tests] == ["discovered"]
+    snapshot = outcome.tests[0].workload_snapshot
+    assert snapshot is not None and snapshot["test"] == "discovered"
 
 
 def test_timeout_transport_preserves_completed_active_and_not_run_tests(
@@ -307,7 +426,7 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
-        _write_partial_timeout_transport(handle, prepared)
+        _write_partial_timeout_transport(handle, prepared, modified_ns=1)
         return SubprocessResult(returncode=-9, stdout=output, timed_out=True)
 
     outcome = _run_execution(handle, prepared, invoke, ("done", "active", "later"), cocotb=True)
@@ -317,6 +436,28 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
         ("active", "timeout"),
         ("later", "inconclusive"),
     ]
+
+
+def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=True)
+    _write_partial_timeout_transport(handle, prepared)
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        lambda _command, timeout: SubprocessResult(
+            returncode=-9,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            timed_out=True,
+        ),
+        ("done", "active", "later"),
+        cocotb=True,
+    )
+
+    assert outcome.verdict == "error"
+    failure = outcome.infrastructure_failure
+    assert failure is not None and "stale" in failure.detail
 
 
 def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path) -> None:
@@ -555,3 +696,210 @@ def test_trace_authority_is_limited_to_runtime_roots_and_declared_globs(
     )
 
     assert outcome.verdict == expected
+
+
+def test_declared_trace_freshness_uses_pre_dispatch_identity(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "run").mkdir()
+    trace = tmp_path / "declared" / "wave.fst"
+    trace.parent.mkdir()
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        _passing_trace_invoker(handle, prepared, trace, fresh=True, modified_ns=1),
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+    assert outcome.verdict == "pass"
+    assert any(artifact.kind == "trace" for artifact in outcome.artifacts)
+
+
+def test_unchanged_declared_trace_is_stale(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "run").mkdir()
+    trace = tmp_path / "declared" / "wave.fst"
+    trace.parent.mkdir()
+    trace.write_bytes(b"stale waveform")
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        _passing_trace_invoker(
+            handle,
+            prepared,
+            trace,
+            fresh=False,
+            transport_modified_ns=1,
+        ),
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+    assert outcome.verdict == "inconclusive"
+    assert all(artifact.kind != "trace" for artifact in outcome.artifacts)
+
+
+def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    _write_transport(
+        handle,
+        prepared,
+        ("smoke",),
+        AdapterResult(
+            True,
+            False,
+            0,
+            ("smoke",),
+            test_results=(AdapterTestResult("smoke", "pass"),),
+        ),
+    )
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        lambda _command, timeout: SubprocessResult(
+            returncode=0,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+        ),
+        ("smoke",),
+        cocotb=False,
+    )
+
+    assert outcome.verdict == "error"
+    failure = outcome.infrastructure_failure
+    assert failure is not None and "stale" in failure.detail
+
+
+def test_stdout_cannot_forge_trace_without_authenticated_evidence(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    trace = run_cwd / "forged.fst"
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        trace.write_bytes(b"fresh waveform")
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout=f"BOOLEY_BUILD_STAGE token=abc123 rc=0\nTRACE_OK: {trace}\n",
+        )
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        invoke,
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+    assert outcome.verdict == "inconclusive"
+    assert all(artifact.kind != "trace" for artifact in outcome.artifacts)
+
+
+def _assert_attempt_config_freezing(
+    first: SimulationTargetOutcome,
+    second: SimulationTargetOutcome,
+    run: _ChangingTraceRun,
+) -> None:
+    first_snapshot = first.tests[0].workload_snapshot
+    second_snapshot = second.tests[0].workload_snapshot
+    assert first_snapshot is not None and second_snapshot is not None
+    assert first.verdict == second.verdict == "pass"
+    assert "../first/*.fst" in run.commands[0]
+    assert "../second/*.fst" in run.commands[1]
+    assert "--run-cwd run" in run.commands[0]
+    assert "--run-cwd other-run" in run.commands[1]
+    assert "--timeout 1" in run.commands[0]
+    assert "--timeout 2" in run.commands[1]
+    assert run.pre_run_timeouts == run.invocation_timeouts == [91, 92]
+    assert first_snapshot["controls"]["run_cwd"] == "run"
+    assert second_snapshot["controls"]["run_cwd"] == "other-run"
+    assert first_snapshot["controls"]["pre_run_commands"] == ["old"]
+    assert second_snapshot["controls"]["pre_run_commands"] == ["new"]
+    assert first_snapshot["controls"]["cycle_sentinels"] == ["[OLD]"]
+    assert second_snapshot["controls"]["cycle_sentinels"] == ["[NEW]"]
+    assert first_snapshot["inputs"][0]["present"] is True
+    assert first_snapshot["inputs"][0]["bytes"] == len("generated\n")
+    assert first.tests[0].cycles == 17
+    assert second.tests[0].cycles == 23
+
+
+def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    prepared = replace(
+        prepared,
+        resolved=replace(
+            prepared.resolved,
+            files=(ResolvedFile("firmware.hex", "user"),),
+        ),
+    )
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    config = project / "booley.toml"
+    config.write_text(
+        "[flows.sim]\n"
+        'run_cwd = "run"\n'
+        'trace_files = ["../first/*.fst"]\n'
+        "timeout_ms = 1000\n"
+        'cycle_sentinels = ["[OLD]"]\n'
+        'pre_run_commands = ["old"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "run").mkdir()
+    (tmp_path / "other-run").mkdir()
+    traces = (tmp_path / "first" / "wave.fst", tmp_path / "second" / "wave.fst")
+    run = _ChangingTraceRun(handle, prepared, config, traces)
+    execution = SimulationExecution(invoke=run.invoke, options=SimulationOptions(trace=True))
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.inspect_target",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
+        patch.object(execution, "_run_pre_run", side_effect=run.pre_run),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+    ):
+        first = execution.run(handle, NamedTests(("smoke",)))
+        second = execution.run(handle, NamedTests(("smoke",)))
+
+    _assert_attempt_config_freezing(first, second, run)
