@@ -19,10 +19,19 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
     executable.parent.mkdir()
     executable.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
+        "import json, os, subprocess, sys\n"
         "with open(os.environ['COMMAND_LOG'], 'a', encoding='utf-8') as stream:\n"
         "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-        "if sys.argv[1] == 'init':\n"
+        "if sys.argv[1] == 'bootstrap':\n"
+        "    before = subprocess.run(['code', '--list-extensions'], check=True, "
+        "capture_output=True, text=True)\n"
+        "    assert 'ms-vscode-remote.remote-containers' not in before.stdout\n"
+        "    subprocess.run(['code', '--install-extension', "
+        "'ms-vscode-remote.remote-containers', '--force'], check=True)\n"
+        "    after = subprocess.run(['code', '--list-extensions'], check=True, "
+        "capture_output=True, text=True)\n"
+        "    assert 'ms-vscode-remote.remote-containers' in after.stdout\n"
+        "elif sys.argv[1] == 'init':\n"
         "    print('[OK] initialized')\n"
         "elif sys.argv[1] == 'doctor':\n"
         "    print('MCP server exposes 17 MCP tool(s)')\n"
@@ -72,6 +81,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["cleanup"] == {"editor_probe_removed": True}
     assert not (home / "bin" / "code").exists()
+    assert not (home / ".booley-ci-dev-containers").exists()
 
 
 def test_host_doctor_rejects_project_outside_isolated_root(tmp_path: Path) -> None:

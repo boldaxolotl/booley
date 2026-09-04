@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -50,15 +49,32 @@ def _environment(home: Path, executable: Path) -> dict[str, str]:
 
 
 def _prepare_editor_probe(home: Path) -> Path:
-    git = shutil.which("git")
-    if git is None:
-        raise RuntimeError("git is required for the headless editor probe")
     probe = home / "bin" / "code"
     probe.parent.mkdir(parents=True, exist_ok=True)
     if probe.exists() or probe.is_symlink():
         raise ValueError("isolated editor probe path already exists")
-    probe.symlink_to(git)
+    probe.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'marker="${HOME}/.booley-ci-dev-containers"\n'
+        'case "${1:-}" in\n'
+        "  --version) printf '1.0.0\\n' ;;\n"
+        "  --list-extensions)\n"
+        '    if test -e "${marker}"; then '
+        "printf 'ms-vscode-remote.remote-containers\\n'; fi ;;\n"
+        "  --install-extension)\n"
+        '    test "${2:-}" = ms-vscode-remote.remote-containers\n'
+        '    : > "${marker}" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
     return probe
+
+
+def _editor_marker(home: Path) -> Path:
+    return home / ".booley-ci-dev-containers"
 
 
 def validate(
@@ -98,6 +114,7 @@ def validate(
         checks.append({"id": "host-doctor.deep-issued-image", "status": "pass"})
     finally:
         probe.unlink(missing_ok=True)
+        _editor_marker(home).unlink(missing_ok=True)
     return {
         "schema": 1,
         "candidate": {"sha": candidate_sha, "image_digest": image_digest},
