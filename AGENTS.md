@@ -8,12 +8,17 @@ simulation, synthesis, linting, and ticket-based workflows.
 - In every new chat, before modifying Booley code, create a new worktree with a
   new branch based on `main`. Always isolate the work this way, especially when
   the existing checkout has dirty files.
-- `main` is protected; submit every change through a pull request from its
-  worktree branch. When a PR is ready to merge, use the Mergify queue workflow;
+- Keep worktree branches local by default. Push a branch or create or update a
+  pull request only when the user explicitly requests that external action. A
+  request to create or update a pull request authorizes its required branch
+  push. A request to implement, edit, or commit does not authorize a push or
+  pull request.
+- `main` is protected. Queue or merge a pull request only when the user
+  explicitly asks to merge it. Use the Mergify queue workflow for that merge;
   read `docs/internals/agents/merge-queue.md` before queueing, dequeueing,
-  retrying, monitoring, or cleaning up that PR.
-- After Mergify reports a pull request merged, delete its local branch and
-  worktree, and delete its branch on GitHub.
+  retrying, monitoring, or cleaning up that pull request.
+- After Mergify reports an authorized pull request merged, delete its local
+  branch and worktree, and delete its branch on GitHub.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
