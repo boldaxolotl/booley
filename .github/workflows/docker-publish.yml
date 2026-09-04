@@ -28,6 +28,7 @@ jobs:
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      runtime-base: ${{ steps.runtime-base.outputs.image }}
       version: ${{ steps.version.outputs.version }}
 
     steps:
@@ -84,6 +85,7 @@ jobs:
           build-contexts: |
             booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
           push: true
+          sbom: true
           # Unique, non-advertised candidate tag. Public version/latest tags
           # are assigned only by the final digest-promotion job.
           tags: >-
@@ -149,6 +151,7 @@ jobs:
           context: .
           file: src/booley/data/docker/Dockerfile.riscv
           push: true
+          sbom: true
           build-contexts: |
             booley-sandbox=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           tags: >-
@@ -166,268 +169,536 @@ jobs:
           # the per-PR sandbox cache that bwave-smoke depends on, for a build
           # that only runs on release tags anyway.
 
-  # Release-only integration check for the public PicoRV32 demo linked from
-  # Booley's README. Pull the exact digest built above rather than `latest`, so
-  # a concurrent release cannot redirect the smoke test to another image.
-  demo-smoke:
-    name: Smoke-test PicoRV32 demo
-    needs: [build-and-push, build-and-push-riscv]
+  standard-image-contract:
+    name: Standard image contract
+    needs: [build-and-push]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: read
-
     steps:
-      # Keep this checkout at the release ref. It supplies the checksum-pinned
-      # Nangate fetcher and the expected package version for the image check.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Read version
-        id: version
-        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare exact reviewed demo contract
-        id: demo
-        uses: ./.github/actions/prepare-picorv32-demo
-
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-
-      - name: Install release CLI
-        run: |
-          python -m pip install --user .
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-          sudo install -o root -g root -m 0755 "${HOME}/.local/bin/booley" "/usr/bin/booley"
-
-      - name: Provision pinned Nangate45 PDK
-        id: nangate
-        shell: bash
-        run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
-          echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
-
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull exact standard candidate
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+        run: |
+          docker pull "${IMAGE}"
+          docker tag "${IMAGE}" booley-sandbox
+      - name: Validate provenance, runtime, size, and resources
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
+          EXPECTED_PARENT: ${{ needs.build-and-push.outputs.runtime-base }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/standard-image-evidence"
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
+          python .github/scripts/release_validation/image_provenance.py \
+            --image "${IMAGE}" --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${IMAGE_DIGEST}" --expected-payload "${expected_payload}" \
+            --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
+            --expected-revision "$(git rev-parse --short HEAD)" \
+            --evidence "${RUNNER_TEMP}/standard-image-evidence/provenance.json"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${IMAGE}" --flavor standard \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/standard-image-evidence/runtime-contract.json"
+          PYTHONPATH=src python .github/scripts/image_size_report.py \
+            --registry-image "sandbox=${IMAGE}" \
+            --limits .github/contracts/image-size-limits.toml --limit-image sandbox \
+            --json "${RUNNER_TEMP}/standard-image-evidence/image-size.json" \
+            --markdown "${RUNNER_TEMP}/standard-image-evidence/image-size.md"
+          python .github/scripts/image_runtime_resources.py \
+            --candidate-sha "${GITHUB_SHA}" --image "sandbox=${IMAGE}" \
+            --json "${RUNNER_TEMP}/standard-image-evidence/runtime-resources.json" \
+            --markdown "${RUNNER_TEMP}/standard-image-evidence/runtime-resources.md"
+      - name: Retain standard image evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-standard-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/standard-image-evidence/
+          if-no-files-found: error
 
-      - name: Pull exact release images
+  openroad-runtime:
+    name: OpenROAD runtime
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull exact standard candidate
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+        run: |
+          docker pull "${IMAGE}"
+          docker tag "${IMAGE}" booley-sandbox
+      - name: Provision pinned Nangate45 PDK
+        id: nangate
+        run: |
+          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
+      - name: Verify OpenROAD physical runtime
+        env:
+          VALIDATION_TMP: ${{ runner.temp }}/openroad-evidence
+        run: |
+          install -d -m 0777 "${VALIDATION_TMP}"
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-release-${{ github.run_id }}-${{ github.run_attempt }}-openroad \
+            docker run --rm --init --network none --user agent \
+            --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-openroad \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
+            --mount type=bind,src="${VALIDATION_TMP}",dst=/evidence \
+            booley-sandbox bash /booley-source/.github/scripts/verify_openroad_runtime.sh \
+            /opt/pdk /evidence
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" \
+            --image "sandbox=${{ needs.build-and-push.outputs.image-digest }}" \
+            --check openroad.gui-runtime --check openroad.placement \
+            --check openroad.repair-timing --uid 1000 --gid 1000 \
+            --cleanup container-removed --cleanup temporary-work-removed \
+            --evidence "${VALIDATION_TMP}/summary.json"
+      - name: Retain OpenROAD evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-openroad-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openroad-evidence/
+          if-no-files-found: error
+
+  host-doctor-runtime:
+    name: Host bootstrap, initialization, and Doctor
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare isolated uid-1000 host
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+        run: |
+          root="${RUNNER_TEMP}/release-host-doctor"
+          mkdir -p "${root}/home" "${root}/evidence"
+          cp -a tests/fixtures/cocotb_counter "${root}/project"
+          python -m venv "${root}/venv"
+          "${root}/venv/bin/pip" install .
+          docker pull "${IMAGE}"
+          docker tag "${IMAGE}" booley-sandbox
+          doctor_gid="$(getent passwd 1000 | cut -d: -f4)"
+          test -n "${doctor_gid}"
+          echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"
+          sudo chown -R "1000:${doctor_gid}" "${root}"
+      - name: Run isolated host validation
+        run: |
+          runner_groups="$(id -G | tr ' ' ',')"
+          sudo /usr/bin/setpriv \
+            --reuid=1000 --regid="${DOCTOR_GID}" \
+            --groups="${DOCTOR_GID},${runner_groups}" \
+            -- "${RUNNER_TEMP}/release-host-doctor/venv/bin/python" \
+            "${GITHUB_WORKSPACE}/.github/scripts/release_validation/host_doctor.py" \
+            --allowed-root "${RUNNER_TEMP}/release-host-doctor" \
+            --project "${RUNNER_TEMP}/release-host-doctor/project" \
+            --home "${RUNNER_TEMP}/release-host-doctor/home" \
+            --booley "${RUNNER_TEMP}/release-host-doctor/venv/bin/booley" \
+            --expected-gid "${DOCTOR_GID}" \
+            --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${{ needs.build-and-push.outputs.image-digest }}" \
+            --evidence "${RUNNER_TEMP}/release-host-doctor/evidence/host-doctor.json"
+      - name: Restore isolated host ownership
+        if: always()
+        run: |
+          if test -d "${RUNNER_TEMP}/release-host-doctor"; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/release-host-doctor"
+          fi
+      - name: Retain host Doctor evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-host-doctor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-host-doctor/evidence/
+          if-no-files-found: error
+
+  simulation-selftest-overlay:
+    name: Simulation self-test overlay isolation
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Prepare exact reviewed demo contract
+        uses: ./.github/actions/prepare-picorv32-demo
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Simulation Doctor self-tests
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/simulation-evidence"
+          cp -a demo "${RUNNER_TEMP}/simulation-project"
+          project_config="${RUNNER_TEMP}/simulation-project/.booley_project/booley.toml"
+          grep -Fxq 'image = "booley-sandbox-riscv"' "${project_config}"
+          sed -i 's/^image = "booley-sandbox-riscv"$/image = "booley-sandbox"/' \
+            "${project_config}"
+          grep -Fxq 'image = "booley-sandbox"' "${project_config}"
+          sudo chown -R 1000:1000 \
+            "${RUNNER_TEMP}/simulation-project" "${RUNNER_TEMP}/simulation-evidence"
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
+            docker run --rm --init --network none \
+            --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
+            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e PYTHONPATH=/booley-source/.github/scripts \
+            "${IMAGE}" python3 -m release_validation.simulation_selftest \
+            --project /work --booley /usr/local/bin/booley \
+            --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${{ needs.build-and-push.outputs.image-digest }}" \
+            --evidence /evidence/simulation-selftest.json
+      - name: Restore simulation ownership
+        if: always()
+        run: |
+          for path in "${RUNNER_TEMP}/simulation-project" "${RUNNER_TEMP}/simulation-evidence"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+      - name: Retain Simulation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-simulation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/simulation-evidence/
+          if-no-files-found: error
+
+  helper-image-metadata:
+    name: Helper image metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Build and inspect helper images
+        run: bash .github/scripts/sidecar-build-evidence.sh
+      - name: Retain helper image evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-helper-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-build-evidence/
+          if-no-files-found: error
+
+  riscv-image-contract:
+    name: RISC-V image contract
+    needs: [build-and-push, build-and-push-riscv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate exact RISC-V candidate
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
+          mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
           docker pull "${BASE_IMAGE}"
-          docker tag "${BASE_IMAGE}" booley-sandbox
           docker pull "${RISCV_IMAGE}"
-          docker tag "${RISCV_IMAGE}" booley-sandbox-riscv
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+          python .github/scripts/release_validation/image_provenance.py \
+            --image "${RISCV_IMAGE}" --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${RISCV_DIGEST}" --expected-payload "${expected_payload}" \
+            --expected-recipe "${expected_recipe}" --expected-parent "${BASE_IMAGE}" \
+            --expected-revision "$(git rev-parse --short HEAD)" \
+            --evidence "${RUNNER_TEMP}/riscv-image-evidence/provenance.json"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${RISCV_IMAGE}" --base-image "${BASE_IMAGE}" --flavor riscv \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/riscv-image-evidence/runtime-contract.json"
+          PYTHONPATH=src python .github/scripts/image_size_report.py \
+            --registry-image "riscv=${RISCV_IMAGE}" \
+            --limits .github/contracts/image-size-limits.toml --limit-image riscv \
+            --json "${RUNNER_TEMP}/riscv-image-evidence/image-size.json" \
+            --markdown "${RUNNER_TEMP}/riscv-image-evidence/image-size.md"
+          python .github/scripts/image_runtime_resources.py \
+            --candidate-sha "${GITHUB_SHA}" --image "riscv=${RISCV_IMAGE}" \
+            --json "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.json" \
+            --markdown "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.md"
+      - name: Retain RISC-V image evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-riscv-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/
+          if-no-files-found: error
 
-      - name: Verify release image provenance
-        run: |
-          expected="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-          for image in booley-sandbox booley-sandbox-riscv; do
-            test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.provenance.schema" }}' "$image")" = "2"
-            test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.payload.fingerprint" }}' "$image")" = "$expected"
-            test -n "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.recipe-fingerprint" }}' "$image")"
-            test -n "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' "$image")"
-            test -n "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
-            actual="$(docker run --rm --entrypoint python3 "$image" -I -c 'from booley.runtime.build_metadata import current_build_metadata; print(current_build_metadata().payload_fingerprint)')"
-            test "$actual" = "$expected"
-          done
-          base_digest="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact-kind" }}' booley-sandbox-riscv)" = "registry-digest"
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' booley-sandbox-riscv)" = "$base_digest"
-          docker image inspect --format '{{json .RepoDigests}}' booley-sandbox | grep -Fq "${base_digest}"
-
-      # Hosted runners have no desktop editor. Supply only the `code --version`
-      # probe that init requires; the smoke never attempts to launch an editor.
-      - name: Provide headless editor probe
-        run: |
-          mkdir -p "${RUNNER_TEMP}/booley-ci-bin"
-          ln -s "$(command -v git)" "${RUNNER_TEMP}/booley-ci-bin/code"
-          echo "${RUNNER_TEMP}/booley-ci-bin" >> "${GITHUB_PATH}"
-
-      # The contract requires both reviewed checkouts to stay pristine. Run it
-      # before `booley init`, which deliberately creates local setup files.
-      - name: Prepare reviewed demo checkout ownership
-        run: sudo chown -R 1000:1000 demo
-
-      - name: Verify exact reviewed demo contract
+  demo-ticket-surface:
+    name: Demo ticket surface
+    needs: [build-and-push, build-and-push-riscv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "${GITHUB_OUTPUT}"
+      - name: Prepare exact reviewed demo contract
+        id: demo
+        uses: ./.github/actions/prepare-picorv32-demo
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate immutable ticket surface
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          docker run --init --rm --network none \
+          mkdir -p "${RUNNER_TEMP}/demo-surface-evidence"
+          sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/demo-surface-evidence"
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-release-${{ github.run_id }}-${{ github.run_attempt }}-demo-surface \
+            docker run --rm --init --network none \
+            --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-demo-surface \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/demo-surface-evidence",dst=/evidence \
+            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e PYTHONPATH=/booley-source/.github/scripts \
+            "${IMAGE}" python3 -m release_validation.demo_surface \
+            --project /work --project-state /booley-project --ticket-slug "${TICKET_SLUG}" \
+            --expected-version "${EXPECTED_VERSION}" \
+            --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${{ needs.build-and-push-riscv.outputs.image-digest }}" \
+            --evidence /evidence/demo-surface.json
+      - name: Restore demo ownership
+        if: always()
+        run: |
+          for path in demo "${RUNNER_TEMP}/demo-surface-evidence"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+      - name: Retain demo ticket evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-demo-ticket-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/demo-surface-evidence/
+          if-no-files-found: error
+
+  picorv32-demo-flows:
+    name: PicoRV32 demo flows
+    needs: [build-and-push, build-and-push-riscv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Prepare exact reviewed demo contract
+        id: demo
+        uses: ./.github/actions/prepare-picorv32-demo
+      - name: Provision pinned Nangate45 PDK
+        id: nangate
+        run: |
+          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run exact reviewed demo flows
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+          BOOLEY_RUN_PICORV32_FLOWS: "1"
+        run: |
+          mkdir -p "${RUNNER_TEMP}/picorv32-evidence"
+          sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/picorv32-evidence"
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-release-${{ github.run_id }}-${{ github.run_attempt }}-picorv32 \
+            docker run --rm --init --network none \
+            --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-picorv32 \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
             --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
-            -w /work \
-            -e BOOLEY_PROJECT_DIR=/booley-project \
-            -e BOOLEY_IN_SANDBOX=1 \
-            -e TICKET_SLUG \
-            "${IMAGE}" bash -euo pipefail -c '
-              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
-            '
-
-      - name: Restore demo checkout ownership for initialization
-        run: sudo chown -R "$(id -u):$(id -g)" demo
-
-      # `booley init` rejects Booley's own Source Checkout and every directory
-      # nested beneath it. Preserve the reviewed checkout above, then stage the
-      # user-facing quick-start exercise at the external location a user has.
-      - name: Stage demo outside Booley source checkout
-        run: cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"
-
-      - name: Bootstrap reusable host resources as documented
-        run: booley bootstrap
-
-      # Exercise the public quick start and reject warnings as well as errors.
-      # Credentials are deliberately absent: this validation never contacts an
-      # agent provider, but still records the demo's configured agent policy.
-      - name: Initialize demo cleanly as documented
-        working-directory: ${{ runner.temp }}/booley-picorv32-demo
-        run: |
-          set -o pipefail
-          init_log="$(mktemp)"
-          /usr/bin/booley init --skip-credentials | tee "${init_log}"
-          if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
-            echo "booley init did not finish cleanly" >&2
-            exit 1
-          fi
-
-      # GitHub's runner uses uid 1001 while the production image deliberately
-      # runs as uid 1000. Doctor requires one identity to own both its trusted
-      # host state and bind mounts, so emulate a normal uid-1000 Linux host for
-      # this probe and restore the runner-owned paths immediately afterward.
-      - name: Prepare staged demo ownership
-        run: |
-          doctor_gid="$(getent passwd 1000 | cut -d: -f4)"
-          test -n "${doctor_gid}"
-          getent group "${doctor_gid}" >/dev/null
-          echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"
-          sudo chown -R "1000:${doctor_gid}" "${HOME}/.agents"
-          sudo chown -R "1000:${doctor_gid}" "${HOME}/.config/booley"
-          sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-ci-bin"
-          sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-picorv32-demo"
-          sudo chmod -R u+rwX "${RUNNER_TEMP}/booley-picorv32-demo"
-
-      # This must run on the host: in-container Doctor cannot launch the
-      # short-lived issued-image probe and therefore skips this exact seam.
-      - name: Run host Doctor issued-image probe
-        working-directory: ${{ runner.temp }}/booley-picorv32-demo
-        run: |
-          set -o pipefail
-          doctor_log="$(mktemp)"
-          runner_groups="$(id -G | tr ' ' ',')"
-          sudo /usr/bin/env \
-            HOME="${HOME}" \
-            PYTHONUSERBASE="${HOME}/.local" \
-            PATH="${HOME}/.local/bin:${PATH}" \
-            /usr/bin/setpriv \
-            --reuid=1000 --regid="${DOCTOR_GID}" \
-            --groups="${DOCTOR_GID},${runner_groups}" \
-            -- "/usr/bin/booley" doctor --deep --skip-agent-checks | tee "${doctor_log}"
-          grep -Eq 'MCP server exposes [0-9]+ MCP tool\(s\)' "${doctor_log}"
-          grep -Fq "0 failed." "${doctor_log}"
-
-      - name: Restore runner ownership after host Doctor
+            --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
+            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e TICKET_SLUG -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
+            'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
+      - name: Restore demo ownership
         if: always()
         run: |
-          sudo chown -R "$(id -u):$(id -g)" "${HOME}/.agents"
-          sudo chown -R "$(id -u):$(id -g)" "${HOME}/.config/booley"
-          sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-ci-bin"
-
-      - name: Measure release image storage contract
+          for path in demo "${RUNNER_TEMP}/picorv32-evidence"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+      - name: Record PicoRV32 evidence
         env:
-          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
-          RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          IMAGE_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
-          mkdir -p "${RUNNER_TEMP}/booley-image-evidence"
-          PYTHONPATH=src python .github/scripts/image_contract.py \
-            --image "${BASE_IMAGE}" \
-            --flavor standard \
-            --contract .github/contracts/session-runtime.toml \
-            --evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"
-          PYTHONPATH=src python .github/scripts/image_contract.py \
-            --image "${RISCV_IMAGE}" \
-            --base-image "${BASE_IMAGE}" \
-            --flavor riscv \
-            --contract .github/contracts/session-runtime.toml \
-            --evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"
-          PYTHONPATH=src python .github/scripts/image_size_report.py \
-            --registry-image "sandbox=${BASE_IMAGE}" \
-            --registry-image "riscv=${RISCV_IMAGE}" \
-            --local-image "proxy=booley-egress-proxy" \
-            --local-image "reaper=booley-reaper" \
-            --json "${RUNNER_TEMP}/booley-image-evidence/image-sizes.json" \
-            --markdown "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"
-          cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Retain release image storage report
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
+            --check picorv32.ticket-ready --check picorv32.contract \
+            --check picorv32.lint --check picorv32.simulation \
+            --uid 1000 --gid 1000 --cleanup container-removed \
+            --cleanup workspace-ownership-restored \
+            --evidence "${RUNNER_TEMP}/picorv32-evidence/summary.json"
+      - name: Retain PicoRV32 evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: booley-image-sizes-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/booley-image-evidence/
+          name: release-picorv32-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/picorv32-evidence/
           if-no-files-found: error
 
-      - name: Run demo Doctor and ticket-authoring surface smoke
+  ibex-lint-demo:
+    name: Ibex lint demo
+    needs: [build-and-push, build-and-push-riscv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare exact reviewed Ibex candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lowRISC/ibex
+          ref: 34b0705760ef3dfa00e99637432473d2be8f22f3
+          path: ibex-demo
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run pinned Ibex lint demo
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
-          EXPECTED_BOOLEY_VERSION: ${{ steps.version.outputs.version }}
-          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
         run: |
-          docker run --init --rm --network none \
-            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
-            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work \
-            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo/.booley_project",dst=/booley-project \
-            --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
-            -w /work \
-            -e BOOLEY_PROJECT_DIR=/booley-project \
-            -e BOOLEY_IN_SANDBOX=1 \
-            -e EXPECTED_BOOLEY_VERSION \
-            -e TICKET_SLUG \
-            "${IMAGE}" bash -euo pipefail -c '
-              python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
-              project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
-              ticket_slug="${TICKET_SLUG}"
-              BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
-              ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
-              before="$(sha256sum "${ticket}")"
-
-              doctor_log="$(mktemp)"
-              booley doctor --deep --skip-agent-checks | tee "${doctor_log}"
-              grep -Fq "0 warning(s)" "${doctor_log}"
-              grep -Fq "0 failed." "${doctor_log}"
-
-              python -c "from booley.runtime.paths import skills_dir; assert (skills_dir() / \"booley-ticket-create\" / \"SKILL.md\").is_file()"
-              python -m booley.ticket_board validate-ticket "${ticket}"
-              python -m booley.ticket_board show "${ticket_slug}" >/dev/null
-              python -c "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
-              booley board show
-
-              test -f "${ticket}"
-              test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
-              test "${before}" = "$(sha256sum "${ticket}")"
-            '
-
-      # The production image runs as uid 1000, while checkout cleanup runs as
-      # the hosted-runner user. Restore the nested repositories even when the
-      # smoke fails so checkout's post-job hooks can read their git metadata.
-      - name: Restore demo checkout ownership
+          mkdir -p "${RUNNER_TEMP}/ibex-evidence"
+          test "$(git -C ibex-demo rev-parse HEAD)" = 34b0705760ef3dfa00e99637432473d2be8f22f3
+          sudo chown -R 1000:1000 ibex-demo "${RUNNER_TEMP}/ibex-evidence"
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-release-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            docker run --rm --init --network none --user agent \
+            --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work -w /work \
+            --mount type=bind,src="${RUNNER_TEMP}/ibex-evidence",dst=/evidence \
+            "${IMAGE}" bash -euo pipefail -c \
+            'test -f /work/rtl/ibex_core.sv && fusesoc --cores-root=/work run \
+            --target=lint lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal" \
+            2>&1 | tee /evidence/ibex-lint.log'
+      - name: Restore Ibex ownership
         if: always()
         run: |
-          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
-            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
-          fi
+          for path in ibex-demo "${RUNNER_TEMP}/ibex-evidence"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+      - name: Record Ibex evidence
+        env:
+          IMAGE_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
+            --check ibex.revision-pin --check ibex.lint --uid 1000 --gid 1000 \
+            --cleanup container-removed --cleanup workspace-ownership-restored \
+            --evidence "${RUNNER_TEMP}/ibex-evidence/summary.json"
+      - name: Retain Ibex evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-ibex-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ibex-evidence/
+          if-no-files-found: error
 
   # Retag the already-tested manifests by digest. No Dockerfile or source
   # context is available to this job, so promotion cannot rebuild candidates.
   promote:
     name: Promote tested image digests
-    needs: [build-and-push, build-and-push-riscv, demo-smoke]
+    needs:
+      - build-and-push
+      - build-and-push-riscv
+      - standard-image-contract
+      - openroad-runtime
+      - host-doctor-runtime
+      - simulation-selftest-overlay
+      - helper-image-metadata
+      - riscv-image-contract
+      - demo-ticket-surface
+      - picorv32-demo-flows
+      - ibex-lint-demo
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -1705,12 +1705,10 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   manual, the external debug spec, and the ELF psABI; **`pdftotext`** is
   included for shell/agent text extraction.
 
-The published image is roughly 5.5 GB of compressed registry layers but about
-20 GB after Docker extracts it. Together with the proxy and reaper, reserve at
-least 21 GB of Docker storage before running the public RISC-V demo, plus room
-for Docker metadata, build cache, containers, and Project artifacts. The base
-and RISC-V images share layers, so their displayed virtual sizes are not
-additive.
+Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
+Project artifacts and temporary upgrade/build data. The current Linux/AMD64
+image occupies 2.02 GB on the measured containerd store and exposes a 4.48 GB
+filesystem; its standard-image layers are shared rather than additive.
 
 Point a project at it with the normal image selector:
 

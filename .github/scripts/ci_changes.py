@@ -17,6 +17,8 @@ CATEGORIES = (
     "python_source",
     "python_tests",
     "image_tests",
+    "release_sensitive",
+    "standard_image",
     "riscv_image",
     "sidecar",
     "native_bwave",
@@ -38,7 +40,8 @@ CONDITIONAL_JOBS = (
     "sidecar-smoke",
     "bwave-smoke",
 )
-ALL_JOBS = ("changes", *CONDITIONAL_JOBS)
+ALWAYS_JOBS = ("changes", "release-semantic")
+ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -55,11 +58,43 @@ _PACKAGING_FILES = {
 }
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/flows/sim/backends/test_bwave_fifo_pipeline.py"}
+_RELEASE_SENSITIVE_PREFIXES = (
+    ".github/actions/",
+    ".github/contracts/",
+    ".github/scripts/",
+    ".github/workflows/",
+    "demo/",
+    "src/booley/eda/provisioning/",
+    "src/booley/flows/sim/",
+    "src/booley/flows/synth/",
+    "src/booley/harness/",
+    "src/booley/mcp/",
+    "src/booley/runtime/",
+    "src/booley/ticket_board/",
+    "tests/eda/provisioning/",
+    "tests/docker/",
+    "tests/flows/sim/",
+    "tests/flows/synth/",
+    "tests/fixtures/cocotb_counter/",
+    "tests/harness/",
+    "tests/mcp_tools/",
+    "tests/smoke/",
+)
+_RELEASE_SENSITIVE_FILES = {
+    ".dockerignore",
+    "MANIFEST.in",
+    "VERSION",
+    "pyproject.toml",
+}
+_STANDARD_IMAGE_PREFIXES = _RELEASE_SENSITIVE_PREFIXES
+_STANDARD_IMAGE_FILES = _RELEASE_SENSITIVE_FILES
 _RISCV_IMAGE_PREFIXES = (".github/actions/prepare-picorv32-demo/", "demo/")
 _RISCV_IMAGE_FILES = {
+    ".github/contracts/image-size-limits.toml",
     ".github/contracts/session-runtime.toml",
     ".github/scripts/ci_changes.py",
     ".github/scripts/image_contract.py",
+    ".github/scripts/image_runtime_resources.py",
     ".github/scripts/image_size_report.py",
     ".github/scripts/verify_picorv32_demo.sh",
     ".github/workflows/test.yml",
@@ -93,6 +128,15 @@ def _riscv_image_categories(path: str) -> tuple[str, ...]:
     if path.startswith(_RISCV_IMAGE_PREFIXES) or path in _RISCV_IMAGE_FILES:
         return ("riscv_image",)
     return ()
+
+
+def _release_image_categories(path: str) -> tuple[str, ...]:
+    categories: list[str] = []
+    if path.startswith(_RELEASE_SENSITIVE_PREFIXES) or path in _RELEASE_SENSITIVE_FILES:
+        categories.append("release_sensitive")
+    if path.startswith(_STANDARD_IMAGE_PREFIXES) or path in _STANDARD_IMAGE_FILES:
+        categories.append("standard_image")
+    return tuple(categories)
 
 
 def _boolean(value: str) -> bool:
@@ -136,6 +180,7 @@ def _path_categories(path: str) -> set[str]:
         categories.add("python_tests")
     if path.startswith(_IMAGE_TEST_PREFIXES) or path in _IMAGE_TEST_FILES:
         categories.add("image_tests")
+    categories.update(_release_image_categories(path))
     categories.update(_riscv_image_categories(path))
     if path.startswith(_NATIVE_BWAVE_PREFIXES):
         categories.add("native_bwave")
@@ -150,6 +195,8 @@ def _path_categories(path: str) -> set[str]:
         or Path(path).name.startswith("Dockerfile")
     ):
         categories.add("docker_toolchain")
+        categories.add("release_sensitive")
+        categories.add("standard_image")
         categories.add("riscv_image")
     if path in _STABLE_BASE_FILES | _STABLE_BASE_ORCHESTRATION_FILES:
         categories.add("stable_base")
@@ -185,7 +232,7 @@ def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
 def required_jobs(categories: set[str]) -> set[str]:
     if categories & {"full", "workflow", "packaging", "release"}:
         return set(ALL_JOBS)
-    jobs = {"changes"}
+    jobs = set(ALWAYS_JOBS)
     if "docs" in categories:
         jobs.add("docs-check")
     if categories & {"python_source", "python_tests"}:
@@ -195,10 +242,10 @@ def required_jobs(categories: set[str]) -> set[str]:
     if "native_bwave" in categories:
         jobs.add("bwave-integration")
     if "python_source" in categories:
-        jobs.update({"package-artifacts", "bwave-smoke"})
+        jobs.add("package-artifacts")
     if categories & {"docker_toolchain", "image_tests"}:
         jobs.update({"package-artifacts", "bwave-smoke"})
-    if "riscv_image" in categories:
+    if categories & {"standard_image", "riscv_image"}:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if "sidecar" in categories:
         jobs.add("sidecar-smoke")

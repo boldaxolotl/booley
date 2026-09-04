@@ -15,6 +15,14 @@ _DOCKER_DIR = _DOCKERFILE.parent
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
 
 
+def _workflow(path: str) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+
+def _named_step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
 def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
@@ -56,6 +64,22 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
         "FROM docker.io/openroad/ubuntu24.04@sha256:"
         "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
     ) in base
+    assert (
+        "FROM docker.io/openroad/ubuntu24.04-dev@sha256:"
+        "1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db "
+        "AS eda-artifacts"
+    ) in base
+    assert (
+        "FROM docker.io/library/ubuntu:24.04@sha256:"
+        "33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517"
+    ) in base
+    assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
+    assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
+    assert (
+        "COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/" in base
+    )
+    assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
+    assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
     assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
@@ -63,7 +87,8 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "COPY src/booley/data/edalize/verible.py" not in base
 
     assert "FROM booley-runtime-base" in candidate
-    assert "COPY dist/booley_rtl-*.whl" in candidate
+    assert "--mount=type=bind,source=dist,target=/tmp/booley-dist,readonly" in candidate
+    assert "COPY dist/booley_rtl-*.whl" not in candidate
     assert "COPY crates/bwave/" in candidate
     assert "COPY src/booley/data/edalize/verible.py" in candidate
     assert "--no-deps" in candidate
@@ -81,6 +106,21 @@ def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
     assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
     assert "cocotb-config --lib-name vpi icarus" not in base
     assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
+
+
+def test_stable_base_keeps_verilator_compiler_launcher_available() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    runtime_install = base[
+        base.index(">>> Installing minimal runtime dependencies") : base.index(
+            "# Copy only installed EDA payloads"
+        )
+    ]
+
+    assert "ccache" in runtime_install
+    assert "zlib1g-dev" in runtime_install
+    assert '"ccache"' in contract
+    assert '"/usr/include/zlib.h"' in contract
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
@@ -110,11 +150,33 @@ def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
 def test_verible_patch_does_not_depend_on_importing_candidate_package() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     patch_start = dockerfile.index("COPY src/booley/data/edalize/verible.py")
-    wheel_copy = dockerfile.index("COPY dist/booley_rtl-*.whl")
-    patch_region = dockerfile[patch_start:wheel_copy]
+    wheel_install = dockerfile.index("--mount=type=bind,source=dist")
+    patch_region = dockerfile[patch_start:wheel_install]
 
     assert "/tmp/booley-build/verible.py" in patch_region
     assert "import booley" not in patch_region
+
+
+def test_read_only_wheel_mount_is_not_mutated() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    mount_start = dockerfile.index("--mount=type=bind,source=dist")
+    mount_end = dockerfile.index("# bwave", mount_start)
+    mount_region = dockerfile[mount_start:mount_end]
+
+    assert 'rm -f "$WHEEL"' not in mount_region
+    assert "rm -f /tmp/booley-installed-files.txt" in mount_region
+
+
+def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    bwave_start = dockerfile.index("# bwave — VCD waveform parser")
+    bwave_end = dockerfile.index("ENV BOOLEY_BWAVE_BIN", bwave_start)
+    bwave_region = dockerfile[bwave_start:bwave_end]
+
+    assert "RUN --mount=type=bind,from=bwave-builder" in bwave_region
+    assert "COPY --from=bwave-builder" not in bwave_region
+    assert "install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave" in bwave_region
+    assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
 
 
 def test_ci_captures_docker_cache_and_layer_evidence() -> None:
@@ -125,6 +187,14 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker-build-evidence" in workflow
     assert ".github/scripts/image_contract.py" in workflow
     assert "runtime-contract.json" in workflow
+
+
+def test_published_runtime_images_include_sbom_attestations() -> None:
+    release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
+
+    assert release.count("sbom: true") == 2
+    assert base_release.count("sbom: true") == 1
 
 
 def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
@@ -156,13 +226,15 @@ def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
     assert "Node.js, Rust" not in setup
 
 
-def test_readme_uses_measured_registry_baseline_instead_of_rough_estimate() -> None:
+def test_readme_uses_current_slim_image_measurements() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "roughly 6 GB" not in readme
-    assert "4.33 GB of compressed" in readme
-    assert "5.53 GB for RISC-V" in readme
-    assert "adds 1.21 GB" in readme
+    assert "15 GB of Docker storage" not in readme
+    assert "21 GB" not in readme
+    assert "4 GB of Docker storage" in readme
+    assert "6 GB" in readme
+    assert "1.58/2.02 GB" in readme
+    assert "2.82/4.48 GB" in readme
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
@@ -305,10 +377,15 @@ def test_openroad_uses_verified_26q3_oci_artifact() -> None:
         "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
         "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
     ) in dockerfile
-    assert '/OpenROAD/src/rsz/src/Resizer.tcl" | sha256sum -c -' in dockerfile
-    assert "/OpenROAD/build/bin/openroad" in dockerfile
+    assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
+    assert (
+        "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
+        in dockerfile
+    )
+    assert "--exclude='./build'" in dockerfile
+    assert "OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
-    assert "/OpenROAD/src/sta/LICENSE" in dockerfile
+    assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
     assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
     assert "/tmp/openroad.deb" not in dockerfile
 
@@ -483,119 +560,139 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
     assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
-def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
+    job = _workflow(".github/workflows/docker-publish.yml")["jobs"]["host-doctor-runtime"]
+    prepare = _named_step(job, "Prepare isolated uid-1000 host")["run"]
+    validate = _named_step(job, "Run isolated host validation")
 
-    trusted_cli_setup = """      - name: Install release CLI
-        run: |
-          python -m pip install --user .
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-"""
-    assert trusted_cli_setup in workflow
+    assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
+    assert 'cp -a tests/fixtures/cocotb_counter "${root}/project"' in prepare
+    assert '"${root}/venv/bin/pip" install .' in prepare
+    assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
+    assert "/usr/bin/booley" not in prepare + validate["run"]
     assert (
-        'sudo install -o root -g root -m 0755 "${HOME}/.local/bin/booley" "/usr/bin/booley"'
-    ) in workflow
-
-
-def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-
-    contract_check = "      - name: Verify exact reviewed demo contract\n"
-    initialize = "      - name: Initialize demo cleanly as documented\n"
-    staged_ownership = "      - name: Prepare staged demo ownership\n"
-    host_doctor = "      - name: Run host Doctor issued-image probe\n"
-    surface_smoke = "      - name: Run demo Doctor and ticket-authoring surface smoke\n"
-    assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
-    assert contract_check in workflow
-    assert workflow.index(contract_check) < workflow.index(initialize)
-    assert workflow.index(initialize) < workflow.index(staged_ownership)
-    assert workflow.index(staged_ownership) < workflow.index(host_doctor)
-    assert workflow.index(initialize) < workflow.index(surface_smoke)
-    assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
-    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
-    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
-    assert "set -o pipefail" in workflow
-    assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
-    ownership_fragments = (
-        'doctor_gid="$(getent passwd 1000 | cut -d: -f4)"',
-        'echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"',
-        'sudo chown -R "1000:${doctor_gid}" "${HOME}/.config/booley"',
-        'sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-picorv32-demo"',
-        'sudo chmod -R u+rwX "${RUNNER_TEMP}/booley-picorv32-demo"',
+        '"${GITHUB_WORKSPACE}/.github/scripts/release_validation/host_doctor.py"'
+        in validate["run"]
     )
-    assert all(fragment in workflow for fragment in ownership_fragments)
-    host_doctor_section = workflow[
-        workflow.index(host_doctor) : workflow.index(
-            "      - name: Measure release image storage contract\n"
-        )
-    ]
-    identity_fragments = (
-        "runner_groups=\"$(id -G | tr ' ' ',')\"",
-        "/usr/bin/setpriv",
-        '--reuid=1000 --regid="${DOCTOR_GID}"',
-        '--groups="${DOCTOR_GID},${runner_groups}"',
-        '"/usr/bin/booley" doctor --deep --skip-agent-checks',
-        "      - name: Restore runner ownership after host Doctor\n        if: always()",
-    )
-    assert all(fragment in host_doctor_section for fragment in identity_fragments)
-    assert 'grep -Fq "[!!]" "${init_log}"' in workflow
-    assert workflow.count('doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
-    assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
-    assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
-    assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
-    assert "BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register" in workflow
-    assert "booley-ticket-create" in workflow
-    assert "python -m booley.ticket_board validate-ticket" in workflow
-    assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
-    assert workflow.count("bash /booley-source/.github/scripts/verify_picorv32_demo.sh") == 1
-    contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
-    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
-    assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
-    assert '--mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work' in workflow
-    assert "add-rv32-zbb-pcpi-co-processor" not in workflow
-    assert "python -m booley.ticket_board parse-ticket" not in workflow
+
+
+def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    surface = jobs["demo-ticket-surface"]
+    flows = jobs["picorv32-demo-flows"]
+    simulation = jobs["simulation-selftest-overlay"]
+
+    for job in (surface, flows):
+        prepare = _named_step(job, "Prepare exact reviewed demo contract")
+        assert prepare["uses"] == "./.github/actions/prepare-picorv32-demo"
+        assert job["needs"] == ["build-and-push", "build-and-push-riscv"]
     assert (
-        """      - name: Restore demo checkout ownership
-        if: always()
-        run: |
-          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
-            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
-          fi
-"""
-        in workflow
+        "-m release_validation.demo_surface"
+        in _named_step(surface, "Validate immutable ticket surface")["run"]
     )
+    assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
+    assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
+    assert _named_step(flows, "Restore demo ownership")["if"] == "always()"
+    assert _named_step(simulation, "Restore simulation ownership")["if"] == "always()"
+    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
+    assert 'cp -a demo "${RUNNER_TEMP}/simulation-project"' in simulation_run
+    assert 'image = "booley-sandbox"' in simulation_run
+    assert '--mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work' in simulation_run
 
 
-def test_release_promotes_stable_tags_only_after_demo_smoke() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_promotes_stable_tags_only_after_independent_gates() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    standard_build = next(
+        step for step in jobs["build-and-push"]["steps"] if step.get("id") == "build"
+    )
+    riscv_build = next(
+        step for step in jobs["build-and-push-riscv"]["steps"] if step.get("id") == "build"
+    )
+    promotion = _named_step(jobs["promote"], "Promote exact tested digests without rebuilding")
 
-    build_section = workflow[: workflow.index("  demo-smoke:")]
-    promote_section = workflow[workflow.index("  promote:") :]
     assert (
         ":candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
-        in build_section
+        in standard_build["with"]["tags"]
     )
-    assert ":latest" not in build_section
-    assert "needs: [build-and-push, build-and-push-riscv, demo-smoke]" in promote_section
-    assert "docker buildx imagetools create" in promote_section
-    assert ":latest" in promote_section
+    assert ":latest" not in standard_build["with"]["tags"] + riscv_build["with"]["tags"]
+    assert set(jobs["promote"]["needs"]) - {"build-and-push", "build-and-push-riscv"} == {
+        "standard-image-contract",
+        "openroad-runtime",
+        "host-doctor-runtime",
+        "simulation-selftest-overlay",
+        "helper-image-metadata",
+        "riscv-image-contract",
+        "demo-ticket-surface",
+        "picorv32-demo-flows",
+        "ibex-lint-demo",
+    }
+    assert "docker buildx imagetools create" in promotion["run"]
+    assert ":latest" in promotion["run"]
 
 
-def test_release_reports_registry_and_sidecar_image_sizes_after_initialization() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_image_measurements_are_variant_scoped() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    standard = _named_step(
+        jobs["standard-image-contract"], "Validate provenance, runtime, size, and resources"
+    )["run"]
+    riscv = _named_step(jobs["riscv-image-contract"], "Validate exact RISC-V candidate")["run"]
+    helper = _named_step(jobs["helper-image-metadata"], "Build and inspect helper images")
 
-    initialize = "      - name: Initialize demo cleanly as documented\n"
-    measure = "      - name: Measure release image storage contract\n"
-    assert workflow.index(initialize) < workflow.index(measure)
-    assert ".github/scripts/image_size_report.py" in workflow
-    assert '--registry-image "sandbox=${BASE_IMAGE}"' in workflow
-    assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
-    assert '--local-image "proxy=booley-egress-proxy"' in workflow
-    assert '--local-image "reaper=booley-reaper"' in workflow
-    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
-    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
-    assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
-    assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
+    assert "--limit-image sandbox" in standard
+    assert '--registry-image "sandbox=${IMAGE}"' in standard
+    assert "--limit-image riscv" in riscv
+    assert '--registry-image "riscv=${RISCV_IMAGE}"' in riscv
+    assert helper["run"] == "bash .github/scripts/sidecar-build-evidence.sh"
+
+    pr_job = _workflow(".github/workflows/test.yml")["jobs"]["bwave-smoke"]
+    standard_size = _named_step(pr_job, "Enforce standard image size ceiling")["run"]
+    assert "--limit-image sandbox" in standard_size
+    assert "--runtime-image sandbox=booley-test" in standard_size
+
+
+def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    probe = Path(".github/scripts/verify_openroad_runtime.sh").read_text(encoding="utf-8")
+
+    assert "Run OpenROAD physical runtime probe" in workflow
+    assert "verify_openroad_runtime.sh" in workflow
+    assert (
+        '--mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly'
+        in workflow
+    )
+    assert "global_placement" in probe
+    assert "detailed_placement" in probe
+    assert 'run_openroad "repair-off" 0' in probe
+    assert 'run_openroad "repair-on" 1' in probe
+    assert "repair_timing -setup" in probe
+    assert "report_design_area" in probe
+    assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
+
+
+def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
+    jobs = _workflow(".github/workflows/test.yml")["jobs"]
+    smoke_job = jobs["bwave-smoke"]
+    checkout = _named_step(smoke_job, "Prepare exact reviewed Ibex candidate")
+    lint_command = _named_step(smoke_job, "Run pinned Ibex lint demo")["run"]
+    command_argv = shlex.split(lint_command)
+    inner_script = next(
+        token for token in command_argv[command_argv.index("-c") + 1 :] if token.strip()
+    )
+    script_lines = inner_script.splitlines()
+
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {
+        "path": "ibex-demo",
+        "persist-credentials": False,
+        "ref": "34b0705760ef3dfa00e99637432473d2be8f22f3",
+        "repository": "lowRISC/ibex",
+    }
+    network_index = command_argv.index("--network")
+    assert command_argv[network_index + 1] == "none"
+    assert script_lines[0].rstrip().endswith("&& \\")
+    assert script_lines[1].rstrip().endswith("--target=lint \\")
+    assert "lowrisc:ibex:ibex_core" in script_lines[2]
+    assert '--verilator_options="--Wno-fatal"' in script_lines[2]
 
 
 def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:

@@ -103,3 +103,12 @@ capture_source docker-cli "${DOCKER_CLI}"
 capture_source docker-dind "${DOCKER_DIND}"
 
 docker tag booley-flexnet-relay:py314 booley-flexnet-relay:1
+
+python .github/scripts/release_validation/evidence.py \
+  --candidate-sha "${GITHUB_SHA}" \
+  --image "egress-proxy=$(docker image inspect --format '{{.Id}}' booley-egress-proxy:py314)" \
+  --image "flexnet-relay=$(docker image inspect --format '{{.Id}}' booley-flexnet-relay:py314)" \
+  --image "reaper=$(docker image inspect --format '{{.Id}}' booley-reaper:py314)" \
+  --check helper-images.build --check helper-images.runtime \
+  --check helper-images.metadata --check helper-images.source-digests \
+  --evidence "${EVIDENCE_DIR}/summary.json"

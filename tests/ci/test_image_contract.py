@@ -46,6 +46,46 @@ def test_repository_contract_distinguishes_standard_and_riscv_capabilities() -> 
     assert "riscv32-unknown-elf riscv64-unknown-elf" in multilib_probe["command"]
 
 
+def test_repository_contract_preserves_slimmed_image_payload() -> None:
+    standard = image_contract.load_contract(CONTRACT, "standard")
+    riscv = image_contract.load_contract(CONTRACT, "riscv")
+
+    assert "/OpenROAD" in standard["absent_paths"]
+    assert (
+        "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz"
+        in standard["required_paths"]
+    )
+    assert (
+        "/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl"
+        in standard["absent_paths"]
+    )
+    for path in (
+        "/usr/local/bin/iverilog",
+        "/usr/local/bin/verilator_bin",
+        "/usr/local/bin/verilator_bin_dbg",
+        "/usr/local/bin/verible-verilog-lint",
+    ):
+        assert path in standard["stripped_elf"]
+    for path in (
+        "/opt/riscv/bin/spike",
+        "/opt/riscv/bin/spike-log-parser",
+        "/opt/riscv/bin/termios-xspike",
+        "/opt/riscv/bin/xspike",
+        "/opt/riscv/lib/libcustomext.so",
+        "/opt/riscv/lib/libriscv.so",
+    ):
+        assert path in riscv["stripped_elf"]
+    assert any(probe["name"] == "xPack duplicate files share storage" for probe in riscv["probes"])
+    spike_probe = next(
+        probe
+        for probe in riscv["probes"]
+        if probe["name"] == "Spike arithmetic reference and extlib loading"
+    )
+    assert "SPIKE_EXTLIB_MARKER" in spike_probe["command"]
+    assert "--extlib=" in spike_probe["command"]
+    assert "li t1, 61" in spike_probe["command"]
+
+
 def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
     contract = tmp_path / "contract.toml"
     contract.write_text(

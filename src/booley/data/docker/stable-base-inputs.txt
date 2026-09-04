@@ -7,5 +7,6 @@ src/booley/data/docker/agent-clis-package-lock.json
 src/booley/data/docker/claude-managed-settings.json
 src/booley/data/docker/codex-requirements.toml
 src/booley/data/docker/export_project_dependencies.py
+src/booley/data/docker/openroad-source-manifest.json
 src/booley/data/docker/vivado-wrapper
 src/booley/harness/docker_base_contract.py
