@@ -859,11 +859,35 @@ class TraceSession:
 
         detail = f"{vcd_path} (exists={vcd_path.exists()}; scope={self._trace_scope or '<all>'})"
         self.record_attempt("vcd_postprocess", "started", detail=detail)
-        postprocess_vcd_to_bwave(vcd_path, self.bwave_path, self._trace_scope)
-        status = "success" if _bwave_valid(self.bwave_path) else "vcd_only"
-        if status == "success":
-            self._publish_bwave(self.bwave_path)
+        success = False
+        try:
+            postprocess_vcd_to_bwave(vcd_path, self.bwave_path, self._trace_scope)
+            success = _bwave_valid(self.bwave_path)
+            if success:
+                self._publish_bwave(self.bwave_path)
+        finally:
+            self._settle_postprocess_artifacts(vcd_path, success=success)
+        status = "success" if success else "vcd_only"
         self.record_attempt("vcd_postprocess", status, detail=detail)
+
+    def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
+        """Keep raw fallback artifacts inside the managed simulation directory."""
+        self._work_dir.mkdir(parents=True, exist_ok=True)
+        source_stderr = vcd_path.parent / "trace.fst.stderr"
+
+        if success:
+            vcd_path.unlink(missing_ok=True)
+            if source_stderr != self.persisted_stderr_path:
+                source_stderr.unlink(missing_ok=True)
+            return
+
+        managed_vcd = self._work_dir / "trace.vcd"
+        if vcd_path.exists() and vcd_path != managed_vcd:
+            managed_vcd.unlink(missing_ok=True)
+            shutil.move(vcd_path, managed_vcd)
+        if source_stderr.exists() and source_stderr != self.persisted_stderr_path:
+            self.persisted_stderr_path.unlink(missing_ok=True)
+            shutil.move(source_stderr, self.persisted_stderr_path)
 
     def _convert_vcd(self, vcd_path: Path) -> Path | None:
         """Convert VCD → .fst, caching in tmpdir."""
