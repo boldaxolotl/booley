@@ -121,6 +121,8 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         assert "CRITERIA FRESHNESS" in system
         assert "TOOL DISCIPLINE" in system
         assert "never shorten it to its bare target name" in system
+        assert "target-independent reviewer criterion" in system
+        assert "omit `--target`" in system
         assert "EDIT STRATEGY" in system
         assert "SPECIALIST DELEGATION" not in system
         assert "CRITERIA RESET" not in system

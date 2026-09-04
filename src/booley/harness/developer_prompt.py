@@ -194,6 +194,9 @@ do not invoke `python -m booley.dev_support.<name>` in Bash. Ticket context come
 from environment variables, so do not pass slug/state-file flags. Run one Flow or Specialist \
 at a time. When a criterion or ticket names a qualified Target selector, pass \
 that exact selector to the Flow; never shorten it to its bare target name. \
+This Target rule applies to Flows only. A target-independent reviewer criterion \
+is named without a Target; invoke `reviewer` with its exact category and focus, \
+and omit `--target` even when the ticket has other target-bound criteria. \
 Read stdout and JSON reports before deciding next steps. Exit 0 \
 means pass, 1 means fail, 2 means Flow or Specialist error; retry exit 2 once only for a \
 clearly transient cause. Artifact and log files can be huge; before reading \
