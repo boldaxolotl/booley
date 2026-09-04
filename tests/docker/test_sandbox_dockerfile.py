@@ -708,7 +708,7 @@ def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
     assert "ref: 34b0705760ef3dfa00e99637432473d2be8f22f3" in workflow
     assert "Run pinned Ibex lint demo" in workflow
     assert "--network none" in workflow
-    assert "lowrisc:ibex:ibex_core" in workflow
+    assert "fusesoc --cores-root=/work run --target=lint lowrisc:ibex:ibex_core" in workflow
     assert '--verilator_options="--Wno-fatal"' in workflow
 
 
