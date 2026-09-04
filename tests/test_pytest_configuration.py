@@ -212,6 +212,12 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "git fetch --no-tags --unshallow origin" in rendered_steps
     assert "diff-cover coverage.xml" in rendered_steps
     assert "--fail-under=90" in rendered_steps
+    changed_line_step = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Enforce 90% changed-line coverage"
+    )
+    assert changed_line_step["env"]["BASE_SHA"] == "${{ needs.changes.outputs.diff_base }}"
 
 
 def test_image_pytest_commands_install_configured_plugins() -> None:
@@ -531,6 +537,11 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     assert "fetch-depth" in rendered_changes
     assert ".github/scripts/ci_changes.py" in rendered_changes
     assert "github.event_name != 'pull_request'" in rendered_changes
+    classify_step = next(
+        step for step in changes["steps"] if step.get("name") == "Classify changed paths"
+    )
+    assert classify_step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+    assert '--event-name "${EVENT_NAME}"' in classify_step["run"]
 
     assert changes["outputs"]["jobs"] == "${{ steps.classify.outputs.jobs }}"
     for job_name in conditional:

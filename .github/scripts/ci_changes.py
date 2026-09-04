@@ -274,7 +274,25 @@ def _git_diff(repo: Path, base: str, head: str) -> bytes:
     return result.stdout
 
 
-def _diff_base(repo: Path, base: str, head: str) -> str:
+def _pull_request_base(repo: Path, head: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--parents", "--max-count=1", head],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "git rev-list failed"
+        raise ValueError(f"cannot resolve pull_request head {head}: {detail}")
+    commit_and_parents = result.stdout.split()
+    if len(commit_and_parents) != 3:
+        raise ValueError("pull_request head must be a two-parent merge commit")
+    return commit_and_parents[1]
+
+
+def _diff_base(repo: Path, base: str, head: str, event_name: str) -> str:
+    if event_name == "pull_request":
+        return _pull_request_base(repo, head)
     if base and not set(base) <= {"0"}:
         return base
     result = subprocess.run(
@@ -307,9 +325,14 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     parser.add_argument("--force-all", type=_boolean, default=False)
+    parser.add_argument(
+        "--event-name",
+        choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
+        default="",
+    )
     args = parser.parse_args()
     try:
-        base = _diff_base(args.repo, args.base, args.head)
+        base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
         categories = classify(paths, force_all=args.force_all)
         _write_outputs(args.github_output, categories, base)
