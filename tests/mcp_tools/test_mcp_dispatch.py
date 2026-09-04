@@ -659,6 +659,59 @@ class TestStructuredContent:
             mcp_server._MAX_STRUCTURED_REPORT_BYTES
         )
 
+    def test_warning_reduction_keeps_counts_conditions_and_log_pointer(self):
+        representatives = [
+            {"tool": "yosys", "message": "x" * 4_000, "count": 1}
+            for _ in range(30)
+        ]
+        warning_summary = {
+            "total_warnings": 40,
+            "unique_warnings": 3,
+            "by_tool": {"yosys": 40},
+            "by_category": {"combinational_loop": 16, "multi_driver": 24},
+            "by_disposition": {"structural": 40},
+            "representatives": representatives,
+        }
+        implementation = {
+            "schema_version": 1,
+            "identity": {"flow": "synth", "target": "asic"},
+            "status": {"grade": "fail", "passed": False},
+            "metrics": {"area_kge": 12.5},
+            "conditions": {
+                "has_critical": True,
+                "comb_loops": 16,
+                "multi_driven": 24,
+                "warning_summary": warning_summary,
+            },
+            "comparison": {
+                "baseline": {
+                    "conditions": {
+                        "has_critical": False,
+                        "warning_summary": {
+                            **warning_summary,
+                            "total_warnings": 2,
+                        },
+                    }
+                }
+            },
+            "artifacts": {"log": "reports/synth/1/targets/asic/run.log"},
+        }
+        payload = {"reports": [], "truncated": True}
+
+        mcp_server._fit_implementation_payload(payload, implementation)
+
+        result = payload["implementation"]
+        assert result["conditions"]["comb_loops"] == 16
+        assert result["conditions"]["multi_driven"] == 24
+        assert result["conditions"]["warning_summary"]["total_warnings"] == 40
+        assert "representatives" not in result["conditions"]["warning_summary"]
+        baseline = result["comparison"]["baseline"]
+        assert baseline["conditions"]["warning_summary"]["total_warnings"] == 2
+        assert result["artifacts"]["log"].endswith("run.log")
+        assert len(json.dumps(payload).encode("utf-8")) <= (
+            mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        )
+
     def test_final_budget_guard_has_a_constant_size_last_resort(self):
         payload = {
             "reports": [],

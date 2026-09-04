@@ -129,7 +129,7 @@ def _pre_repair_snapshot_tcl(config: StaTimingConfig, pre_rpt: str, pre_csv: str
     return (
         'puts "BOOLEY_STAGE: sta_report_pre_repair"\n'
         f"report_checks -path_delay max -sort_by_slack -group_count 1 > {{{pre_rpt}}}\n"
-        "set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]\n"
+        "set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]\n"
         f"set _pre_csv [open {{{pre_csv}}} w]\n"
         "foreach _pp $_pre_paths {\n"
         "  set _slk [get_property $_pp slack]\n"
@@ -219,7 +219,7 @@ estimate_parasitics -placement
 report_design_area
 write_verilog {{{out_verilog}}}
 report_checks -path_delay max -sort_by_slack -group_count 1 > {{{rpt}}}
-set paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]
+set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
 set csv_out [open {{{csv}}} w]
 foreach path $paths {{
   set startpoint_name [get_property [get_property $path startpoint] full_name]

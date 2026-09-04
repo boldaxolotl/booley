@@ -31,7 +31,7 @@ detailed_placement
 estimate_parasitics -placement
 puts "BOOLEY_STAGE: sta_report_pre_repair"
 report_checks -path_delay max -sort_by_slack -group_count 1 > {<WORK>/reports/timing/pre_repair.rpt}
-set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]
+set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
 set _pre_csv [open {<WORK>/reports/timing/pre_repair.csv.rpt} w]
 foreach _pp $_pre_paths {
   set _slk [get_property $_pp slack]
@@ -48,7 +48,7 @@ puts "BOOLEY_STAGE: sta_report"
 report_design_area
 write_verilog {openroad_dut.v}
 report_checks -path_delay max -sort_by_slack -group_count 1 > {<WORK>/reports/timing/overall.rpt}
-set paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]
+set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
 set csv_out [open {<WORK>/reports/timing/overall.csv.rpt} w]
 foreach path $paths {
   set startpoint_name [get_property [get_property $path startpoint] full_name]
@@ -70,17 +70,17 @@ if {![catch {set _clks [all_clocks]}]} {
     set _cn [get_property $_clk name]
     set _per [get_property $_clk period]
     set _wns "NA"
-    if {![catch {set _sp [find_timing_paths -path_delay max -sort_by_slack -group_count 1 -to $_clk]}] && [llength $_sp] > 0} {
+    if {![catch {set _sp [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_sp] > 0} {
       set _wns [format "%.6f" [get_property [lindex $_sp 0] slack]]
     }
     set _whs "NA"
-    if {![catch {set _hp [find_timing_paths -path_delay min -sort_by_slack -group_count 1 -to $_clk]}] && [llength $_hp] > 0} {
+    if {![catch {set _hp [find_timing_paths -path_delay min -sort_by_slack -group_path_count 1 -to $_clk]}] && [llength $_hp] > 0} {
       set _whs [format "%.6f" [get_property [lindex $_hp 0] slack]]
     }
     puts [format "STA_PERCLOCK: name=%s period_ns=%.6f wns_ns=%s whs_ns=%s" $_cn $_per $_wns $_whs]
   }
 }
-if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_count 1 -from [all_registers] -to [all_registers]]}] && [llength $_r2r] > 0} {
+if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1 -from [all_registers] -to [all_registers]]}] && [llength $_r2r] > 0} {
   foreach _p $_r2r {
     puts [format "STA_REG2REG_SLACK_NS: %.6f" [get_property $_p slack]]
     break

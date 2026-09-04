@@ -35,6 +35,7 @@ from booley.flows.synth.backends.yosys.core import (
 )
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.timing import parse_perclock
+from booley.flows.synth.warnings import WarningSummary
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -241,6 +242,7 @@ class SynthMetrics:
     are always reported; only the count above this is a critical condition."""
     comb_loops: int = 0
     multi_driven: int = 0
+    warning_summary: WarningSummary = field(default_factory=WarningSummary)
     returncode: int = 0
     timed_out: bool = False
     # Terminal classification is deliberately separate from returncode: make
@@ -322,6 +324,14 @@ class SynthMetrics:
             "unexpected_latches": self.unexpected_latches,
             "comb_loops": self.comb_loops,
             "multi_driven": self.multi_driven,
+            "warning_summary": self.warning_summary.to_detail(),
+        }
+
+    def warning_detail(self) -> dict[str, Any]:
+        """Return warning evidence shared by legacy report surfaces."""
+        return {
+            "total_warnings": self.warning_summary.total_warnings,
+            "warning_summary": self.warning_summary.to_detail(),
         }
 
     @property
@@ -365,6 +375,7 @@ class SynthMetrics:
             self.returncode == 0
             and not self.timed_out
             and self.ppa_complete
+            and self.structural_checks_complete
             and not self.has_critical
         )
 
@@ -655,6 +666,7 @@ def _result_line(
     failed: list[str],
     selfcompare_msg: str | None,
     violated: list[str],
+    eda_warnings: list[str] | None = None,
 ) -> str:
     """The single ``RESULT:`` headline, in strict severity order.
 
@@ -675,7 +687,12 @@ def _result_line(
     if violated:
         # Structurally clean but timing is VIOLATED. Exit stays 0 by default
         # (timing does not gate synthesis), yet the user must clearly see it.
-        return f"RESULT: WARN -- timing VIOLATED ({'; '.join(violated)})"
+        timing = f"timing VIOLATED ({'; '.join(violated)})"
+        if eda_warnings:
+            return f"RESULT: WARN -- {timing}; {'; '.join(eda_warnings)}"
+        return f"RESULT: WARN -- {timing}"
+    if eda_warnings:
+        return f"RESULT: WARN -- {'; '.join(eda_warnings)}"
     return "RESULT: PASS"
 
 
@@ -767,6 +784,7 @@ def _baseline_report_detail(metrics: SynthMetrics, baseline_ref: str) -> dict[st
     return {
         "ref": baseline_ref,
         **_select_present(metrics.qor_detail(), _REPORT_BASELINE_FIELDS),
+        **metrics.warning_detail(),
     }
 
 
@@ -790,10 +808,13 @@ def _add_report_deltas(
 
 def _add_baseline_criterion_detail(detail: dict[str, Any], baseline: SynthMetrics) -> None:
     """Attach baseline QoR and recipe evidence to criterion detail."""
-    detail["baseline_metrics"] = _select_present(
-        baseline.qor_detail(),
-        _BASELINE_DETAIL_FIELDS,
-    )
+    detail["baseline_metrics"] = {
+        **_select_present(
+            baseline.qor_detail(),
+            _BASELINE_DETAIL_FIELDS,
+        ),
+        **baseline.warning_detail(),
+    }
     detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = baseline.recipe_fingerprint or None
     detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = baseline.recipe_snapshot or None
     detail[BASELINE_RUN_EVIDENCE_DETAIL] = baseline.run_evidence or None
@@ -811,6 +832,7 @@ def _target_summary(
         "unexpected_latches": metrics.unexpected_latches,
         "comb_loops": metrics.comb_loops,
         "multi_driven": metrics.multi_driven,
+        **metrics.warning_detail(),
         # The aggregate detail is what reaches the agent as MCP
         # structuredContent, so the pointers ride along with the numbers.
         "artifacts": {
@@ -825,6 +847,7 @@ def _target_summary(
             "infra_error": baseline.infra_error,
             "ppa_complete": baseline.ppa_complete,
             **_select_present(baseline.qor_detail(), _BASELINE_DETAIL_FIELDS),
+            **baseline.warning_detail(),
         }
     return summary
 
@@ -889,6 +912,7 @@ def _build_report_dict(
     if metrics.failure_output:
         report["failure_output"] = metrics.failure_output
     report["conditions"] = metrics.structural_detail()
+    report.update(metrics.warning_detail())
     return report
 
 
@@ -1344,6 +1368,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     ) -> None:
         """Apply terminal and mode-specific completeness policy to metrics."""
         metrics.expected_latches = _expected_latches(self.args.work_dir)
+        metrics.warning_summary = outcome.diagnostics.warnings
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
@@ -1359,7 +1384,22 @@ class AsicSynthesizeFlow(BooleyFlow):
             and metrics.synth_mode.runs_openroad
             and metrics.has_timing_evidence
         )
-        metrics.structural_checks_complete = metrics.yosys_complete
+        legacy_inline = (
+            not outcome.yosys_complete
+            and not outcome.diagnostics.structural.complete
+            and metrics.has_metrics
+            and bool(result.stdout.strip())
+            and "BOOLEY_STAGE:" not in result.stdout
+        )
+        metrics.structural_checks_complete = (
+            outcome.diagnostics.structural.complete or legacy_inline
+        )
+        if outcome.diagnostics.structural.complete:
+            metrics.comb_loops = outcome.diagnostics.structural.comb_loops
+            metrics.multi_driven = outcome.diagnostics.structural.multi_driven
+        elif not legacy_inline:
+            metrics.comb_loops = 0
+            metrics.multi_driven = 0
         if metrics.synth_mode is not None and metrics.synth_mode.runs_openroad:
             metrics.ppa_complete = (
                 metrics.termination == "completed"
@@ -2055,6 +2095,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             lines.append(self._format_io_bound_line(tgt, cur))
         if cur.has_critical:
             lines.append(self._format_critical_line(tgt, cur))
+        if cur.warning_summary.total_warnings:
+            lines.append(self._format_warning_line(tgt, cur))
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
         if cur.log_path:
@@ -2143,7 +2185,15 @@ class AsicSynthesizeFlow(BooleyFlow):
             stdout_lines, failed_targets, targets, current_results, baseline_results
         )
         self._append_fatal_timing_failure(failed_targets, violated)
-        stdout_lines.extend(["", _result_line(failed_targets, selfcompare_msg, violated)])
+        eda_warnings = [
+            f"{target}: {current_results[target].warning_summary.actionable_warnings} "
+            "actionable EDA warning(s)"
+            for target in targets
+            if current_results[target].warning_summary.actionable_warnings
+        ]
+        stdout_lines.extend(
+            ["", _result_line(failed_targets, selfcompare_msg, violated, eda_warnings)]
+        )
         report_text = "\n".join(stdout_lines)
         print(report_text)
         detail = self._implementation_aggregate_detail(
@@ -2312,6 +2362,18 @@ class AsicSynthesizeFlow(BooleyFlow):
         return f"[synth] {tgt}: CRITICAL -- {', '.join(parts)}"
 
     @staticmethod
+    def _format_warning_line(tgt: str, cur: SynthMetrics) -> str:
+        """Format the bounded warning inventory without replaying the log."""
+        summary = cur.warning_summary
+        label = "WARNING" if summary.actionable_warnings else "NOTE"
+        noun = "warning" if summary.total_warnings == 1 else "warnings"
+        return (
+            f"[synth] {tgt}: {label} -- {summary.total_warnings} EDA {noun}, "
+            f"{summary.unique_warnings} unique; full diagnostics: "
+            f"{cur.log_path or 'run.log'}"
+        )
+
+    @staticmethod
     def _format_status_suffix(cur: SynthMetrics) -> str:
         """Append a concise failure reason to the per-config summary line."""
         if cur.passed:
@@ -2369,6 +2431,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         detail: dict[str, Any] = {
             **cur.qor_detail(),
             **cur.structural_detail(),
+            **cur.warning_detail(),
             "process_count": cur.process_count,
             **cur.status_detail(),
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,

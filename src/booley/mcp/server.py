@@ -1569,6 +1569,26 @@ def _drop_per_clock(value: dict[str, Any]) -> None:
         _record_omitted_field(value, "comparison.baseline.metrics.per_clock")
 
 
+def _drop_warning_representatives(value: dict[str, Any]) -> None:
+    """Drop bounded diagnostic prose while retaining warning counts."""
+    conditions = value.get("conditions")
+    summary = conditions.get("warning_summary") if isinstance(conditions, dict) else None
+    if isinstance(summary, dict) and summary.pop("representatives", None) is not None:
+        _record_omitted_field(value, "conditions.warning_summary.representatives")
+    comparison = value.get("comparison")
+    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
+    baseline_conditions = baseline.get("conditions") if isinstance(baseline, dict) else None
+    baseline_summary = (
+        baseline_conditions.get("warning_summary")
+        if isinstance(baseline_conditions, dict)
+        else None
+    )
+    if isinstance(baseline_summary, dict) and baseline_summary.pop("representatives", None) is not None:
+        _record_omitted_field(
+            value, "comparison.baseline.conditions.warning_summary.representatives"
+        )
+
+
 def _bounded_scalar_map(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -1610,6 +1630,9 @@ def _minimum_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
         if key in value:
             minimum[key] = _bounded_scalar_map(value[key])
     minimum["metrics"] = _bounded_scalar_map(value.get("metrics"))
+    conditions = _minimum_conditions(value.get("conditions"))
+    if conditions:
+        minimum["conditions"] = conditions
     if "artifacts" in value:
         minimum["artifacts"] = _bounded_nested_map(value["artifacts"])
     comparison = value.get("comparison")
@@ -1617,6 +1640,23 @@ def _minimum_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
         minimum["comparison"] = _minimum_comparison(comparison)
     if value.get("omitted_fields"):
         minimum["omitted_fields"] = copy.deepcopy(value["omitted_fields"])
+    return minimum
+
+
+def _minimum_conditions(value: Any) -> dict[str, Any]:
+    """Retain scalar conditions and bounded warning-count maps."""
+    minimum = _bounded_scalar_map(value)
+    if not isinstance(value, dict):
+        return minimum
+    summary = value.get("warning_summary")
+    if not isinstance(summary, dict):
+        return minimum
+    bounded = _bounded_scalar_map(summary)
+    for key in ("by_tool", "by_category", "by_disposition"):
+        counts = _bounded_scalar_map(summary.get(key))
+        if counts:
+            bounded[key] = counts
+    minimum["warning_summary"] = bounded
     return minimum
 
 
@@ -1643,12 +1683,16 @@ def _minimum_comparison(value: dict[str, Any]) -> dict[str, Any]:
         if "artifacts" in baseline:
             minimum["baseline"]["artifacts"] = _bounded_nested_map(baseline["artifacts"])
         minimum["baseline"]["metrics"] = _bounded_scalar_map(baseline.get("metrics"))
+        conditions = _minimum_conditions(baseline.get("conditions"))
+        if conditions:
+            minimum["baseline"]["conditions"] = conditions
     return minimum
 
 
 def _drop_result_expansions(results: dict[str, Any]) -> None:
     for result in results.values():
         if isinstance(result, dict):
+            _drop_warning_representatives(result)
             _drop_per_clock(result)
 
 
@@ -1660,6 +1704,7 @@ def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[st
         return
     results = compact.get("results")
     if not isinstance(results, dict):
+        _drop_warning_representatives(compact)
         _drop_per_clock(compact)
         payload["implementation"] = _minimum_target_implementation(compact)
         if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
