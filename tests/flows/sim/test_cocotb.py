@@ -479,6 +479,8 @@ class TestCocotbBatching:
         assert script.count("--test=") == 3
         assert "--cocotb-module test_counter" in script
         assert "--result-verbosity compact" in script
+        assert "--adapter-result" in script
+        assert "--selected-test=test_reset" in script
 
     def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--result-verbosity", "full"])

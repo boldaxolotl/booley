@@ -50,6 +50,14 @@ from collections import deque
 from pathlib import Path
 
 from booley.flows.run_log import write_run_log
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    AdapterTransportIdentity,
+    add_transport_arguments,
+    transport_identity_from_args,
+    write_adapter_result,
+)
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
     adopt_declared_trace_files,
@@ -68,6 +76,84 @@ from booley.flows.sim.trace_session import TraceSession
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
 # default with ``-fst`` omitted. vvp writes it into the run cwd.
 _DEFAULT_VCD_NAME = "dump.vcd"
+
+
+def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
+    """Render one parent-side Icarus adapter invocation."""
+    if work.adapter != "icarus":
+        raise ValueError(f"Icarus adapter cannot prepare {work.adapter!r} work")
+    cmd = [
+        "python3",
+        "-m",
+        "booley.flows.sim.backends.icarus",
+        "--build-dir",
+        work.build_dir,
+        "--timeout",
+        str(work.timeout_s),
+    ]
+    if work.max_rundir_bytes > 0:
+        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
+    if work.run_cwd:
+        cmd += ["--run-cwd", work.run_cwd]
+    if work.trace:
+        cmd.append("--trace")
+    cmd += [f"--plusarg={value}" for value in work.plusargs]
+    cmd += [f"--pass-sentinel={value}" for value in work.pass_sentinels]
+    cmd += [f"--fail-sentinel={value}" for value in work.fail_sentinels]
+    if work.trace:
+        cmd += [f"--trace-arg={value}" for value in work.trace_args]
+        cmd += [f"--trace-file={value}" for value in work.trace_files]
+    if work.adapter_result_path:
+        cmd += [
+            "--adapter-result",
+            work.adapter_result_path,
+            "--attempt-token",
+            work.attempt_token,
+            "--target-identity",
+            work.target_identity,
+        ]
+        cmd += [f"--selected-test={name}" for name in work.tests]
+    return cmd
+
+
+def _publish_adapter_result(
+    identity: AdapterTransportIdentity | None,
+    output: str,
+    returncode: int,
+    *,
+    failure_kind: str = "",
+    pass_sentinels: list[str] | None = None,
+    fail_sentinels: list[str] | None = None,
+    trace_required: bool = False,
+    detail: str = "",
+) -> None:
+    if identity is None:
+        return
+    verdict = parse_sim_verdict(
+        output,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+    )
+    sva_errors = count_sva_errors(output)
+    timed_out = "simulation timed out" in output.lower()
+    trace_missing = trace_required and "TRACE_OK:" not in output
+    inconclusive = (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
+    kind = failure_kind
+    if not kind:
+        kind = "timeout" if timed_out else "artifact" if trace_missing else ""
+    if not kind and inconclusive:
+        kind = "inconclusive"
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=verdict is True and returncode == 0 and sva_errors == 0 and not trace_missing,
+            inconclusive=inconclusive,
+            sva_errors=sva_errors,
+            tests=identity.selected_tests,
+            failure_kind=kind,
+            detail=detail,
+        ),
+    )
 
 
 def _find_vvp() -> str:
@@ -282,6 +368,7 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     max_rundir_bytes: int = 0,
+    transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run the edalize-built vvp image once; return the captured output.
 
@@ -310,6 +397,13 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     if image is None:
         msg = f"ERROR: no vvp image (*.scr) found in {build_dir}"
         print(msg)
+        _publish_adapter_result(
+            transport,
+            msg,
+            1,
+            failure_kind="infrastructure",
+            detail=msg,
+        )
         return msg
 
     # booley_vcd_dump.sv triggers $dumpvars(0) only when +trace is set, so the
@@ -380,6 +474,14 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
             print(f"TRACE_OK: {found}")
             output += f"\nTRACE_OK: {found}"
 
+    _publish_adapter_result(
+        transport,
+        output,
+        proc.returncode,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+        trace_required=vcd,
+    )
     return output
 
 
@@ -444,11 +546,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="fail_sentinels",
         help="substring marking a FAIL (repeatable; overrides the default)",
     )
+    add_transport_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    transport = transport_identity_from_args(args, "icarus")
     # Entry-point only (never the in-process API): tie this supervisor's life to
     # its parent's so simulate's wrapper timeout cannot orphan it (F-13).
     from booley.flows.sim.run_guard import install_parent_death_guard
@@ -466,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
         pass_sentinels=args.pass_sentinels or None,
         fail_sentinels=args.fail_sentinels or None,
         max_rundir_bytes=args.max_rundir_bytes,
+        transport=transport,
     )
     # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.
     verdict = parse_sim_verdict(

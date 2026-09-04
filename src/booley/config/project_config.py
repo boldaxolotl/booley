@@ -9,6 +9,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Load booley.toml (project dir first, fallback to .booley/ root)
 # ---------------------------------------------------------------------------
+import copy as _copy
 import logging as _logging
 import re
 import tomllib
@@ -38,6 +39,7 @@ _PIPELINE_DIR = _SCRIPT_DIR.parent
 # module attributes via PEP 562 ``__getattr__``.
 
 _CONFIG_CACHE: dict[str, Any] | None = None
+_CONFIG_CACHE_PRISTINE: dict[str, Any] | None = None
 
 # Names resolved lazily from project config. Exposed via ``__getattr__`` and
 # read internally via ``_get`` (which honors test monkeypatches).
@@ -68,7 +70,7 @@ def _load_config() -> dict[str, Any]:
     by Target name — not design-description, which lives in the ``.core``
     (ADR 0022 decisions 15/16).
     """
-    global _CONFIG_CACHE
+    global _CONFIG_CACHE, _CONFIG_CACHE_PRISTINE
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
 
@@ -146,6 +148,7 @@ def _load_config() -> dict[str, Any]:
             name: section["env"] for name, section in normalized_tests.items() if "env" in section
         },
     }
+    _CONFIG_CACHE_PRISTINE = _copy.deepcopy(_CONFIG_CACHE)
     return _CONFIG_CACHE
 
 
@@ -392,6 +395,74 @@ def lookup_target_section(sections: Mapping[str, Any], target: str) -> Any:
     return None
 
 
+def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
+    """Load ``tests.toml`` for one explicit checkout without using the CWD cache.
+
+    Real module attributes are honored first because unit tests deliberately
+    patch the lazy compatibility constants. Normal execution has no such
+    attributes and always reads the Target handle's Project root.
+    """
+    patched = any(
+        name in globals() for name in ("TEST_NAMES", "TEST_SELECT", "TEST_SKIP", "TEST_ENV")
+    ) or (
+        _CONFIG_CACHE is not None
+        and _CONFIG_CACHE_PRISTINE is not None
+        and _CONFIG_CACHE != _CONFIG_CACHE_PRISTINE
+    )
+    if patched:
+        target_names: set[str] = set()
+        for name in ("TEST_NAMES", "TEST_SELECT", "TEST_SKIP", "TEST_ENV"):
+            value = globals().get(name, (_CONFIG_CACHE or {}).get(name, {}))
+            if isinstance(value, Mapping):
+                target_names.update(str(target) for target in value)
+        return {
+            target: {
+                key: value
+                for key, source in (
+                    (
+                        "tests",
+                        globals().get("TEST_NAMES", (_CONFIG_CACHE or {}).get("TEST_NAMES", {})),
+                    ),
+                    (
+                        "select",
+                        globals().get(
+                            "TEST_SELECT", (_CONFIG_CACHE or {}).get("TEST_SELECT", {})
+                        ),
+                    ),
+                    (
+                        "skip",
+                        globals().get("TEST_SKIP", (_CONFIG_CACHE or {}).get("TEST_SKIP", {})),
+                    ),
+                    (
+                        "env",
+                        globals().get("TEST_ENV", (_CONFIG_CACHE or {}).get("TEST_ENV", {})),
+                    ),
+                )
+                if isinstance(source, Mapping)
+                and (value := lookup_target_section(source, target)) is not None
+            }
+            for target in target_names
+        }
+    try:
+        project_dir = resolve_checkout_project_dir(Path(work_dir))
+        with (project_dir / "tests.toml").open("rb") as stream:
+            return normalize_tests_toml(tomllib.load(stream))
+    except FileNotFoundError:
+        return {}
+
+
+def load_test_configuration_field(
+    work_dir: Path | str,
+    field: str,
+) -> dict[str, Any]:
+    """Project-root-scoped mapping for one normalized ``tests.toml`` field."""
+    return {
+        target: section[field]
+        for target, section in load_test_configuration(work_dir).items()
+        if field in section
+    }
+
+
 def _normalize_tests_section(
     target: str,
     section: Any,
@@ -502,7 +573,13 @@ def resolve_test_name(target: str, name: str) -> int:
     return matches[0][0]
 
 
-def render_test_selector(target: str, index: int, name: str) -> str:
+def render_test_selector(
+    target: str,
+    index: int,
+    name: str,
+    *,
+    work_dir: Path | str | None = None,
+) -> str:
     """Render the per-Target plusarg that selects test ``index`` (decision 16).
 
     Booley renders the Target's ``select`` template (from tests.toml) into the
@@ -511,7 +588,12 @@ def render_test_selector(target: str, index: int, name: str) -> str:
     :data:`DEFAULT_TEST_SELECT`, preserving the legacy ``+test_id=N`` contract.
     The returned string is the full plusarg, leading ``+`` included.
     """
-    template = lookup_target_section(_get("TEST_SELECT"), target)
+    templates = (
+        _get("TEST_SELECT")
+        if work_dir is None
+        else load_test_configuration_field(work_dir, "select")
+    )
+    template = lookup_target_section(templates, target)
     if template is None:
         template = DEFAULT_TEST_SELECT
     return template.format(index=index, name=name)

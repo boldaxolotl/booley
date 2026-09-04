@@ -1785,6 +1785,9 @@ class TestEdalizeSimPath:
         # V<top> from --top (decision 12) over the FuseSoC build dir.
         assert "booley.flows.sim.backends.verilator" in script
         assert "--top tb_counter" in script
+        assert "--adapter-result" in script
+        assert "--attempt-token" in script
+        assert "--target-identity" in script
 
     def test_prepare_sim_command_forwards_test_plusarg(self, tmp_path: Path):
         """The run half forwards the resolved `+test_id=N` selector (run kept)."""

@@ -62,18 +62,95 @@ if TYPE_CHECKING:
     from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
 
 from booley.flows.run_log import write_run_log
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    AdapterTransportIdentity,
+    add_transport_arguments,
+    transport_identity_from_args,
+    write_adapter_result,
+)
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     VERDICT_PASS,
     CocotbResults,
     find_import_failure,
     format_results_line,
+    parse_results_line,
     parse_results_xml,
     reconcile,
     recover_timeout_progress,
     results_payload,
 )
 from booley.flows.sim.backends.shared import find_icarus_image
+
+
+def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
+    """Render one parent-side Cocotb adapter invocation."""
+    if work.adapter != "cocotb":
+        raise ValueError(f"Cocotb adapter cannot prepare {work.adapter!r} work")
+    cmd = [
+        "python3",
+        "-m",
+        "booley.flows.sim.backends.cocotb",
+        "--build-dir",
+        work.build_dir,
+        "--eda-tool",
+        work.eda_tool,
+        "--cocotb-module",
+        work.cocotb_module,
+        "--timeout",
+        str(work.timeout_s),
+    ]
+    cmd += [f"--test={name}" for name in work.tests]
+    cmd += ["--result-verbosity", work.result_verbosity]
+    cmd += ["--sim-time-grace", str(work.sim_time_grace_s)]
+    if work.max_rundir_bytes > 0:
+        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
+    if work.run_cwd:
+        cmd += ["--run-cwd", work.run_cwd]
+    if work.trace:
+        cmd += ["--trace", "--expected-trace-scope", work.trace_scope]
+    cmd += [f"--plusarg={value}" for value in work.plusargs]
+    if work.adapter_result_path:
+        cmd += [
+            "--adapter-result",
+            work.adapter_result_path,
+            "--attempt-token",
+            work.attempt_token,
+            "--target-identity",
+            work.target_identity,
+        ]
+        cmd += [f"--selected-test={name}" for name in work.tests]
+    return cmd
+
+
+def _publish_adapter_result(
+    identity: AdapterTransportIdentity | None,
+    output: str,
+    passed: bool,
+    *,
+    failure_kind: str = "",
+    detail: str = "",
+) -> None:
+    if identity is None:
+        return
+    results = parse_results_line(output)
+    discovered = tuple(test.name for test in results.tests if test.name) if results else ()
+    names = identity.selected_tests or discovered
+    sva_errors = count_sva_errors(output)
+    inconclusive = not passed and (results is None or results.state != STATE_OK)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=passed and sva_errors == 0,
+            inconclusive=inconclusive,
+            sva_errors=sva_errors,
+            tests=tuple(names),
+            failure_kind=failure_kind or ("inconclusive" if inconclusive else ""),
+            detail=detail,
+        ),
+    )
 from booley.flows.sim.result import (
     count_sva_errors,
     format_infra_error,
@@ -563,7 +640,7 @@ def _prepare_invocation(
     work_dir: Path,
     plusargs: list[str],
     vcd: bool,
-) -> tuple[dict[str, str], list[str]] | None:
+) -> tuple[dict[str, str], list[str]] | str:
     """Resolve the sim env + command; ``None`` means the failure was reported.
 
     D3: an image built before the cocotb pip layer has no cocotb-config —
@@ -585,7 +662,7 @@ def _prepare_invocation(
         )
     except FileNotFoundError:
         _report_infra_failure(work_dir, COCOTB_CONFIG_MISSING_MSG)
-        return None
+        return COCOTB_CONFIG_MISSING_MSG
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
         detail = (
@@ -594,14 +671,14 @@ def _prepare_invocation(
             + f" — {COCOTB_CONFIG_MISSING_MSG}"
         )
         _report_infra_failure(work_dir, detail)
-        return None
+        return detail
     if cmd is None:
-        _report_infra_failure(
-            work_dir,
+        detail = (
             f"no built cocotb sim found in {build_dir} "
-            f"({'no vvp image (*.scr)' if eda_tool == 'icarus' else 'no Vtop binary'})",
+            f"({'no vvp image (*.scr)' if eda_tool == 'icarus' else 'no Vtop binary'})"
         )
-        return None
+        _report_infra_failure(work_dir, detail)
+        return detail
     return env, cmd
 
 
@@ -660,6 +737,7 @@ def run_cocotb_sim(
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
     result_verbosity: str = "compact",
     expected_trace_scope: str = "",
+    transport: AdapterTransportIdentity | None = None,
 ) -> int:
     """Run the edalize-built cocotb sim once; return the process exit code.
 
@@ -679,10 +757,20 @@ def run_cocotb_sim(
     results_file = _reset_result_transports(work_dir)
     tests = list(tests or [])
     if vcd and not expected_trace_scope.strip():
+        detail = (
+            "trace requested without an expected DUT scope; the waveform identity "
+            "cannot be validated"
+        )
         _report_infra_failure(
             work_dir,
-            "trace requested without an expected DUT scope; the waveform identity "
-            "cannot be validated",
+            detail,
+        )
+        _publish_adapter_result(
+            transport,
+            "",
+            False,
+            failure_kind="infrastructure",
+            detail=detail,
         )
         return 1
 
@@ -696,7 +784,14 @@ def run_cocotb_sim(
         plusargs=list(plusargs or []),
         vcd=vcd,
     )
-    if prepared is None:
+    if isinstance(prepared, str):
+        _publish_adapter_result(
+            transport,
+            "",
+            False,
+            failure_kind="infrastructure",
+            detail=prepared,
+        )
         return 1
     env, cmd = prepared
 
@@ -735,6 +830,8 @@ def run_cocotb_sim(
         result_verbosity,
         trace_result.failure_reason,
     )
+
+    _publish_adapter_result(transport, output, passed)
 
     return 0 if passed else 1
 
@@ -843,11 +940,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="resolved DUT toplevel required to validate a requested trace",
     )
+    add_transport_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    transport = transport_identity_from_args(args, "cocotb")
     return run_cocotb_sim(
         build_dir=Path(args.build_dir),
         eda_tool=args.eda_tool,
@@ -862,6 +961,7 @@ def main(argv: list[str] | None = None) -> int:
         sim_time_grace_s=args.sim_time_grace_s,
         result_verbosity=args.result_verbosity,
         expected_trace_scope=args.expected_trace_scope,
+        transport=transport,
     )
 
 

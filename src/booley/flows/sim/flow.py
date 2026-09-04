@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
-from booley.config.project_config import lookup_target_section, render_test_selector
+from booley.config.project_config import (
+    load_test_configuration_field,
+    lookup_target_section,
+    render_test_selector,
+)
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
@@ -64,6 +68,11 @@ from ..flow_config import (
 )
 from ..human_display import cap_target_items
 from . import edam as sim_edam
+from .adapter_contract import PreparedSimulationWork
+from .adapter_transport import (
+    AdapterResult,
+    AdapterTransportIdentity,
+)
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -74,6 +83,8 @@ from .build import (
     prepare_simulation_build,
     setup_failure_outcome,
 )
+from .execution.composition import prepare_adapter_invocation
+from .execution.engine import AdapterEvidenceError, read_completed_adapter_result
 from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
@@ -633,9 +644,11 @@ def _resolve_cycle_sentinels(work_dir: Path | None = None) -> list[str]:
     return [sentinel for sentinel in as_str_list(raw) if sentinel]
 
 
-def _get_test_names() -> dict[str, list[str]]:
+def _get_test_names(work_dir: Path | str | None = None) -> dict[str, list[str]]:
     """Load test names from project config. Empty dict on failure."""
     try:
+        if work_dir is not None:
+            return load_test_configuration_field(work_dir, "tests")
         from booley.config.project_config import TEST_NAMES
 
         return TEST_NAMES
@@ -643,12 +656,14 @@ def _get_test_names() -> dict[str, list[str]]:
         return {}
 
 
-def _get_test_skips() -> dict[str, list[str]]:
+def _get_test_skips(work_dir: Path | str | None = None) -> dict[str, list[str]]:
     """Load per-target known-hang skip lists (tests.toml ``skip``).
 
     Empty dict on failure — a project that declares no skips runs every test.
     """
     try:
+        if work_dir is not None:
+            return load_test_configuration_field(work_dir, "skip")
         from booley.config.project_config import TEST_SKIP
 
         return TEST_SKIP
@@ -656,13 +671,15 @@ def _get_test_skips() -> dict[str, list[str]]:
         return {}
 
 
-def _get_test_envs() -> dict[str, dict[str, str]]:
+def _get_test_envs(work_dir: Path | str | None = None) -> dict[str, dict[str, str]]:
     """Per-Target simulator environment (tests.toml ``env``, F-5).
 
     Empty dict on failure — a Target that declares no ``env`` runs with the
     inherited environment, exactly as before the knob existed.
     """
     try:
+        if work_dir is not None:
+            return load_test_configuration_field(work_dir, "env")
         from booley.config.project_config import TEST_ENV
 
         return TEST_ENV
@@ -670,7 +687,7 @@ def _get_test_envs() -> dict[str, dict[str, str]]:
         return {}
 
 
-def _get_test_selects() -> dict[str, str]:
+def _get_test_selects(work_dir: Path | str | None = None) -> dict[str, str]:
     """Per-target explicit ``select`` templates (tests.toml ``select``).
 
     Only *explicitly declared* templates appear here (the rendering default,
@@ -679,6 +696,8 @@ def _get_test_selects() -> dict[str, str]:
     plusarg template is a config contradiction. Empty dict on failure.
     """
     try:
+        if work_dir is not None:
+            return load_test_configuration_field(work_dir, "select")
         from booley.config.project_config import TEST_SELECT
 
         return TEST_SELECT
@@ -735,8 +754,8 @@ def _resolve_sim_campaign_work_units(
         cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
     except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
         cocotb_modules = {}
-    test_names = _get_test_names()
-    configured_skips = _get_test_skips()
+    test_names = _get_test_names(work_dir)
+    configured_skips = _get_test_skips(work_dir)
     units = 0
     for target in targets:
         if lookup_target_section(cocotb_modules, target):
@@ -1174,6 +1193,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def __init__(self) -> None:
         self._prepared_builds: dict[str, PreparedSimulationBuild] = {}
         self._build_attempt_tokens: dict[str, str] = {}
+        self._adapter_attempts: dict[str, AdapterTransportIdentity] = {}
         super().__init__()
 
     # Simulation is always admitted as a heavy Session Runtime job.
@@ -1361,7 +1381,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         own value. ``{}`` when the Target declares none — the run then inherits
         the ambient environment exactly as before.
         """
-        return dict(lookup_target_section(_get_test_envs(), target) or {})
+        return dict(lookup_target_section(_get_test_envs(self.args.work_dir), target) or {})
 
     def _sim_plusargs(
         self,
@@ -1402,7 +1422,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return plusargs
         tests = lookup_target_section(test_names_map, target) or []
         if test_name in tests:
-            selector = render_test_selector(target, tests.index(test_name), test_name)
+            selector = render_test_selector(
+                target,
+                tests.index(test_name),
+                test_name,
+                work_dir=self.args.work_dir,
+            )
             selector = selector.removeprefix("+")
             selector_key = self._plusarg_key(selector)
             if selector_key is not None:
@@ -1721,15 +1746,19 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         rel: str,
         plusargs: list[str],
         trace_mode: TraceMode,
+        transport: AdapterTransportIdentity | None = None,
     ) -> tuple[str, str]:
         """Return the compile-failure marker and EDA-specific run command."""
         if sim_edam.normalize_eda_tool(resolved.eda_tool) == "icarus":
-            return "iverilog compilation failed", shlex.join(self._icarus_run_cmd(rel, plusargs))
+            return "iverilog compilation failed", shlex.join(
+                self._icarus_run_cmd(rel, plusargs, transport=transport)
+            )
         command = self._verilator_run_cmd(
             rel,
             resolved.toplevel,
             plusargs,
             trace_mode=trace_mode,
+            transport=transport,
         )
         return "Verilator elaboration failed", shlex.join(command)
 
@@ -1752,8 +1781,26 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             test_names_map,
             resolved.parameters,
         )
-        marker, run_line = self._native_run_line(resolved, rel, plusargs, trace_mode)
         attempt_token = new_attempt_token()
+        adapter = sim_edam.normalize_eda_tool(resolved.eda_tool)
+        selected = tuple(self._run_test_names(target, test_name, test_names_map))
+        adapter_result_path = Path(resolved.build_root) / "adapter-result.json"
+        adapter_result_path.unlink(missing_ok=True)
+        transport = AdapterTransportIdentity(
+            adapter=adapter,
+            attempt_token=attempt_token,
+            target_identity=self._target_handle(target).identity,
+            selected_tests=selected,
+            result_path=adapter_result_path,
+        )
+        self._adapter_attempts[target] = transport
+        marker, run_line = self._native_run_line(
+            resolved,
+            rel,
+            plusargs,
+            trace_mode,
+            transport,
+        )
         self._record_build_attempt_token(target, attempt_token)
         script = _build_run_script(
             build_cmd,
@@ -1814,6 +1861,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         plusargs: list[str],
         *,
         trace_mode: TraceMode = TraceMode.VCD_FIFO,
+        transport: AdapterTransportIdentity | None = None,
     ) -> list[str]:
         """Build the ``booley.flows.sim.backends.verilator`` invocation for one sim run.
 
@@ -1823,34 +1871,38 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         still finds them. ``--timeout`` is the binary run budget in seconds (the
         eda_tool ``timeout`` is in ms and bounds the whole make+run via ``_execute``).
         """
-        cmd = [
-            "python3",
-            "-m",
-            "booley.flows.sim.backends.verilator",
-            "--bin-dir",
-            rel,
-            "--top",
-            toplevel,
-            "--timeout",
-            str(max(1, self._effective_timeout_ms() // 1000)),
-        ]
-        cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        if self.args.trace:
-            cmd += ["--trace", "--trace-mode", trace_mode.value]
-        for pa in plusargs:
-            # The ``=`` form is required when a project's test selector is a
-            # getopt-style token (for example ``--meminit=ram,firmware.elf``).
-            # Passing that token as the next argv item makes argparse treat it
-            # as a new runner option instead of the value of ``--plusarg``.
-            cmd.append(f"--plusarg={pa}")
-        cmd += self._sentinel_args()
-        cmd += self._trace_args()
-        return cmd
+        passes, fails = _resolve_sim_sentinels(self.args.work_dir)
+        trace_args = resolve_trace_args(self.args.work_dir) if self.args.trace else []
+        trace_files = resolve_trace_files(self.args.work_dir) if self.args.trace else []
+        return prepare_adapter_invocation(
+            PreparedSimulationWork(
+                adapter="verilator",
+                build_dir=rel,
+                run_cwd=self._simulation_run_cwd(rel),
+                timeout_s=max(1, self._effective_timeout_ms() // 1000),
+                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
+                plusargs=tuple(plusargs),
+                trace=self.args.trace,
+                trace_mode=trace_mode.value,
+                trace_args=tuple(trace_args),
+                trace_files=tuple(trace_files),
+                pass_sentinels=tuple(passes),
+                fail_sentinels=tuple(fails),
+                top=toplevel,
+                tests=transport.selected_tests if transport else (),
+                adapter_result_path=str(transport.result_path) if transport else "",
+                attempt_token=transport.attempt_token if transport else "",
+                target_identity=transport.target_identity if transport else "",
+            )
+        )
 
-    def _icarus_run_cmd(self, rel: str, plusargs: list[str]) -> list[str]:
+    def _icarus_run_cmd(
+        self,
+        rel: str,
+        plusargs: list[str],
+        *,
+        transport: AdapterTransportIdentity | None = None,
+    ) -> list[str]:
         """Build the ``booley.flows.sim.backends.icarus`` invocation for one sim run.
 
         The Icarus mirror of :meth:`_verilator_run_cmd`. ``--build-dir`` is the
@@ -1861,26 +1913,28 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         itself). ``--timeout`` is the run budget in seconds (the EDA tool ``timeout``
         is in ms and bounds the whole make+run via ``_execute``).
         """
-        cmd = [
-            "python3",
-            "-m",
-            "booley.flows.sim.backends.icarus",
-            "--build-dir",
-            rel,
-            "--timeout",
-            str(max(1, self._effective_timeout_ms() // 1000)),
-        ]
-        cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        if self.args.trace:
-            cmd.append("--trace")
-        for pa in plusargs:
-            cmd.append(f"--plusarg={pa}")
-        cmd += self._sentinel_args()
-        cmd += self._trace_args()
-        return cmd
+        passes, fails = _resolve_sim_sentinels(self.args.work_dir)
+        trace_args = resolve_trace_args(self.args.work_dir) if self.args.trace else []
+        trace_files = resolve_trace_files(self.args.work_dir) if self.args.trace else []
+        return prepare_adapter_invocation(
+            PreparedSimulationWork(
+                adapter="icarus",
+                build_dir=rel,
+                run_cwd=self._simulation_run_cwd(rel),
+                timeout_s=max(1, self._effective_timeout_ms() // 1000),
+                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
+                plusargs=tuple(plusargs),
+                trace=self.args.trace,
+                trace_args=tuple(trace_args),
+                trace_files=tuple(trace_files),
+                pass_sentinels=tuple(passes),
+                fail_sentinels=tuple(fails),
+                tests=transport.selected_tests if transport else (),
+                adapter_result_path=str(transport.result_path) if transport else "",
+                attempt_token=transport.attempt_token if transport else "",
+                target_identity=transport.target_identity if transport else "",
+            )
+        )
 
     def _cocotb_run_cmd(
         self,
@@ -1891,41 +1945,29 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         plusargs: list[str] | None = None,
         *,
         trace_scope: str = "",
+        transport: AdapterTransportIdentity | None = None,
     ) -> list[str]:
         """Build one batched Cocotb run-half invocation (ADR 0034)."""
-        cmd = [
-            "python3",
-            "-m",
-            "booley.flows.sim.backends.cocotb",
-            "--build-dir",
-            rel,
-            "--eda-tool",
-            eda_tool,
-            "--cocotb-module",
-            module,
-            "--timeout",
-            str(max(1, self._effective_timeout_ms() // 1000)),
-        ]
-        # ``=`` form like every selector-ish flag (F-12): pytest-parametrized
-        # cocotb names can be arbitrary, and a two-token value starting with
-        # ``-`` would parse as a new runner option.
-        cmd += [f"--test={t}" for t in tests]
-        cmd += ["--result-verbosity", self.args.result_verbosity]
-        # F-25: the frozen-simulator-clock watchdog's grace, forwarded so the
-        # knob crosses into the sandbox with the run-half invocation.
-        cmd += [
-            "--sim-time-grace",
-            str(_resolve_sim_time_grace_s(self.args.work_dir)),
-        ]
-        cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        if self.args.trace:
-            cmd += ["--trace", "--expected-trace-scope", trace_scope]
-        for plusarg in plusargs or []:
-            cmd.append(f"--plusarg={plusarg}")
-        return cmd
+        return prepare_adapter_invocation(
+            PreparedSimulationWork(
+                adapter="cocotb",
+                build_dir=rel,
+                run_cwd=self._simulation_run_cwd(rel),
+                timeout_s=max(1, self._effective_timeout_ms() // 1000),
+                eda_tool=eda_tool,
+                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
+                plusargs=tuple(plusargs or ()),
+                trace=self.args.trace,
+                trace_scope=trace_scope,
+                cocotb_module=module,
+                tests=tuple(tests),
+                result_verbosity=self.args.result_verbosity,
+                sim_time_grace_s=_resolve_sim_time_grace_s(self.args.work_dir),
+                adapter_result_path=str(transport.result_path) if transport else "",
+                attempt_token=transport.attempt_token if transport else "",
+                target_identity=transport.target_identity if transport else "",
+            )
+        )
 
     def _simulation_run_cwd(self, build_dir: str) -> str:
         """Resolve the real or Doctor-isolated simulation runtime directory."""
@@ -1974,6 +2016,17 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             else "Verilator elaboration failed"
         )
         plusargs = self._target_parameter_plusargs(resolved.parameters)
+        attempt_token = new_attempt_token()
+        adapter_result_path = Path(resolved.build_root) / "adapter-result.json"
+        adapter_result_path.unlink(missing_ok=True)
+        transport = AdapterTransportIdentity(
+            adapter="cocotb",
+            attempt_token=attempt_token,
+            target_identity=self._target_handle(target).identity,
+            selected_tests=tuple(tests),
+            result_path=adapter_result_path,
+        )
+        self._adapter_attempts[target] = transport
         run_line = shlex.join(
             self._cocotb_run_cmd(
                 rel,
@@ -1982,9 +2035,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 tests,
                 plusargs,
                 trace_scope=resolved.toplevel,
+                transport=transport,
             )
         )
-        attempt_token = new_attempt_token()
         self._record_build_attempt_token(target, attempt_token)
         script = _build_run_script(
             build_cmd,
@@ -2010,6 +2063,33 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 reason="no authenticated build attempt was recorded",
             )
         return classify_build_outcome(proc, token)
+
+    def _adapter_result(
+        self,
+        target: str,
+        proc: SubprocessResult,
+        build_outcome: BuildOutcome,
+    ) -> AdapterResult | None:
+        """Decode one authenticated terminal result using phase precedence.
+
+        Unit tests that inject a synthetic ``SubprocessResult`` have no real
+        dispatch timestamp and retain their compatibility marker fixtures. A
+        real, normally completed adapter must publish its authenticated result.
+        Build rejection and wrapper timeout precede a missing terminal child
+        result because the adapter may never have reached publication.
+        """
+        identity = self._adapter_attempts.pop(target, None)
+        if identity is None:
+            return None
+        if build_outcome.design_failed:
+            return None
+        try:
+            return read_completed_adapter_result(identity, proc, build_outcome)
+        except AdapterEvidenceError as exc:
+            raise SimulationBuildInfrastructureError(
+                target,
+                setup_failure_outcome(str(exc)),
+            ) from exc
 
     @staticmethod
     def _require_build_verdict(target: str, outcome: BuildOutcome | None) -> None:
@@ -2185,7 +2265,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # isolate arbitrary adapter/configure failures
+        except (
+            SimulationBuildPreparationError,
+            fusesoc_registry.FuseSocError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as exc:
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2210,6 +2296,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         self._persist_full_run_log(target, proc)
         test_run_log = self._persist_test_run_log(target, test_name or target, proc)
         self._require_build_verdict(target, build_outcome)
+        self._adapter_result(target, proc, build_outcome)
 
         result = self._interpret_sim_result(
             combined,
@@ -2448,7 +2535,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         err = self._validate_interactive_args(targets)
         if err is not None:
             return err
-        return targets, _get_test_names()
+        return targets, _get_test_names(self.args.work_dir)
 
     def _maybe_dispatch_special_run(
         self,
@@ -3269,7 +3356,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         selected = [test.name for test in target_result.tests]
         declared = list(
             lookup_target_section(
-                getattr(self, "_test_names_map", None) or _get_test_names(),
+                getattr(self, "_test_names_map", None) or _get_test_names(self.args.work_dir),
                 target_result.target,
             )
             or []
@@ -3281,7 +3368,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         ]
         skipped_tests = self._skipped_tests(
             target_result.target,
-            getattr(self, "_test_names_map", None) or _get_test_names(),
+            getattr(self, "_test_names_map", None) or _get_test_names(self.args.work_dir),
         )
         self.set_criterion(
             crit_key,
@@ -3381,8 +3468,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             "pre_run_commands": _resolve_pre_run_commands(self.args.work_dir),
             "run_cwd": normalized_run_cwd,
             "environment": self._target_sim_env(result.target),
-            "select": lookup_target_section(_get_test_selects(), result.target),
-            "skip": list(lookup_target_section(_get_test_skips(), result.target) or []),
+            "select": lookup_target_section(
+                _get_test_selects(self.args.work_dir), result.target
+            ),
+            "skip": list(
+                lookup_target_section(_get_test_skips(self.args.work_dir), result.target) or []
+            ),
         }
         for test in result.tests:
             test.workload_snapshot = build_workload_snapshot(
@@ -3575,7 +3666,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         command: str | None = None
         try:
-            test_names_map = getattr(self, "_test_names_map", None) or _get_test_names()
+            test_names_map = getattr(self, "_test_names_map", None) or _get_test_names(
+                self.args.work_dir
+            )
             if self.is_cocotb_target(target):
                 tests = self._resolve_tests_to_run(target, test_names_map)
                 selected = [t for t in tests if t is not None]
@@ -3584,7 +3677,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # report context is best-effort
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3608,7 +3701,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # report context is best-effort
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3686,7 +3779,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # isolate arbitrary cocotb setup failures
+        except (
+            SimulationBuildPreparationError,
+            fusesoc_registry.FuseSocError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as exc:
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
@@ -3733,6 +3832,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         combined = proc.stdout + "\n" + proc.stderr
         self._persist_full_run_log(target, proc)  # F-29e, as on the HDL loop
         self._require_build_verdict(target, build_outcome)
+        self._adapter_result(target, proc, build_outcome)
         test_results, trace_inconclusive = self._interpret_cocotb_result(
             combined,
             proc,
@@ -4068,7 +4168,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         the ``--skip`` arg adds ad-hoc ones for a single call. Both match test
         names exactly (unlike ``--test``'s substring include-filter).
         """
-        skips = set(lookup_target_section(_get_test_skips(), target) or [])
+        skips = set(
+            lookup_target_section(_get_test_skips(self.args.work_dir), target) or []
+        )
         if self.args.skip:
             skips.update(s.strip() for s in self.args.skip.split(",") if s.strip())
         return skips
@@ -4120,7 +4222,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         Returns an ``EXIT_ERROR`` McpToolResult on the first offending target,
         else ``None``.
         """
-        selects = _get_test_selects()
+        selects = _get_test_selects(self.args.work_dir)
         for target in targets:
             if lookup_target_section(selects, target) is not None and self.is_cocotb_target(
                 target
@@ -4202,7 +4304,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         suite = resolve_target_test_suite(
             target,
             test_names=test_names_map,
-            test_skips=_get_test_skips(),
+            test_skips=_get_test_skips(self.args.work_dir),
         )
         return list(suite.tests)
 
@@ -4226,7 +4328,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             resolve_target_test_suite(
                 target,
                 test_names=test_names_map,
-                test_skips=_get_test_skips(),
+                test_skips=_get_test_skips(self.args.work_dir),
             ).skipped
         )
 

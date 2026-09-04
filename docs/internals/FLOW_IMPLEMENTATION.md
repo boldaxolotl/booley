@@ -207,6 +207,29 @@ Target's `cocotb_module` flow option (never from `tests.toml`); cocotb Targets
 support Icarus and Verilator and drive test selection through `COCOTB_TEST_FILTER`
 rather than a plusarg.
 
+### Internal adapter boundary
+
+Simulation's private adapter boundary is split deliberately. `sim.build`
+prepares and authenticates the shared Edalize build stage. The
+`sim.execution` package owns caller invariants, Project-root-scoped Pre-Run and
+artifact-integrity policy, and the sole adapter composition point. The three
+leaf modules under `sim.backends` render and execute only their own simulator
+invocation; no leaf imports a sibling adapter or `sim.flow`.
+
+Parent-to-child result transport is a versioned JSON document bound to an
+unpredictable attempt token, adapter name, durable Target identity, and ordered
+selected-test set. Adapters write it atomically and retain the historical
+`[SIM_SUMMARY]`, `[COCOTB_RESULTS]`, `result.json`, and `results.xml` outputs for
+compatibility. A consumer validates the complete identity and rejects malformed,
+stale, reordered, duplicate, or contradictory evidence. Trace artifacts are
+additionally checked for containment, regular-file status, and freshness;
+Project-configured absolute trace paths must be explicitly allowlisted.
+
+`TargetHandle.project_root` is authoritative at this boundary. Test registry
+fields and `[flows.sim]` settings are loaded for that checkout on each current
+or Cycle Count baseline invocation rather than borrowed from the lazy
+active-Project cache.
+
 ### Configuration boundary
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the

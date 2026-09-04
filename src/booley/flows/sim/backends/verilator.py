@@ -32,6 +32,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.run_log import write_run_log
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    AdapterTransportIdentity,
+    add_transport_arguments,
+    transport_identity_from_args,
+    write_adapter_result,
+)
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
     TraceFileSnapshot,
@@ -50,6 +58,87 @@ from booley.flows.sim.result import (
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
+
+
+def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
+    """Render one parent-side Verilator adapter invocation."""
+    if work.adapter != "verilator":
+        raise ValueError(f"Verilator adapter cannot prepare {work.adapter!r} work")
+    cmd = [
+        "python3",
+        "-m",
+        "booley.flows.sim.backends.verilator",
+        "--bin-dir",
+        work.build_dir,
+        "--top",
+        work.top,
+        "--timeout",
+        str(work.timeout_s),
+    ]
+    if work.max_rundir_bytes > 0:
+        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
+    if work.run_cwd:
+        cmd += ["--run-cwd", work.run_cwd]
+    if work.trace:
+        cmd += ["--trace", "--trace-mode", work.trace_mode]
+    cmd += [f"--plusarg={value}" for value in work.plusargs]
+    cmd += [f"--pass-sentinel={value}" for value in work.pass_sentinels]
+    cmd += [f"--fail-sentinel={value}" for value in work.fail_sentinels]
+    if work.trace:
+        cmd += [f"--trace-arg={value}" for value in work.trace_args]
+        cmd += [f"--trace-file={value}" for value in work.trace_files]
+    if work.adapter_result_path:
+        cmd += [
+            "--adapter-result",
+            work.adapter_result_path,
+            "--attempt-token",
+            work.attempt_token,
+            "--target-identity",
+            work.target_identity,
+        ]
+        cmd += [f"--selected-test={name}" for name in work.tests]
+    return cmd
+
+
+def _publish_adapter_result(
+    identity: AdapterTransportIdentity | None,
+    output: str,
+    returncode: int,
+    *,
+    failure_kind: str = "",
+    pass_sentinels: list[str] | None = None,
+    fail_sentinels: list[str] | None = None,
+    trace_required: bool = False,
+    detail: str = "",
+) -> None:
+    """Publish normalized terminal evidence without replacing compatibility output."""
+    if identity is None:
+        return
+    verdict = parse_sim_verdict(
+        output,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+    )
+    sva_errors = count_sva_errors(output)
+    timed_out = "simulation timed out" in output.lower()
+    trace_missing = trace_required and "TRACE_OK:" not in output
+    inconclusive = (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
+    kind = failure_kind
+    if not kind:
+        kind = "timeout" if timed_out else "artifact" if trace_missing else ""
+    if not kind and inconclusive:
+        kind = "inconclusive"
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=verdict is True and returncode == 0 and sva_errors == 0 and not trace_missing,
+            inconclusive=inconclusive,
+            sva_errors=sva_errors,
+            tests=identity.selected_tests,
+            failure_kind=kind,
+            detail=detail,
+        ),
+    )
 
 
 def _find_binary(bin_dir: Path, top_module: str) -> Path | None:
@@ -685,13 +774,22 @@ def run_verilated_binary(
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     max_rundir_bytes: int = 0,
+    transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run one edalize-built ``V<top>`` under the resolved trace recipe."""
     paths = _resolve_run_paths(bin_dir, run_cwd, work_dir)
     paths.work_dir.mkdir(parents=True, exist_ok=True)
     exe = _find_binary(paths.bin_dir, top_module)
     if exe is None:
-        return _report_missing_binary(paths.bin_dir, top_module, paths.work_dir)
+        output = _report_missing_binary(paths.bin_dir, top_module, paths.work_dir)
+        _publish_adapter_result(
+            transport,
+            output,
+            1,
+            failure_kind="infrastructure",
+            detail=output.strip(),
+        )
+        return output
     scope = _resolve_single_scope(trace_scope)
     cmd, env = _build_run_cmd(exe, paths.bin_dir, plusargs)
     trace = _prepare_trace_runtime(paths, vcd, scope, trace_files, cmd, trace_args, trace_mode)
@@ -703,10 +801,27 @@ def run_verilated_binary(
     try:
         lines, proc = _execute_with_heartbeat(cmd, paths, env, timeout, trace, max_rundir_bytes)
     except subprocess.TimeoutExpired as exc:
-        return _timeout_result(exc, timeout, paths.work_dir)
-    return _finalize_verilated_run(
+        output = _timeout_result(exc, timeout, paths.work_dir)
+        _publish_adapter_result(
+            transport,
+            output,
+            1,
+            failure_kind="timeout",
+            detail=f"Verilator simulation timed out after {timeout}s",
+        )
+        return output
+    output = _finalize_verilated_run(
         lines, proc, paths, trace, trace_files, pass_sentinels, fail_sentinels
     )
+    _publish_adapter_result(
+        transport,
+        output,
+        proc.returncode,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+        trace_required=vcd,
+    )
+    return output
 
 
 def _positive_int(value: str) -> int:
@@ -795,11 +910,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     _add_trace_arguments(parser)
     _add_verdict_arguments(parser)
+    add_transport_arguments(parser)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    transport = transport_identity_from_args(args, "verilator")
     # Entry-point only (never the in-process API): tie this supervisor's life to
     # its parent's so simulate's wrapper timeout cannot orphan it (F-13).
     from booley.flows.sim.run_guard import install_parent_death_guard
@@ -820,6 +937,7 @@ def main(argv: list[str] | None = None) -> int:
         pass_sentinels=args.pass_sentinels or None,
         fail_sentinels=args.fail_sentinels or None,
         max_rundir_bytes=args.max_rundir_bytes,
+        transport=transport,
     )
     # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.
     verdict = parse_sim_verdict(

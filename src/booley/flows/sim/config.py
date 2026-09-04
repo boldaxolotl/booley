@@ -40,3 +40,8 @@ def resolve_trace_args(work_dir: Path | str | None = None) -> list[str]:
 def resolve_trace_files(work_dir: Path | str | None = None) -> list[str]:
     """Return declared trace artifact paths or globs in search order."""
     return [str(path) for path in (_sim_config(work_dir).get("trace_files") or [])]
+
+
+def resolve_pre_run_commands(work_dir: Path | str | None = None) -> list[str]:
+    """Return Project-owned shell lines run before each Simulation work unit."""
+    return [str(command) for command in (_sim_config(work_dir).get("pre_run_commands") or [])]
