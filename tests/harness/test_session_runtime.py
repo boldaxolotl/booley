@@ -2776,6 +2776,30 @@ class TestMangledArgWarning:
         run.assert_called_once_with(workspace, cmd, tty=False)
 
 
+class _ParallelEnterProbe:
+    def __init__(self, command_env: dict[str, str]) -> None:
+        self.command_env = command_env
+        self.first_selecting = threading.Event()
+        self.release_first = threading.Event()
+        self.second_waiting = threading.Event()
+        self.execution_barrier = threading.Barrier(2)
+        self.select_guard = threading.Lock()
+        self.select_calls = 0
+
+    def select_runtime(self, _workspace: Path) -> tuple[str, dict[str, str]]:
+        with self.select_guard:
+            self.select_calls += 1
+            call = self.select_calls
+        if call == 1:
+            self.first_selecting.set()
+            assert self.release_first.wait(timeout=2)
+        return "runtime", self.command_env
+
+    def run_command(self, *_args, **_kwargs) -> SimpleNamespace:
+        self.execution_barrier.wait(timeout=2)
+        return SimpleNamespace(exit_code=0)
+
+
 class TestRunProjectCommand:
     COMMAND_ENV: ClassVar[dict[str, str]] = {
         "HTTP_PROXY": dc.PROXY_URL,
@@ -2911,53 +2935,34 @@ class TestRunProjectCommand:
     ) -> None:
         from booley.harness import lifecycle_lock
 
-        first_selecting = threading.Event()
-        release_first = threading.Event()
-        second_waiting = threading.Event()
-        select_guard = threading.Lock()
-        execution_barrier = threading.Barrier(2)
-        select_calls = 0
-
-        def select_runtime(_workspace: Path) -> tuple[str, dict[str, str]]:
-            nonlocal select_calls
-            with select_guard:
-                select_calls += 1
-                call = select_calls
-            if call == 1:
-                first_selecting.set()
-                assert release_first.wait(timeout=2)
-            return "runtime", self.COMMAND_ENV
+        probe = _ParallelEnterProbe(self.COMMAND_ENV)
 
         real_wait = lifecycle_lock.wait_for_file_lock
 
         def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
-            if first_selecting.is_set():
-                second_waiting.set()
+            if probe.first_selecting.is_set():
+                probe.second_waiting.set()
             real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
-
-        def run_command(*_args, **_kwargs) -> SimpleNamespace:
-            execution_barrier.wait(timeout=2)
-            return SimpleNamespace(exit_code=0)
 
         monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
         monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
-        monkeypatch.setattr(sr, "_select_or_start_project_runtime", select_runtime)
+        monkeypatch.setattr(sr, "_select_or_start_project_runtime", probe.select_runtime)
         monkeypatch.setattr(
             "booley.harness.runtime_attachment.run_command",
-            run_command,
+            probe.run_command,
         )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             first = executor.submit(sr.enter, workspace, ["bwave", "first"], tty=False)
-            assert first_selecting.wait(timeout=2)
+            assert probe.first_selecting.wait(timeout=2)
             second = executor.submit(sr.enter, workspace, ["bwave", "second"], tty=False)
-            assert second_waiting.wait(timeout=2)
+            assert probe.second_waiting.wait(timeout=2)
             assert not second.done()
-            release_first.set()
+            probe.release_first.set()
             assert first.result(timeout=5) == 0
             assert second.result(timeout=5) == 0
 
-        assert select_calls == 2
+        assert probe.select_calls == 2
 
     def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
         request = self._request(workspace)
