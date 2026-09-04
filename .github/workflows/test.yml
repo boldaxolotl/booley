@@ -687,6 +687,17 @@ jobs:
             --contract .github/contracts/session-runtime.toml \
             --evidence "${RUNNER_TEMP}/docker-build-evidence/runtime-contract.json"
 
+      - name: Enforce standard image size ceiling
+        run: |
+          PYTHONPATH=src python .github/scripts/image_size_report.py \
+            --runtime-image sandbox=booley-test \
+            --limits .github/contracts/image-size-limits.toml \
+            --limit-image sandbox \
+            --json "${RUNNER_TEMP}/docker-build-evidence/standard-image-size.json" \
+            --markdown "${RUNNER_TEMP}/docker-build-evidence/standard-image-size.md"
+          cat "${RUNNER_TEMP}/docker-build-evidence/standard-image-size.md" \
+            >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Record standard runtime resource observations
         run: |
           python .github/scripts/image_runtime_resources.py \

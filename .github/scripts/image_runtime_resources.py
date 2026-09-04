@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -93,9 +94,20 @@ def measure_image(name: str, reference: str, runs: int) -> dict[str, object]:
     }
     return {
         "reference": reference,
+        "image_id": _docker(["image", "inspect", "--format", "{{.Id}}", reference]).stdout.strip(),
         "cold_container_start": measure_startup(reference, runs),
         "peak_rss_kib": peak_rss,
         "max_representative_peak_rss_kib": max(peak_rss.values()),
+    }
+
+
+def report(references: dict[str, str], *, runs: int, candidate_sha: str) -> dict[str, object]:
+    images = {name: measure_image(name, reference, runs) for name, reference in references.items()}
+    return {
+        "schema": 1,
+        "candidate_sha": candidate_sha,
+        "checks": [{"id": f"runtime-resources.{name}", "status": "pass"} for name in images],
+        "images": images,
     }
 
 
@@ -149,17 +161,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", action="append", required=True, type=_named_reference)
     parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--candidate-sha", default=os.environ.get("GITHUB_SHA", "unknown"))
     parser.add_argument("--json", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     args = parser.parse_args()
     references = _unique_references(args.image)
-    payload = {
-        "schema": 1,
-        "images": {
-            name: measure_image(name, reference, args.runs)
-            for name, reference in references.items()
-        },
-    }
+    payload = report(references, runs=args.runs, candidate_sha=args.candidate_sha)
     args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     args.markdown.write_text(markdown(payload), encoding="utf-8")
     return 0

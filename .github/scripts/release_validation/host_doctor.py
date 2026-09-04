@@ -70,6 +70,7 @@ def validate(
     expected_uid: int,
     expected_gid: int,
     candidate_sha: str,
+    image_digest: str,
 ) -> dict[str, object]:
     project = _inside(allowed_root, project, "project")
     home = _inside(allowed_root, home, "home")
@@ -99,7 +100,7 @@ def validate(
         probe.unlink(missing_ok=True)
     return {
         "schema": 1,
-        "candidate_sha": candidate_sha,
+        "candidate": {"sha": candidate_sha, "image_digest": image_digest},
         "identity": identity,
         "checks": checks,
         "cleanup": {"editor_probe_removed": not probe.exists()},
@@ -115,6 +116,7 @@ def main() -> int:
     parser.add_argument("--expected-uid", type=int, default=1000)
     parser.add_argument("--expected-gid", type=int, required=True)
     parser.add_argument("--candidate-sha", default=os.environ.get("GITHUB_SHA", "unknown"))
+    parser.add_argument("--image-digest", required=True)
     parser.add_argument("--evidence", required=True, type=Path)
     args = parser.parse_args()
     evidence = validate(
@@ -125,6 +127,7 @@ def main() -> int:
         expected_uid=args.expected_uid,
         expected_gid=args.expected_gid,
         candidate_sha=args.candidate_sha,
+        image_digest=args.image_digest,
     )
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")

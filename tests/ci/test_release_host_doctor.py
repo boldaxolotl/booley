@@ -51,6 +51,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
         expected_uid=os.getuid(),
         expected_gid=os.getgid(),
         candidate_sha="candidate-sha",
+        image_digest="sha256:candidate",
     )
 
     commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
@@ -60,7 +61,10 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
         ["doctor", "--deep", "--skip-agent-checks"],
     ]
     assert evidence["schema"] == 1
-    assert evidence["candidate_sha"] == "candidate-sha"
+    assert evidence["candidate"] == {
+        "sha": "candidate-sha",
+        "image_digest": "sha256:candidate",
+    }
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
     assert evidence["checks"][-1] == {
         "id": "host-doctor.deep-issued-image",
@@ -84,4 +88,5 @@ def test_host_doctor_rejects_project_outside_isolated_root(tmp_path: Path) -> No
             expected_uid=os.getuid(),
             expected_gid=os.getgid(),
             candidate_sha="candidate-sha",
+            image_digest="sha256:candidate",
         )

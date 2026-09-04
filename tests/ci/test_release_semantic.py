@@ -48,3 +48,44 @@ def test_pr_topology_requires_one_minute_semantic_budget() -> None:
     errors = semantic.validate_pr_topology(workflow)
 
     assert errors == ("release-semantic must enforce a 60-second duration budget",)
+
+
+def test_release_topology_splits_validation_by_image_dependency() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+
+    assert semantic.validate_release_topology(workflow) == ()
+
+    jobs = workflow["jobs"]
+    validation_jobs = {
+        "standard-image-contract",
+        "openroad-runtime",
+        "host-doctor-runtime",
+        "simulation-selftest-overlay",
+        "helper-image-metadata",
+        "riscv-image-contract",
+        "demo-ticket-surface",
+        "picorv32-demo-flows",
+        "ibex-lint-demo",
+    }
+    assert validation_jobs <= set(jobs)
+    assert "demo-smoke" not in jobs
+    assert set(jobs["promote"]["needs"]) == {
+        "build-and-push",
+        "build-and-push-riscv",
+        *validation_jobs,
+    }
+
+
+def test_release_topology_rejects_riscv_output_reference_in_standard_job() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    workflow["jobs"]["openroad-runtime"]["steps"][0]["name"] = (
+        "${{ needs.build-and-push-riscv.outputs.image-digest }}"
+    )
+
+    assert semantic.validate_release_topology(workflow) == (
+        "standard release job openroad-runtime references the RISC-V build output",
+    )

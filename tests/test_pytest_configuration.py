@@ -259,6 +259,20 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     )
 
 
+def test_standard_size_ceiling_runs_without_riscv_gate() -> None:
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+
+    size_contract = next(
+        step for step in steps if step.get("name") == "Enforce standard image size ceiling"
+    )
+
+    assert "if" not in size_contract
+    assert "--runtime-image sandbox=booley-test" in size_contract["run"]
+    assert "--limit-image sandbox" in size_contract["run"]
+    assert "--limits .github/contracts/image-size-limits.toml" in size_contract["run"]
+
+
 def test_riscv_image_lane_is_path_gated() -> None:
     """The slow derived-image contract runs only when its owning inputs change."""
     workflow = _test_workflow()

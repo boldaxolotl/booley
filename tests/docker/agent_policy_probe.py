@@ -77,19 +77,20 @@ def _assert_diagnostics() -> None:
     assert report["checks"]["config.load"]["summary"] == "config loaded"
 
 
-def _descendant_pids(root_pid: int) -> set[int]:
-    descendants: set[int] = set()
-    pending = [root_pid]
-    while pending:
-        parent = pending.pop()
-        try:
-            text = Path(f"/proc/{parent}/task/{parent}/children").read_text()
-        except FileNotFoundError:
+def _process_group_pids(group_id: int) -> set[int]:
+    members: set[int] = set()
+    for process_dir in Path("/proc").iterdir():
+        if not process_dir.name.isdigit():
             continue
-        children = {int(value) for value in text.split()}
-        descendants.update(children)
-        pending.extend(children)
-    return descendants
+        try:
+            stat = (process_dir / "stat").read_text()
+        except (FileNotFoundError, PermissionError):
+            continue
+        _, separator, suffix = stat.rpartition(")")
+        fields = suffix.split()
+        if separator and len(fields) >= 3 and int(fields[2]) == group_id:
+            members.add(int(process_dir.name))
+    return members
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -101,16 +102,32 @@ def _pid_is_running(pid: int) -> bool:
     return bool(separator) and suffix.split()[0] != "Z"
 
 
-def _wait_for_exit(pids: set[int], timeout: float) -> set[int]:
+def _wait_for_group_members(group_id: int, root_pid: int, timeout: float) -> set[int]:
     deadline = time.monotonic() + timeout
-    running = {pid for pid in pids if _pid_is_running(pid)}
+    while time.monotonic() < deadline:
+        members = _process_group_pids(group_id) - {root_pid}
+        if members:
+            return members
+        time.sleep(0.05)
+    return set()
+
+
+def _wait_for_group_exit(group_id: int, timeout: float) -> set[int]:
+    deadline = time.monotonic() + timeout
+    running = {pid for pid in _process_group_pids(group_id) if _pid_is_running(pid)}
     while running and time.monotonic() < deadline:
         time.sleep(0.05)
-        running = {pid for pid in running if _pid_is_running(pid)}
+        running = {pid for pid in _process_group_pids(group_id) if _pid_is_running(pid)}
     return running
 
 
-def _probe_signal(name: str, command: list[str], env: dict[str, str]) -> int:
+def _probe_signal(
+    name: str,
+    command: list[str],
+    env: dict[str, str],
+    *,
+    readiness_timeout: float = 5.0,
+) -> int:
     process = subprocess.Popen(
         command,
         env=env,
@@ -120,14 +137,14 @@ def _probe_signal(name: str, command: list[str], env: dict[str, str]) -> int:
         text=True,
         start_new_session=True,
     )
-    descendants: set[int] = set()
+    group_id = process.pid
     try:
-        time.sleep(0.5)
         assert process.poll() is None, f"{name} stdio server exited before signal"
-        descendants = _descendant_pids(process.pid)
+        descendants = _wait_for_group_members(group_id, process.pid, readiness_timeout)
+        assert descendants, f"{name} started no descendant process"
         os.kill(process.pid, signal.SIGTERM)
         stdout, stderr = process.communicate(timeout=10)
-        survivors = _wait_for_exit(descendants, timeout=10)
+        survivors = _wait_for_group_exit(group_id, timeout=10)
         assert not survivors, f"{name} left descendants running after SIGTERM: {survivors}"
         expected_terminations = {0, -signal.SIGTERM, 128 + signal.SIGTERM}
         assert process.returncode in expected_terminations, (
@@ -136,14 +153,10 @@ def _probe_signal(name: str, command: list[str], env: dict[str, str]) -> int:
         )
         return process.returncode
     finally:
-        if process.poll() is None or _wait_for_exit(descendants, timeout=0):
+        if process.poll() is None or _wait_for_group_exit(group_id, timeout=0):
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-            for pid in _wait_for_exit(descendants, timeout=0):
-                with suppress(ProcessLookupError):
-                    os.kill(pid, signal.SIGKILL)
-            if process.poll() is None:
-                process.wait(timeout=5)
+        process.communicate(timeout=5)
 
 
 def _assert_signal_propagation(root: Path) -> dict[str, int]:

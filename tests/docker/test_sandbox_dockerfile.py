@@ -15,6 +15,14 @@ _DOCKER_DIR = _DOCKERFILE.parent
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
 
 
+def _workflow(path: str) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+
+def _named_step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
 def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
@@ -555,128 +563,87 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
     assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
-def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
+    job = _workflow(".github/workflows/docker-publish.yml")["jobs"]["host-doctor-runtime"]
+    prepare = _named_step(job, "Prepare isolated uid-1000 host")["run"]
+    validate = _named_step(job, "Run isolated host validation")
 
-    trusted_cli_setup = """      - name: Install release CLI
-        run: |
-          python -m pip install --user .
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-"""
-    assert trusted_cli_setup in workflow
+    assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
+    assert '"${root}/venv/bin/pip" install .' in prepare
+    assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
+    assert "/usr/bin/booley" not in prepare + validate["run"]
     assert (
-        'sudo install -o root -g root -m 0755 "${HOME}/.local/bin/booley" "/usr/bin/booley"'
-    ) in workflow
-
-
-def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-
-    contract_check = "      - name: Verify exact reviewed demo contract\n"
-    initialize = "      - name: Initialize demo cleanly as documented\n"
-    staged_ownership = "      - name: Prepare staged demo ownership\n"
-    host_doctor = "      - name: Run host Doctor issued-image probe\n"
-    surface_smoke = "      - name: Run demo Doctor and ticket-authoring surface smoke\n"
-    assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
-    assert contract_check in workflow
-    assert workflow.index(contract_check) < workflow.index(initialize)
-    assert workflow.index(initialize) < workflow.index(staged_ownership)
-    assert workflow.index(staged_ownership) < workflow.index(host_doctor)
-    assert workflow.index(initialize) < workflow.index(surface_smoke)
-    assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
-    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
-    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
-    assert "set -o pipefail" in workflow
-    assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
-    ownership_fragments = (
-        'doctor_gid="$(getent passwd 1000 | cut -d: -f4)"',
-        'echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"',
-        'sudo chown -R "1000:${doctor_gid}" "${HOME}/.config/booley"',
-        'sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-picorv32-demo"',
-        'sudo chmod -R u+rwX "${RUNNER_TEMP}/booley-picorv32-demo"',
+        '"${GITHUB_WORKSPACE}/.github/scripts/release_validation/host_doctor.py"'
+        in validate["run"]
     )
-    assert all(fragment in workflow for fragment in ownership_fragments)
-    host_doctor_section = workflow[
-        workflow.index(host_doctor) : workflow.index(
-            "      - name: Measure release image storage contract\n"
-        )
-    ]
-    identity_fragments = (
-        "runner_groups=\"$(id -G | tr ' ' ',')\"",
-        "/usr/bin/setpriv",
-        '--reuid=1000 --regid="${DOCTOR_GID}"',
-        '--groups="${DOCTOR_GID},${runner_groups}"',
-        '"/usr/bin/booley" doctor --deep --skip-agent-checks',
-        "      - name: Restore runner ownership after host Doctor\n        if: always()",
-    )
-    assert all(fragment in host_doctor_section for fragment in identity_fragments)
-    assert 'grep -Fq "[!!]" "${init_log}"' in workflow
-    assert workflow.count('doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
-    assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
-    assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
-    assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
-    assert "BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register" in workflow
-    assert "booley-ticket-create" in workflow
-    assert "python -m booley.ticket_board validate-ticket" in workflow
-    assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
-    assert workflow.count("bash /booley-source/.github/scripts/verify_picorv32_demo.sh") == 1
-    contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
-    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
-    assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
-    assert '--mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work' in workflow
-    assert "add-rv32-zbb-pcpi-co-processor" not in workflow
-    assert "python -m booley.ticket_board parse-ticket" not in workflow
+
+
+def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    surface = jobs["demo-ticket-surface"]
+    flows = jobs["picorv32-demo-flows"]
+
+    for job in (surface, flows):
+        prepare = _named_step(job, "Prepare exact reviewed demo contract")
+        assert prepare["uses"] == "./.github/actions/prepare-picorv32-demo"
+        assert job["needs"] == ["build-and-push", "build-and-push-riscv"]
     assert (
-        """      - name: Restore demo checkout ownership
-        if: always()
-        run: |
-          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
-            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
-          fi
-"""
-        in workflow
+        "-m release_validation.demo_surface"
+        in _named_step(surface, "Validate immutable ticket surface")["run"]
     )
+    assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
+    assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
+    assert _named_step(flows, "Restore demo ownership")["if"] == "always()"
 
 
-def test_release_promotes_stable_tags_only_after_demo_smoke() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_promotes_stable_tags_only_after_independent_gates() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    standard_build = next(
+        step for step in jobs["build-and-push"]["steps"] if step.get("id") == "build"
+    )
+    riscv_build = next(
+        step for step in jobs["build-and-push-riscv"]["steps"] if step.get("id") == "build"
+    )
+    promotion = _named_step(jobs["promote"], "Promote exact tested digests without rebuilding")
 
-    build_section = workflow[: workflow.index("  demo-smoke:")]
-    promote_section = workflow[workflow.index("  promote:") :]
     assert (
         ":candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
-        in build_section
+        in standard_build["with"]["tags"]
     )
-    assert ":latest" not in build_section
-    assert "needs: [build-and-push, build-and-push-riscv, demo-smoke]" in promote_section
-    assert "docker buildx imagetools create" in promote_section
-    assert ":latest" in promote_section
+    assert ":latest" not in standard_build["with"]["tags"] + riscv_build["with"]["tags"]
+    assert set(jobs["promote"]["needs"]) - {"build-and-push", "build-and-push-riscv"} == {
+        "standard-image-contract",
+        "openroad-runtime",
+        "host-doctor-runtime",
+        "simulation-selftest-overlay",
+        "helper-image-metadata",
+        "riscv-image-contract",
+        "demo-ticket-surface",
+        "picorv32-demo-flows",
+        "ibex-lint-demo",
+    }
+    assert "docker buildx imagetools create" in promotion["run"]
+    assert ":latest" in promotion["run"]
 
 
-def test_release_reports_registry_and_sidecar_image_sizes_after_initialization() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_release_image_measurements_are_variant_scoped() -> None:
+    jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
+    standard = _named_step(
+        jobs["standard-image-contract"], "Validate provenance, runtime, size, and resources"
+    )["run"]
+    riscv = _named_step(jobs["riscv-image-contract"], "Validate exact RISC-V candidate")["run"]
+    helper = _named_step(jobs["helper-image-metadata"], "Build and inspect helper images")
 
-    initialize = "      - name: Initialize demo cleanly as documented\n"
-    measure = "      - name: Measure release image storage contract\n"
-    assert workflow.index(initialize) < workflow.index(measure)
-    assert ".github/scripts/image_size_report.py" in workflow
-    assert '--registry-image "sandbox=${BASE_IMAGE}"' in workflow
-    assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
-    assert '--local-image "proxy=booley-egress-proxy"' in workflow
-    assert '--local-image "reaper=booley-reaper"' in workflow
-    assert "--limits .github/contracts/image-size-limits.toml" in workflow
-    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
-    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
-    assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
-    assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
+    assert "--limit-image sandbox" in standard
+    assert '--registry-image "sandbox=${IMAGE}"' in standard
+    assert "--limit-image riscv" in riscv
+    assert '--registry-image "riscv=${RISCV_IMAGE}"' in riscv
+    assert helper["run"] == "bash .github/scripts/sidecar-build-evidence.sh"
 
-    pr_workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    assert "--limits .github/contracts/image-size-limits.toml" in pr_workflow
-    assert ".github/scripts/image_runtime_resources.py" in pr_workflow
-    standard_measure = "      - name: Record standard runtime resource observations\n"
-    evidence_upload = "      - name: Upload Docker build evidence\n"
-    assert pr_workflow.index(standard_measure) < pr_workflow.index(evidence_upload)
-    assert "--image sandbox=booley-test" in pr_workflow
+    pr_job = _workflow(".github/workflows/test.yml")["jobs"]["bwave-smoke"]
+    standard_size = _named_step(pr_job, "Enforce standard image size ceiling")["run"]
+    assert "--limit-image sandbox" in standard_size
+    assert "--runtime-image sandbox=booley-test" in standard_size
 
 
 def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:

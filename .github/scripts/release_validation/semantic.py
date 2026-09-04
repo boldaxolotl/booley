@@ -23,6 +23,19 @@ _REGRESSION_PATHS = {
     },
     "src/booley/flows/synth/flow.py": {"release_sensitive", "standard_image"},
 }
+_STANDARD_RELEASE_JOBS = {
+    "standard-image-contract",
+    "openroad-runtime",
+    "host-doctor-runtime",
+    "simulation-selftest-overlay",
+    "helper-image-metadata",
+}
+_RISCV_RELEASE_JOBS = {
+    "riscv-image-contract",
+    "demo-ticket-surface",
+    "picorv32-demo-flows",
+    "ibex-lint-demo",
+}
 
 
 def _mapping(value: object, label: str) -> dict[str, Any]:
@@ -43,6 +56,16 @@ def _commands(job: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(step.get("run", "")) for step in steps if isinstance(step, dict))
 
 
+def _strings(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, dict):
+        return tuple(text for child in value.values() for text in _strings(child))
+    if isinstance(value, list):
+        return tuple(text for child in value for text in _strings(child))
+    return ()
+
+
 def validate_pr_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     jobs = _mapping(workflow.get("jobs"), "test workflow jobs")
     semantic = _mapping(jobs.get("release-semantic"), "release-semantic job")
@@ -59,9 +82,26 @@ def validate_pr_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
 
 def validate_release_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     jobs = _mapping(workflow.get("jobs"), "release workflow jobs")
-    if "promote" not in jobs:
-        return ("release workflow must define promote",)
-    return ()
+    expected = _STANDARD_RELEASE_JOBS | _RISCV_RELEASE_JOBS
+    errors: list[str] = []
+    missing = sorted(expected - set(jobs))
+    if missing:
+        errors.append(f"release workflow misses split jobs: {','.join(missing)}")
+        return tuple(errors)
+    for name in _STANDARD_RELEASE_JOBS:
+        job = _mapping(jobs[name], name)
+        if "build-and-push-riscv" in _needs(job):
+            errors.append(f"{name} must not depend on build-and-push-riscv")
+        if any("needs.build-and-push-riscv" in text for text in _strings(job)):
+            errors.append(f"standard release job {name} references the RISC-V build output")
+    for name in _RISCV_RELEASE_JOBS:
+        if "build-and-push-riscv" not in _needs(_mapping(jobs[name], name)):
+            errors.append(f"{name} must depend on build-and-push-riscv")
+    promote = _mapping(jobs.get("promote"), "promote job")
+    required = expected | {"build-and-push", "build-and-push-riscv"}
+    if _needs(promote) != required:
+        errors.append("promote must depend on every split release validation")
+    return tuple(errors)
 
 
 def _classifier_errors() -> tuple[str, ...]:
