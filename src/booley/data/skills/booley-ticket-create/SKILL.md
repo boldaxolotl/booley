@@ -19,6 +19,21 @@ booley-ticket-create <fuzzy description>          # human mode (default)
 booley-ticket-create --agent <structured input>   # agent mode — no interaction
 ```
 
+## Output Boundary
+
+Ticket creation authors only the Ticket, any new Target definitions approved at the
+Step 2f gate, and empty placeholder files for Scope paths marked `[new]`. A new Target
+definition may be added to an existing Target-definition file, but existing Targets
+remain unchanged.
+
+The developer who runs the Ticket authors its implementation. A placeholder is a
+zero-byte file: do not put declarations, modules, packages, assertions, stimulus,
+functions, comments, or any other content in it. Leave existing RTL (including
+Verilog/SystemVerilog/VHDL), HDL testbenches, firmware, Python, scripts, constraints,
+generators, build hooks, and every other implementation or support-code file unchanged.
+If validation or sealing would require code beyond an approved new Target definition,
+stop and report the blocker; creating that code is outside this skill.
+
 ## Step 1: Parse Input
 
 `--agent` in `$ARGUMENTS` → **agent mode** (Step 3). Otherwise → **human mode** (Step 2).
@@ -122,13 +137,14 @@ mechanics require no further user confirmation.
 ## Step 4: Author and Seal
 
 Follow §C end to end after ticket approval: create the draft, open its contract
-worktrees, author every needed Target/control file there, validate, seal, and enqueue.
-Author the new Targets exactly as approved at the 2f gate. Sealing remains an internal
-implementation detail: do not expose its SHAs or pause for another confirmation. Target
-authoring is part of ticket creation, never deferred to the developer. If authoring or
-validation requires changing an approved Target definition, return to 2f. If a mechanical
-failure cannot be repaired, report the actionable error without turning contract internals
-into user choices.
+worktrees, author only the approved new Target definitions there, validate, seal, and
+enqueue. Author the new Targets exactly as approved at the 2f gate and create only empty
+placeholders for `[new]` Scope paths; do not implement any part of the Ticket. Sealing
+remains an internal implementation detail: do not expose its SHAs or pause for another
+confirmation. New-Target authoring is part of ticket creation, never deferred to the
+developer. If authoring or validation requires changing an approved Target definition,
+return to 2f. If it requires implementation code or a mechanical failure cannot be
+repaired, report the actionable error without turning contract internals into user choices.
 
 ## Step 5: Report
 
@@ -198,10 +214,11 @@ python -m booley.ticket_board create-file "$SLUG" \
 # E4. Open isolated outer and paired project-data authoring worktrees.
 python -m booley.ticket_board contract-open "$SLUG"
 
-# E5. Create or edit all required .core files, constraints, Target-selection
-#     configuration, and build hooks in the returned worktree(s). RTL/TB sources
-#     may remain absent only when Scope declares each path [new]; relative-QoR
-#     Targets must already be fully executable.
+# E5. Add only the approved new Target definitions in the returned worktree(s).
+#     A Scope [new] path may be absent or a zero-byte placeholder. Leave all other
+#     implementation/support-code files unchanged. Existing sources may make a new
+#     relative-QoR Target fully executable; otherwise report the blocker instead of
+#     creating code to make the Target runnable.
 
 # E6. Validate — a path, not a slug. Fix and re-run until clean.
 python -m booley.ticket_board validate-ticket \
