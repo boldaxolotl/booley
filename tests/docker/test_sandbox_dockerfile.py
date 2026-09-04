@@ -571,6 +571,7 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     validate = _named_step(job, "Run isolated host validation")
 
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
+    assert 'cp -a tests/fixtures/cocotb_counter "${root}/project"' in prepare
     assert '"${root}/venv/bin/pip" install .' in prepare
     assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
     assert "/usr/bin/booley" not in prepare + validate["run"]
@@ -584,6 +585,7 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
     jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
     surface = jobs["demo-ticket-surface"]
     flows = jobs["picorv32-demo-flows"]
+    simulation = jobs["simulation-selftest-overlay"]
 
     for job in (surface, flows):
         prepare = _named_step(job, "Prepare exact reviewed demo contract")
@@ -596,6 +598,11 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
     assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
     assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
     assert _named_step(flows, "Restore demo ownership")["if"] == "always()"
+    assert _named_step(simulation, "Restore simulation ownership")["if"] == "always()"
+    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
+    assert 'cp -a demo "${RUNNER_TEMP}/simulation-project"' in simulation_run
+    assert 'image = "booley-sandbox"' in simulation_run
+    assert '--mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work' in simulation_run
 
 
 def test_release_promotes_stable_tags_only_after_independent_gates() -> None:

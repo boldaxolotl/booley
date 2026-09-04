@@ -244,6 +244,7 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         ("src/booley/harness/doctor.py", False),
         ("src/booley/harness/session_runtime.py", False),
         ("src/booley/mcp/server.py", False),
+        ("tests/fixtures/cocotb_counter/README.md", False),
         # PR #350: shared size/resource contracts own both image variants.
         (".github/contracts/image-size-limits.toml", True),
         (".github/scripts/image_runtime_resources.py", True),

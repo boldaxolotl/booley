@@ -288,8 +288,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - name: Prepare exact reviewed demo contract
-        uses: ./.github/actions/prepare-picorv32-demo
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -301,7 +299,7 @@ jobs:
         run: |
           root="${RUNNER_TEMP}/release-host-doctor"
           mkdir -p "${root}/home" "${root}/evidence"
-          cp -a demo "${root}/project"
+          cp -a tests/fixtures/cocotb_counter "${root}/project"
           python -m venv "${root}/venv"
           "${root}/venv/bin/pip" install .
           docker pull "${IMAGE}"
@@ -365,14 +363,21 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
           mkdir -p "${RUNNER_TEMP}/simulation-evidence"
-          sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/simulation-evidence"
+          cp -a demo "${RUNNER_TEMP}/simulation-project"
+          project_config="${RUNNER_TEMP}/simulation-project/.booley_project/booley.toml"
+          grep -Fxq 'image = "booley-sandbox-riscv"' "${project_config}"
+          sed -i 's/^image = "booley-sandbox-riscv"$/image = "booley-sandbox"/' \
+            "${project_config}"
+          grep -Fxq 'image = "booley-sandbox"' "${project_config}"
+          sudo chown -R 1000:1000 \
+            "${RUNNER_TEMP}/simulation-project" "${RUNNER_TEMP}/simulation-evidence"
           .github/scripts/run_with_container_cleanup.sh \
             booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
             docker run --rm --init --network none \
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
-            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley_project",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
             -e PYTHONPATH=/booley-source/.github/scripts \
@@ -381,10 +386,10 @@ jobs:
             --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${{ needs.build-and-push.outputs.image-digest }}" \
             --evidence /evidence/simulation-selftest.json
-      - name: Restore demo ownership
+      - name: Restore simulation ownership
         if: always()
         run: |
-          for path in demo "${RUNNER_TEMP}/simulation-evidence"; do
+          for path in "${RUNNER_TEMP}/simulation-project" "${RUNNER_TEMP}/simulation-evidence"; do
             if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
           done
       - name: Retain Simulation evidence

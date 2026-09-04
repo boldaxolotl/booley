@@ -75,6 +75,7 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "tests/docker/",
     "tests/flows/sim/",
     "tests/flows/synth/",
+    "tests/fixtures/cocotb_counter/",
     "tests/harness/",
     "tests/mcp_tools/",
     "tests/smoke/",
