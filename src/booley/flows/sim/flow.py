@@ -2628,7 +2628,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             elab_failed=outcome.elab_failed,
             test_validated=outcome.test_validated,
             trace_path=(
-                artifacts.relative(Path(trace.path), self.args.work_dir)
+                artifacts.relative(Path(trace.path), self.args.work_dir) or ""
                 if trace is not None
                 else ""
             ),
@@ -2637,7 +2637,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             trace_signal_count=trace.signal_count if trace is not None else 0,
             trace_total_ticks=trace.total_ticks if trace is not None else 0,
             run_log_path=(
-                artifacts.relative(Path(outcome.run_log_path), self.args.work_dir)
+                artifacts.relative(Path(outcome.run_log_path), self.args.work_dir) or ""
                 if outcome.run_log_path
                 else ""
             ),
