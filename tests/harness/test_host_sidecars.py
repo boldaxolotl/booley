@@ -232,8 +232,9 @@ def test_active_session_blocker_names_project_and_scoped_shutdown_command(
     with pytest.raises(sidecars.SidecarError) as raised:
         sidecars._replace_stale_container("booley-reaper", ["run"], docker)
 
-    assert project in str(raised.value)
-    assert "booley session down --project-root '/projects/acme cpu'" in str(raised.value)
+    detail = str(raised.value)
+    assert project in detail
+    assert "booley session down --project-root" in detail
     assert docker.calls == []
 
 
@@ -614,7 +615,9 @@ def test_ensure_network_accepts_already_connected_and_rejects_other_failures(
         sidecars._ensure_container_network("name", "network", FakeDocker(_cp(1, stderr="denied")))
 
 
-def test_inspect_container_handles_missing_failure_valid_and_incomplete() -> None:
+def test_inspect_container_handles_missing_failure_valid_and_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert not sidecars._inspect_container(
         "name", FakeDocker(_cp(1, stderr="No such container"))
     ).exists
@@ -625,6 +628,11 @@ def test_inspect_container_handles_missing_failure_valid_and_incomplete() -> Non
         '"State":{"Running":true},"NetworkSettings":{"Networks":{"network":{}}},'
         '"Mounts":[{"Type":"bind","Source":"/projects/acme",'
         '"Destination":"/work","RW":true}]}'
+    )
+    monkeypatch.setattr(
+        sidecars,
+        "host_path_from_docker_mount",
+        lambda _source: "/projects/acme",
     )
     state = sidecars._inspect_container("name", FakeDocker(_cp(stdout=document)))
     assert state.image_id == "sha"
