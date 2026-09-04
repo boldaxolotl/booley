@@ -83,6 +83,13 @@ from .build import (
     prepare_simulation_build,
     setup_failure_outcome,
 )
+from .execution import (
+    DefaultSelection,
+    NamedTests,
+    SimulationExecution,
+    SimulationOptions,
+    SimulationTargetOutcome,
+)
 from .execution.composition import prepare_adapter_invocation
 from .execution.engine import AdapterEvidenceError, read_completed_adapter_result
 from .standalone import StandaloneMixin, _StandaloneOutcome
@@ -314,6 +321,7 @@ class TargetResult:
     inconclusive: bool = False
     elab_failed: bool = False
     target_identity: str = ""
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass
@@ -3468,9 +3476,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             "pre_run_commands": _resolve_pre_run_commands(self.args.work_dir),
             "run_cwd": normalized_run_cwd,
             "environment": self._target_sim_env(result.target),
-            "select": lookup_target_section(
-                _get_test_selects(self.args.work_dir), result.target
-            ),
+            "select": lookup_target_section(_get_test_selects(self.args.work_dir), result.target),
             "skip": list(
                 lookup_target_section(_get_test_skips(self.args.work_dir), result.target) or []
             ),
@@ -3677,7 +3683,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3701,7 +3707,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -4087,8 +4093,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cycles=None,
             sva_errors=sva_errors,
             error_tail=(
-                "cocotb build failed — the design did not compile, so none of "
-                f"the {len(names)} selected test(s) ran\n{tail}"
+                "cocotb build failed — the design did not compile, so the "
+                f"{len(names)} selected test(s) never ran\n{tail}"
             ).strip(),
             timed_out=timed_out,
             inconclusive=False,
@@ -4119,47 +4125,131 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         test_names_map: dict[str, list[str]],
         output_lines: list[str],
     ) -> TargetResult:
-        """Run all tests for a single config."""
-        # ADR 0034: a Cocotb Target batches — one build, one sim process for
-        # the whole selected set. Non-cocotb Targets keep this loop unchanged.
-        if self.is_cocotb_target(target):
-            return self._stamp_target_identity(
-                self._run_target_cocotb(
-                    target,
-                    tb_top,
-                    test_names_map,
-                    output_lines,
-                )
-            )
-        target_start = time.monotonic()
-        output_lines.append(f"[sim] {target} (session-runtime)")
-
+        """Execute one selected Target through the deep Simulation boundary."""
+        del tb_top
         tests_to_run = self._resolve_tests_to_run(target, test_names_map)
         skipped = self._skipped_tests(target, test_names_map)
         if skipped:
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-        test_results: list[TestResult] = []
-        for test in tests_to_run:
-            tr = self._run_single_test(target, test, test_names_map)
-            test_results.append(tr)
-            # F-27: surface the pre-run hook's firing + exit status ahead of the
-            # test's own line, in the order they actually happened.
-            output_lines.extend(self._drain_pre_run_lines())
-            # Freshness checked per test: a setup failure before the run-half
-            # leaves no this-invocation log to point at.
-            _append_test_output_line(tr, output_lines, self._run_log_is_fresh(target))
-
-        target_elapsed = time.monotonic() - target_start
-        passed_count = sum(1 for t in test_results if t.passed)
-        if len(test_results) > 1:
-            output_lines.append(f"  --- {passed_count}/{len(test_results)} passed ---")
-
-        return self._native_target_result(
-            target,
-            tb_top,
-            target_elapsed,
-            test_results,
+        selection = self._execution_selection(tests_to_run)
+        execution = self._simulation_execution()
+        outcome = execution.run(self._target_handle(target), selection)
+        legacy = isinstance(outcome, TargetResult)
+        result = outcome if legacy else self._project_execution_outcome(outcome)
+        output_lines.append(f"[sim] {target} (session-runtime)")
+        output_lines.extend(result.diagnostics)
+        output_lines.extend(
+            self._drain_pre_run_lines() if legacy else self._pre_run_output_lines(outcome)
         )
+        for test in result.tests:
+            _append_test_output_line(test, output_lines, self._run_log_is_fresh(target))
+        if len(result.tests) > 1:
+            passed = sum(1 for test in result.tests if test.passed)
+            output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
+        return result
+
+    def _simulation_execution(self) -> SimulationExecution:
+        """Compose the execution boundary with the Flow's process transport."""
+        override = getattr(self, "_simulation_execution_override", None)
+        if override is not None:
+            return cast(SimulationExecution, override)
+        return SimulationExecution(
+            invoke=self._execute_boundary,
+            options=SimulationOptions(
+                trace=self.args.trace,
+                timeout_ms=int(self.args.timeout) if self.args.timeout is not None else None,
+                result_verbosity=self.args.result_verbosity,
+            ),
+        )
+
+    @staticmethod
+    def _execution_selection(tests: list[str | None]) -> NamedTests | DefaultSelection:
+        """Translate the legacy suite representation before crossing the seam."""
+        names = tuple(test for test in tests if test is not None)
+        return NamedTests(names) if names else DefaultSelection()
+
+    def _project_execution_outcome(self, outcome: SimulationTargetOutcome) -> TargetResult:
+        """Project immutable execution evidence into the compatibility report model."""
+        if outcome.infrastructure_failure is not None:
+            detail = (
+                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
+            )
+            missing = find_missing_executable(detail)
+            if missing:
+                raise MissingExecutableError(missing, detail)
+            build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
+            raise SimulationBuildInfrastructureError(outcome.target, build)
+        tests = [self._project_execution_test(test) for test in outcome.tests]
+        self._record_execution_artifacts(outcome)
+        return TargetResult(
+            target=outcome.target,
+            tb_top=outcome.toplevel,
+            eda_tool=outcome.eda_tool,
+            passed=outcome.passed,
+            elapsed_s=round(outcome.elapsed_s, 1),
+            tests=tests,
+            inconclusive=outcome.verdict == "inconclusive",
+            elab_failed=any(test.elab_failed for test in tests),
+            target_identity=outcome.target_identity,
+            diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
+        )
+
+    def _project_execution_test(self, outcome: Any) -> TestResult:
+        """Build one compatibility test row from immutable execution evidence."""
+        trace = next((item for item in outcome.artifacts if item.kind == "trace"), None)
+        return TestResult(
+            name=outcome.name,
+            passed=outcome.passed,
+            elapsed_s=outcome.elapsed_s,
+            build_s=outcome.build_s,
+            cycles=outcome.cycles,
+            cycle_status=outcome.cycle_status,
+            sva_errors=outcome.sva_errors,
+            error_tail=outcome.error_tail,
+            timed_out=outcome.timed_out,
+            inconclusive=outcome.inconclusive,
+            inconclusive_reason=outcome.reason,
+            elab_failed=outcome.elab_failed,
+            test_validated=outcome.test_validated,
+            trace_path=(
+                artifacts.relative(Path(trace.path), self.args.work_dir)
+                if trace is not None
+                else ""
+            ),
+            trace_bytes=trace.size if trace is not None else 0,
+            trace_top_scope=trace.top_scope if trace is not None else "",
+            trace_signal_count=trace.signal_count if trace is not None else 0,
+            trace_total_ticks=trace.total_ticks if trace is not None else 0,
+            run_log_path=(
+                artifacts.relative(Path(outcome.run_log_path), self.args.work_dir)
+                if outcome.run_log_path
+                else ""
+            ),
+            workload_snapshot=dict(outcome.workload_snapshot or {}),
+            build_outcome=outcome.build,
+        )
+
+    def _record_execution_artifacts(self, outcome: SimulationTargetOutcome) -> None:
+        """Expose validated execution artifacts to existing report projection."""
+        run_log = next(
+            (item for item in outcome.artifacts if item.kind == "live_run_log"),
+            None,
+        )
+        if run_log is not None:
+            self._run_log_dirs = getattr(self, "_run_log_dirs", {})
+            self._run_log_dirs[outcome.target] = Path(run_log.path).parent
+        if outcome.eda_tool:
+            self._record_eda_tool(outcome.target, outcome.eda_tool)
+
+    @staticmethod
+    def _pre_run_output_lines(outcome: SimulationTargetOutcome) -> list[str]:
+        """Render execution-owned Pre-Run evidence for compatibility output."""
+        return [
+            f"  pre_run_commands ({len(item.commands)} line(s)) for "
+            f"{', '.join(item.test_names) or outcome.target}: {item.status} "
+            f"in {item.elapsed_s:.1f}s"
+            for item in outcome.pre_runs
+        ]
 
     def _effective_skips(self, target: str) -> set[str]:
         """Test names to exclude for *target*: tests.toml ``skip`` union ``--skip``.
@@ -4168,9 +4258,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         the ``--skip`` arg adds ad-hoc ones for a single call. Both match test
         names exactly (unlike ``--test``'s substring include-filter).
         """
-        skips = set(
-            lookup_target_section(_get_test_skips(self.args.work_dir), target) or []
-        )
+        skips = set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
         if self.args.skip:
             skips.update(s.strip() for s in self.args.skip.split(",") if s.strip())
         return skips
@@ -4337,18 +4425,15 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> McpToolResult:
-        """Build all commands and print as JSON without executing."""
+        """Render side-effect-free previews through the execution boundary."""
         commands: list[list[str]] = []
         for target in targets:
             tests = self._resolve_tests_to_run(target, test_names_map)
-            # A Cocotb Target batches: one command carries the whole selected
-            # set (B4) — there is no per-test command to expand.
-            if self.is_cocotb_target(target):
-                selected = [t for t in tests if t is not None]
-                commands.append(self._dry_run_cocotb_command(target, selected))
-                continue
-            for test in tests:
-                commands.append(self._dry_run_command(target, test, test_names_map))
+            preview = self._simulation_execution().preview(
+                self._target_handle(target),
+                self._execution_selection(tests),
+            )
+            commands.extend([list(command) for command in preview.commands])
 
         print(json.dumps(commands, indent=2))
         return McpToolResult(

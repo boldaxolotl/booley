@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Any, Literal
+
+from booley.flows.sim.build import BuildOutcome
+
+SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
 
 
 class InvalidSimulationRequestError(ValueError):
@@ -18,7 +23,9 @@ class NamedTests:
 
     def __post_init__(self) -> None:
         if not self.names:
-            raise InvalidSimulationRequestError("named Simulation test selection must not be empty")
+            raise InvalidSimulationRequestError(
+                "named Simulation test selection must not be empty"
+            )
         if any(not name for name in self.names):
             raise InvalidSimulationRequestError("Simulation test names must not be empty")
         if len(set(self.names)) != len(self.names):
@@ -40,8 +47,6 @@ class SimulationOptions:
     trace: bool = False
     timeout_ms: int | None = None
     result_verbosity: str = "compact"
-    no_kill: bool = False
-    report_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.timeout_ms is not None and self.timeout_ms <= 0:
@@ -57,8 +62,32 @@ class PreRunEvidence:
     """Outcome of one Project-owned Pre-Run Commands firing."""
 
     commands: tuple[str, ...]
+    test_names: tuple[str, ...]
     status: str
     elapsed_s: float
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class SimulationArtifactEvidence:
+    """A current-attempt artifact validated by shared execution policy."""
+
+    kind: str
+    path: str
+    size: int
+    test_names: tuple[str, ...]
+    top_scope: str = ""
+    signal_count: int = 0
+    total_ticks: int = 0
+
+
+@dataclass(frozen=True)
+class SimulationInfrastructureFailure:
+    """An expected execution failure that produced no design verdict."""
+
+    kind: str
+    message: str
+    missing_executable: str = ""
     detail: str = ""
 
 
@@ -67,11 +96,23 @@ class SimulationTestOutcome:
     """Immutable normalized result for one selected Simulation test."""
 
     name: str
+    verdict: SimulationVerdict
     passed: bool
     elapsed_s: float = 0.0
+    build_s: float = 0.0
+    cycles: int | None = None
+    cycle_status: str = "missing"
     inconclusive: bool = False
     reason: str = ""
     sva_errors: int = 0
+    error_tail: str = ""
+    timed_out: bool = False
+    elab_failed: bool = False
+    test_validated: bool = True
+    build: BuildOutcome | None = None
+    artifacts: tuple[SimulationArtifactEvidence, ...] = ()
+    run_log_path: str = ""
+    workload_snapshot: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -83,9 +124,14 @@ class SimulationTargetOutcome:
     toplevel: str
     eda_tool: str
     passed: bool
+    verdict: Literal["pass", "fail", "inconclusive", "error"]
     elapsed_s: float
     tests: tuple[SimulationTestOutcome, ...]
+    builds: tuple[BuildOutcome, ...] = ()
     pre_runs: tuple[PreRunEvidence, ...] = ()
+    artifacts: tuple[SimulationArtifactEvidence, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+    infrastructure_failure: SimulationInfrastructureFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -100,9 +146,12 @@ __all__ = [
     "InvalidSimulationRequestError",
     "NamedTests",
     "PreRunEvidence",
+    "SimulationArtifactEvidence",
+    "SimulationInfrastructureFailure",
     "SimulationOptions",
     "SimulationPreview",
     "SimulationSelection",
     "SimulationTargetOutcome",
     "SimulationTestOutcome",
+    "SimulationVerdict",
 ]

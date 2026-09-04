@@ -7,6 +7,7 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
+    AdapterTestResult,
     AdapterTransportIdentity,
     write_adapter_result,
 )
@@ -64,7 +65,13 @@ def test_adapter_pass_cannot_override_nonzero_process_exit(tmp_path: Path) -> No
     identity = _identity(tmp_path)
     write_adapter_result(
         identity,
-        AdapterResult(True, False, 0, identity.selected_tests),
+        AdapterResult(
+            True,
+            False,
+            0,
+            identity.selected_tests,
+            test_results=(AdapterTestResult("smoke", "pass"),),
+        ),
     )
     process = SubprocessResult(returncode=1, dispatched_unix=10.0)
 

@@ -31,6 +31,26 @@ def run_pre_run_commands(
     commands = tuple(resolve_pre_run_commands(root))
     if not commands:
         return None
+    environment = _pre_run_environment(
+        handle,
+        test_names=test_names,
+        build_root=build_root,
+        eda_tool=eda_tool,
+        simulator_environment=simulator_environment,
+    )
+    return _invoke_pre_run(commands, test_names, root, environment, timeout_s)
+
+
+def _pre_run_environment(
+    handle: TargetHandle,
+    *,
+    test_names: tuple[str, ...],
+    build_root: Path,
+    eda_tool: str,
+    simulator_environment: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Build the Project-scoped environment for one hook firing."""
+    root = handle.project_root
     run_cwd = (root / resolve_run_cwd(root)).resolve()
     environment = os.environ.copy()
     environment.update(simulator_environment or {})
@@ -48,6 +68,17 @@ def run_pre_run_commands(
         environment["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(root))
     if len(test_names) == 1:
         environment["BOOLEY_TEST_NAME"] = test_names[0]
+    return environment
+
+
+def _invoke_pre_run(
+    commands: tuple[str, ...],
+    test_names: tuple[str, ...],
+    root: Path,
+    environment: Mapping[str, str],
+    timeout_s: int,
+) -> PreRunEvidence:
+    """Execute one prepared hook and normalize its result."""
     started = time.monotonic()
     try:
         result = subprocess.run(
@@ -62,15 +93,22 @@ def run_pre_run_commands(
     except subprocess.TimeoutExpired as exc:
         return PreRunEvidence(
             commands,
+            test_names,
             "timed_out",
             time.monotonic() - started,
             str(exc),
         )
     except OSError as exc:
-        return PreRunEvidence(commands, "spawn_error", time.monotonic() - started, str(exc))
+        return PreRunEvidence(
+            commands,
+            test_names,
+            "spawn_error",
+            time.monotonic() - started,
+            str(exc),
+        )
     detail = result.stderr.strip() or result.stdout.strip()
     status = "passed" if result.returncode == 0 else "failed"
-    return PreRunEvidence(commands, status, time.monotonic() - started, detail)
+    return PreRunEvidence(commands, test_names, status, time.monotonic() - started, detail)
 
 
 __all__ = ["run_pre_run_commands"]

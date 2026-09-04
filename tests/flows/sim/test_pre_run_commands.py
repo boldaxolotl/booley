@@ -20,6 +20,7 @@ from tests.flows.sim.test_cocotb import (
     _cocotb_output,
     _fake_resolved,
     _make_cocotb_flow,
+    _write_test_registry,
 )
 from tests.flows.sim.test_flow import (
     _make_flow,
@@ -202,14 +203,12 @@ class TestCocotbBatchFiring:
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
     def test_fires_once_per_batch(self, _mock_pre, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
+        _write_test_registry(tmp_path, "ccfg", ["test_reset", "test_count"])
         out = "BOOLEY_BUILD_STAGE token=abc123 rc=0\n" + _cocotb_output(
             [("test_reset", "pass", ""), ("test_count", "pass", "")]
         )
         run_mock = MagicMock(return_value=_completed())
         with (
-            patch(
-                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
-            ),
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),
@@ -234,14 +233,12 @@ class TestCocotbBatchFiring:
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
     def test_single_test_batch_sets_test_name(self, _mock_pre, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_reset"])
+        _write_test_registry(tmp_path, "ccfg", ["test_reset", "test_count"])
         out = "BOOLEY_BUILD_STAGE token=abc123 rc=0\n" + _cocotb_output(
             [("test_reset", "pass", "")]
         )
         run_mock = MagicMock(return_value=_completed())
         with (
-            patch(
-                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
-            ),
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),
@@ -265,11 +262,9 @@ class TestCocotbBatchFiring:
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
     def test_batch_failure_short_circuits_before_build(self, _mock_pre, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
+        _write_test_registry(tmp_path, "ccfg", ["test_reset", "test_count"])
         run_mock = MagicMock(return_value=_completed(rc=3, stderr="no cross gcc"))
         with (
-            patch(
-                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
-            ),
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),

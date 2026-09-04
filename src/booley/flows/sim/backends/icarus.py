@@ -52,11 +52,11 @@ from pathlib import Path
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
-    AdapterResult,
     AdapterTransportIdentity,
     add_transport_arguments,
+    publish_native_adapter_result,
     transport_identity_from_args,
-    write_adapter_result,
+    work_transport_arguments,
 )
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
@@ -103,57 +103,11 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.trace:
         cmd += [f"--trace-arg={value}" for value in work.trace_args]
         cmd += [f"--trace-file={value}" for value in work.trace_files]
-    if work.adapter_result_path:
-        cmd += [
-            "--adapter-result",
-            work.adapter_result_path,
-            "--attempt-token",
-            work.attempt_token,
-            "--target-identity",
-            work.target_identity,
-        ]
-        cmd += [f"--selected-test={name}" for name in work.tests]
+    cmd += work_transport_arguments(work)
     return cmd
 
 
-def _publish_adapter_result(
-    identity: AdapterTransportIdentity | None,
-    output: str,
-    returncode: int,
-    *,
-    failure_kind: str = "",
-    pass_sentinels: list[str] | None = None,
-    fail_sentinels: list[str] | None = None,
-    trace_required: bool = False,
-    detail: str = "",
-) -> None:
-    if identity is None:
-        return
-    verdict = parse_sim_verdict(
-        output,
-        pass_sentinels=pass_sentinels,
-        fail_sentinels=fail_sentinels,
-    )
-    sva_errors = count_sva_errors(output)
-    timed_out = "simulation timed out" in output.lower()
-    trace_missing = trace_required and "TRACE_OK:" not in output
-    inconclusive = (verdict is None and returncode == 0 and sva_errors == 0) or trace_missing
-    kind = failure_kind
-    if not kind:
-        kind = "timeout" if timed_out else "artifact" if trace_missing else ""
-    if not kind and inconclusive:
-        kind = "inconclusive"
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=verdict is True and returncode == 0 and sva_errors == 0 and not trace_missing,
-            inconclusive=inconclusive,
-            sva_errors=sva_errors,
-            tests=identity.selected_tests,
-            failure_kind=kind,
-            detail=detail,
-        ),
-    )
+_publish_adapter_result = publish_native_adapter_result
 
 
 def _find_vvp() -> str:

@@ -144,7 +144,8 @@ class TestNoTicketDryRun:
             "  lite:\n"
             "    flow: sim\n"
             "    flow_options:\n"
-            "      tool: verilator\n",
+            "      tool: verilator\n"
+            "    toplevel: tb_demo\n",
             encoding="utf-8",
         )
         tool = _make_interactive_simulate(

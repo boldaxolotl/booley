@@ -9,6 +9,7 @@ import pytest
 
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
+    AdapterTestResult,
     AdapterTransportError,
     AdapterTransportIdentity,
     read_adapter_result,
@@ -34,6 +35,7 @@ def test_adapter_result_round_trips_with_expected_identity(tmp_path) -> None:
         inconclusive=False,
         sva_errors=0,
         tests=("reset",),
+        test_results=(AdapterTestResult("reset", "pass"),),
     )
 
     write_adapter_result(identity, result)
@@ -86,6 +88,34 @@ def test_adapter_result_rejects_unselected_test(tmp_path) -> None:
         read_adapter_result(identity)
 
 
+def test_adapter_result_requires_per_test_verdicts(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(passed=True, inconclusive=False, sva_errors=0, tests=("reset",)),
+    )
+
+    with pytest.raises(AdapterTransportError, match="omits required per-test"):
+        read_adapter_result(identity)
+
+
+def test_adapter_pass_cannot_contradict_per_test_failure(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=True,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("reset",),
+            test_results=(AdapterTestResult("reset", "fail"),),
+        ),
+    )
+
+    with pytest.raises(AdapterTransportError, match="contradicts a per-test"):
+        read_adapter_result(identity)
+
+
 @pytest.mark.parametrize("adapter", [verilator, icarus])
 def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adapter) -> None:
     identity = _identity(tmp_path)
@@ -97,6 +127,7 @@ def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adap
         inconclusive=False,
         sva_errors=0,
         tests=("reset",),
+        test_results=(AdapterTestResult("reset", "pass"),),
     )
 
 

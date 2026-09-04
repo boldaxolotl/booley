@@ -65,9 +65,11 @@ from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
+    AdapterTestResult,
     AdapterTransportIdentity,
     add_transport_arguments,
     transport_identity_from_args,
+    work_transport_arguments,
     write_adapter_result,
 )
 from booley.flows.sim.backends.cocotb_results import (
@@ -83,6 +85,14 @@ from booley.flows.sim.backends.cocotb_results import (
     results_payload,
 )
 from booley.flows.sim.backends.shared import find_icarus_image
+from booley.flows.sim.result import (
+    count_sva_errors,
+    format_infra_error,
+    format_summary,
+    write_result_json,
+)
+from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
+from booley.flows.sim.trace_session import TraceSession
 
 
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
@@ -112,16 +122,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.trace:
         cmd += ["--trace", "--expected-trace-scope", work.trace_scope]
     cmd += [f"--plusarg={value}" for value in work.plusargs]
-    if work.adapter_result_path:
-        cmd += [
-            "--adapter-result",
-            work.adapter_result_path,
-            "--attempt-token",
-            work.attempt_token,
-            "--target-identity",
-            work.target_identity,
-        ]
-        cmd += [f"--selected-test={name}" for name in work.tests]
+    cmd += work_transport_arguments(work)
     return cmd
 
 
@@ -138,27 +139,54 @@ def _publish_adapter_result(
     results = parse_results_line(output)
     discovered = tuple(test.name for test in results.tests if test.name) if results else ()
     names = identity.selected_tests or discovered
+    extras = tuple(name for name in discovered if name not in names)
     sva_errors = count_sva_errors(output)
-    inconclusive = not passed and (results is None or results.state != STATE_OK)
+    test_results = _adapter_test_results(results, names)
+    inconclusive = any(test.verdict == "inconclusive" for test in test_results) or (
+        not passed and (results is None or results.state != STATE_OK)
+    )
+    normalized_passed = (
+        passed
+        and sva_errors == 0
+        and bool(test_results)
+        and all(test.verdict == "pass" for test in test_results)
+    )
     write_adapter_result(
         identity,
         AdapterResult(
-            passed=passed and sva_errors == 0,
+            passed=normalized_passed,
             inconclusive=inconclusive,
             sva_errors=sva_errors,
             tests=tuple(names),
             failure_kind=failure_kind or ("inconclusive" if inconclusive else ""),
             detail=detail,
+            test_results=test_results,
+            diagnostics=(
+                "results.xml reports extra non-selected test(s): "
+                f"{', '.join(extras)} — logged, not verdict-bearing",
+            )
+            if extras
+            else (),
         ),
     )
-from booley.flows.sim.result import (
-    count_sva_errors,
-    format_infra_error,
-    format_summary,
-    write_result_json,
-)
-from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
-from booley.flows.sim.trace_session import TraceSession
+
+
+def _adapter_test_results(
+    results: CocotbResults | None,
+    names: tuple[str, ...],
+) -> tuple[AdapterTestResult, ...]:
+    """Normalize Cocotb's result line into the shared per-test transport."""
+    if results is None:
+        return tuple(
+            AdapterTestResult(name, "inconclusive", detail="missing results") for name in names
+        )
+    verdicts = reconcile(list(names), results)
+    elapsed = {test.name: test.elapsed_s for test in results.tests}
+    return tuple(
+        AdapterTestResult(name, verdict, elapsed.get(name, 0.0), detail)
+        for name, verdict, detail in verdicts
+    )
+
 
 # The dump/trace file name in the run cwd — identical for both EDA tools: Icarus's
 # booley_vcd_dump module hardcodes $dumpfile("dump.vcd"); Verilator's cocotb

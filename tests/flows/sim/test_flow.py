@@ -15,6 +15,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.build import SimulationBuildPreparationError
+from booley.flows.sim.execution import NamedTests, SimulationPreview
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
@@ -284,7 +285,52 @@ def _make_flow(
     with patch.dict(os.environ, env):
         flow.parse_args(argv)
     flow.read_state()
+    flow._simulation_execution_override = _LegacyFlowExecution(flow)
     return flow
+
+
+class _LegacyFlowExecution:
+    """Common-interface fake retained while Flow compatibility tests migrate."""
+
+    def __init__(self, flow: SimulateFlow) -> None:
+        self._flow = flow
+
+    def run(self, handle, selection):
+        names = list(selection.names) if isinstance(selection, NamedTests) else [None]
+        test_map = {handle.selector: [name for name in names if name is not None]}
+        if self._flow.is_cocotb_target(handle.selector):
+            selected = [name for name in names if name is not None]
+            output_lines: list[str] = []
+            result = self._flow._stamp_target_identity(
+                self._flow._run_target_cocotb(
+                    handle.selector,
+                    self._flow._tb_top_for_target(handle.selector),
+                    {handle.selector: selected},
+                    output_lines,
+                )
+            )
+            result.diagnostics = tuple(line for line in output_lines if "(note:" in line)
+            return result
+        tests = [self._flow._run_single_test(handle.selector, name, test_map) for name in names]
+        return self._flow._native_target_result(
+            handle.selector,
+            self._flow._tb_top_for_target(handle.selector),
+            sum(test.elapsed_s for test in tests),
+            tests,
+        )
+
+    def preview(self, handle, selection):
+        names = list(selection.names) if isinstance(selection, NamedTests) else [None]
+        test_map = {handle.selector: [name for name in names if name is not None]}
+        if self._flow.is_cocotb_target(handle.selector):
+            command = self._flow._dry_run_cocotb_command(
+                handle.selector, test_map[handle.selector]
+            )
+            return SimulationPreview((tuple(command),))
+        commands = tuple(
+            tuple(self._flow._dry_run_command(handle.selector, name, test_map)) for name in names
+        )
+        return SimulationPreview(commands)
 
 
 # ---------------------------------------------------------------------------
@@ -790,7 +836,7 @@ class TestDryRun:
         # invocation (patched resolve_target would fail the test if it fired).
         (tmp_path / "sim.core").write_text(
             "CAPI=2:\nname: ::sim_demo:0\ntargets:\n  lite:\n    flow: sim\n"
-            "    flow_options:\n      tool: verilator\n",
+            "    toplevel: alu_tb\n    flow_options:\n      tool: verilator\n",
             encoding="utf-8",
         )
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"], seed_core=False)
@@ -1264,6 +1310,7 @@ class TestReportGeneration:
                 ]
             )
         flow.read_state()
+        flow._simulation_execution_override = _LegacyFlowExecution(flow)
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
@@ -1678,15 +1725,18 @@ class TestEdalizeSimPath:
         assert flow._sim_plusargs("lite", "adhoc", names) == []
         assert flow._sim_plusargs("lite", None, names) == []
 
-    def test_sim_plusargs_honors_tests_toml_select_template(self, tmp_path: Path, monkeypatch):
+    def test_sim_plusargs_honors_tests_toml_select_template(self, tmp_path: Path):
         """A Target's tests.toml `select` template overrides the default (dec. 16)."""
-        from booley.config import project_config
-
         flow = _make_flow(tmp_path)
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "tests.toml").write_text(
+            '[lite]\ntests = ["smoke", "stress", "boot"]\nselect = "+test={name}"\n',
+            encoding="utf-8",
+        )
         names = {"lite": ["smoke", "stress", "boot"]}
         # `+test={name}` renders the test name; `+` is stripped (sim_run_command
         # re-adds it). Targets without a template stay on the default +test_id=N.
-        monkeypatch.setitem(project_config.TEST_SELECT, "lite", "+test={name}")
         assert flow._sim_plusargs("lite", "stress", names) == ["test=stress"]
         assert flow._sim_plusargs("lite", None, names) == []
 

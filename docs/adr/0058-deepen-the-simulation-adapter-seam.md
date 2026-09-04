@@ -11,6 +11,12 @@ exit code. Adapter composition owns Verilator, Icarus, and Cocotb command
 shaping; leaf adapters own simulator launch, verdict normalization, and trace
 finalization.
 
+`SimulationExecution.run(handle, selection)` owns the production execution
+sequence and returns immutable normalized evidence; `preview(handle,
+selection)` renders the same native-per-test or Cocotb-batch grouping without
+executing it. `SimulateFlow` depends on those two operations rather than leaf
+adapter details.
+
 The caller expresses test intent as either an ordered, nonempty `NamedTests`
 value or `DefaultSelection`. `None` is not an adapter-level test identity. A
 default native selection means one default simulator invocation; a default
@@ -22,7 +28,15 @@ unpredictable attempt token, the durable Target identity, and the complete
 ordered selected-test set. The child publishes its normalized result by atomic
 replacement. The decoder rejects a schema, token, adapter, Target, selection,
 count, or verdict contradiction. Existing summary lines and result files remain
-compatibility evidence while callers migrate to the typed channel.
+compatibility evidence for human logs and older integrations; production Flow
+grading uses the typed channel.
+
+The authenticated result carries normalized per-test verdicts and diagnostics.
+The parent validates the result file as a fresh, contained current-attempt
+artifact before accepting it, and independently validates run logs and trace
+artifacts. Build, Pre-Run, workload, artifact, and infrastructure evidence all
+cross the execution boundary in the returned outcome instead of being rebuilt
+from output markers by the Flow.
 
 Project-owned settings are resolved from `TargetHandle.project_root` for each
 invocation. This applies equally to the active checkout and an ephemeral Cycle
