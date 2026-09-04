@@ -138,8 +138,8 @@ Structured output (`sim_<target>.json`):
 | Field | Contents |
 |---|---|
 | `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
-| `passed`, `elapsed_s` | Target-level verdict and execution duration. |
-| `phase_timings_s` | Target aggregation of `setup`, `pre_run`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. |
+| `passed`, `complete`, `elapsed_s` | Target-level verdict, whether terminal publication completed, and execution duration. An interrupted publication leaves `complete: false` as an explicitly recoverable checkpoint. |
+| `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_run`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
 | `tests[]` | Per-test `name`, `passed`, `verdict`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |

@@ -14,7 +14,7 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import write_run_log
-from booley.flows.sim.build import SimulationBuildPreparationError
+from booley.flows.sim.build import BuildOutcome, SimulationBuildPreparationError
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
@@ -93,6 +93,32 @@ def test_native_run_target_stamps_selected_identity(tmp_path: Path) -> None:
     result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
 
     assert result.target_identity == "::sim_demo:0#sim"
+
+
+def test_target_metadata_resolution_is_counted_as_setup(tmp_path: Path) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    target_result = TargetResult(
+        target="lite",
+        elapsed_s=1.0,
+        phase_timings_s={
+            "setup": 0.1,
+            "unattributed": 0.2,
+            "execution_total": 1.0,
+        },
+    )
+    with (
+        patch.object(flow, "_tb_top_for_target", return_value="alu_tb"),
+        patch.object(flow, "_run_target", return_value=target_result),
+        patch("booley.flows.sim.flow.time.monotonic", side_effect=[10.0, 10.25]),
+    ):
+        result = flow._run_resolved_target("lite", {}, [])
+
+    assert result.elapsed_s == 1.25
+    assert result.phase_timings_s == {
+        "setup": 0.35,
+        "unattributed": 0.2,
+        "execution_total": 1.25,
+    }
 
 
 def test_human_display_caps_targets_at_three():
@@ -1135,6 +1161,77 @@ class TestReportGeneration:
         assert report["tests"][0]["name"] == "smoke"
         assert report["tests"][0]["cycles"] == 2561
 
+    def test_native_report_persists_phase_and_resource_telemetry(self, tmp_path: Path):
+        output = (
+            "BOOLEY_BUILD_MILLISECONDS: 125\n"
+            "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=875\n"
+            "BOOLEY_SIM_CPU_SECONDS: user=0.750000 system=0.125000\n"
+            '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
+        )
+        proc = SubprocessResult(
+            returncode=0,
+            stdout=output,
+            duration_s=1.0,
+            peak_rss_mb=42.5,
+            oom_kill_delta=0,
+        )
+        build_outcome = BuildOutcome(ran=True, verdict="pass", failure_kind=None)
+        flow = _make_flow(tmp_path, config="lite")
+        with (
+            patch("booley.flows.sim.flow._get_test_names", return_value={}),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
+            patch.object(flow, "_execute", return_value=proc),
+            patch.object(flow, "_build_outcome", return_value=build_outcome),
+        ):
+            result = flow._run()
+
+        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        test = report["tests"][0]
+        assert report["complete"] is True
+        assert result.detail["resolution_s"] >= 0.0
+        assert test["phase_timings_s"]["build"] == 0.125
+        assert test["phase_timings_s"]["run"] == 0.875
+        assert report["phase_timings_s"]["setup"] >= test["phase_timings_s"]["setup"]
+        assert report["phase_timings_s"]["execution_total"] == report["elapsed_s"]
+        assert test["resources"] == {
+            "command_peak_rss_mb": 42.5,
+            "command_oom_kill_delta": 0,
+            "simulation_user_cpu_s": 0.75,
+            "simulation_system_cpu_s": 0.125,
+        }
+
+    def test_interrupted_publication_is_explicitly_recoverable(self, tmp_path: Path):
+        flow = _make_flow(tmp_path, config="lite")
+        target = TargetResult(
+            target="lite",
+            passed=True,
+            elapsed_s=1.0,
+            tests=[SimTestResult(name="smoke", passed=True)],
+            phase_timings_s={"execution_total": 1.0},
+        )
+        with (
+            patch.object(flow, "_compile_command_str", return_value=None),
+            patch.object(flow, "_fileset_for_report", return_value=None),
+            patch.object(flow, "_artifacts_for", return_value={}),
+            patch.object(flow.state, "save", side_effect=RuntimeError("interrupted")),
+            pytest.raises(RuntimeError, match="interrupted"),
+        ):
+            flow._persist_target_outcome(target)
+
+        report_path = tmp_path / "reports/sim_lite.json"
+        assert json.loads(report_path.read_text())["complete"] is False
+
+        with (
+            patch.object(flow, "_compile_command_str", return_value=None),
+            patch.object(flow, "_fileset_for_report", return_value=None),
+            patch.object(flow, "_artifacts_for", return_value={}),
+        ):
+            flow._persist_target_outcome(target)
+        recovered = json.loads(report_path.read_text())
+        assert recovered["complete"] is True
+        assert recovered["phase_timings_s"]["total"] >= 1.0
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["coremark"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
@@ -1354,20 +1451,39 @@ class TestTimeout:
         def _timeout_execute(self_inner, cmd):
             return SubprocessResult(
                 returncode=-1,
-                stdout="partial output",
+                stdout="BOOLEY_BUILD_MILLISECONDS: 250\npartial output",
                 stderr="",
                 timed_out=True,
                 duration_s=600.0,
+                peak_rss_mb=96.5,
+                oom_kill_delta=1,
             )
 
-        with patch.object(SimulateFlow, "_execute", _timeout_execute):
+        build_outcome = BuildOutcome(
+            ran=True,
+            verdict="pass",
+            failure_kind=None,
+            elapsed_s=0.25,
+        )
+        with (
+            patch.object(SimulateFlow, "_execute", _timeout_execute),
+            patch.object(SimulateFlow, "_build_outcome", return_value=build_outcome),
+        ):
             flow = _make_flow(tmp_path, config="lite")
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text(encoding="utf-8"))
-        assert report["tests"][0]["timed_out"] is True
-        assert report["tests"][0]["verdict"] == "timeout"
-        assert "TIMEOUT: simulation exceeded" in report["tests"][0]["error_tail"]
+        test = report["tests"][0]
+        assert report["complete"] is True
+        assert test["timed_out"] is True
+        assert test["verdict"] == "timeout"
+        assert "TIMEOUT: simulation exceeded" in test["error_tail"]
+        assert test["phase_timings_s"]["build"] == 0.25
+        assert test["phase_timings_s"]["run"] == 599.75
+        assert test["resources"] == {
+            "command_peak_rss_mb": 96.5,
+            "command_oom_kill_delta": 1,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -129,6 +129,7 @@ def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> Non
         check=False,
         capture_output=True,
         text=True,
+        timeout=10,
     )
 
     assert completed.returncode == 7

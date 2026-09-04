@@ -551,6 +551,22 @@ def _target_phase_timings(tests: list[TestResult], elapsed_s: float) -> dict[str
     return {name: round(duration, 3) for name, duration in phases.items()}
 
 
+def _attach_pre_run_failure_telemetry(
+    test: TestResult,
+    *,
+    setup_s: float,
+    pre_run_s: float,
+) -> None:
+    """Record phases when Pre-Run Commands prevent build and simulation."""
+    test.phase_timings_s = {
+        "setup": round(setup_s, 3),
+        "pre_run": round(pre_run_s, 3),
+        "build": 0.0,
+        "run": 0.0,
+        "result_processing": 0.0,
+    }
+
+
 def _build_run_script(
     build_cmd: list[str],
     marker: str,
@@ -2241,54 +2257,53 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
         return ["sh", "-c", script]
 
-    def _run_single_test(
+    def _prepare_single_test_command(
         self,
         target: str,
         test_name: str | None,
-        test_names_map: dict[str, list[str]] | None = None,
-    ) -> TestResult:
-        """Execute a single test and return its result.
-
-        The Target's EDA tool selects the Verilator or Icarus run half. Both
-        execute directly inside the Session Runtime.
-        """
-        logger.info("  %s ...", test_name or "(all)")
-
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[list[str] | None, TestResult | None, float]:
+        """Prepare one native test command and capture setup failure timing."""
         setup_started = time.monotonic()
         try:
             self._eda_tool_for_target(target)
-            cmd = self._prepare_sim_command(
-                target,
-                test_name,
-                test_names_map or {},
-            )
+            cmd = self._prepare_sim_command(target, test_name, test_names_map)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
         except Exception as exc:  # isolate arbitrary adapter/configure failures
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
-            return TestResult(
+            failure = TestResult(
                 name=test_name or target,
                 passed=False,
                 error_tail=f"sim setup failed: {exc}",
                 elab_failed=True,
                 phase_timings_s={"setup": round(time.monotonic() - setup_started, 3)},
             )
-        setup_s = time.monotonic() - setup_started
-        # Pre-Run Commands (ADR 0039): per-test on the HDL loop. A failure
-        # short-circuits this test only — the loop continues.
+            return None, failure, time.monotonic() - setup_started
+        return cmd, None, time.monotonic() - setup_started
+
+    def _timed_pre_run(
+        self,
+        target: str,
+        test_name: str | None,
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[TestResult | None, float]:
+        """Run Pre-Run Commands and return their result with wall time."""
         pre_run_started = time.monotonic()
-        prerun_fail = self._run_pre_run_commands_local(target, test_name, test_names_map or {})
-        pre_run_s = time.monotonic() - pre_run_started
-        if prerun_fail is not None:
-            prerun_fail.phase_timings_s = {
-                "setup": round(setup_s, 3),
-                "pre_run": round(pre_run_s, 3),
-                "build": 0.0,
-                "run": 0.0,
-                "result_processing": 0.0,
-            }
-            return prerun_fail
+        failure = self._run_pre_run_commands_local(target, test_name, test_names_map)
+        return failure, time.monotonic() - pre_run_started
+
+    def _execute_single_test(
+        self,
+        target: str,
+        test_name: str | None,
+        cmd: list[str],
+        *,
+        setup_s: float,
+        pre_run_s: float,
+    ) -> TestResult:
+        """Execute and interpret one prepared native simulator command."""
         proc = self._execute(cmd)
         processing_started = time.monotonic()
         build_outcome = self._build_outcome(target, proc)
@@ -2320,6 +2335,39 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             result_processing_s=time.monotonic() - processing_started,
         )
         return result
+
+    def _run_single_test(
+        self,
+        target: str,
+        test_name: str | None,
+        test_names_map: dict[str, list[str]] | None = None,
+    ) -> TestResult:
+        """Execute a single native-simulator test and return its result."""
+        logger.info("  %s ...", test_name or "(all)")
+        names = test_names_map or {}
+        cmd, setup_failure, setup_s = self._prepare_single_test_command(
+            target,
+            test_name,
+            names,
+        )
+        if setup_failure is not None:
+            return setup_failure
+        assert cmd is not None
+        prerun_failure, pre_run_s = self._timed_pre_run(target, test_name, names)
+        if prerun_failure is not None:
+            _attach_pre_run_failure_telemetry(
+                prerun_failure,
+                setup_s=setup_s,
+                pre_run_s=pre_run_s,
+            )
+            return prerun_failure
+        return self._execute_single_test(
+            target,
+            test_name,
+            cmd,
+            setup_s=setup_s,
+            pre_run_s=pre_run_s,
+        )
 
     def _persist_full_run_log(self, target: str, proc: Any) -> None:
         """Overwrite *target*'s ``run.log`` with the WHOLE subprocess output.
@@ -2586,10 +2634,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return mode_error
         if self.args.elab_only:
             return self._run_elab_only()
+        total_start = time.monotonic()
+        resolution_started = total_start
         resolved = self._resolve_run_targets()
         if isinstance(resolved, McpToolResult):
             return resolved
         targets, test_names_map = resolved
+        resolution_s = time.monotonic() - resolution_started
 
         special_result = self._maybe_dispatch_special_run(targets, test_names_map)
         if special_result is not None:
@@ -2598,7 +2649,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         all_results: list[TargetResult] = []
         output_lines: list[str] = []
         overall_pass = True
-        total_start = time.monotonic()
         # The report writer composes the per-target compile command from the
         # same inputs a --dry-run uses; stash the resolved test-name map so it
         # doesn't have to re-derive it.
@@ -2616,9 +2666,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
         for target in targets:
             try:
-                target_result = self._run_target(
+                target_result = self._run_resolved_target(
                     target,
-                    self._tb_top_for_target(target),
                     test_names_map,
                     output_lines,
                 )
@@ -2654,6 +2703,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
+            "resolution_s": round(resolution_s, 3),
             "phase_timings_s": {
                 result.target: dict(result.phase_timings_s) for result in all_results
             },
@@ -3761,101 +3811,70 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         print(report_text)
         return report_text
 
-    def _run_target_cocotb(  # noqa: PLR0915 — one linear build+run+score pipeline per Target; the pre-run/log/verdict steps all share local state
+    def _prepare_cocotb_command(
         self,
         target: str,
-        tb_top: str,
-        test_names_map: dict[str, list[str]],
-        output_lines: list[str],
-    ) -> TargetResult:
-        """Run a Cocotb Target: one build + one sim process for the whole set (B2).
-
-        The per-test loop of :meth:`_run_target` collapses to a single
-        :mod:`booley.flows.sim.backends.cocotb` execution; per-test report entries are
-        fanned out from the parsed ``results.xml`` (via the run-half's
-        ``[COCOTB_RESULTS]`` line). ``--test <substr>`` filtered the selected
-        set upstream (``_resolve_tests_to_run``) before the filter regex is
-        built. Cocotb supports only the Icarus and Verilator run-halves; an
-        unsupported simulator fails fast rather than silently changing mode.
-        """
-        target_start = time.monotonic()
-        output_lines.append(f"[sim] {target} (session-runtime, cocotb)")
-
-        tests_to_run = self._resolve_tests_to_run(target, test_names_map)
-        selected = [t for t in tests_to_run if t is not None]
-        skipped = self._skipped_tests(target, test_names_map)
-        if skipped:
-            output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-
-        setup_started = time.monotonic()
+        selected: list[str],
+    ) -> tuple[list[str] | None, TestResult | None, float]:
+        """Prepare one cocotb batch command and capture setup failure timing."""
+        started = time.monotonic()
         try:
-            cmd = self._prepare_cocotb_sim_command(target, selected)
+            command = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
         except Exception as exc:  # isolate arbitrary cocotb setup failures
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
-            tr = TestResult(
+            failure = TestResult(
                 name=selected[0] if len(selected) == 1 else target,
                 passed=False,
                 error_tail=f"sim setup failed: {exc}",
                 elab_failed=True,
-                phase_timings_s={"setup": round(time.monotonic() - setup_started, 3)},
+                phase_timings_s={"setup": round(time.monotonic() - started, 3)},
             )
-            _append_test_output_line(tr, output_lines)
-            target_elapsed = round(time.monotonic() - target_start, 3)
-            return TargetResult(
-                target=target,
-                tb_top=tb_top,
-                eda_tool=self._eda_tool_for(target),
-                passed=False,
-                elapsed_s=target_elapsed,
-                tests=[tr],
-                elab_failed=True,
-                phase_timings_s=_target_phase_timings([tr], target_elapsed),
-            )
-        setup_s = time.monotonic() - setup_started
+            return None, failure, time.monotonic() - started
+        return command, None, time.monotonic() - started
 
-        # Pre-Run Commands (ADR 0039): once per batch on the cocotb path (one
-        # build + one sim process for the whole set). BOOLEY_TEST_NAME is set
-        # only when the batch is a single test; BOOLEY_TEST_NAMES always
-        # carries the selected set.
-        pre_run_started = time.monotonic()
-        prerun_fail = self._run_pre_run_commands_local(
-            target,
-            selected[0] if len(selected) == 1 else None,
-            {target: selected},
+    def _failed_cocotb_target(
+        self,
+        target: str,
+        tb_top: str,
+        failure: TestResult,
+        output_lines: list[str],
+        target_start: float,
+    ) -> TargetResult:
+        """Build the common target result for a pre-execution cocotb failure."""
+        _append_test_output_line(failure, output_lines)
+        elapsed_s = round(time.monotonic() - target_start, 3)
+        return TargetResult(
+            target=target,
+            tb_top=tb_top,
+            eda_tool=self._eda_tool_for(target),
+            passed=False,
+            elapsed_s=elapsed_s,
+            tests=[failure],
+            elab_failed=True,
+            phase_timings_s=_target_phase_timings([failure], elapsed_s),
         )
-        pre_run_s = time.monotonic() - pre_run_started
-        output_lines.extend(self._drain_pre_run_lines())  # F-27
-        if prerun_fail is not None:
-            prerun_fail.phase_timings_s = {
-                "setup": round(setup_s, 3),
-                "pre_run": round(pre_run_s, 3),
-                "build": 0.0,
-                "run": 0.0,
-                "result_processing": 0.0,
-            }
-            _append_test_output_line(prerun_fail, output_lines)
-            target_elapsed = round(time.monotonic() - target_start, 3)
-            return TargetResult(
-                target=target,
-                tb_top=tb_top,
-                eda_tool=self._eda_tool_for(target),
-                passed=False,
-                elapsed_s=target_elapsed,
-                tests=[prerun_fail],
-                elab_failed=True,
-                phase_timings_s=_target_phase_timings([prerun_fail], target_elapsed),
-            )
 
-        proc = self._execute(cmd)
+    def _execute_cocotb_batch(
+        self,
+        target: str,
+        selected: list[str],
+        output_lines: list[str],
+        command: list[str],
+        *,
+        setup_s: float,
+        pre_run_s: float,
+    ) -> tuple[list[TestResult], bool, str]:
+        """Execute and interpret one prepared cocotb batch."""
+        proc = self._execute(command)
         processing_started = time.monotonic()
         build_outcome = self._build_outcome(target, proc)
         combined = proc.stdout + "\n" + proc.stderr
         self._persist_full_run_log(target, proc)  # F-29e, as on the HDL loop
         self._require_build_verdict(target, build_outcome)
-        test_results, trace_inconclusive = self._interpret_cocotb_result(
+        tests, trace_inconclusive = self._interpret_cocotb_result(
             combined,
             proc,
             target,
@@ -3863,9 +3882,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             output_lines,
             build_outcome,
         )
-        if test_results:
+        if tests:
             _attach_process_telemetry(
-                test_results[0],
+                tests[0],
                 combined,
                 proc,
                 build_outcome,
@@ -3873,41 +3892,113 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 pre_run_s=pre_run_s,
                 result_processing_s=time.monotonic() - processing_started,
             )
-        _append_batch_output_lines(test_results, output_lines, self._run_log_is_fresh(target))
+        _append_batch_output_lines(tests, output_lines, self._run_log_is_fresh(target))
+        return tests, trace_inconclusive, combined
 
-        target_elapsed = time.monotonic() - target_start
-        any_inconclusive = any(t.inconclusive for t in test_results) or trace_inconclusive
-        any_elab_failed = any(t.elab_failed for t in test_results)
-        sva_total = sum(t.sva_errors for t in test_results)
-        # The run-half's [SIM_SUMMARY] is the batch authority (it folds in the
-        # sim exit code — an all-pass XML after a nonzero-rc run stays a FAIL).
-        # Per-test verdicts above come from the reconciled results.xml.
+    def _completed_cocotb_target(
+        self,
+        target: str,
+        tb_top: str,
+        tests: list[TestResult],
+        trace_inconclusive: bool,
+        combined: str,
+        output_lines: list[str],
+        elapsed_s: float,
+    ) -> TargetResult:
+        """Aggregate one completed cocotb batch into its target result."""
+        any_inconclusive = any(test.inconclusive for test in tests) or trace_inconclusive
+        any_elab_failed = any(test.elab_failed for test in tests)
+        sva_total = sum(test.sva_errors for test in tests)
         try:
             summary = parse_summary_line(combined)
         except ValueError:
             summary = None
         summary_passed = summary["passed"] if summary is not None else True
-        all_passed = (
-            all(t.passed for t in test_results)
+        passed = (
+            all(test.passed for test in tests)
             and not any_inconclusive
             and sva_total == 0
             and summary_passed
         )
-        passed_count = sum(1 for t in test_results if t.passed)
-        if len(test_results) > 1:
-            output_lines.append(f"  --- {passed_count}/{len(test_results)} passed ---")
-
-        rounded_elapsed = round(target_elapsed, 3)
+        if len(tests) > 1:
+            passed_count = sum(1 for test in tests if test.passed)
+            output_lines.append(f"  --- {passed_count}/{len(tests)} passed ---")
+        rounded_elapsed = round(elapsed_s, 3)
         return TargetResult(
             target=target,
             tb_top=tb_top,
             eda_tool=self._eda_tool_for(target),
-            passed=all_passed,
+            passed=passed,
             elapsed_s=rounded_elapsed,
-            tests=test_results,
+            tests=tests,
             inconclusive=any_inconclusive,
             elab_failed=any_elab_failed,
-            phase_timings_s=_target_phase_timings(test_results, rounded_elapsed),
+            phase_timings_s=_target_phase_timings(tests, rounded_elapsed),
+        )
+
+    def _selected_cocotb_tests(
+        self,
+        target: str,
+        test_names_map: dict[str, list[str]],
+        output_lines: list[str],
+    ) -> list[str]:
+        """Resolve a cocotb batch and report tests excluded by policy."""
+        selected = [
+            test for test in self._resolve_tests_to_run(target, test_names_map) if test is not None
+        ]
+        skipped = self._skipped_tests(target, test_names_map)
+        if skipped:
+            output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
+        return selected
+
+    def _run_target_cocotb(
+        self,
+        target: str,
+        tb_top: str,
+        test_names_map: dict[str, list[str]],
+        output_lines: list[str],
+    ) -> TargetResult:
+        """Run one build-and-simulation process for a cocotb target."""
+        target_start = time.monotonic()
+        output_lines.append(f"[sim] {target} (session-runtime, cocotb)")
+        selected = self._selected_cocotb_tests(target, test_names_map, output_lines)
+        command, setup_failure, setup_s = self._prepare_cocotb_command(target, selected)
+        if setup_failure is not None:
+            return self._failed_cocotb_target(
+                target, tb_top, setup_failure, output_lines, target_start
+            )
+        assert command is not None
+        prerun_failure, pre_run_s = self._timed_pre_run(
+            target,
+            selected[0] if len(selected) == 1 else None,
+            {target: selected},
+        )
+        output_lines.extend(self._drain_pre_run_lines())  # F-27
+        if prerun_failure is not None:
+            _attach_pre_run_failure_telemetry(
+                prerun_failure,
+                setup_s=setup_s,
+                pre_run_s=pre_run_s,
+            )
+            return self._failed_cocotb_target(
+                target, tb_top, prerun_failure, output_lines, target_start
+            )
+        tests, trace_inconclusive, combined = self._execute_cocotb_batch(
+            target,
+            selected,
+            output_lines,
+            command,
+            setup_s=setup_s,
+            pre_run_s=pre_run_s,
+        )
+        return self._completed_cocotb_target(
+            target=target,
+            tb_top=tb_top,
+            tests=tests,
+            trace_inconclusive=trace_inconclusive,
+            combined=combined,
+            output_lines=output_lines,
+            elapsed_s=time.monotonic() - target_start,
         )
 
     def _interpret_cocotb_result(  # noqa: PLR0915 — one typed verdict fan-out pipeline
@@ -4145,6 +4236,23 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 f"TIMEOUT: simulation exceeded {self._effective_timeout_ms()} ms\n{tail}"
             ).rstrip()
         return tail
+
+    def _run_resolved_target(
+        self,
+        target: str,
+        test_names_map: dict[str, list[str]],
+        output_lines: list[str],
+    ) -> TargetResult:
+        """Resolve target metadata, then include that work in setup timing."""
+        resolution_started = time.monotonic()
+        tb_top = self._tb_top_for_target(target)
+        resolution_s = time.monotonic() - resolution_started
+        result = self._run_target(target, tb_top, test_names_map, output_lines)
+        result.elapsed_s = round(result.elapsed_s + resolution_s, 3)
+        timings = result.phase_timings_s
+        timings["setup"] = round(timings.get("setup", 0.0) + resolution_s, 3)
+        timings["execution_total"] = result.elapsed_s
+        return result
 
     def _run_target(
         self,
@@ -4389,14 +4497,14 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             detail={"commands": commands},
         )
 
-    def _write_target_report(self, result: TargetResult) -> None:
+    def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
         """Write one Target's verdict, build context, and artifact pointers."""
         report_dir = self.args.report_dir
         if report_dir is None:
             return
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / f"sim_{result.target}.json"
-        report = self._target_report_payload(result, report_path)
+        report = self._target_report_payload(result, report_path, complete=complete)
         invocation_dir = self.reserve_invocation_dir()
         if invocation_dir is not None:
             _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
@@ -4406,6 +4514,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         self,
         result: TargetResult,
         report_path: Path,
+        *,
+        complete: bool,
     ) -> dict[str, Any]:
         """Compose best-effort build context around one Target verdict."""
         report: dict[str, Any] = {
@@ -4418,6 +4528,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             "elapsed_s": result.elapsed_s,
             "phase_timings_s": dict(result.phase_timings_s),
             "passed": result.passed,
+            "complete": complete,
             "tests": [_test_report_entry(t) for t in result.tests],
         }
         build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
@@ -4469,7 +4580,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""
         started = time.monotonic()
-        self._write_target_report(result)
+        # Publish an explicit recovery checkpoint before Criteria mutation.
+        # A retry can safely replace it; readers never mistake it for a fully
+        # committed target when interruption prevents the final publication.
+        self._write_target_report(result, complete=False)
         self._record_elab_criterion(result)
         self._record_sim_criterion(result)
         self._record_cycle_count_criteria(result)
@@ -4479,10 +4593,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         result.phase_timings_s["publication"] = publication_s
         execution_s = result.phase_timings_s.get("execution_total", result.elapsed_s)
         result.phase_timings_s["total"] = round(execution_s + publication_s, 3)
-        # Refresh the atomic target report with the publication measurement.
-        # The first write remains the durability boundary; this second write
-        # only adds telemetry and cannot expose a partial JSON document.
-        self._write_target_report(result)
+        self._write_target_report(result, complete=True)
 
     def _record_elab_criterion(self, result: TargetResult) -> None:
         """Record authenticated full-Simulation build-stage evidence."""
