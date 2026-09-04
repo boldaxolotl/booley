@@ -103,7 +103,7 @@ def _invoke_pre_run(
         return PreRunEvidence(
             commands,
             test_names,
-            "spawn_error",
+            "failed",
             time.monotonic() - started,
             str(exc),
         )

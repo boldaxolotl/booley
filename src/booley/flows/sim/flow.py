@@ -59,9 +59,6 @@ from ..flow_config import (
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
-from .adapter_transport import (
-    AdapterTransportIdentity,
-)
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -1120,12 +1117,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     )
     code_modifying: bool = False
 
-    def __init__(self) -> None:
-        self._prepared_builds: dict[str, PreparedSimulationBuild] = {}
-        self._build_attempt_tokens: dict[str, str] = {}
-        self._adapter_attempts: dict[str, AdapterTransportIdentity] = {}
-        super().__init__()
-
     # Simulation is always admitted as a heavy Session Runtime job.
     def _resolve_job_class(self) -> str:
         """Simulation is a heavy Session Runtime workload."""
@@ -1718,7 +1709,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         prepared: PreparedSimulationBuild,
     ) -> None:
         """Register prepared Target state used by reports and optional sweeps."""
-        self._prepared_builds[target] = prepared
         self._remember_resolved_target(target, prepared.resolved)
         self._record_run_log_dir(target, prepared.build_root)
         self._record_eda_tool(target, prepared.eda_tool)

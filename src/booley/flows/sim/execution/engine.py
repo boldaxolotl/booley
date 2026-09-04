@@ -23,9 +23,17 @@ from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
+    AdapterTestResult,
     AdapterTransportError,
     AdapterTransportIdentity,
     read_adapter_result,
+)
+from booley.flows.sim.backends.cocotb import RESULTS_XML_NAME
+from booley.flows.sim.backends.cocotb_results import (
+    TIMEOUT_ACTIVE_DETAIL,
+    parse_results_xml,
+    reconcile,
+    recover_timeout_progress,
 )
 from booley.flows.sim.build import (
     BuildOutcome,
@@ -46,6 +54,7 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
+from booley.flows.sim.result import count_sva_errors
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot
@@ -53,7 +62,7 @@ from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import TargetHandle, inspect_target
 
 from .artifacts import artifact_path_component, configured_trace_path
-from .composition import prepare_adapter_invocation
+from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invocation
 from .contract import (
     DefaultSelection,
     NamedTests,
@@ -91,37 +100,8 @@ class _Attempt:
     setup_s: float
 
 
-class AdapterEvidenceError(RuntimeError):
-    """A completed adapter supplied no trustworthy terminal result."""
-
-
 class SimulationArtifactPersistenceError(RuntimeError):
     """A completed attempt could not preserve its required run evidence."""
-
-
-def read_completed_adapter_result(
-    identity: AdapterTransportIdentity,
-    process: SubprocessResult,
-    build: BuildOutcome,
-) -> AdapterResult | None:
-    """Compatibility wrapper for callers testing phase precedence directly."""
-    if build.design_failed:
-        return None
-    if not identity.result_path.exists():
-        if process.dispatched_unix <= 0 or process.timed_out:
-            return None
-        raise AdapterEvidenceError(
-            "adapter completed without authenticated terminal result evidence"
-        )
-    try:
-        result = read_adapter_result(identity)
-    except AdapterTransportError as exc:
-        raise AdapterEvidenceError(f"invalid authenticated adapter result: {exc}") from exc
-    if result.passed and (process.returncode != 0 or not build.passed):
-        raise AdapterEvidenceError(
-            "authenticated adapter pass contradicts process or build evidence"
-        )
-    return result
 
 
 class SimulationExecution:
@@ -196,11 +176,19 @@ class SimulationExecution:
     ) -> SimulationTargetOutcome:
         started = time.monotonic()
         attempt = self._prepare_attempt(handle, test_names)
+        try:
+            begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
+        except OSError as exc:
+            detail = f"could not establish current run log: {exc}"
+            return _artifact_failure(handle, attempt, None, None, detail, started)
         pre_run = self._run_pre_run(handle, attempt)
         if pre_run is not None and pre_run.status != "passed":
-            if pre_run.status == "spawn_error":
-                return _pre_run_infrastructure_failure(handle, attempt, pre_run, started)
-            return _pre_run_failure(handle, attempt, pre_run, started)
+            failure = (
+                _pre_run_infrastructure_failure
+                if pre_run.status == "spawn_error"
+                else _pre_run_failure
+            )
+            return failure(handle, attempt, pre_run, started)
         dispatched_ns = time.time_ns()
         process = self._invoke(list(attempt.command), timeout=self._wrapper_timeout_s(handle))
         processing_started = time.monotonic()
@@ -238,11 +226,10 @@ class SimulationExecution:
             selected_tests=test_names,
             result_path=prepared.build_root / f".booley-adapter-{token}.json",
         )
-        begin_run_log(prepared.build_root, flow="sim", target=handle.selector)
         work = self._prepared_work(handle, prepared, identity, trace_mode)
         try:
             invocation = prepare_adapter_invocation(work)
-        except ValueError as exc:
+        except UnsupportedSimulationAdapterError as exc:
             raise SimulationBuildPreparationError(str(exc)) from exc
         script = build_stage_script(
             prepared.make_argv,
@@ -345,7 +332,7 @@ class SimulationExecution:
             return None
         if not attempt.identity.result_path.exists():
             if process.timed_out:
-                return None
+                return _recover_cocotb_timeout(attempt, process, dispatched_ns)
             raise AdapterTransportError("adapter completed without authenticated terminal result")
         validate_fresh_artifact(
             attempt.identity.result_path,
@@ -450,7 +437,14 @@ class SimulationExecution:
         key = build_root.resolve()
         if key in self._reset_trace_roots:
             return
-        shutil.rmtree(build_root, ignore_errors=True)
+        try:
+            shutil.rmtree(build_root)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise SimulationBuildPreparationError(
+                f"could not reset traced Simulation build root {build_root}: {exc}"
+            ) from exc
         self._reset_trace_roots.add(key)
 
 
@@ -458,6 +452,49 @@ def _trace_overlay(handle: TargetHandle) -> Any:
     return fusesoc_registry.write_trace_overlay(
         handle.selector,
         project_root=handle.project_root,
+    )
+
+
+def _recover_cocotb_timeout(
+    attempt: _Attempt,
+    process: SubprocessResult,
+    dispatched_ns: int,
+) -> AdapterResult | None:
+    """Recover Cocotb's durable progress when the outer wrapper killed the batch."""
+    if attempt.adapter != "cocotb":
+        return None
+    results_path = attempt.prepared.build_root / RESULTS_XML_NAME
+    parsed = None
+    if results_path.exists():
+        try:
+            validate_fresh_artifact(
+                results_path,
+                roots=(attempt.prepared.build_root,),
+                before=None,
+                not_before_ns=dispatched_ns,
+            )
+        except ArtifactValidationError:
+            pass
+        else:
+            parsed = parse_results_xml(results_path)
+    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
+    recovered = recover_timeout_progress(output, list(attempt.test_names), parsed)
+    tests = tuple(
+        AdapterTestResult(
+            name,
+            "timeout" if detail == TIMEOUT_ACTIVE_DETAIL else verdict,
+            detail=detail,
+        )
+        for name, verdict, detail in reconcile(list(attempt.test_names), recovered)
+    )
+    return AdapterResult(
+        passed=False,
+        inconclusive=True,
+        sva_errors=count_sva_errors(output),
+        tests=attempt.test_names,
+        failure_kind="timeout",
+        detail="cocotb batch timed out before terminal adapter transport",
+        test_results=tests,
     )
 
 
@@ -658,7 +695,7 @@ def _transport_failure(
 def _artifact_failure(
     handle: TargetHandle,
     attempt: _Attempt,
-    build: BuildOutcome,
+    build: BuildOutcome | None,
     pre_run: PreRunEvidence | None,
     detail: str,
     started: float,
@@ -949,12 +986,14 @@ def _run_log_for(
     artifacts: tuple[SimulationArtifactEvidence, ...],
     name: str,
 ) -> SimulationArtifactEvidence | None:
+    archive = next(
+        (item for item in artifacts if item.kind == "run_log" and item.test_names == (name,)),
+        None,
+    )
+    if archive is not None:
+        return archive
     return next(
-        (
-            item
-            for item in artifacts
-            if item.kind == "run_log" and item.test_names == (name,)
-        ),
+        (item for item in artifacts if item.kind == "live_run_log" and name in item.test_names),
         None,
     )
 
@@ -984,7 +1023,7 @@ def _archive_run_logs(
     output: str,
     artifact_root: Path | None,
 ) -> tuple[SimulationArtifactEvidence, ...]:
-    if artifact_root is None or not output:
+    if artifact_root is None or not output or attempt.adapter == "cocotb":
         return ()
     names = attempt.test_names or (handle.selector,)
     target = artifact_path_component(f"sim_{handle.selector}")
@@ -1129,4 +1168,4 @@ def _output_tail(process: SubprocessResult, build_failed: bool) -> str:
     return "\n".join(source.strip().splitlines()[-50:])
 
 
-__all__ = ["AdapterEvidenceError", "SimulationExecution", "read_completed_adapter_result"]
+__all__ = ["SimulationExecution"]

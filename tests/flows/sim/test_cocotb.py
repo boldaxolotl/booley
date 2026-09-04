@@ -607,11 +607,6 @@ class TestCocotbSelectRejection:
         with (
             patch.object(
                 SimulateFlow,
-                "_prepare_sim_command",
-                return_value=["sh", "-c", ":"],
-            ),
-            patch.object(
-                SimulateFlow,
                 "_execute",
                 _execute_returning(
                     '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',

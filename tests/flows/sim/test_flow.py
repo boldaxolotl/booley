@@ -59,11 +59,7 @@ _FLOW_ENABLED = True
 
 
 class SimulateFlow(ProductionSimulateFlow):
-    """Test shell retaining names patched by pre-boundary campaign tests."""
-
-    _prepare_sim_command = None
-    _prepare_cocotb_sim_command = None
-    _dry_run_command = None
+    """Concrete Flow used by the campaign compatibility tests."""
 
 
 def test_target_metadata_resolution_is_counted_as_setup(tmp_path: Path) -> None:
@@ -306,7 +302,9 @@ class _BoundaryHarness(SimulationExecution):
 
     def _prepare_build(self, handle):
         inspection = inspect_target(handle.project_root, handle)
-        eda_tool = getattr(self._flow, "_boundary_eda_tool", None) or inspection.eda_tool or "verilator"
+        eda_tool = (
+            getattr(self._flow, "_boundary_eda_tool", None) or inspection.eda_tool or "verilator"
+        )
         if eda_tool not in {"icarus", "verilator"}:
             from booley.flows.sim.build import SimulationBuildPreparationError
 
@@ -390,56 +388,67 @@ def _adapter_result_for_test_process(
         summary = None
     parsed = cocotb_results.parse_results_line(output)
     if parsed is not None:
-        if "cocotb simulation timed out" in output.lower() or process.timed_out:
-            parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
-        reconciled = cocotb_results.reconcile(list(names), parsed)
-        elapsed = {test.name: test.elapsed_s for test in parsed.tests}
-        tests = tuple(
-            AdapterTestResult(
-                name,
-                "timeout" if detail == cocotb_results.TIMEOUT_ACTIVE_DETAIL else verdict,
-                elapsed.get(name, process.duration_s),
-                detail,
-            )
-            for name, verdict, detail in reconciled
+        return _cocotb_adapter_result(names, process, output, summary, parsed)
+    return _native_adapter_result(names, process, output, summary)
+
+
+def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterResult:
+    if "cocotb simulation timed out" in output.lower() or process.timed_out:
+        parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
+    elapsed = {test.name: test.elapsed_s for test in parsed.tests}
+    tests = tuple(
+        AdapterTestResult(
+            name,
+            "timeout" if detail == cocotb_results.TIMEOUT_ACTIVE_DETAIL else verdict,
+            elapsed.get(name, process.duration_s),
+            detail,
         )
-        discovered = tuple(test.name for test in parsed.tests if test.name)
-        extras = tuple(name for name in discovered if name not in names)
-        diagnostics = (
+        for name, verdict, detail in cocotb_results.reconcile(list(names), parsed)
+    )
+    extras = tuple(test.name for test in parsed.tests if test.name not in names)
+    diagnostics = (
+        (
             "results.xml reports extra non-selected test(s): "
             f"{', '.join(extras)} — logged, not verdict-bearing",
-        ) if extras else ()
-        sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-        inconclusive = any(test.verdict == "inconclusive" for test in tests)
-        passed = bool(
-            process.returncode == 0
-            and summary is not None
-            and summary["passed"]
-            and sva_errors == 0
-            and tests
-            and all(test.verdict == "pass" for test in tests)
         )
-    else:
-        sentinel = parse_sim_verdict(output)
-        passed_by_sentinel = bool(
-            process.returncode == 0
-            and (summary["passed"] if summary is not None else sentinel is True)
-        )
-        inconclusive_by_sentinel = summary is None and sentinel is None and not process.timed_out
-        verdict = (
-            "timeout"
-            if process.timed_out
-            else "pass"
-            if passed_by_sentinel
-            else "inconclusive"
-            if inconclusive_by_sentinel
-            else "fail"
-        )
-        tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
-        diagnostics = ()
-        sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-        inconclusive = inconclusive_by_sentinel
-        passed = passed_by_sentinel
+        if extras
+        else ()
+    )
+    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
+    inconclusive = any(test.verdict == "inconclusive" for test in tests)
+    passed = bool(
+        process.returncode == 0
+        and summary is not None
+        and summary["passed"]
+        and sva_errors == 0
+        and tests
+        and all(test.verdict == "pass" for test in tests)
+    )
+    return _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics)
+
+
+def _native_adapter_result(names, process, output, summary) -> AdapterResult:
+    sentinel = parse_sim_verdict(output)
+    passed = bool(
+        process.returncode == 0
+        and (summary["passed"] if summary is not None else sentinel is True)
+    )
+    inconclusive = summary is None and sentinel is None and not process.timed_out
+    verdict = (
+        "timeout"
+        if process.timed_out
+        else "pass"
+        if passed
+        else "inconclusive"
+        if inconclusive
+        else "fail"
+    )
+    tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
+    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
+    return _test_adapter_result(names, tests, passed, inconclusive, sva_errors, ())
+
+
+def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics):
     timed_out = any(test.verdict == "timeout" for test in tests)
     return AdapterResult(
         passed=passed,
@@ -870,16 +879,7 @@ class TestExecutionValidation:
 class TestDryRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(
-        SimulateFlow,
-        "_dry_run_command",
-        side_effect=lambda config, test, names: (
-            ["sh", "-c", ":", "--config", config] + (["--test", test] if test else [])
-        ),
-    )
-    def test_dry_run_prints_json(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path, capsys
-    ):
+    def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -895,16 +895,7 @@ class TestDryRun:
         "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
     )
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(
-        SimulateFlow,
-        "_dry_run_command",
-        side_effect=lambda config, test, names: (
-            ["sh", "-c", ":", "--config", config] + (["--test", test] if test else [])
-        ),
-    )
-    def test_dry_run_expands_tests(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path, capsys
-    ):
+    def test_dry_run_expands_tests(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
         flow._run()
         captured = capsys.readouterr()
@@ -913,16 +904,8 @@ class TestDryRun:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(
-        SimulateFlow,
-        "_dry_run_command",
-        side_effect=lambda config, test, names: (
-            ["sh", "-c", ":", "--config", config] + (["--test", test] if test else [])
-        ),
-    )
     def test_dry_run_with_test_filter(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -937,10 +920,8 @@ class TestDryRun:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_dry_run_multi_config(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -999,9 +980,7 @@ class TestDryRun:
 
 
 class TestCommandBuilding:
-    # The legacy run_sim_batch command builder (_build_sim_command) was removed
-    # with the legacy runners; both simulators now build via _prepare_sim_command
-    # (covered by TestEdalizeSimPath and the real-fusesoc setup tests).
+    # Adapter command rendering is covered through SimulationExecution.preview.
 
     def test_trace_scope_left_the_surface(self, tmp_path: Path):
         """--trace-scope was removed (ADR 0022): the --trace overlay traces full
@@ -1073,18 +1052,16 @@ def _mock_execute_inconclusive(self, cmd: list[str]) -> SubprocessResult:
 class TestSummaryParsing:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_summary_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_summary_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_summary_fail(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_summary_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
@@ -1098,11 +1075,8 @@ class TestSummaryParsing:
 class TestInconclusiveDetection:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_inconclusive)
-    def test_inconclusive_no_criterion(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
+    def test_inconclusive_no_criterion(self, _mock_backend, _mock_tests, tmp_path: Path):
         """No summary, rc=0 → inconclusive; criterion NOT set."""
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
@@ -1116,9 +1090,8 @@ class TestInconclusiveDetection:
 class TestFullRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_single_config_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_single_config_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -1126,9 +1099,8 @@ class TestFullRun:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_single_config_fail(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_single_config_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
@@ -1136,17 +1108,15 @@ class TestFullRun:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_multi_test_all_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_multi_test_all_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_multi_config_mixed(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_multi_config_mixed(self, _mock_backend, _mock_tests, tmp_path: Path):
         """First config passes, second fails => overall FAIL."""
         call_count = 0
 
@@ -1180,30 +1150,23 @@ class TestFullRun:
 class TestCriterionSetting:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_sets_sim_pass_lite(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_sets_sim_pass_lite(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         flow._run()
         assert flow.state.is_met("sim_pass_lite")
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_sets_sim_pass_full_false(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
+    def test_sets_sim_pass_full_false(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="full")
         flow._run()
         assert not flow.state.is_met("sim_pass_full")
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_sets_criteria_per_config(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
+    def test_sets_criteria_per_config(self, _mock_backend, _mock_tests, tmp_path: Path):
         """Multi-config sets separate criteria."""
         call_count = 0
 
@@ -1230,11 +1193,8 @@ class TestCriterionSetting:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_inconclusive)
-    def test_inconclusive_skips_criterion(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
+    def test_inconclusive_skips_criterion(self, _mock_backend, _mock_tests, tmp_path: Path):
         """Inconclusive result must NOT set any criterion."""
         flow = _make_flow(tmp_path, config="lite")
         flow._run()
@@ -1249,9 +1209,8 @@ class TestCriterionSetting:
 class TestReportGeneration:
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_writes_config_report(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_writes_config_report(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         flow._run()
         report_path = tmp_path / "reports" / "sim_lite.json"
@@ -1283,7 +1242,6 @@ class TestReportGeneration:
         with (
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(flow, "_execute", return_value=proc),
         ):
             result = flow._run()
@@ -1336,11 +1294,9 @@ class TestReportGeneration:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["coremark"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_custom_cycle_pass)
     def test_configured_cycle_sentinel_reaches_mcp_and_json_reports(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -1392,7 +1348,6 @@ class TestReportGeneration:
                 return_value={"lite": ["smoke", "stress"]},
             ),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(flow, "_execute", side_effect=execute),
         ):
             result = flow._run()
@@ -1425,7 +1380,6 @@ class TestReportGeneration:
                 return_value={"lite": ["smoke", "stress"]},
             ),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(
                 flow,
                 "_execute",
@@ -1493,9 +1447,8 @@ class TestReportGeneration:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_no_report_dir_skips(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_no_report_dir_skips(self, _mock_backend, _mock_tests, tmp_path: Path):
         """No --report-dir => no crash, no report."""
         state_file = _make_state(tmp_path)
         env = _env_with_state(state_file)
@@ -1545,10 +1498,7 @@ class TestTimeout:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_timeout_results_in_fail(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
+    def test_timeout_results_in_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
         def _timeout_execute(self_inner, cmd):
             return SubprocessResult(
                 returncode=-1,
@@ -1669,8 +1619,6 @@ def _mock_execute_raw_verilator_pass(self, cmd: list[str]) -> SubprocessResult:
     )
 
 
-
-
 class TestErrorTailSource:
     """The error excerpt must surface the DUT's own (stdout) failure signal, not
     the build's stderr lint-warning storm — except for elaboration failures,
@@ -1683,10 +1631,8 @@ class TestErrorTailSource:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_sim_failure_tail_from_stdout_not_stderr_noise(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -1719,10 +1665,8 @@ class TestErrorTailSource:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_elab_failure_tail_falls_back_to_stderr(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -1758,10 +1702,8 @@ class TestTruncationResilientReport:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_headline_block_is_last(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -1806,10 +1748,8 @@ class TestTruncationResilientReport:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_error_excerpt_capped_with_marker(
         self,
-        _mock_edalize,
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
@@ -1852,10 +1792,6 @@ class TestTruncationResilientReport:
         build_root = tmp_path / "build" / "lite"
         build_root.mkdir(parents=True)
 
-        def _prepare(self_inner, target, test_name, test_names_map):
-            self_inner._record_run_log_dir(target, build_root)
-            return ["sh", "-c", ":"]
-
         def _fail_and_write_log(self_inner, cmd):
             # Simulate the run-half's child-process write: run.log lands on
             # disk DURING the run, through the shared writer that preserves
@@ -1868,10 +1804,7 @@ class TestTruncationResilientReport:
                 duration_s=1.0,
             )
 
-        with (
-            patch.object(SimulateFlow, "_prepare_sim_command", _prepare),
-            patch.object(SimulateFlow, "_execute", _fail_and_write_log),
-        ):
+        with patch.object(SimulateFlow, "_execute", _fail_and_write_log):
             flow = _make_flow(tmp_path, config="lite")
             result = flow._run()
 
@@ -2018,6 +1951,7 @@ class TestTruncationResilientReport:
 
         assert flow._run_log_is_fresh("lite") is False
         assert flow._run_log_pointer("lite") is None
+
 
 # ---------------------------------------------------------------------------
 # Build-context observability (compile command + fileset in report / failure card)
@@ -2259,8 +2193,6 @@ def _fake_sim_resolved(
     )
 
 
-
-
 # ---------------------------------------------------------------------------
 # ravenoc F-32 — a missing EDA binary is a Flow error, never a test failure
 # ---------------------------------------------------------------------------
@@ -2326,8 +2258,7 @@ class TestMissingExecutableIsEdaToolError:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_missing_verilator_in_build_exits_2(self, _prep, _sel, _tests, tmp_path: Path):
+    def test_missing_verilator_in_build_exits_2(self, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         # What the sandbox script actually prints with verilator off PATH: the
         # canonical elab marker (accurate rc, wrong stage) over sh's own gripe.
@@ -2337,7 +2268,6 @@ class TestMissingExecutableIsEdaToolError:
             "ERROR: Verilator elaboration failed (rc=2)\n"
             "BOOLEY_BUILD_STAGE token=abc123 rc=2\n"
         )
-        flow._build_attempt_tokens = {"lite": "abc123"}
         with patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout)):
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -2346,9 +2276,8 @@ class TestMissingExecutableIsEdaToolError:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_live_sim_echoing_command_not_found_is_not_hijacked(
-        self, _prep, _sel, _tests, tmp_path: Path
+        self, _sel, _tests, tmp_path: Path
     ):
         """A running TB's own $system noise must not become a Flow error."""
         flow = _make_flow(tmp_path, config="lite")
@@ -2369,8 +2298,7 @@ class TestMissingExecutableIsEdaToolError:
 class TestTraceArtifactReported:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_trace_path_and_size_reach_the_report(self, _prep, _sel, _tests, tmp_path: Path):
+    def test_trace_path_and_size_reach_the_report(self, _sel, _tests, tmp_path: Path):
         store = tmp_path / "build" / "lite"
         store.mkdir(parents=True)
         fst = store / "dump.fst"
@@ -2402,9 +2330,8 @@ class TestTraceArtifactReported:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_untraced_run_reports_no_trace_line(self, _prep, _sel, _tests, tmp_path: Path):
+    def test_untraced_run_reports_no_trace_line(self, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert "trace:" not in result.report_text
@@ -2458,8 +2385,6 @@ class TestSubSecondDurations:
 # ---------------------------------------------------------------------------
 
 
-
-
 class TestInconclusiveReason:
     """fpu F-22a: the RESULT line must name the reason it actually hit."""
 
@@ -2507,7 +2432,6 @@ class TestInconclusiveReason:
         )
         report = flow._format_summary([tr], [], False)
         assert "no pass/fail sentinel detected" in report
-
 
 
 class TestErrorExcerptSelection:

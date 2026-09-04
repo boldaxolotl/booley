@@ -120,6 +120,25 @@ def test_missing_pre_run_executable_is_a_spawn_error(tmp_path: Path) -> None:
     assert "riscv64-unknown-elf-gcc" in evidence.detail
 
 
+def test_pre_run_process_spawn_error_is_an_ordinary_failure(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    with patch(
+        "booley.flows.sim.execution.pre_run.subprocess.run",
+        side_effect=OSError("resource temporarily unavailable"),
+    ):
+        evidence = run_pre_run_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build" / "lite",
+            eda_tool="icarus",
+            timeout_s=5,
+        )
+
+    assert evidence is not None
+    assert evidence.status == "failed"
+    assert "resource temporarily unavailable" in evidence.detail
+
+
 def test_timeout_is_preserved_as_pre_run_evidence(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     with patch(

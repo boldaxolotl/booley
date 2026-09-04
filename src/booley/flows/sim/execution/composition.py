@@ -11,6 +11,11 @@ from booley.flows.sim.backends.verilator import prepare_invocation as prepare_ve
 
 AdapterPreparer = Callable[[PreparedSimulationWork], list[str]]
 
+
+class UnsupportedSimulationAdapterError(ValueError):
+    """The resolved Target names no supported Simulation adapter."""
+
+
 _PREPARERS: dict[str, AdapterPreparer] = {
     "cocotb": prepare_cocotb,
     "icarus": prepare_icarus,
@@ -23,8 +28,10 @@ def prepare_adapter_invocation(work: PreparedSimulationWork) -> list[str]:
     try:
         prepare = _PREPARERS[work.adapter]
     except KeyError as exc:  # pragma: no cover - Literal protects typed callers
-        raise ValueError(f"unsupported Simulation adapter: {work.adapter!r}") from exc
+        raise UnsupportedSimulationAdapterError(
+            f"unsupported Simulation adapter: {work.adapter!r}"
+        ) from exc
     return prepare(work)
 
 
-__all__ = ["prepare_adapter_invocation"]
+__all__ = ["UnsupportedSimulationAdapterError", "prepare_adapter_invocation"]
