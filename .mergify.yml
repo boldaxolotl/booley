@@ -12,6 +12,10 @@ merge_queue:
 queue_rules:
   - name: default
     batch_size: 1
+    # Cold-cache runtime image validation takes about 57 minutes. Keep the
+    # queue bound explicit so Mergify's shorter history-derived timeout cannot
+    # dequeue a healthy build before ci-required reports.
+    checks_timeout: 90 minutes
     max_checks_retries: 0
     branch_protection_injection_mode: queue
     merge_method: merge
