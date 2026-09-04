@@ -1835,7 +1835,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd()
+        run_cwd = self._simulation_run_cwd(rel)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1871,7 +1871,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd()
+        run_cwd = self._simulation_run_cwd(rel)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1918,7 +1918,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(_resolve_sim_time_grace_s(self.args.work_dir)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd()
+        run_cwd = self._simulation_run_cwd(rel)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1927,8 +1927,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cmd.append(f"--plusarg={plusarg}")
         return cmd
 
-    def _simulation_run_cwd(self) -> str:
-        """Resolve the configured simulation runtime directory."""
+    def _simulation_run_cwd(self, build_dir: str) -> str:
+        """Resolve the real or Doctor-isolated simulation runtime directory."""
+        if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
+            return (Path(build_dir) / selftest_overlay.BAD_RUN_CWD_DIR).as_posix()
         return resolve_run_cwd(self.args.work_dir)
 
     @staticmethod

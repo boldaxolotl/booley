@@ -27,6 +27,7 @@ from booley.targets.target import TargetHandle, inspect_target
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
+from .config import resolve_run_cwd
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -173,7 +174,7 @@ def _prepare_simulation_build(
 
 
 def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
-    """Apply Doctor's internal known-bad simulation overlay when requested."""
+    """Apply Doctor's bad fixture to isolated build and runtime views."""
     import os
 
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
@@ -185,6 +186,13 @@ def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
             "Doctor requested a bad simulation fixture, but "
             f"{selftest_overlay.bad_overlay_dir(project_dir, 'sim')} is empty"
         )
+    run_cwd = (project_root / resolve_run_cwd(project_root)).resolve()
+    selftest_overlay.stage_bad_run_overlay(
+        project_dir,
+        "sim",
+        run_cwd,
+        build_root / selftest_overlay.BAD_RUN_CWD_DIR,
+    )
 
 
 def build_stage_script(
