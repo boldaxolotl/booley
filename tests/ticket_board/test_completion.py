@@ -524,6 +524,53 @@ def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_p
     assert parents == [advanced, ticket_sha]
 
 
+def test_complete_rejects_destination_change_to_dynamically_referenced_hook(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    hooks = root / "hooks"
+    hooks.mkdir()
+    hook = hooks / "prepare.py"
+    hook.write_text("print('basis')\n", encoding="utf-8")
+    (root / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, pre_run: hooks/prepare.py}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "hooks/prepare.py", "toy.core")
+    _git(root, "commit", "-m", "add acceptance controls")
+    basis_sha = _git(root, "rev-parse", "HEAD")
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    hook.write_text("print('destination drift')\n", encoding="utf-8")
+    _git(root, "add", "hooks/prepare.py")
+    _git(root, "commit", "-m", "change acceptance hook")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        basis_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    contract = TargetContract(
+        outer_sha=basis_sha,
+        project_sha="",
+        surface_digest="c" * 64,
+        targets=(),
+        participants=(participant,),
+    )
+    tio = _TicketIO(root, contract)
+
+    assert ticket_sha != basis_sha
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert "protected path(s) changed: hooks/prepare.py" in capsys.readouterr().err
+
+
 def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     base = _repository(root)

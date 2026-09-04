@@ -39,7 +39,6 @@ from .acceptance_journal import (
     load_persisted_journal,
 )
 from .contract_ops import ContractOperationError, pin_basis_refs
-from .contract_path_policy import is_static_contract_path
 from .frontmatter import parse_frontmatter
 from .git_ops import worktree_is_clean
 from .target_finalization import (
@@ -167,16 +166,10 @@ def _load_journal(
         raise CompletionError(str(exc)) from exc
 
 
-def _changed_paths(repository: Path, before: str, after: str) -> set[str]:
-    output = _require_git(repository, "diff", "--name-only", "-z", before, after)
-    return {path for path in output.split("\0") if path}
-
-
 def _validate_participant(
     repository: Path,
     participant: BasisParticipant,
     source: str,
-    protected_paths: set[str],
 ) -> str:
     destination = _commit(repository, participant.destination_ref)
     if not _is_ancestor(repository, participant.authoring_sha, source):
@@ -187,17 +180,6 @@ def _validate_participant(
     if not _is_ancestor(repository, participant.destination_sha, destination):
         raise CompletionError(
             f"{participant.destination_ref} rewrote the recorded destination history"
-        )
-    destination_changes = _changed_paths(repository, participant.destination_sha, destination)
-    collisions = sorted(
-        path
-        for path in destination_changes
-        if path in protected_paths or is_static_contract_path(path)
-    )
-    if collisions:
-        raise CompletionError(
-            f"{participant.destination_ref} changed recorded control path(s) also changed "
-            f"by this Ticket: {', '.join(collisions)}"
         )
     return destination
 
@@ -246,10 +228,9 @@ def _plan_candidate(
     source: str,
     transaction: str,
     slug: str,
-    protected_paths: set[str],
     plan_directory: Path,
 ) -> _CandidatePlan:
-    destination = _validate_participant(repository, participant, source, protected_paths)
+    destination = _validate_participant(repository, participant, source)
     staging_ref = f"refs/booley/acceptance/{transaction}/{participant.role}"
     if _is_ancestor(repository, source, destination):
         candidate = destination
@@ -456,25 +437,6 @@ def _publish_candidate(
     )
 
 
-def _protected_paths(
-    contract: AcceptanceBasis, participant: BasisParticipant, project_prefix: str
-) -> set[str]:
-    has_project = any(item.role == "project" for item in contract.participants)
-    if participant.role == "project":
-        return {
-            item.path.removeprefix(project_prefix)
-            for item in contract.surface_entries
-            if item.path.startswith(project_prefix)
-        }
-    if has_project:
-        return {
-            item.path
-            for item in contract.surface_entries
-            if not item.path.startswith(project_prefix)
-        }
-    return {item.path for item in contract.surface_entries}
-
-
 def _plan_missing_candidates(
     root: Path,
     project_repository: Path | None,
@@ -482,7 +444,6 @@ def _plan_missing_candidates(
     contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     plan_directory: Path,
-    project_prefix: str,
 ) -> dict[str, _CandidatePlan]:
     plans: dict[str, _CandidatePlan] = {}
     for participant in contract.participants:
@@ -495,10 +456,63 @@ def _plan_missing_candidates(
             journal["sources"][participant.role],
             journal["transaction"],
             slug,
-            _protected_paths(contract, participant, project_prefix),
             plan_directory,
         )
     return plans
+
+
+def _candidate_identity(
+    role: str,
+    journal: AcceptanceJournal,
+    plans: Mapping[str, _CandidatePlan],
+) -> str:
+    if role in plans:
+        return plans[role].prepared_sha
+    prepared = journal["candidates"][role]["prepared_sha"]
+    if prepared is None:
+        raise CompletionError(f"prepared {role} acceptance candidate has no identity")
+    return prepared
+
+
+def _candidate_repository(
+    root: Path,
+    project_repository: Path | None,
+    role: str,
+    plans: Mapping[str, _CandidatePlan],
+) -> Path:
+    plan = plans.get(role)
+    if plan is not None and plan.source_repository is not None:
+        return plan.source_repository
+    if role == "outer":
+        return root
+    if project_repository is None:
+        raise CompletionError("recorded project repository is unavailable")
+    return project_repository
+
+
+def _validate_candidate_surface(
+    root: Path,
+    project_repository: Path | None,
+    contract: AcceptanceBasis,
+    journal: AcceptanceJournal,
+    plans: Mapping[str, _CandidatePlan],
+    directory: Path,
+) -> None:
+    outer = directory / "candidate-surface"
+    outer_source = _candidate_repository(root, project_repository, "outer", plans)
+    _clone_checkout(outer_source, outer, _candidate_identity("outer", journal, plans))
+    if any(row.role == "project" for row in contract.participants):
+        project_source = _candidate_repository(root, project_repository, "project", plans)
+        project_path = outer / checkout_project_dir_relative_to(root)
+        _clone_checkout(
+            project_source,
+            project_path,
+            _candidate_identity("project", journal, plans),
+        )
+    try:
+        assert_inputs_unchanged(contract, outer)
+    except AcceptanceBasisError as exc:
+        raise CompletionError(str(exc)) from exc
 
 
 def _import_candidate(repository: Path, plan: _CandidatePlan) -> None:
@@ -745,19 +759,18 @@ def _prepare_all(
     journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
-    try:
-        project_prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
-    except (FileNotFoundError, ValueError) as exc:
-        raise CompletionError(str(exc)) from exc
     with tempfile.TemporaryDirectory(prefix="booley-accept-plan-") as directory:
+        plan_directory = Path(directory)
         plans = _plan_missing_candidates(
             root,
             project_repository,
             slug,
             contract,
             journal,
-            Path(directory),
-            project_prefix,
+            plan_directory,
+        )
+        _validate_candidate_surface(
+            root, project_repository, contract, journal, plans, plan_directory
         )
         _persist_candidate_plans(root, project_repository, contract, journal, journal_path, plans)
     if not journal["published"]:

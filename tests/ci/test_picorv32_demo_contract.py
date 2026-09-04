@@ -225,6 +225,10 @@ def _demo_git_project(tmp_path: Path) -> Path:
 
 
 def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.CompletedProcess[str]:
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -238,6 +242,7 @@ def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.Comple
         ],
         capture_output=True,
         text=True,
+        env=os.environ | {"PYTHONPATH": python_path},
         check=False,
     )
 

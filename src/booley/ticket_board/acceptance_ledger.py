@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +17,8 @@ from typing import Any, Literal
 
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
+
+from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
 
@@ -66,21 +66,10 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
 
 def _write_once(path: Path, content: bytes) -> None:
     """Atomically create *path*, accepting an identical existing value."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(raw_tmp)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            if path.read_bytes() != content:
-                raise AcceptanceLedgerError(f"conflicting acceptance record: {path}") from None
-    finally:
-        tmp.unlink(missing_ok=True)
+        atomic_write_once(path, content)
+    except WriteOnceConflictError as exc:
+        raise AcceptanceLedgerError(f"conflicting acceptance record: {path}") from exc
 
 
 def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> AcceptanceSnapshot:

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -36,8 +34,9 @@ from .acceptance_basis import (
     canonical_json,
     record_relative_path,
 )
-from .frontmatter import parse_frontmatter, update_frontmatter
+from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
+from .persistence import WriteOnceConflictError, atomic_write_once
 from .target_contract import (
     TargetContract,
     canonical_contract_bindings,
@@ -456,15 +455,13 @@ def _draft_generation(root: Path, slug: str) -> str:
             return value
         raise ContractOperationError(f"invalid draft generation descriptor: {path}")
     value = secrets.token_hex(8)
-    payload = json.dumps({"generation": value}, sort_keys=True) + "\n"
+    payload = (json.dumps({"generation": value}, sort_keys=True) + "\n").encode()
     try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
+        created = atomic_write_once(path, payload)
+    except WriteOnceConflictError as exc:
+        raise ContractOperationError(f"conflicting draft generation descriptor: {path}") from exc
+    if not created:
         return _draft_generation(root, slug)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
     return value
 
 
@@ -485,38 +482,45 @@ def open_contract(
     branch = fields.get("branch")
     if not isinstance(branch, str) or not branch:
         raise ContractOperationError("ticket has no destination branch")
-    outer = resolve_project_dir(root) / "worktrees" / slug
     generation = _draft_generation(root, slug)
+    outer = resolve_project_dir(root) / "worktrees" / slug
+    return _open_generation(root, Path(ticket_path), slug, fields, generation, outer)
+
+
+def _open_generation(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    fields: dict,
+    generation: str,
+    outer: Path,
+) -> ContractWorktrees:
+    branch = fields.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise ContractOperationError("ticket has no destination branch")
     ticket_branch = _generation_branch(generation, slug)
     project_plan = _preflight_project_repository(
         root, branch, fields.get("project_destination_ref")
     )
     outer_base = _full_commit(root, branch)
     if outer.is_dir() and _worktree_owns_branch(root, outer, ticket_branch):
-        paired = paired_project_repository(outer)
+        paired = _resume_project_attachment(root, ticket, slug, outer, ticket_branch, project_plan)
         return ContractWorktrees(
             outer,
-            paired.worktree if paired is not None else None,
+            paired,
             outer_base,
             project_plan.base_sha if project_plan is not None else "",
             generation,
         )
     outer_attachment = _plan_open_attachment(root, outer, ticket_branch, outer_base)
-    project_attachment = None
-    if project_plan is not None:
-        project_attachment = _plan_open_attachment(
-            project_plan.source,
-            ticket_project_worktree(outer),
-            ticket_branch,
-            project_plan.base_sha,
-        )
+    project_attachment = _project_open_attachment(project_plan, outer, ticket_branch)
     _validate_open_bases(root, branch, outer_base, project_plan)
     try:
         _create_attachment(outer_attachment)
         if project_attachment is not None and project_plan is not None:
             _create_attachment(project_attachment)
             _set_attachment_upstream(project_attachment, project_plan.base_branch)
-        _prepare_contract_project(root, outer, Path(ticket_path), slug)
+        _prepare_contract_project(root, outer, ticket, slug)
     except Exception as exc:
         rollback_failures = _rollback_open(outer_attachment, project_attachment)
         if rollback_failures:
@@ -528,6 +532,59 @@ def open_contract(
     project = project_attachment.worktree if project_attachment is not None else None
     project_base = project_plan.base_sha if project_plan is not None else ""
     return ContractWorktrees(outer, project, outer_base, project_base, generation)
+
+
+def _project_open_attachment(
+    project: _ProjectOpenPlan | None,
+    outer: Path,
+    ticket_branch: str,
+) -> _OpenAttachment | None:
+    if project is None:
+        return None
+    return _plan_open_attachment(
+        project.source,
+        ticket_project_worktree(outer),
+        ticket_branch,
+        project.base_sha,
+    )
+
+
+def _resume_project_attachment(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    outer: Path,
+    ticket_branch: str,
+    project: _ProjectOpenPlan | None,
+) -> Path | None:
+    """Finish a project attachment interrupted after the outer worktree was created."""
+    paired = paired_project_repository(outer)
+    if project is None:
+        if paired is not None:
+            raise ContractOperationError("unexpected paired project contract worktree")
+        _prepare_contract_project(root, outer, ticket, slug)
+        return None
+    if paired is not None:
+        if not _worktree_owns_branch(project.source, paired.worktree, ticket_branch):
+            raise ContractOperationError("paired project contract worktree has the wrong branch")
+        _prepare_contract_project(root, outer, ticket, slug)
+        return paired.worktree
+    attachment = _project_open_attachment(project, outer, ticket_branch)
+    if attachment is None:  # Defensive: project is known to be present above.
+        raise ContractOperationError("paired project attachment could not be planned")
+    try:
+        _create_attachment(attachment)
+        _set_attachment_upstream(attachment, project.base_branch)
+        _prepare_contract_project(root, outer, ticket, slug)
+    except Exception as exc:
+        failures, _clear = _rollback_attachment(attachment)
+        if failures:
+            raise ContractOperationError(
+                f"project attachment recovery failed: {exc}; rollback incomplete: "
+                + "; ".join(failures)
+            ) from exc
+        raise
+    return attachment.worktree
 
 
 def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
@@ -751,16 +808,10 @@ def _write_authored_record(
     except AcceptanceBasisError as exc:
         raise ContractOperationError(str(exc)) from exc
     path, project_owner = _record_path(prepared, slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.read_bytes() != payload:
-            raise ContractOperationError(f"Acceptance Basis record already exists: {path}")
-    else:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
+    try:
+        atomic_write_once(path, payload, mode=0o644)
+    except WriteOnceConflictError as exc:
+        raise ContractOperationError(f"Acceptance Basis record already exists: {path}") from exc
     repository = prepared.project if project_owner else prepared.outer
     changes = prepared.project_changes if project_owner else prepared.outer_changes
     if repository is None:
@@ -783,10 +834,30 @@ def prepare_acceptance_basis(
     fields, body = parse_frontmatter(prepared.ticket.read_text(encoding="utf-8"))
     if effective_fields is not None:
         fields = effective_fields
+    basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
+    return _commit_acceptance_basis(prepared, slug, fields, *basis_inputs)
+
+
+def _prepare_basis_inputs(
+    prepared: _SealInputs,
+    slug: str,
+    fields: dict[str, object],
+    body: str,
+) -> tuple[tuple, tuple[str, ...]]:
     from .target_finalization import canonical_remove_targets
 
-    removals = canonical_remove_targets(fields, prepared.outer)
-    bindings = _write_authored_record(prepared, slug, fields, body)
+    removals = tuple(canonical_remove_targets(fields, prepared.outer))
+    bindings = tuple(_write_authored_record(prepared, slug, fields, body))
+    return bindings, removals
+
+
+def _commit_acceptance_basis(
+    prepared: _SealInputs,
+    slug: str,
+    fields: dict[str, object],
+    bindings: tuple,
+    removals: tuple[str, ...],
+) -> AcceptanceBasis:
     outer_start = _full_commit(prepared.outer, "HEAD")
     project_start = _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
     outer_sha = outer_start
@@ -813,8 +884,8 @@ def prepare_acceptance_basis(
                 prepared.project,
                 project_sha,
             ),
-            tuple(bindings),
-            tuple(removals),
+            bindings,
+            removals,
         )
         created_keepalives = _publish_basis_keepalives(
             basis,
@@ -837,20 +908,25 @@ def _publish_basis_keepalives(
     project: Path | None,
 ) -> list[tuple[Path, str, str]]:
     created: list[tuple[Path, str, str]] = []
-    for participant in basis.participants:
-        repository = outer if participant.role == "outer" else project
-        if repository is None:
-            raise ContractOperationError(
-                f"Acceptance Basis {participant.role} repository disappeared"
-            )
-        ref = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
-        current = _git(repository, "rev-parse", "--verify", "--quiet", ref)
-        if current.returncode == 0:
-            if current.stdout.strip() != participant.authoring_sha:
-                raise ContractOperationError(f"keepalive ref {ref} names another commit")
-            continue
-        _require_git(repository, "update-ref", ref, participant.authoring_sha, "")
-        created.append((repository, ref, participant.authoring_sha))
+    try:
+        for participant in basis.participants:
+            repository = outer if participant.role == "outer" else project
+            if repository is None:
+                raise ContractOperationError(
+                    f"Acceptance Basis {participant.role} repository disappeared"
+                )
+            ref = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
+            current = _git(repository, "rev-parse", "--verify", "--quiet", ref)
+            if current.returncode == 0:
+                if current.stdout.strip() != participant.authoring_sha:
+                    raise ContractOperationError(f"keepalive ref {ref} names another commit")
+                continue
+            _require_git(repository, "update-ref", ref, participant.authoring_sha, "")
+            created.append((repository, ref, participant.authoring_sha))
+    except Exception:
+        for repository, ref, sha in reversed(created):
+            _git(repository, "update-ref", "-d", ref, sha)
+        raise
     return created
 
 
@@ -996,62 +1072,6 @@ def _restore_project_contract(
     _attach_worktree(source, destination, branch, contract.project_sha)
     base_branch = participant.destination_ref.removeprefix("refs/heads/")
     _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
-
-
-def return_to_draft(
-    project_root: Path | str,
-    ticket_path: Path | str,
-    slug: str,
-    *,
-    status: str,
-    logs_dir: Path | str,
-) -> ContractWorktrees:
-    """Preserve an old basis and create a fresh authoring generation."""
-    if status != "blocked":
-        raise ContractOperationError(f"return-to-draft requires a blocked ticket, got {status!r}")
-    root = Path(project_root).resolve()
-    ticket = Path(ticket_path)
-    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    raw = fields.get("acceptance_basis")
-    if raw is None:
-        raise ContractOperationError("ticket has no Acceptance Basis")
-    try:
-        basis = AcceptanceBasis.from_mapping(raw)
-    except AcceptanceBasisError as exc:
-        raise ContractOperationError(str(exc)) from exc
-    outer = resolve_project_dir(root) / "worktrees" / slug
-    paired = paired_project_repository(outer) if outer.is_dir() else None
-    source = resolve_inner_project_repo(root)
-    evidence = Path(logs_dir) / slug
-    archive = Path(logs_dir) / "runs" / slug / basis.basis_id
-    if evidence.exists() and archive.exists():
-        raise ContractOperationError(f"evidence archive already exists: {archive}")
-    for participant in basis.participants:
-        repository = root if participant.role == "outer" else source
-        if repository is None:
-            raise ContractOperationError(f"Acceptance Basis {participant.role} repository missing")
-        keepalive = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
-        current = _git(repository, "rev-parse", "--verify", "--quiet", keepalive)
-        if current.returncode == 0 and current.stdout.strip() != participant.authoring_sha:
-            raise ContractOperationError(f"keepalive ref {keepalive} names another commit")
-        if current.returncode != 0:
-            _require_git(repository, "update-ref", keepalive, participant.authoring_sha)
-    _remove_contract_worktrees(root, outer, paired, source)
-    _generation_file(root, slug).unlink(missing_ok=True)
-    replacement = open_contract(root, ticket, slug)
-    update_frontmatter(
-        ticket,
-        {},
-        remove_keys=["acceptance_basis", "created", "feature_branch"],
-    )
-    drafts = ticket.parent.parent / "drafts"
-    drafts.mkdir(parents=True, exist_ok=True)
-    destination = drafts / ticket.name
-    shutil.move(str(ticket), str(destination))
-    if evidence.exists():
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(evidence), str(archive))
-    return replacement
 
 
 def _remove_contract_worktrees(

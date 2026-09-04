@@ -427,6 +427,7 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
     from booley.criteria.state import DevelopmentState
     from booley.harness.job_fence import active_ticket_jobs
 
+    from .acceptance_basis import AcceptanceBasisError
     from .acceptance_ledger import (
         AcceptanceLedgerError,
         bind_review_package,
@@ -476,17 +477,28 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
         return False
     execution_id = expected_execution_id or str((entry or {}).get("execution_id", ""))
     try:
+        evidence_basis = _handoff_basis_evidence(tio, slug, entry)
         snapshot = freeze_acceptance(
             log_dir,
             DevelopmentState.load(state_path),
             execution_id=execution_id,
-            acceptance_basis=(entry or {}).get("acceptance_basis"),
+            acceptance_basis=evidence_basis,
         )
         bind_review_package(log_dir, snapshot)
-    except AcceptanceLedgerError as exc:
+    except (AcceptanceBasisError, AcceptanceLedgerError) as exc:
         print(f"Error: cannot freeze acceptance for '{slug}': {exc}", file=sys.stderr)
         return False
     return True
+
+
+def _handoff_basis_evidence(tio: Any, slug: str, entry: dict | None) -> dict:
+    """Load the durable enqueue receipt embedded in an Acceptance Snapshot."""
+    from .acceptance_basis import load_basis_receipt
+
+    raw_basis = (entry or {}).get("acceptance_basis")
+    if not isinstance(raw_basis, dict):
+        return {}
+    return load_basis_receipt(tio._project_root, slug, raw_basis)
 
 
 def op_handoff(

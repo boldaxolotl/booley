@@ -1678,9 +1678,8 @@ class TestEnqueueTicket:
         # File already exists with 'created' stamp -> duplicate guard kicks in
         assert result is False
 
-    def test_enqueue_stamps_frontmatter(self, tmp_path):
-        """enqueue_ticket stamps created/last_update when file exists but hasn't
-        been stamped yet (no 'created' field)."""
+    def test_enqueue_requires_git_before_stamping_frontmatter(self, tmp_path):
+        """A filesystem-only Ticket cannot become executable."""
         tio = make_tio(tmp_path)
         # Write the file directly without a 'created' field
         content = (
@@ -1701,15 +1700,9 @@ class TestEnqueueTicket:
         result = tio.enqueue_ticket(
             "add-thing", "A completely different summary here", "feature", "master"
         )
-        # File exists but has no 'created' stamp -> re-enqueue allowed, stamps it
-        assert result is True
-        # Verify frontmatter was stamped (created is a spec field)
+        assert result is False
         fields, _ = parse_frontmatter((queue_dir / "add-thing.md").read_text(encoding="utf-8"))
-        assert fields.get("created") is not None
-        # last_update is a runtime field, now in progress.json
-        progress = load_progress(tio.logs_dir, "add-thing")
-        assert progress is not None
-        assert progress.get("last_update") not in (None, "")
+        assert fields.get("created") is None
 
     def test_enqueue_transition_log(self, tmp_path):
         """Verify transition log creation via append_transition (used by enqueue)."""
@@ -4524,7 +4517,7 @@ class TestCollectAllMessagesRecovered:
 
 
 class TestEnqueueAppliesParams:
-    """Test that enqueue_ticket writes on_success to frontmatter."""
+    """Test that failed filesystem-only enqueue leaves authored input unchanged."""
 
     def test_on_success_applied(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -4533,7 +4526,7 @@ class TestEnqueueAppliesParams:
         # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
         # In normal workflow, enqueue is called before find_ticket_file can find it.
         with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
-            tio.enqueue_ticket(
+            result = tio.enqueue_ticket(
                 "t1",
                 "t1",
                 "feature",
@@ -4542,8 +4535,8 @@ class TestEnqueueAppliesParams:
             )
         path = tio.tickets_dir / "board" / "queue" / "t1.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"]["destination"] == "done"
-        assert fields["on_success"]["merge"] is False
+        assert result is False
+        assert "on_success" not in fields
 
     def test_no_on_success_by_default(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -5413,14 +5406,14 @@ class TestOpResetPreservesBlockedMd:
 class TestOpBoardMove:
     """Test op_board_move enforces valid state transitions."""
 
-    def test_draft_to_queue(self, tmp_path):
-        """draft -> queue is a valid transition."""
+    def test_draft_to_queue_requires_git_backing(self, tmp_path):
+        """draft -> queue cannot publish without Git identities."""
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "drafts", "my-ticket")
         result = op_board_move(tio, "my-ticket", "queue")
-        assert result is True
+        assert result is False
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "queued"
+        assert status == "draft"
 
     def test_blocked_to_queue(self, tmp_path):
         """blocked -> queue is a valid transition (unblock)."""
@@ -5615,7 +5608,7 @@ class TestBoardMoveTerminalActionOverrides:
     def test_flags_are_announced_as_ignored_on_other_edges(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "drafts", "my-ticket")
-        assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is True
+        assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is False
         assert "apply to the review->done move only" in capsys.readouterr().err
 
 

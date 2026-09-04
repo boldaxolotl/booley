@@ -55,6 +55,7 @@ from .logs import (
     append_incident as _append_incident_unlocked,
 )
 from .paths import (
+    existing_runtime_file,
     human_log_file,
     migrate_runtime_file,
     ticket_log_dir,
@@ -670,51 +671,56 @@ class TicketIO:
         done_slugs = compute_done_slugs(all_tickets)
         return not all(d in done_slugs for d in deps), False
 
-    def _enqueue_locked(self, slug, ticket_path, on_success, has_unmet, acceptance_basis=None):
-        """Perform locked enqueue mutations: stamp, progress, move, transition."""
-        recheck_path, _ = find_ticket_file(self.tickets_dir, slug)
-        if recheck_path is not None:
-            with recheck_path.open(encoding="utf-8") as f:
-                recheck_fields, _ = parse_frontmatter(f.read())
-            if recheck_fields.get("created"):
-                return False
+    def _finish_enqueue_publication(self, journal) -> bool:
+        """Roll a prepared enqueue forward through its exact-once side effects."""
+        from .enqueue_publication import (
+            finish_enqueue,
+            publish_enqueue,
+            write_enqueue_journal,
+        )
 
-        fm_updates = {"created": now_iso()}
-        if acceptance_basis is not None:
-            fm_updates["acceptance_basis"] = acceptance_basis
-        if on_success:
-            from booley.core.models import OnSuccess
-
-            errors = OnSuccess.from_dict(on_success).validate()
-            if errors:
-                print(f"Error: invalid on_success: {'; '.join(errors)}", file=sys.stderr)
-                return False
-            fm_updates["on_success"] = on_success
-        update_frontmatter(ticket_path, fm_updates)
-
+        self._validate_enqueue_journal_basis(journal)
+        if journal.state == "prepared":
+            journal = publish_enqueue(self._project_root, journal)
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
-        initial_progress["last_update"] = now_iso()
-        save_progress(self.logs_dir, slug, initial_progress)
-
-        if has_unmet:
-            dest_dir = self.tickets_dir / "board" / "waiting"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest_path = dest_dir / f"{slug}.md"
-            if ticket_path != dest_path:
-                shutil.move(str(ticket_path), str(dest_path))
-            self._append_transition_unlocked(
-                slug, "---", "waiting:init", "ticket-create", "ticket created (waiting on deps)"
-            )
-        else:
-            queue_dir = self.tickets_dir / "board" / "queue"
-            queue_dir.mkdir(parents=True, exist_ok=True)
-            queue_path = queue_dir / f"{slug}.md"
-            if ticket_path != queue_path:
-                shutil.move(str(ticket_path), str(queue_path))
-            self._append_transition_unlocked(
-                slug, "---", "queued:init", "ticket-create", "ticket created"
-            )
+        initial_progress["last_update"] = journal.created
+        save_progress(self.logs_dir, journal.slug, initial_progress)
+        if journal.state == "published":
+            self._append_enqueue_transition_once(journal)
+            journal = journal.with_state("transitioned")
+            write_enqueue_journal(self._project_root, journal)
+        finish_enqueue(self._project_root, journal)
         return True
+
+    def _validate_enqueue_journal_basis(self, journal) -> None:
+        """Revalidate immutable basis evidence before resuming publication."""
+        from .acceptance_basis import AcceptanceBasis, load_basis_receipt
+        from .contract_ops import validate_basis_refs
+
+        basis = AcceptanceBasis.from_mapping(journal.basis)
+        receipt = load_basis_receipt(self._project_root, journal.slug, journal.basis)
+        if receipt != journal.receipt:
+            raise RuntimeError("enqueue journal receipt differs from write-once evidence")
+        outer = basis.participant("outer")
+        errors = validate_basis_refs(
+            self._project_root,
+            basis,
+            slug=journal.slug,
+            destination_branch=outer.destination_ref.removeprefix("refs/heads/"),
+        )
+        if errors:
+            raise RuntimeError("enqueue journal Acceptance Basis is invalid: " + "; ".join(errors))
+
+    def _append_enqueue_transition_once(self, journal) -> None:
+        marker = f"enqueue operation {journal.operation_id}"
+        path = human_log_file(self.logs_dir, journal.slug, "transitions.log")
+        if path.exists() and marker in path.read_text(encoding="utf-8"):
+            return
+        state = "waiting:init" if journal.has_unmet else "queued:init"
+        detail = "ticket created (waiting on deps)" if journal.has_unmet else "ticket created"
+        self._append_transition_unlocked(
+            journal.slug, "---", state, "ticket-create", f"{detail}; {marker}"
+        )
 
     def enqueue_ticket(
         self,
@@ -731,18 +737,24 @@ class TicketIO:
         """
         if self._retired_enqueue_argument(integration_base):
             return False
-        ticket_path, skip = self._resolve_enqueue_path(slug)
-        if skip:
-            return False
         with self._ticket_lock(slug):
-            fields = self._validated_enqueue_fields(slug, ticket_path, on_success)
-            if fields is None:
+            from .enqueue_publication import load_enqueue_journal
+
+            pending = load_enqueue_journal(self._project_root, slug)
+            if pending is not None:
+                return self._finish_enqueue_publication(pending)
+            ticket_path, skip = self._resolve_enqueue_path(slug)
+            if skip or ticket_path is None:
                 return False
+            prepared = self._prepare_enqueue_fields(slug, ticket_path, on_success)
+            if prepared is None:
+                return False
+            fields, body = prepared
             has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
             if dep_error:
                 return False
-            basis = fields.get("acceptance_basis")
-            return self._enqueue_locked(slug, ticket_path, on_success, has_unmet, basis)
+            journal = self._prepare_enqueue_publication(slug, ticket_path, fields, body, has_unmet)
+            return self._finish_enqueue_publication(journal)
 
     @staticmethod
     def _retired_enqueue_argument(integration_base: str) -> bool:
@@ -755,9 +767,39 @@ class TicketIO:
         )
         return True
 
-    def _validated_enqueue_fields(
+    def _prepare_enqueue_fields(
         self, slug: str, ticket_path: Path, on_success: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any], str] | None:
+        authored = self._draft_enqueue_fields(ticket_path, on_success)
+        if authored is None:
+            return None
+        effective_fields, body = authored
+        if not self._validate_authored_enqueue(slug, ticket_path, effective_fields, body):
+            return None
+        try:
+            from .acceptance_basis import write_basis_receipt
+            from .contract_ops import prepare_acceptance_basis
+
+            basis = prepare_acceptance_basis(
+                self._project_root,
+                ticket_path,
+                slug,
+                effective_fields=effective_fields,
+            )
+            write_basis_receipt(self._project_root, slug, basis)
+            effective_fields["acceptance_basis"] = basis.as_dict()
+        except (RuntimeError, ValueError, OSError) as exc:
+            self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
+            return None
+        contract_errors = self._validate_enqueue_contract(slug, effective_fields)
+        if contract_errors:
+            self._print_enqueue_errors("ticket Acceptance Basis is invalid", contract_errors)
+            return None
+        return effective_fields, body
+
+    def _draft_enqueue_fields(
+        self, ticket_path: Path, on_success: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], str] | None:
         with ticket_path.open(encoding="utf-8") as handle:
             fields, body = parse_frontmatter(handle.read())
         effective_fields = dict(fields)
@@ -772,32 +814,37 @@ class TicketIO:
                 ],
             )
             return None
-        if (self._project_root / ".git").exists() and effective_fields.get(
-            "acceptance_basis"
-        ) is None:
+        if effective_fields.get("acceptance_basis") is not None:
+            self._print_enqueue_errors(
+                "invalid draft", ["draft Tickets cannot contain an Acceptance Basis"]
+            )
+            return None
+        if not (self._project_root / ".git").exists():
+            self._print_enqueue_errors(
+                "Acceptance Basis publication failed",
+                ["enqueue requires a Git-backed Project; the draft was left unchanged"],
+            )
+            return None
+        return effective_fields, body
+
+    def _validate_authored_enqueue(
+        self,
+        slug: str,
+        ticket_path: Path,
+        fields: dict[str, Any],
+        body: str,
+    ) -> bool:
+        if (self._project_root / ".git").exists():
             try:
-                from .acceptance_basis import write_basis_receipt
-                from .contract_ops import open_contract, prepare_acceptance_basis
+                from .contract_ops import open_contract
 
                 open_contract(self._project_root, ticket_path, slug)
-                basis = prepare_acceptance_basis(
-                    self._project_root,
-                    ticket_path,
-                    slug,
-                    effective_fields=effective_fields,
-                )
-                write_basis_receipt(self._project_root, slug, basis)
-                effective_fields["acceptance_basis"] = basis.as_dict()
             except (RuntimeError, ValueError, OSError) as exc:
-                self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
-                return None
-        contract_errors = self._validate_enqueue_contract(slug, effective_fields)
-        if contract_errors:
-            self._print_enqueue_errors("ticket Acceptance Basis is invalid", contract_errors)
-            return None
-        validation_root = self._enqueue_validation_root(slug, effective_fields)
+                self._print_enqueue_errors("Ticket workspace preparation failed", [str(exc)])
+                return False
+        validation_root = self._enqueue_validation_root(slug, fields)
         results = validate_ticket_fields(
-            effective_fields,
+            fields,
             body,
             check_files=(validation_root / ".booley").is_dir(),
             check_git=False,
@@ -809,8 +856,38 @@ class TicketIO:
         errors = [item for item in results if not item.startswith("[warning] ")]
         if errors:
             self._print_enqueue_errors("ticket validation failed", errors)
-            return None
-        return effective_fields
+            return False
+        return True
+
+    def _prepare_enqueue_publication(
+        self,
+        slug: str,
+        ticket_path: Path,
+        fields: dict[str, Any],
+        body: str,
+        has_unmet: bool,
+    ):
+        from .acceptance_basis import AcceptanceBasis, load_basis_receipt
+        from .enqueue_publication import prepare_enqueue
+
+        basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+        receipt = load_basis_receipt(self._project_root, slug, basis.as_dict())
+        created = now_iso()
+        candidate_fields = {**fields, "created": created}
+        destination_dir = "waiting" if has_unmet else "queue"
+        destination = self.tickets_dir / "board" / destination_dir / ticket_path.name
+        content = format_frontmatter(candidate_fields, body).encode()
+        return prepare_enqueue(
+            self._project_root,
+            slug,
+            ticket_path,
+            destination,
+            content,
+            has_unmet=has_unmet,
+            created=created,
+            basis=basis.as_dict(),
+            receipt=receipt,
+        )
 
     @staticmethod
     def _print_enqueue_errors(summary: str, errors: list[str]) -> None:
@@ -820,7 +897,7 @@ class TicketIO:
 
     def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
         """Validate sealed tickets against their immutable authoring checkout."""
-        if not (self._project_root / ".git").exists() or fields.get("acceptance_basis") is None:
+        if not (self._project_root / ".git").exists():
             return self._project_root
         from booley.runtime.project_dir import resolve_project_dir
 
@@ -854,27 +931,53 @@ class TicketIO:
 
     def return_to_draft(self, slug: str) -> dict[str, str]:
         """Preserve a blocked generation and reopen a new draft workspace."""
-        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
-        if ticket_path is None or status is None:
-            raise FileNotFoundError(f"ticket {slug!r} does not exist")
-        from .contract_ops import return_to_draft
+        from .draft_transition import return_to_draft, transition_pending
 
+        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
+        pending = transition_pending(self._project_root, slug)
+        if (ticket_path is None or status is None) and not pending:
+            raise FileNotFoundError(f"ticket {slug!r} does not exist")
+        self._validate_return_to_draft_preconditions(slug)
         with self._ticket_lock(slug):
+            self._validate_return_to_draft_preconditions(slug)
+            current_path, current_status = find_ticket_file(self.tickets_dir, slug)
             result = return_to_draft(
                 self._project_root,
-                ticket_path,
+                current_path or ticket_path or self.tickets_dir / "board/blocked" / f"{slug}.md",
                 slug,
-                status=status,
+                status=current_status or status or "",
                 logs_dir=self.logs_dir,
-            )
-            self._append_transition_unlocked(
-                slug,
-                "blocked",
-                "draft",
-                "return-to-draft",
-                f"new authoring generation {result.generation}",
+                append_transition=lambda detail: self._append_return_transition_once(slug, detail),
             )
         return result.as_dict()
+
+    def _validate_return_to_draft_preconditions(self, slug: str) -> None:
+        from booley.harness.job_fence import active_ticket_jobs
+        from booley.runtime.pid import is_pid_alive
+
+        from .helpers import read_lock_pid
+
+        lock = existing_runtime_file(self.logs_dir, slug, "ticket.lock")
+        owner = read_lock_pid(lock)
+        caller = str(self._resolve_developer_pid())
+        if owner is not None and str(owner) != caller and is_pid_alive(owner):
+            raise RuntimeError(f"ticket {slug!r} is owned by live process {owner}")
+        active = active_ticket_jobs(ticket_log_dir(self.logs_dir, slug))
+        if active:
+            names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
+            raise RuntimeError(f"ticket {slug!r} has active endpoint Jobs: {names}")
+        state = acceptance_state(self.tickets_dir, slug)
+        if state is not None and state.publication_pending:
+            raise RuntimeError(
+                f"ticket {slug!r} has an Acceptance publication in progress ({state})"
+            )
+
+    def _append_return_transition_once(self, slug: str, detail: str) -> None:
+        operation_id = detail.rsplit("; ", maxsplit=1)[-1]
+        path = human_log_file(self.logs_dir, slug, "transitions.log")
+        if path.exists() and operation_id in path.read_text(encoding="utf-8"):
+            return
+        self._append_transition_unlocked(slug, "blocked", "draft", "return-to-draft", detail)
 
     def _detect_dep_cycle(self, slug, deps, all_tickets=None):
         """Check for circular dependencies. Returns cycle path list or None.

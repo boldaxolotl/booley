@@ -22,6 +22,7 @@ from booley.criteria.templates import (
 )
 from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
     AcceptanceBasisError,
     load_acceptance_basis,
 )
@@ -102,38 +103,8 @@ def _build_context(
     fields: dict,
 ) -> TicketContext:
     """Construct a TicketContext from parsed frontmatter fields."""
-    # Migration: reject retired plan-file fields (the planner specialists were pruned).
-    retired_plan_fields = [
-        k for k in ("plan_file", "rtl_plan_file", "verification_plan_file") if fields.get(k)
-    ]
-    if retired_plan_fields:
-        raise FatalError(
-            f"Retired field(s) in ticket YAML: {', '.join(retired_plan_fields)}. Remove them — "
-            "the planner specialists were pruned; put the plan in the ticket body instead.",
-            slug=slug,
-        )
-
-    if fields.get("target_contract") is not None:
-        raise FatalError(
-            "Legacy Target Contract tickets are unsupported after the hard cutoff; "
-            "recreate the Ticket.",
-            slug=slug,
-        )
-    raw_contract = fields.get("acceptance_basis")
-    try:
-        target_contract = (
-            load_acceptance_basis(
-                project_root,
-                slug,
-                fields,
-                parse_frontmatter(ticket_path.read_text(encoding="utf-8"))[1],
-            )
-            if raw_contract is not None
-            else None
-        )
-    except AcceptanceBasisError as exc:
-        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
-
+    _reject_retired_ticket_fields(fields, slug)
+    target_contract = _load_context_basis(project_root, ticket_path, slug, fields)
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -153,6 +124,46 @@ def _build_context(
         project_root=project_root,
         criteria=fields.get("criteria", {}),
     )
+
+
+def _reject_retired_ticket_fields(fields: dict[str, Any], slug: str) -> None:
+    retired_plan_fields = [
+        k for k in ("plan_file", "rtl_plan_file", "verification_plan_file") if fields.get(k)
+    ]
+    if retired_plan_fields:
+        raise FatalError(
+            f"Retired field(s) in ticket YAML: {', '.join(retired_plan_fields)}. Remove them — "
+            "the planner specialists were pruned; put the plan in the ticket body instead.",
+            slug=slug,
+        )
+    if fields.get("target_contract") is not None:
+        raise FatalError(
+            "Legacy Target Contract tickets are unsupported after the hard cutoff; "
+            "recreate the Ticket.",
+            slug=slug,
+        )
+
+
+def _load_context_basis(
+    project_root: Path,
+    ticket_path: Path,
+    slug: str,
+    fields: dict[str, Any],
+) -> AcceptanceBasis | None:
+    raw_basis = fields.get("acceptance_basis")
+    try:
+        return (
+            load_acceptance_basis(
+                project_root,
+                slug,
+                fields,
+                parse_frontmatter(ticket_path.read_text(encoding="utf-8"))[1],
+            )
+            if raw_basis is not None
+            else None
+        )
+    except AcceptanceBasisError as exc:
+        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
 
 
 def _check_dependencies(ctx: TicketContext) -> None:
