@@ -60,6 +60,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Successful cocotb trace conversion removes simulator-owned raw VCD files,
   including files emitted outside the managed work directory. Failed
   conversions retain raw traces and diagnostics in the simulation work area.
+- Simulation elaboration-only checks now classify missing build executables as
+  EDA tool errors while preserving report metadata and leaving the design
+  verdict unset.
 - Windows initialization again recognizes trusted installed console launchers
   after path normalization without accepting Project-controlled executables.
   ([#313](https://github.com/boldaxolotl/booley/issues/313))
