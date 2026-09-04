@@ -47,6 +47,7 @@ import shutil
 import subprocess
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.run_log import write_run_log
@@ -78,6 +79,16 @@ from booley.flows.sim.trace_session import TraceSession
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
 # default with ``-fst`` omitted. vvp writes it into the run cwd.
 _DEFAULT_VCD_NAME = "dump.vcd"
+
+
+@dataclass(frozen=True)
+class _IcarusRun:
+    build_dir: Path
+    run_cwd: Path
+    work_dir: Path
+    image: Path
+    command: list[str]
+    trace: TraceSession | None
 
 
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
@@ -313,7 +324,95 @@ def _evaluate_verdict(
     write_run_log(work_dir, output)
 
 
-def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: build args, spawn, poll, parse, write result
+def _prepare_icarus_run(
+    build_dir: Path,
+    run_cwd: Path | None,
+    work_dir: Path | None,
+    plusargs: list[str],
+    vcd: bool,
+    trace_scope: str | None,
+) -> _IcarusRun | str:
+    build = Path(build_dir).resolve()
+    run = Path(run_cwd).resolve() if run_cwd is not None else build
+    work = Path(work_dir).resolve() if work_dir is not None else build
+    work.mkdir(parents=True, exist_ok=True)
+    image = find_icarus_image(build)
+    if image is None:
+        return f"ERROR: no vvp image (*.scr) found in {build}"
+    if vcd and not any(value.lstrip("+") == "trace" for value in plusargs):
+        plusargs.append("+trace")
+    command = _build_vvp_cmd(_find_vvp(), build, image, plusargs)
+    trace = _new_trace_session(work, trace_scope) if vcd else None
+    if trace is not None:
+        trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
+    return _IcarusRun(build, run, work, image, command, trace)
+
+
+def _execute_icarus_run(run: _IcarusRun, timeout: int, max_rundir_bytes: int):
+    from booley.runtime.heartbeat import Heartbeat
+
+    print(f"\n{'=' * 60}")
+    print(f"[iverilog simulation: {run.image}]")
+    print(f"{'=' * 60}")
+    print(f"CWD: {run.run_cwd}")
+    print(f"CMD: {' '.join(run.command)}\n")
+    heartbeat = Heartbeat("iverilog sim", interval=60)
+    heartbeat.start()
+    try:
+        return _stream_output(
+            run.command,
+            run.run_cwd,
+            timeout,
+            max_rundir_bytes=max_rundir_bytes,
+            work_dir=run.work_dir,
+        )
+    finally:
+        heartbeat.stop()
+
+
+def _finalize_icarus_trace(
+    run: _IcarusRun,
+    proc,
+    trace_files: list[str],
+) -> str:
+    if run.trace is None:
+        return ""
+    run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
+    found = run.trace.find()
+    if found is None and trace_files:
+        roots = [run.run_cwd, run.work_dir, run.build_dir]
+        found = adopt_declared_trace_files(run.trace, trace_files, roots)
+    if found is not None:
+        print(f"TRACE_OK: {found}")
+        return f"\nTRACE_OK: {found}"
+    reason = "trace requested but no queryable .fst store or .vcd was produced"
+    if not trace_files:
+        reason += (
+            " (a testbench writing its dump under its own name needs "
+            "[flows.sim].trace_files to declare it)"
+        )
+    incident = run.trace.write_incident(reason, sim_proc=proc)
+    print(f"ERROR: {reason}")
+    print(f"TRACE_INCIDENT: {incident}")
+    return f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}"
+
+
+def _icarus_setup_failure(
+    detail: str,
+    transport: AdapterTransportIdentity | None,
+) -> str:
+    print(detail)
+    _publish_adapter_result(
+        transport,
+        detail,
+        1,
+        failure_kind="infrastructure",
+        detail=detail,
+    )
+    return detail
+
+
+def run_icarus_image(
     *,
     build_dir: Path,
     run_cwd: Path | None = None,
@@ -328,110 +427,27 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     max_rundir_bytes: int = 0,
     transport: AdapterTransportIdentity | None = None,
 ) -> str:
-    """Run the edalize-built vvp image once; return the captured output.
-
-    *build_dir* holds the image + ``.scr`` + VPI modules; *run_cwd* is the
-    directory to run ``vvp`` from (a TB that opens vectors relative to cwd needs
-    the project's sim cwd), defaulting to *build_dir*; *work_dir* is the
-    trace/result output dir (where the ``.fst`` store and ``result.json`` land,
-    and what ``TraceSession.find()`` discovers), defaulting to *build_dir*.
-
-    Tracing is **file → postprocess** (no FIFO, see module docstring): vvp writes
-    ``dump.vcd`` into *run_cwd*, which is then fed through the iverilog
-    ``TraceSession`` VCD→bwave postprocess.
-    """
-    from booley.runtime.heartbeat import Heartbeat
-
-    # Resolve every path to absolute up front, while cwd is still the project
-    # root: --build-dir/--work-dir/--run-cwd arrive relative so the generated
-    # command is workspace-location independent. vvp runs from --run-cwd, where
-    # a relative build-dir, image path, or trace dir would miss.
-    build_dir = Path(build_dir).resolve()
-    run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir
-    work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    image = find_icarus_image(build_dir)
-    if image is None:
-        msg = f"ERROR: no vvp image (*.scr) found in {build_dir}"
-        print(msg)
-        _publish_adapter_result(
-            transport,
-            msg,
-            1,
-            failure_kind="infrastructure",
-            detail=msg,
-        )
-        return msg
-
-    # booley_vcd_dump.sv triggers $dumpvars(0) only when +trace is set, so the
-    # run-half owns that coupling: a trace run always passes +trace to vvp (the
-    # caller just requests --trace). Mirrors how the Verilator run-half owns its
-    # own trace flags.
-    plusargs = list(plusargs or [])
-    if vcd and not any(pa.lstrip("+") == "trace" for pa in plusargs):
-        plusargs.append("+trace")
-
-    cmd = _build_vvp_cmd(_find_vvp(), build_dir, image, plusargs)
-    trace = _new_trace_session(work_dir, trace_scope) if vcd else None
-    if trace:
-        trace.reset_for_run((run_cwd / _DEFAULT_VCD_NAME,))
-
-    print(f"\n{'=' * 60}")
-    print(f"[iverilog simulation: {image}]")
-    print(f"{'=' * 60}")
-    print(f"CWD: {run_cwd}")
-    print(f"CMD: {' '.join(cmd)}\n")
-
-    hb = Heartbeat("iverilog sim", interval=60)
-    hb.start()
-    try:
-        lines, proc = _stream_output(
-            cmd,
-            run_cwd,
-            timeout,
-            max_rundir_bytes=max_rundir_bytes,
-            work_dir=work_dir,
-        )
-    finally:
-        hb.stop()
-
+    """Run an edalize-built vvp image once and return its captured output."""
+    run = _prepare_icarus_run(
+        build_dir,
+        run_cwd,
+        work_dir,
+        list(plusargs or []),
+        vcd,
+        trace_scope,
+    )
+    if isinstance(run, str):
+        return _icarus_setup_failure(run, transport)
+    lines, proc = _execute_icarus_run(run, timeout, max_rundir_bytes)
     output = "".join(lines)
     _evaluate_verdict(
         output,
         proc.returncode,
-        work_dir,
+        run.work_dir,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
     )
-
-    if vcd and trace:
-        # $dumpfile/$dumpvars drop dump.vcd in the run cwd; hand it to the
-        # VCD→bwave postprocess, then verify a queryable artifact landed.
-        trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
-        found = trace.find()
-        if found is None and trace_files:
-            # F-22: the TB writes its dump under a name only the project knows
-            # ([flows.sim].trace_files).
-            found = adopt_declared_trace_files(trace, trace_files, [run_cwd, work_dir, build_dir])
-        if found is None:
-            reason = "trace requested but no queryable .fst store or .vcd was produced"
-            if not trace_files:
-                reason += (
-                    " (a testbench writing its dump under its own name needs "
-                    "[flows.sim].trace_files to declare it)"
-                )
-            incident = trace.write_incident(reason, sim_proc=proc)
-            print(f"ERROR: {reason}")
-            print(f"TRACE_INCIDENT: {incident}")
-            output += f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}"
-        else:
-            # Positive assertion mirroring verilator_run: a queryable waveform
-            # really landed. simulate's --trace path scrapes TRACE_OK so a
-            # silently-traceless run can no longer pass as success.
-            print(f"TRACE_OK: {found}")
-            output += f"\nTRACE_OK: {found}"
-
+    output += _finalize_icarus_trace(run, proc, list(trace_files or []))
     _publish_adapter_result(
         transport,
         output,

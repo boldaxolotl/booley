@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -62,6 +62,12 @@ class AdapterResult:
     detail: str = ""
     test_results: tuple[AdapterTestResult, ...] = ()
     diagnostics: tuple[str, ...] = ()
+
+
+def partial_result_identity(identity: AdapterTransportIdentity) -> AdapterTransportIdentity:
+    """Address authenticated nonterminal evidence for an in-flight attempt."""
+    path = identity.result_path.with_name(f"{identity.result_path.name}.partial")
+    return replace(identity, result_path=path)
 
 
 def _payload(identity: AdapterTransportIdentity, result: AdapterResult) -> dict[str, Any]:
@@ -396,6 +402,7 @@ __all__ = [
     "AdapterTransportIdentity",
     "AdapterVerdict",
     "add_transport_arguments",
+    "partial_result_identity",
     "publish_native_adapter_result",
     "read_adapter_result",
     "transport_arguments",

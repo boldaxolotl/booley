@@ -54,6 +54,7 @@ import re
 import shutil
 import subprocess
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,6 +69,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterTestResult,
     AdapterTransportIdentity,
     add_transport_arguments,
+    partial_result_identity,
     transport_identity_from_args,
     work_transport_arguments,
     write_adapter_result,
@@ -218,6 +220,47 @@ COCOTB_CONFIG_MISSING_MSG = (
 )
 
 
+def _partial_result_publisher(
+    identity: AdapterTransportIdentity | None,
+    selected: list[str],
+    results_file: Path,
+) -> Callable[[str], None] | None:
+    """Publish authenticated Cocotb progress while terminal cleanup is pending."""
+    if identity is None:
+        return None
+    partial = partial_result_identity(identity)
+    lines: deque[str] = deque(maxlen=5_000)
+
+    def publish(line: str) -> None:
+        if line:
+            lines.append(line)
+        if line and "cocotb.regression" not in line:
+            return
+        output = "".join(lines)
+        recovered = recover_timeout_progress(
+            output,
+            selected,
+            parse_results_xml(results_file),
+        )
+        names = tuple(selected) or tuple(test.name for test in recovered.tests)
+        tests = _adapter_test_results(recovered, names)
+        write_adapter_result(
+            partial,
+            AdapterResult(
+                passed=False,
+                inconclusive=any(test.verdict == "inconclusive" for test in tests),
+                sva_errors=count_sva_errors(output),
+                tests=names,
+                failure_kind="timeout",
+                detail="cocotb batch ended before terminal adapter transport",
+                test_results=tests,
+            ),
+        )
+
+    publish("")
+    return publish
+
+
 def build_cocotb_test_filter(module: str, names: list[str]) -> str:
     """Build the anchored ``COCOTB_TEST_FILTER`` regex for the selected set (A3).
 
@@ -363,6 +406,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     *,
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = 0.0,
+    on_line: Callable[[str], None] | None = None,
 ) -> tuple[deque[str], subprocess.Popen, bool]:
     """Run the sim, stream stdout live, enforce *timeout* (seconds).
 
@@ -419,6 +463,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         for line in stdout:
             print(line, end="")
             lines.append(line)
+            if on_line is not None:
+                on_line(line)
             # F-25: track the simulator's own clock, so a cocotb/simulator
             # run-loop mismatch (time frozen at 0.00 ns) aborts with a
             # diagnosis instead of burning the whole wall-clock budget.
@@ -507,6 +553,18 @@ class _TraceFinalization:
 
     output: str = ""
     failure_reason: str = ""
+
+
+@dataclass(frozen=True)
+class _CocotbRun:
+    build_dir: Path
+    run_cwd: Path
+    work_dir: Path
+    results_file: Path
+    tests: list[str]
+    env: dict[str, str]
+    command: list[str]
+    trace: TraceSession | None
 
 
 def _persist_result_transport(
@@ -764,6 +822,105 @@ def _print_run_banner(
     print(f"CMD: {' '.join(cmd)}\n")
 
 
+def _prepare_cocotb_run(
+    build_dir: Path,
+    run_cwd: Path | None,
+    work_dir: Path | None,
+    eda_tool: str,
+    module: str,
+    tests: list[str],
+    plusargs: list[str],
+    vcd: bool,
+    trace_scope: str,
+) -> _CocotbRun | str:
+    build = Path(build_dir).resolve()
+    run = Path(run_cwd).resolve() if run_cwd is not None else build
+    work = Path(work_dir).resolve() if work_dir is not None else build
+    work.mkdir(parents=True, exist_ok=True)
+    results = _reset_result_transports(work)
+    if vcd and not trace_scope.strip():
+        detail = (
+            "trace requested without an expected DUT scope; the waveform identity "
+            "cannot be validated"
+        )
+        _report_infra_failure(work, detail)
+        return detail
+    prepared = _prepare_invocation(
+        build_dir=build,
+        eda_tool=eda_tool,
+        cocotb_module=module,
+        tests=tests,
+        results_file=results,
+        work_dir=work,
+        plusargs=plusargs,
+        vcd=vcd,
+    )
+    if isinstance(prepared, str):
+        return prepared
+    env, command = prepared
+    trace = TraceSession(work, trace_scope, backend="iverilog") if vcd else None
+    if trace is not None:
+        trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
+    return _CocotbRun(build, run, work, results, tests, env, command, trace)
+
+
+def _execute_cocotb_run(
+    run: _CocotbRun,
+    timeout: int,
+    max_rundir_bytes: int,
+    sim_time_grace_s: float,
+    transport: AdapterTransportIdentity | None,
+):
+    from booley.runtime.heartbeat import Heartbeat
+
+    heartbeat = Heartbeat("cocotb sim", interval=60)
+    heartbeat.start()
+    try:
+        publish = _partial_result_publisher(transport, run.tests, run.results_file)
+        return _stream_output(
+            run.command,
+            run.run_cwd,
+            run.env,
+            timeout,
+            max_rundir_bytes=max_rundir_bytes,
+            sim_time_grace_s=sim_time_grace_s,
+            on_line=publish,
+        )
+    finally:
+        heartbeat.stop()
+
+
+def _complete_cocotb_run(
+    run: _CocotbRun,
+    lines,
+    proc,
+    timed_out: bool,
+    result_verbosity: str,
+    transport: AdapterTransportIdentity | None,
+) -> int:
+    output = "".join(lines)
+    trace_result = (
+        _finalize_cocotb_trace(run.trace, run.run_cwd, proc)
+        if run.trace is not None
+        else _TraceFinalization()
+    )
+    if trace_result.output:
+        print(trace_result.output)
+        output = f"{output}\n{trace_result.output}"
+    output, passed = _evaluate_verdict(
+        output,
+        proc.returncode,
+        timed_out,
+        run.work_dir,
+        run.results_file,
+        run.tests,
+        result_verbosity,
+        trace_result.failure_reason,
+    )
+    _publish_adapter_result(transport, output, passed)
+    return 0 if passed else 1
+
+
 def run_cocotb_sim(
     *,
     build_dir: Path,
@@ -781,101 +938,33 @@ def run_cocotb_sim(
     expected_trace_scope: str = "",
     transport: AdapterTransportIdentity | None = None,
 ) -> int:
-    """Run the edalize-built cocotb sim once; return the process exit code.
-
-    *build_dir* holds the built sim (vvp image / ``Vtop``) plus the
-    ``copyto``-staged Python testbench; *run_cwd* is where the sim runs from
-    (TB vector/firmware base), defaulting to *build_dir*; *work_dir* is the
-    result/trace output dir (``results.xml``, ``result.json``, ``run.log``,
-    the ``.fst`` store), defaulting to *build_dir*. *sim_time_grace_s* is the
-    frozen-clock watchdog's grace period (F-25; 0 disables it).
-    """
-    from booley.runtime.heartbeat import Heartbeat
-
-    build_dir = Path(build_dir).resolve()
-    run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir
-    work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
-    work_dir.mkdir(parents=True, exist_ok=True)
-    results_file = _reset_result_transports(work_dir)
+    """Run the edalize-built Cocotb simulator once."""
     tests = list(tests or [])
-    if vcd and not expected_trace_scope.strip():
-        detail = (
-            "trace requested without an expected DUT scope; the waveform identity "
-            "cannot be validated"
-        )
-        _report_infra_failure(
-            work_dir,
-            detail,
-        )
-        _publish_adapter_result(
-            transport,
-            "",
-            False,
-            failure_kind="infrastructure",
-            detail=detail,
-        )
-        return 1
-
-    prepared = _prepare_invocation(
-        build_dir=build_dir,
-        eda_tool=eda_tool,
-        cocotb_module=cocotb_module,
+    run = _prepare_cocotb_run(
+        build_dir,
+        run_cwd,
+        work_dir,
+        eda_tool,
+        cocotb_module,
         tests=tests,
-        results_file=results_file,
-        work_dir=work_dir,
         plusargs=list(plusargs or []),
         vcd=vcd,
+        trace_scope=expected_trace_scope,
     )
-    if isinstance(prepared, str):
+    if isinstance(run, str):
         _publish_adapter_result(
             transport,
             "",
             False,
             failure_kind="infrastructure",
-            detail=prepared,
+            detail=run,
         )
         return 1
-    env, cmd = prepared
-
-    trace = TraceSession(work_dir, expected_trace_scope, backend="iverilog") if vcd else None
-    if trace:
-        trace.reset_for_run((run_cwd / _DEFAULT_VCD_NAME,))
-
-    _print_run_banner(env, cmd, run_cwd, cocotb_module, eda_tool, tests)
-
-    hb = Heartbeat("cocotb sim", interval=60)
-    hb.start()
-    try:
-        lines, proc, timed_out = _stream_output(
-            cmd,
-            run_cwd,
-            env,
-            timeout,
-            max_rundir_bytes=max_rundir_bytes,
-            sim_time_grace_s=sim_time_grace_s,
-        )
-    finally:
-        hb.stop()
-
-    output = "".join(lines)
-    trace_result = _finalize_cocotb_trace(trace, run_cwd, proc) if trace else _TraceFinalization()
-    if trace_result.output:
-        print(trace_result.output)
-        output = f"{output}\n{trace_result.output}"
-    output, passed = _evaluate_verdict(
-        output,
-        proc.returncode,
-        timed_out,
-        work_dir,
-        results_file,
-        tests,
-        result_verbosity,
-        trace_result.failure_reason,
+    _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
+    lines, proc, timed_out = _execute_cocotb_run(
+        run, timeout, max_rundir_bytes, sim_time_grace_s, transport
     )
-
-    _publish_adapter_result(transport, output, passed)
-
-    return 0 if passed else 1
+    return _complete_cocotb_run(run, lines, proc, timed_out, result_verbosity, transport)
 
 
 def _finalize_cocotb_trace(

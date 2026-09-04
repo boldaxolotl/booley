@@ -15,6 +15,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
     AdapterTransportIdentity,
+    partial_result_identity,
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
@@ -135,6 +136,29 @@ def _write_transport(
         prepared.build_root / ".booley-adapter-abc123.json",
     )
     write_adapter_result(identity, result)
+
+
+def _write_partial_timeout_transport(handle, prepared) -> None:
+    identity = AdapterTransportIdentity(
+        "cocotb",
+        "abc123",
+        handle.identity,
+        ("done", "active", "later"),
+        prepared.build_root / ".booley-adapter-abc123.json",
+    )
+    result = AdapterResult(
+        False,
+        True,
+        0,
+        identity.selected_tests,
+        failure_kind="timeout",
+        test_results=(
+            AdapterTestResult("done", "pass"),
+            AdapterTestResult("active", "timeout"),
+            AdapterTestResult("later", "inconclusive"),
+        ),
+    )
+    write_adapter_result(partial_result_identity(identity), result)
 
 
 def _passing_trace_invoker(handle, prepared, trace: Path, *, fresh: bool):
@@ -283,6 +307,7 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
+        _write_partial_timeout_transport(handle, prepared)
         return SubprocessResult(returncode=-9, stdout=output, timed_out=True)
 
     outcome = _run_execution(handle, prepared, invoke, ("done", "active", "later"), cocotb=True)

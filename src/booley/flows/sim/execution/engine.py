@@ -23,17 +23,10 @@ from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
-    AdapterTestResult,
     AdapterTransportError,
     AdapterTransportIdentity,
+    partial_result_identity,
     read_adapter_result,
-)
-from booley.flows.sim.backends.cocotb import RESULTS_XML_NAME
-from booley.flows.sim.backends.cocotb_results import (
-    TIMEOUT_ACTIVE_DETAIL,
-    parse_results_xml,
-    reconcile,
-    recover_timeout_progress,
 )
 from booley.flows.sim.build import (
     BuildOutcome,
@@ -54,7 +47,6 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
-from booley.flows.sim.result import count_sva_errors
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot
@@ -330,17 +322,23 @@ class SimulationExecution:
     ) -> AdapterResult | None:
         if build.design_failed:
             return None
-        if not attempt.identity.result_path.exists():
+        identity = attempt.identity
+        if not identity.result_path.exists():
             if process.timed_out:
-                return _recover_cocotb_timeout(attempt, process, dispatched_ns)
-            raise AdapterTransportError("adapter completed without authenticated terminal result")
+                identity = partial_result_identity(identity)
+                if not identity.result_path.exists():
+                    return None
+            else:
+                raise AdapterTransportError(
+                    "adapter completed without authenticated terminal result"
+                )
         validate_fresh_artifact(
-            attempt.identity.result_path,
+            identity.result_path,
             roots=(attempt.prepared.build_root,),
             before=None,
             not_before_ns=dispatched_ns,
         )
-        result = read_adapter_result(attempt.identity)
+        result = read_adapter_result(identity)
         if result.passed and (process.returncode != 0 or not build.passed):
             raise AdapterTransportError("adapter pass contradicts process or build evidence")
         if result.failure_kind == "infrastructure":
@@ -452,49 +450,6 @@ def _trace_overlay(handle: TargetHandle) -> Any:
     return fusesoc_registry.write_trace_overlay(
         handle.selector,
         project_root=handle.project_root,
-    )
-
-
-def _recover_cocotb_timeout(
-    attempt: _Attempt,
-    process: SubprocessResult,
-    dispatched_ns: int,
-) -> AdapterResult | None:
-    """Recover Cocotb's durable progress when the outer wrapper killed the batch."""
-    if attempt.adapter != "cocotb":
-        return None
-    results_path = attempt.prepared.build_root / RESULTS_XML_NAME
-    parsed = None
-    if results_path.exists():
-        try:
-            validate_fresh_artifact(
-                results_path,
-                roots=(attempt.prepared.build_root,),
-                before=None,
-                not_before_ns=dispatched_ns,
-            )
-        except ArtifactValidationError:
-            pass
-        else:
-            parsed = parse_results_xml(results_path)
-    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-    recovered = recover_timeout_progress(output, list(attempt.test_names), parsed)
-    tests = tuple(
-        AdapterTestResult(
-            name,
-            "timeout" if detail == TIMEOUT_ACTIVE_DETAIL else verdict,
-            detail=detail,
-        )
-        for name, verdict, detail in reconcile(list(attempt.test_names), recovered)
-    )
-    return AdapterResult(
-        passed=False,
-        inconclusive=True,
-        sva_errors=count_sva_errors(output),
-        tests=attempt.test_names,
-        failure_kind="timeout",
-        detail="cocotb batch timed out before terminal adapter transport",
-        test_results=tests,
     )
 
 

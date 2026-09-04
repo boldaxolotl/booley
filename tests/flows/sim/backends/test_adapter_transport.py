@@ -12,14 +12,11 @@ from booley.flows.sim.adapter_transport import (
     AdapterTestResult,
     AdapterTransportError,
     AdapterTransportIdentity,
+    partial_result_identity,
     read_adapter_result,
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb, icarus, verilator
-from booley.flows.sim.backends.cocotb_results import (
-    format_results_line,
-    recover_timeout_progress,
-)
 
 
 def _identity(tmp_path) -> AdapterTransportIdentity:
@@ -163,18 +160,42 @@ def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:
 1.00ns INFO cocotb.regression done passed
 1.00ns INFO cocotb.regression running active (2/3)
 """
-    recovered = recover_timeout_progress(progress, list(identity.selected_tests))
-
-    cocotb._publish_adapter_result(
-        identity,
-        f"{progress}\n{format_results_line(recovered)}\n",
-        False,
+    publish = cocotb._partial_result_publisher(
+        identity, list(identity.selected_tests), tmp_path / "results.xml"
     )
+    assert publish is not None
+    for line in progress.splitlines(keepends=True):
+        publish(line)
 
-    result = read_adapter_result(identity)
+    result = read_adapter_result(partial_result_identity(identity))
     assert result.failure_kind == "timeout"
     assert [(item.name, item.verdict) for item in result.test_results] == [
         ("done", "pass"),
         ("active", "timeout"),
         ("later", "inconclusive"),
+    ]
+
+
+def test_default_cocotb_partial_transport_discovers_current_attempt_names(tmp_path) -> None:
+    identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=())
+    results = tmp_path / "results.xml"
+    results.write_text(
+        "<testsuite><testcase name='done'/><testcase name='active'>"
+        "<failure message='interrupted'/></testcase>"
+        "<testcase name='later'><skipped/></testcase></testsuite>",
+        encoding="utf-8",
+    )
+    publish = cocotb._partial_result_publisher(identity, [], results)
+    assert publish is not None
+
+    publish("0.00ns INFO cocotb.regression running done (1/3)\n")
+    publish("1.00ns INFO cocotb.regression done passed\n")
+    publish("1.00ns INFO cocotb.regression running active (2/3)\n")
+
+    result = read_adapter_result(partial_result_identity(identity))
+    assert result.tests == ("done", "active", "later")
+    assert [test.verdict for test in result.test_results] == [
+        "pass",
+        "timeout",
+        "inconclusive",
     ]
