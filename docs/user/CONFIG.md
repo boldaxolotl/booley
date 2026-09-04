@@ -854,8 +854,9 @@ readable, and it also covers identities that arrive via rebase, cherry-pick, or
 
 The hook also inspects changed tracked paths and committed symlink targets. A
 push is rejected when either carries a banned term or resolves into the hidden
-project-state directory; changing the worktree link after committing does not
-bypass the check.
+project-state directory. The reserved repository spelling `.booley_project/`
+is blocked independently of the Session Runtime's absolute project-state path,
+and changing the worktree link after committing does not bypass the check.
 
 Both the **author and the committer** of every outgoing commit must match at
 least one entry. Each entry is an fnmatch glob, matched case-insensitively

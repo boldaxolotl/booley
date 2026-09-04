@@ -179,6 +179,70 @@ class TestProjectCommitMsgHookVendoring:
         assert b"\r" not in hook.read_bytes(), "hook written with CRLF (D0a)"
 
 
+class TestInstalledPrePushGuard:
+    def test_external_runtime_alias_cannot_hide_tracked_project_state(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        main = tmp_path / "main"
+        origin = tmp_path / "origin"
+        project_dir = tmp_path / "runtime-project-state"
+        _git_init(main)
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(
+            ["git", "-C", str(main), "remote", "add", "origin", str(origin)],
+            check=True,
+        )
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        _step_project_git_hooks(_ctx(main))
+
+        leaked = main / ".booley_project" / "docs" / "example.md"
+        leaked.parent.mkdir(parents=True)
+        leaked.write_text("private project state\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(main), "add", "-f", ".booley_project/docs/example.md"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(main),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "docs: add example",
+                "--no-verify",
+            ],
+            check=True,
+        )
+
+        result = subprocess.run(
+            ["git", "-C", str(main), "push", "origin", "HEAD:main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0, "tracked Project state reached the remote"
+        assert "tracked path exposes project state" in result.stderr
+        assert ".booley_project/docs/example.md" in result.stderr
+        refs = subprocess.run(
+            ["git", "-C", str(origin), "for-each-ref", "--format=%(refname)"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert not refs.stdout.strip()
+
+
 class TestCommitMsgHookBody:
     """F-7: a bare `exec python3` breaks every commit on stock Windows — the
     Microsoft Store PATH alias resolves as python3 but exits non-zero with a

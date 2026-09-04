@@ -284,6 +284,101 @@ class TestMain:
         assert "symlink target" in err
         assert ".booley_project/AGENTS.md" in err
 
+    def test_blocks_tracked_project_state_when_runtime_uses_external_alias(
+        self, repo, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo.parent / "runtime-project-state"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        path = repo / ".booley_project" / "docs" / "example.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("private project state\n", encoding="utf-8")
+        _git(repo, "add", ".booley_project/docs/example.md")
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
+
+        with _stdin(_head(repo)):
+            assert main() == 1
+
+        err = capsys.readouterr().err
+        assert "tracked path exposes project state" in err
+        assert ".booley_project/docs/example.md" in err
+
+    def test_blocks_checkout_state_symlink_when_runtime_uses_external_alias(
+        self, repo, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo.parent / "runtime-project-state"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        sha = _commit_symlink(repo, "AGENTS.md", ".booley_project/AGENTS.md")
+
+        with _stdin(sha):
+            assert main() == 1
+
+        err = capsys.readouterr().err
+        assert "symlink target exposes project state" in err
+        assert ".booley_project/AGENTS.md" in err
+
+    def test_blocks_case_variant_of_checkout_project_state(self, repo, monkeypatch, capsys):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo.parent / "runtime-project-state"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        path = repo / ".BOOLEY_PROJECT" / "docs" / "example.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("private project state\n", encoding="utf-8")
+        _git(repo, "add", ".BOOLEY_PROJECT/docs/example.md")
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
+
+        with _stdin(_head(repo)):
+            assert main() == 1
+
+        err = capsys.readouterr().err
+        assert "tracked path exposes project state" in err
+        assert ".BOOLEY_PROJECT/docs/example.md" in err
+
+    def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo.parent / "runtime-project-state"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        (repo / ".booley_project").write_text("private project state\n", encoding="utf-8")
+        _git(repo, "add", ".booley_project")
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add state")
+
+        with _stdin(_head(repo)):
+            assert main() == 1
+
+        err = capsys.readouterr().err
+        assert "tracked path exposes project state: .booley_project" in err
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            ".booley_project_backup/example.md",
+            "docs/.booley_project/example.md",
+        ],
+    )
+    def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo.parent / "runtime-project-state"
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        path = repo / relative_path
+        path.parent.mkdir(parents=True)
+        path.write_text("ordinary docs\n", encoding="utf-8")
+        _git(repo, "add", relative_path)
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
+
+        with _stdin(_head(repo)):
+            assert main() == 0
+
     def test_escape_hatch_skips_everything(self, repo, monkeypatch):
         monkeypatch.chdir(repo)
         monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")
