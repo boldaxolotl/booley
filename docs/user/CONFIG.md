@@ -308,11 +308,14 @@ instead.
 
 ### How Booley asks for a waveform (`[flows.sim].trace_args`)
 
-By default `booley flow sim --trace` passes `+trace` and `+tracefile=<file>`, the pair
-the shipped `booley_vcd_dump.sv` convention module consumes: an uninstantiated
-module the `--trace` overlay roots to dump a VCD, with no testbench edits. Copy
-the template from `booley.data.refs/booley_vcd_dump.sv` (the setup skills offer
-it too) and list it in your testbench fileset.
+By default `booley flow sim --trace` passes `+trace` and `+tracefile=<file>`.
+For Icarus, the trace overlay supplies Booley's packaged `booley_vcd_dump.sv`
+when the Target does not already provide one, then roots that uninstantiated
+module so it dumps a VCD with no testbench edits. Existing project-supplied
+copies remain supported and are rooted instead of adding a duplicate. Verilator
+does not need this module: its trace overlay enables or preserves build-time
+tracing, and the Target's trace-capable C++ simulation harness owns the waveform
+lifecycle.
 
 A project that owns its C++ `main()` defines its own trace CLI instead (Ibex's
 `VerilatorSimCtrl` enables capture only for `-t` / `--trace[=FILE]`). A mismatch
@@ -1180,7 +1183,6 @@ filesets:
   tb:
     files:
       - tb/tb_dut.sv: {file_type: systemVerilogSource}
-      - tb/booley_vcd_dump.sv: {file_type: systemVerilogSource}  # enables --trace
     tags: [tb]                        # required on the testbench fileset
   fw:                                 # non-RTL data the TB reads ($readmemh etc.)
     files:
@@ -1208,10 +1210,11 @@ targets:
 
 A few conventions worth calling out in that example:
 
-- **`tb/booley_vcd_dump.sv`** is the trace-convention module described under
-  [`trace_args`](#how-booley-asks-for-a-waveform-flowssimtrace_args).
-  Without it, `booley flow sim --trace` has nothing to root and `booley doctor` warns at
-  setup time.
+- **Tracing needs no project-owned helper source.** The Icarus trace overlay
+  supplies the packaged dump module when the Target does not already provide one,
+  then roots it for the trace run. Existing project-supplied modules remain
+  supported and are reused. Verilator relies on the Target's trace-capable C++
+  simulation harness and does not need the SystemVerilog dump module.
 - **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
   `$readmemh` image, a vectors file) into the build tree at the name the TB opens.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley

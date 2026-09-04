@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -16,10 +18,12 @@ from booley.core.boundary import (
     as_str,
     require_bool,
     require_dict,
+    require_list,
     require_str,
 )
 from booley.harness import interactive_docker as legacy
 from booley.harness.image_lifecycle import Intent
+from booley.runtime.platform_paths import host_path_from_docker_mount
 
 IMAGE_SCHEMA = "1"
 POLICY_SCHEMA = 1
@@ -30,6 +34,8 @@ LABEL_BOOLEY_VERSION = "io.booley.sidecar.booley-version"
 LABEL_POLICY_FINGERPRINT = "io.booley.sidecar.policy-fingerprint"
 ROLE_LABEL = "booley.role"
 SESSION_ROLE = "interactive"
+_DEVCONTAINER_FOLDER_LABEL = "devcontainer.local_folder"
+_WORKSPACE_MOUNT_TARGET = "/work"
 
 
 class SidecarState(StrEnum):
@@ -95,6 +101,13 @@ class _ContainerState:
     running: bool = False
     labels: dict[str, str] | None = None
     networks: frozenset[str] = frozenset()
+    project_root: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveSession:
+    name: str
+    project_root: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,11 +375,12 @@ def _create_network(docker: _DockerPort) -> None:
 
 
 def _replace_stale_network(state: _NetworkState, docker: _DockerPort) -> None:
-    active = _active_session_names(docker)
+    active = _active_sessions(docker)
     if active:
         raise SidecarError(
             f"cannot replace stale {legacy.EGRESS_NETWORK} while active Booley Sessions "
-            f"exist: {', '.join(active)}; shut them down and retry `booley bootstrap`"
+            f"exist: {_active_session_summary(active)}; shut down each listed "
+            "Project and retry `booley bootstrap`"
         )
     foreign = tuple(name for name in state.attached_names if name != legacy.PROXY_CONTAINER)
     if foreign:
@@ -504,12 +518,12 @@ def _apply_container(
 
 
 def _replace_stale_container(name: str, run_args: list[str], docker: _DockerPort) -> None:
-    active = _active_session_names(docker)
+    active = _active_sessions(docker)
     if active:
-        joined = ", ".join(active)
         raise SidecarError(
-            f"cannot replace stale {name} while active Booley Sessions exist: {joined}; "
-            "shut them down with `booley session down` and retry `booley bootstrap`"
+            f"cannot replace stale {name} while active Booley Sessions exist: "
+            f"{_active_session_summary(active)}; shut down each listed Project "
+            "and retry `booley bootstrap`"
         )
     removed = docker.run(["rm", "-f", name])
     if removed.returncode:
@@ -548,18 +562,49 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
             networks.get("Networks"), field=f"container {name}.NetworkSettings.Networks"
         )
         attached_names = _string_keys(attached, f"container {name} networks")
+        labels = _string_labels(config.get("Labels"), f"container {name}")
+        project_root = _project_root_from_inspection(document, labels, name)
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned incomplete inspection for container {name}") from exc
     return _ContainerState(
         True,
         image_id,
         running,
-        _string_labels(config.get("Labels"), f"container {name}"),
+        labels,
         frozenset(attached_names),
+        project_root,
     )
 
 
-def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
+def _project_root_from_inspection(
+    document: dict[str, Any], labels: dict[str, str], name: str
+) -> str | None:
+    """Return the host Project mounted by an Interactive Mode container."""
+    if folder := labels.get(_DEVCONTAINER_FOLDER_LABEL):
+        return folder
+    mounts = require_list(document.get("Mounts"), field=f"container {name}.Mounts")
+    for index, raw in enumerate(mounts):
+        mount = require_dict(raw, field=f"container {name}.Mounts[{index}]")
+        kind = require_str(mount, "Type")
+        destination = require_str(mount, "Destination")
+        if kind == "bind" and destination == _WORKSPACE_MOUNT_TARGET:
+            source = require_str(mount, "Source")
+            host_path = host_path_from_docker_mount(source)
+            return str(host_path) if host_path is not None else None
+    return None
+
+
+def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
+    """Describe active Sessions with a copyable Project-scoped shutdown command."""
+    descriptions = []
+    for session in sessions:
+        argv = ["booley", "session", "down", "--project-root", session.project_root]
+        command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        descriptions.append(f"{session.name} (Project {session.project_root}; run `{command}`)")
+    return ", ".join(descriptions)
+
+
+def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
     result = docker.run(
         [
             "ps",
@@ -574,7 +619,7 @@ def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
         raise SidecarError(
             f"cannot enumerate active Booley Sessions safely: {_failure_detail(result)}"
         )
-    names: list[str] = []
+    sessions: list[_ActiveSession] = []
     for line in result.stdout.splitlines():
         fields = line.split("\t")
         if len(fields) != 2 or not all(field.strip() for field in fields):
@@ -587,8 +632,10 @@ def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
             or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE
         ):
             raise SidecarError(f"cannot prove active Session ownership for {name}")
-        names.append(name)
-    return tuple(sorted(names))
+        if state.project_root is None:
+            raise SidecarError(f"cannot identify owning Project for active Session {name}")
+        sessions.append(_ActiveSession(name, state.project_root))
+    return tuple(sorted(sessions, key=lambda session: session.name))
 
 
 def _proxy_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[str]:
