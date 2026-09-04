@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import fusesoc_registry
-from booley.ticket_board.target_contract import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import ContractTargetBinding
 from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
     apply_target_removals,

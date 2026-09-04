@@ -124,7 +124,7 @@ def _hook_contract_controls(worktree_path: Path, surface_root: Path | None) -> l
     """Translate sealed surface paths for the repository receiving the hook."""
     root = surface_root or worktree_path
     try:
-        from booley.ticket_board.target_contract import contract_control_paths
+        from booley.ticket_board.acceptance_targets import contract_control_paths
 
         controls = contract_control_paths(root)
     except (OSError, ValueError):
@@ -671,11 +671,11 @@ def _current_ticket_path(ctx: TicketContext) -> Path | None:
     return ticket
 
 
-def _validate_materialized_target_contract(
+def _validate_materialized_acceptance_basis(
     ctx: TicketContext, worktree_path: Path
 ) -> StepResult | None:
     """Validate the sealed surface after disposable checkouts are materialized."""
-    if ctx.target_contract is None:
+    if ctx.acceptance_basis is None:
         return None
     from booley.ticket_board.acceptance_basis import (
         BLOCK_REASON,
@@ -684,7 +684,7 @@ def _validate_materialized_target_contract(
     )
 
     try:
-        assert_inputs_unchanged(ctx.target_contract, worktree_path)
+        assert_inputs_unchanged(ctx.acceptance_basis, worktree_path)
     except (OSError, AcceptanceBasisError) as exc:
         return StepResult(block_reason=f"{BLOCK_REASON}: {exc}")
     return None
@@ -695,7 +695,7 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     _prune_stale_worktree_locks(project_root)
     expected_wt = (
         resolve_project_dir(project_root) / "worktrees" / ctx.slug
-        if ctx.target_contract is not None
+        if ctx.acceptance_basis is not None
         else project_root / ".booley_project" / "worktrees" / ctx.slug
     )
     if not _try_reuse_worktree(ctx, project_root, expected_wt):
@@ -703,7 +703,7 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
         if fail:
             return fail
     worktree_path = ctx.worktree_path
-    base_ref = ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
+    base_ref = ctx.acceptance_basis.outer_sha if ctx.acceptance_basis is not None else ctx.branch
     logger.info("Worktree ready")
     return _prepare_branch(ctx, worktree_path, base_ref) or _materialize_worktree_submodules(
         project_root, worktree_path
@@ -720,7 +720,7 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
 
-    contract_failure = _validate_materialized_target_contract(ctx, worktree_path)
+    contract_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
     if contract_failure is not None:
         return contract_failure
 

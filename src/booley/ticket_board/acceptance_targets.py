@@ -1,4 +1,4 @@
-"""Immutable FuseSoC Target contracts for Ticket Mode.
+"""Acceptance Basis Target bindings and protected-input discovery.
 
 The module is deliberately below the harness and Flows.  It owns the persisted
 schema, normalized Target/control-plane surface, criterion-to-Target bindings,
@@ -454,6 +454,7 @@ def _core_auxiliary_paths(root: Path, core_file: Path, doc: Mapping[str, Any]) -
             imperative,
             search_roots=(core_file.parent,),
             project_root=root,
+            strict=True,
         )
     )
     return paths
@@ -466,6 +467,7 @@ def _config_auxiliary_paths(root: Path, config_path: Path) -> set[Path]:
             _target_config(config_path),
             search_roots=(root, config_path.parent),
             project_root=root,
+            strict=True,
         )
     )
 
@@ -544,6 +546,7 @@ def _semantic_surface(project_root: Path | str, targets: Iterable[str]) -> dict[
                 },
                 search_roots=(inspection.handle.core_file.parent,),
                 project_root=root,
+                strict=True,
             )
         )
 

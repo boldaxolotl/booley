@@ -23,7 +23,7 @@ from booley.config.project_config import TEST_LISTS_TABLE, normalize_tests_toml
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 
-from .target_contract import (
+from .acceptance_targets import (
     ContractTargetBinding,
     canonical_contract_bindings,
     criterion_targets,

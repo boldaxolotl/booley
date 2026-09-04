@@ -323,6 +323,27 @@ def _published_worktrees(
     )
 
 
+def _finish_published_transition(
+    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+) -> ContractWorktrees:
+    """Confirm published identities, then retire the slug-level recovery journal."""
+    draft = Path(journal.draft_ticket)
+    _require_file(draft, journal.draft_sha256, "published draft")
+    _require_file(_generation_file(root, journal.slug), journal.generation_sha256, "generation")
+    worktrees = _published_worktrees(root, journal, basis)
+    new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
+    if _worktree_for_ref(root, new_ref).resolve() != worktrees.outer.resolve():
+        raise DraftTransitionError("published outer authoring worktree identity changed")
+    if journal.has_project:
+        project = resolve_inner_project_repo(root)
+        if project is None or worktrees.project is None:
+            raise DraftTransitionError("published project authoring worktree is unavailable")
+        if _worktree_for_ref(project, new_ref).resolve() != worktrees.project.resolve():
+            raise DraftTransitionError("published project authoring worktree identity changed")
+    _journal_path(root, journal.slug).unlink()
+    return worktrees
+
+
 def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
     operation = _operation_dir(root, journal.operation_id)
     blocked = Path(journal.blocked_ticket)
@@ -410,13 +431,16 @@ def return_to_draft(
         journal = journal.with_state("cutover-ready")
         _write_journal(root, journal)
     if journal.state == "published":
-        return _published_worktrees(root, journal, basis)
-    worktrees = _relocate_worktrees(root, journal, basis)
+        return _finish_published_transition(root, journal, basis)
+    _relocate_worktrees(root, journal, basis)
     if journal.state == "cutover-ready":
-        _publish_board(root, journal)
         _publish_generation(root, journal)
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
-        append_transition(f"new authoring generation {journal.generation}; {journal.operation_id}")
+        _publish_board(root, journal)
+        append_transition(
+            f"old basis {journal.basis_id}; new authoring generation {journal.generation}; "
+            f"{journal.operation_id}"
+        )
         journal = journal.with_state("published")
         _write_journal(root, journal)
-    return worktrees
+    return _finish_published_transition(root, journal, basis)

@@ -22,10 +22,10 @@ from booley.core.boundary import (
 )
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.git import scope_matches_file
+from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.target_contract import criterion_targets
 
 
 class DemoContractError(ValueError):

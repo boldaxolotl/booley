@@ -348,7 +348,7 @@ class FpgaImplFlow(BooleyFlow):
                 self.state.criteria,
                 "fpga_impl_ok_",
                 handles,
-                contract=getattr(self, "_target_contract", None),
+                contract=getattr(self, "_acceptance_basis", None),
                 flow="fpga",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -455,7 +455,7 @@ class FpgaImplFlow(BooleyFlow):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            sealed=getattr(self, "_target_contract", None) is not None,
+            sealed=getattr(self, "_acceptance_basis", None) is not None,
         )
 
     def _prepare_fpga_command(

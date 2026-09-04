@@ -12,7 +12,7 @@ from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target import TargetHandle, select_target
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
-from booley.ticket_board.target_contract import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import ContractTargetBinding
 
 
 class ImplementationComparisonError(ValueError):

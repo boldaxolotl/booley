@@ -18,7 +18,7 @@ from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.target_contract import (
+from booley.ticket_board.acceptance_targets import (
     ContractParticipant,
     ContractTargetBinding,
     TargetContract,
@@ -85,7 +85,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         branch="main",
         summary="Qualified target",
         project_root=tmp_path,
-        target_contract=contract,
+        acceptance_basis=contract,
     )
     template = CriteriaTemplate.from_yaml(
         {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
@@ -155,7 +155,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
         branch="main",
         summary="Derived review target",
         project_root=tmp_path,
-        target_contract=contract,
+        acceptance_basis=contract,
     )
     template = CriteriaTemplate.from_yaml(
         {
@@ -194,7 +194,7 @@ def _write_progress(project_root: Path, slug: str, data: dict):
 
 
 def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _verify_target_contract
+    from booley.harness.setup.intake import _verify_acceptance_basis
 
     contract = AcceptanceBasis(
         participants=(
@@ -216,7 +216,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
         criteria={"mandatory": {}},
         project_root=tmp_path,
         base_sha="a" * 40,
-        target_contract=contract,
+        acceptance_basis=contract,
     )
 
     with (
@@ -225,7 +225,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
             return_value=[],
         ) as validate_refs,
     ):
-        _verify_target_contract(ctx, "fresh")
+        _verify_acceptance_basis(ctx, "fresh")
 
     validate_refs.assert_called_once_with(
         tmp_path,
@@ -281,11 +281,8 @@ async def test_basis_intake_defers_criteria_until_workspace_materialization(
     from booley.harness.setup.intake import run
 
     with (
-        patch(
-            "booley.harness.setup.intake.load_acceptance_basis",
-            return_value=contract,
-        ),
-        patch("booley.harness.setup.intake._verify_target_contract"),
+        patch("booley.ticket_board.io.TicketIO.load_basis", return_value=contract),
+        patch("booley.harness.setup.intake._verify_acceptance_basis"),
         patch("booley.harness.setup.intake._init_criteria_state") as init_state,
     ):
         ctx = await run(str(sample_ticket), project_root)

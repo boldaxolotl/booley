@@ -17,7 +17,7 @@ from booley.flows.implementation_comparison import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import select_target
-from booley.ticket_board.target_contract import (
+from booley.ticket_board.acceptance_targets import (
     ContractParticipant,
     ContractTargetBinding,
     TargetContract,

@@ -1445,14 +1445,37 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
 
 
 class TestOpHandoff:
-    def test_freezes_live_acceptance_before_review(self, tmp_path):
+    def test_freezes_live_acceptance_before_review(self, tmp_path, monkeypatch):
         import json
 
         from booley.criteria.state import DevelopmentState
+        from booley.ticket_board import acceptance_basis as basis_module
+        from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
+        basis = AcceptanceBasis(
+            (
+                BasisParticipant(
+                    "outer",
+                    "a" * 40,
+                    "refs/heads/booley-generation/1234567890abcdef/t1",
+                    "refs/heads/main",
+                    "b" * 40,
+                ),
+            )
+        )
+        receipt = {
+            "schema": 1,
+            "basis_id": basis.basis_id,
+            "participants": [basis.participant("outer").as_dict()],
+            "record": {"role": "outer", "locator": "record.json", "sha256": "c" * 64},
+            "source_sha256": "d" * 64,
+            "operation_id": "e" * 32,
+        }
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
         state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
         state = DevelopmentState.load(state_path)
         state.slug = "t1"
@@ -1476,6 +1499,7 @@ class TestOpHandoff:
         assert accepted.kind == "accepted"
         assert accepted.snapshot is not None
         assert accepted.snapshot.criteria["sim_pass"]["met"] is True
+        assert accepted.snapshot.acceptance_basis == receipt
         binding = json.loads(
             (tio.logs_dir / "t1" / "acceptance" / "review-package.json").read_text(
                 encoding="utf-8"

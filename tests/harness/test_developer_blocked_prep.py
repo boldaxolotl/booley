@@ -44,7 +44,7 @@ async def test_invalid_resumed_contract_prepares_blocked_triage(
     ctx = _context(
         tmp_path,
         completed_steps=["setup"],
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=tmp_path / "worktree",
     )
     monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
@@ -99,12 +99,12 @@ def test_resumed_contract_is_revalidated_in_existing_worktree(
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=worktree,
     )
     validate = MagicMock(return_value=StepResult(block_reason="contract changed"))
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
         validate,
     )
 
@@ -118,12 +118,12 @@ def test_valid_resumed_contract_allows_execution(
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=worktree,
     )
     validate = MagicMock(return_value=None)
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
         validate,
     )
 
@@ -138,7 +138,7 @@ def test_legacy_resume_needs_no_contract_validation(tmp_path: Path) -> None:
 
 
 def test_sealed_resume_without_worktree_reports_contract_failure(tmp_path: Path) -> None:
-    ctx = _context(tmp_path, target_contract=MagicMock())
+    ctx = _context(tmp_path, acceptance_basis=MagicMock())
 
     assert developer._resumed_contract_failure(ctx) == (
         "acceptance-input-change-required: Ticket worktree is unavailable"

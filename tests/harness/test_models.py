@@ -48,7 +48,7 @@ class TestTicketContext:
         )
         assert ctx.logs_dir == tmp_path / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
 
-    def test_sealed_contract_fields_requires_contract(self, tmp_path: Path) -> None:
+    def test_acceptance_basis_fields_requires_basis(self, tmp_path: Path) -> None:
         ctx = TicketContext(
             slug="my-ticket",
             ticket_path=Path("/t.md"),
@@ -59,7 +59,7 @@ class TestTicketContext:
         )
 
         with pytest.raises(ValueError, match="no Acceptance Basis"):
-            ctx.sealed_contract_fields()
+            ctx.acceptance_basis_fields()
 
 
 class TestOnSuccess:

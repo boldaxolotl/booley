@@ -16,9 +16,9 @@ from .acceptance_basis import (
     AcceptanceBasisError,
     assert_inputs_unchanged,
 )
+from .acceptance_targets import resolve_commit, validate_targets_for_seal
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
-from .target_contract import resolve_commit, validate_targets_for_seal
 from .validation import validate_ticket_fields
 
 

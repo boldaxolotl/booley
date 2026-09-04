@@ -1182,7 +1182,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="synth",
-            sealed=getattr(self, "_target_contract", None) is not None,
+            sealed=getattr(self, "_acceptance_basis", None) is not None,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -1835,7 +1835,7 @@ class AsicSynthesizeFlow(BooleyFlow):
                 self.state.criteria,
                 "synthesis_ok_",
                 handles,
-                contract=getattr(self, "_target_contract", None),
+                contract=getattr(self, "_acceptance_basis", None),
                 flow="synth",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)

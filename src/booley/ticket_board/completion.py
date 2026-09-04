@@ -27,7 +27,6 @@ from .acceptance_basis import (
     AcceptanceBasisError,
     BasisParticipant,
     assert_inputs_unchanged,
-    load_acceptance_basis,
 )
 from .acceptance_journal import (
     AcceptanceJournal,
@@ -39,7 +38,6 @@ from .acceptance_journal import (
     load_persisted_journal,
 )
 from .contract_ops import ContractOperationError, pin_basis_refs
-from .frontmatter import parse_frontmatter
 from .git_ops import worktree_is_clean
 from .target_finalization import (
     TargetFinalizationError,
@@ -1356,9 +1354,7 @@ def _completion_inputs(
         print(f"Error: cannot complete '{slug}': {retired_errors[0]}", file=sys.stderr)
         return None
     try:
-        ticket_path = Path(tio.tickets_dir) / str(entry["file"])
-        fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
-        contract = load_acceptance_basis(tio._project_root, slug, fields, body)
+        contract = tio.load_basis(slug)
         if removal_targets != contract.removal_targets:
             raise AcceptanceBasisError(
                 "on_success.remove_targets changed after Acceptance Basis publication"

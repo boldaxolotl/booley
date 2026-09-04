@@ -477,7 +477,7 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
         return False
     execution_id = expected_execution_id or str((entry or {}).get("execution_id", ""))
     try:
-        evidence_basis = _handoff_basis_evidence(tio, slug, entry)
+        evidence_basis = _handoff_basis_evidence(tio, slug)
         snapshot = freeze_acceptance(
             log_dir,
             DevelopmentState.load(state_path),
@@ -491,14 +491,13 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
     return True
 
 
-def _handoff_basis_evidence(tio: Any, slug: str, entry: dict | None) -> dict:
+def _handoff_basis_evidence(tio: Any, slug: str) -> dict:
     """Load the durable enqueue receipt embedded in an Acceptance Snapshot."""
     from .acceptance_basis import load_basis_receipt
 
-    raw_basis = (entry or {}).get("acceptance_basis")
-    if not isinstance(raw_basis, dict):
-        return {}
-    return load_basis_receipt(tio._project_root, slug, raw_basis)
+    runtime_ticket = ticket_log_dir(tio.logs_dir, slug) / "ticket.md"
+    basis = tio._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket)
+    return load_basis_receipt(tio._project_root, slug, basis.as_dict())
 
 
 def op_handoff(
@@ -768,8 +767,16 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
             return False
         try:
+            from .acceptance_basis import load_basis_receipt
+
             validate_review_package_binding(log_dir, accepted.snapshot)
-        except AcceptanceLedgerError as exc:
+            basis = tio.load_basis(slug)
+            current_receipt = load_basis_receipt(tio._project_root, slug, basis.as_dict())
+            if accepted.snapshot.acceptance_basis != current_receipt:
+                raise AcceptanceLedgerError(
+                    "Acceptance Snapshot names a different Board Acceptance Basis"
+                )
+        except (AcceptanceLedgerError, ValueError, OSError) as exc:
             print(
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",
                 file=sys.stderr,

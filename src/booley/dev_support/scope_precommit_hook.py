@@ -145,7 +145,7 @@ def _reject_forbidden(forbidden: list[str]) -> int:
     print(
         "Development state, criteria, ticket files, and Target/control-plane inputs are "
         "the record your run is graded against. Unstage these and commit the rest; "
-        "request a Target contract revision when the sealed recipe must change.",
+        "return the Ticket to draft when Acceptance Basis inputs must change.",
         file=sys.stderr,
     )
     return 1

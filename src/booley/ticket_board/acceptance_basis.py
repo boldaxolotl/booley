@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,9 +20,9 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
 )
 
+from .acceptance_targets import ContractTargetBinding
 from .contract_path_policy import is_static_contract_path
 from .persistence import WriteOnceConflictError, atomic_write_once
-from .target_contract import ContractTargetBinding
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
@@ -58,10 +58,41 @@ _GENERATED_FIELDS = frozenset(
     }
 )
 _RETIRED_FIELDS = frozenset({"target_contract", "target_contract_history", "base_sha"})
+_AUTHORED_DEFAULTS: dict[str, Any] = {
+    "scope": [],
+    "spec": "",
+    "dependencies": [],
+    "priority": "medium",
+    "criteria": {},
+    "on_success": {
+        "destination": "review",
+        "merge": True,
+        "cleanup": True,
+        "triage_report": True,
+        "remove_targets": [],
+    },
+}
 
 
 class AcceptanceBasisError(ValueError):
     """An Acceptance Basis or its committed record is malformed."""
+
+
+@dataclass(frozen=True)
+class AcceptancePathPolicy:
+    """Versioned discovery policy for schema-1 acceptance control paths."""
+
+    schema: int = SCHEMA_VERSION
+
+    def discover(self, project_root: Path | str) -> tuple[str, ...]:
+        if self.schema != SCHEMA_VERSION:
+            raise AcceptanceBasisError(f"unsupported Acceptance Path Policy {self.schema}")
+        from .acceptance_targets import contract_control_paths
+
+        return contract_control_paths(project_root)
+
+
+PATH_POLICY = AcceptancePathPolicy()
 
 
 @dataclass(frozen=True, order=True)
@@ -73,11 +104,6 @@ class BasisParticipant:
     ticket_ref: str
     destination_ref: str
     destination_sha: str
-
-    @property
-    def sealed_sha(self) -> str:
-        """Compatibility spelling used by generic Git publication code."""
-        return self.authoring_sha
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -226,7 +252,7 @@ def authored_ticket_record(fields: Mapping[str, Any], body: str, bindings: Any) 
     unknown = sorted(set(fields) - set(_AUTHORED_FIELDS) - _GENERATED_FIELDS)
     if unknown:
         raise AcceptanceBasisError(f"unknown authored Ticket field(s): {', '.join(unknown)}")
-    frontmatter = {name: fields[name] for name in _AUTHORED_FIELDS if name in fields}
+    frontmatter = _canonical_authored_fields(fields)
     rows = [_binding_to_record(row) for row in bindings]
     return {
         "schema": RECORD_SCHEMA_VERSION,
@@ -244,6 +270,32 @@ def _binding_to_record(binding: ContractTargetBinding) -> dict[str, str]:
         "candidate_identity": binding.candidate,
         "candidate_selector": binding.candidate_selector,
     }
+
+
+def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = {
+        name: deepcopy(value)
+        for name, value in _AUTHORED_DEFAULTS.items()
+        if name in _AUTHORED_FIELDS
+    }
+    canonical.update({name: fields[name] for name in _AUTHORED_FIELDS if name in fields})
+    from booley.core.models import OnSuccess
+
+    raw_on_success = canonical["on_success"]
+    if not isinstance(raw_on_success, Mapping):
+        raise AcceptanceBasisError("on_success must be a mapping")
+    configured = OnSuccess.from_dict(dict(raw_on_success))
+    errors = configured.validate()
+    if errors:
+        raise AcceptanceBasisError(errors[0])
+    canonical["on_success"] = {
+        "destination": configured.destination,
+        "merge": configured.merge,
+        "cleanup": configured.cleanup,
+        "triage_report": configured.triage_report,
+        "remove_targets": list(configured.remove_targets),
+    }
+    return canonical
 
 
 def _binding_from_record(value: Any) -> ContractTargetBinding:
@@ -328,11 +380,19 @@ def _validate_record(value: Any) -> None:
         raise AcceptanceBasisError(
             f"Acceptance Basis record has unknown authored field(s): {', '.join(unknown)}"
         )
+    if _canonical_authored_fields(frontmatter) != frontmatter:
+        raise AcceptanceBasisError("Acceptance Basis record authored defaults are not canonical")
     for binding in bindings:
         _binding_from_record(binding)
     on_success = frontmatter.get("on_success")
     if on_success is not None and not isinstance(on_success, Mapping):
         raise AcceptanceBasisError("Acceptance Basis record on_success must be a mapping")
+    if isinstance(on_success, Mapping):
+        from booley.core.models import OnSuccess
+
+        errors = OnSuccess.from_dict(dict(on_success)).validate()
+        if errors:
+            raise AcceptanceBasisError(f"Acceptance Basis record {errors[0]}")
 
 
 def load_acceptance_basis(
@@ -347,7 +407,7 @@ def load_acceptance_basis(
     record = load_basis_record(project_root, slug, basis)
     _validate_receipt(Path(project_root), slug, basis, record)
     recorded_fields = record.get("ticket", {}).get("frontmatter")
-    current_fields = {name: fields[name] for name in _AUTHORED_FIELDS if name in fields}
+    current_fields = _canonical_authored_fields(fields)
     if recorded_fields != current_fields:
         raise AcceptanceBasisError(f"{BLOCK_REASON}: authored Ticket frontmatter changed")
     if body is not None and record.get("ticket", {}).get("body") != body:
@@ -356,7 +416,13 @@ def load_acceptance_basis(
 
 
 def _receipt_payload(
-    project_root: Path, slug: str, basis: AcceptanceBasis, record: Mapping[str, Any]
+    project_root: Path,
+    slug: str,
+    basis: AcceptanceBasis,
+    record: Mapping[str, Any],
+    *,
+    source_sha256: str,
+    operation_id: str,
 ) -> dict[str, Any]:
     project_owner = any(row.role == "project" for row in basis.participants)
     locator = (
@@ -371,7 +437,8 @@ def _receipt_payload(
             "locator": locator.as_posix(),
             "sha256": hashlib.sha256(canonical_json(record)).hexdigest(),
         },
-        "operation_id": basis.basis_id[:32],
+        "source_sha256": source_sha256,
+        "operation_id": operation_id,
     }
 
 
@@ -379,17 +446,34 @@ def _receipt_path(project_root: Path, slug: str, basis: AcceptanceBasis) -> Path
     return runtime_dir(project_root) / "acceptance" / "bases" / slug / f"{basis.basis_id}.json"
 
 
-def write_basis_receipt(project_root: Path | str, slug: str, basis: AcceptanceBasis) -> Path:
+def write_basis_receipt(
+    project_root: Path | str,
+    slug: str,
+    basis: AcceptanceBasis,
+    *,
+    source_sha256: str,
+    operation_id: str,
+) -> dict[str, Any]:
     """Create the write-once control-plane receipt before Board publication."""
     root = Path(project_root).resolve()
     record = load_basis_record(root, slug, basis)
-    payload = canonical_json(_receipt_payload(root, slug, basis, record))
     path = _receipt_path(root, slug, basis)
+    if path.exists():
+        return _validate_receipt(root, slug, basis, record)
+    receipt = _receipt_payload(
+        root,
+        slug,
+        basis,
+        record,
+        source_sha256=source_sha256,
+        operation_id=operation_id,
+    )
+    payload = canonical_json(receipt)
     try:
         atomic_write_once(path, payload)
     except WriteOnceConflictError as exc:
         raise AcceptanceBasisError(f"conflicting Acceptance Basis receipt: {path}") from exc
-    return path
+    return receipt
 
 
 def load_basis_receipt(
@@ -399,21 +483,36 @@ def load_basis_receipt(
     root = Path(project_root).resolve()
     basis = AcceptanceBasis.from_mapping(value)
     record = load_basis_record(root, slug, basis)
-    _validate_receipt(root, slug, basis, record)
-    return _receipt_payload(root, slug, basis, record)
+    return _validate_receipt(root, slug, basis, record)
 
 
 def _validate_receipt(
     project_root: Path, slug: str, basis: AcceptanceBasis, record: Mapping[str, Any]
-) -> None:
+) -> dict[str, Any]:
     path = _receipt_path(project_root, slug, basis)
     try:
         actual = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise AcceptanceBasisError(f"Acceptance Basis receipt is unavailable: {path}") from exc
-    expected = _receipt_payload(project_root, slug, basis, record)
-    if actual != expected or canonical_json(actual) != path.read_bytes():
+    expected = _receipt_payload(
+        project_root,
+        slug,
+        basis,
+        record,
+        source_sha256=str(actual.get("source_sha256", "")),
+        operation_id=str(actual.get("operation_id", "")),
+    )
+    source_identity = actual.get("source_sha256")
+    operation_identity = actual.get("operation_id")
+    identities_valid = (
+        isinstance(source_identity, str)
+        and re.fullmatch(r"[0-9a-f]{64}", source_identity) is not None
+        and isinstance(operation_identity, str)
+        and re.fullmatch(r"[0-9a-f]{32}", operation_identity) is not None
+    )
+    if not identities_valid or actual != expected or canonical_json(actual) != path.read_bytes():
         raise AcceptanceBasisError(f"{BLOCK_REASON}: Acceptance Basis receipt mismatch")
+    return actual
 
 
 def _git_paths(repository: Path, *args: str) -> set[str]:
@@ -434,10 +533,8 @@ def _git_paths(repository: Path, *args: str) -> set[str]:
 
 def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) -> None:
     """Reject tracked, staged, or untracked changes to protected acceptance inputs."""
-    from .target_contract import contract_control_paths
-
     root = Path(project_root).resolve()
-    protected = _basis_control_paths(root, basis, contract_control_paths)
+    protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
     project = next((row for row in basis.participants if row.role == "project"), None)
     try:
         prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
@@ -475,8 +572,10 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
     """Discover protected paths from both baseline and effective composite trees."""
     try:
         current = set(discover(root))
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
         current = set()
+    except ValueError as exc:
+        raise AcceptanceBasisError(f"{BLOCK_REASON}: {exc}") from exc
     with tempfile.TemporaryDirectory(prefix="booley-basis-controls-") as raw_directory:
         baseline = Path(raw_directory) / "outer"
         _clone_commit(root, baseline, basis.outer_sha)
@@ -485,8 +584,12 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
             source = _project_repository(root)
             project_relative = checkout_project_dir_relative_to(root)
             _clone_commit(source, baseline / project_relative, project.authoring_sha)
-        with suppress(FileNotFoundError, ValueError):
+        try:
             current.update(discover(baseline))
+        except FileNotFoundError:
+            pass
+        except ValueError as exc:
+            raise AcceptanceBasisError(f"{BLOCK_REASON}: {exc}") from exc
     return current
 
 
@@ -539,6 +642,7 @@ def _assert_repository_inputs_unchanged(
         for path in changed
         if path in protected
         or any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in protected)
+        or any(prefix.startswith(path.rstrip("/") + "/") for prefix in protected)
         or is_static_contract_path(f"{ticket_prefix}{path}")
         or path.endswith("/FUSESOC_IGNORE")
         or path == "FUSESOC_IGNORE"

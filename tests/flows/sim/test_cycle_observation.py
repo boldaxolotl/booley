@@ -19,7 +19,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_contract_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
-from booley.ticket_board.target_contract import (
+from booley.ticket_board.acceptance_targets import (
     ContractParticipant,
     ContractTargetBinding,
     TargetContract,
@@ -131,7 +131,7 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         branch="main",
         summary="Qualified Cycle Count Target",
         project_root=Path(),
-        target_contract=_sealed_contract(),
+        acceptance_basis=_sealed_contract(),
     )
     _apply_contract_selectors(context, template, expanded, params)
     state = DevelopmentState()

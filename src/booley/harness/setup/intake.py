@@ -24,17 +24,16 @@ from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
-    load_acceptance_basis,
 )
-from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.acceptance_targets import ContractTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import (
     existing_runtime_file,
     migrate_runtime_file,
     ticket_log_dir,
     ticket_runtime_dir,
 )
-from booley.ticket_board.target_contract import ContractTargetBinding
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -104,7 +103,7 @@ def _build_context(
 ) -> TicketContext:
     """Construct a TicketContext from parsed frontmatter fields."""
     _reject_retired_ticket_fields(fields, slug)
-    target_contract = _load_context_basis(project_root, ticket_path, slug, fields)
+    acceptance_basis = _load_context_basis(project_root, ticket_path, slug, fields)
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -116,8 +115,8 @@ def _build_context(
         on_success=OnSuccess.from_dict(fields.get("on_success")),
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
-        base_sha=target_contract.outer_sha if target_contract is not None else "",
-        target_contract=target_contract,
+        base_sha=acceptance_basis.outer_sha if acceptance_basis is not None else "",
+        acceptance_basis=acceptance_basis,
         feature_branch=fields.get("feature_branch", ""),
         completed_steps=fields.get("steps_completed", []),
         current_step=fields.get("stage", ""),
@@ -153,12 +152,10 @@ def _load_context_basis(
     raw_basis = fields.get("acceptance_basis")
     try:
         return (
-            load_acceptance_basis(
-                project_root,
-                slug,
-                fields,
-                parse_frontmatter(ticket_path.read_text(encoding="utf-8"))[1],
-            )
+            TicketIO(
+                tickets_dir_from_project_root(project_root),
+                project_root=project_root,
+            ).load_basis(slug, runtime_ticket_path=ticket_path)
             if raw_basis is not None
             else None
         )
@@ -373,10 +370,10 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     action = _detect_and_apply_resume(ctx, fields)
 
-    _verify_target_contract(ctx, action)
+    _verify_acceptance_basis(ctx, action)
 
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
-    if ctx.target_contract is None:
+    if ctx.acceptance_basis is None:
         if criteria_state_needs_init:
             _init_criteria_state(ctx)
     else:
@@ -385,11 +382,11 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     return ctx
 
 
-def _verify_target_contract(ctx: TicketContext, action: str) -> None:
+def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
     """Verify durable sealed refs before criteria state can be initialized."""
     del action
-    contract = ctx.target_contract
-    if contract is None:
+    basis = ctx.acceptance_basis
+    if basis is None:
         if _is_git_checkout(ctx.project_root):
             raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
         logger.warning("Filesystem-only Ticket %s has no Acceptance Basis", ctx.slug)
@@ -399,7 +396,7 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
     try:
         errors = validate_basis_refs(
             ctx.project_root,
-            contract,
+            basis,
             slug=ctx.slug,
             destination_branch=ctx.branch,
         )
@@ -422,7 +419,7 @@ def _is_git_checkout(path: Path) -> bool:
 
 
 def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
-    return ctx.sealed_contract_fields()
+    return ctx.acceptance_basis_fields()
 
 
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
@@ -539,7 +536,7 @@ def _apply_contract_selectors(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Seed sealed identities and callable selectors into runtime criteria."""
-    contract = ctx.target_contract
+    contract = ctx.acceptance_basis
     if contract is None:
         return
     for key in expanded:
@@ -593,7 +590,7 @@ def _derive_scalar_tb_review_binding(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Bind a scalar TB review when structured simulation proves one owner."""
-    contract = ctx.target_contract
+    contract = ctx.acceptance_basis
     assert contract is not None
     review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
     if not review_keys or all(

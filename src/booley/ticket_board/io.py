@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import logging
 import os
 import shutil
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .acceptance_basis import AcceptanceBasis
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +207,41 @@ class TicketIO:
                 entry["step"] = ""
 
         return entry
+
+    def load_basis(
+        self, slug: str, *, runtime_ticket_path: str | Path | None = None
+    ) -> AcceptanceBasis:
+        """Load an executable basis from Board authority and cross-check its snapshot."""
+        with self._ticket_lock(slug):
+            return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
+
+    def _load_basis_unlocked(
+        self, slug: str, *, runtime_ticket_path: str | Path | None = None
+    ) -> AcceptanceBasis:
+        from .acceptance_basis import AcceptanceBasisError, load_acceptance_basis
+
+        board_path, status = find_ticket_file(self.tickets_dir, slug)
+        if board_path is None or status in {None, "draft"}:
+            raise AcceptanceBasisError(f"executable Board Ticket {slug!r} is unavailable")
+        board_fields, board_body = parse_frontmatter(board_path.read_text(encoding="utf-8"))
+        basis = load_acceptance_basis(self._project_root, slug, board_fields, board_body)
+        if runtime_ticket_path is None:
+            return basis
+        snapshot_path = Path(runtime_ticket_path)
+        snapshot_fields, snapshot_body = parse_frontmatter(
+            snapshot_path.read_text(encoding="utf-8")
+        )
+        snapshot = load_acceptance_basis(
+            self._project_root,
+            slug,
+            snapshot_fields,
+            snapshot_body,
+        )
+        if snapshot.as_dict() != basis.as_dict():
+            raise AcceptanceBasisError(
+                "acceptance-input-change-required: runtime Ticket snapshot names another basis"
+            )
+        return basis
 
     def _load_or_bootstrap_progress(self, slug, file_path):
         """Load .runtime/progress.json, bootstrapping from frontmatter if missing."""
@@ -707,6 +747,7 @@ class TicketIO:
             basis,
             slug=journal.slug,
             destination_branch=outer.destination_ref.removeprefix("refs/heads/"),
+            exact_ticket_heads=True,
         )
         if errors:
             raise RuntimeError("enqueue journal Acceptance Basis is invalid: " + "; ".join(errors))
@@ -786,7 +827,13 @@ class TicketIO:
                 slug,
                 effective_fields=effective_fields,
             )
-            write_basis_receipt(self._project_root, slug, basis)
+            write_basis_receipt(
+                self._project_root,
+                slug,
+                basis,
+                source_sha256=hashlib.sha256(ticket_path.read_bytes()).hexdigest(),
+                operation_id=uuid.uuid4().hex,
+            )
             effective_fields["acceptance_basis"] = basis.as_dict()
         except (RuntimeError, ValueError, OSError) as exc:
             self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])

@@ -34,11 +34,7 @@ from .acceptance_basis import (
     canonical_json,
     record_relative_path,
 )
-from .frontmatter import parse_frontmatter
-from .git_status import parse_porcelain_v1_z
-from .persistence import WriteOnceConflictError, atomic_write_once
-from .target_contract import (
-    TargetContract,
+from .acceptance_targets import (
     canonical_contract_bindings,
     contract_control_paths,
     criterion_targets,
@@ -46,6 +42,9 @@ from .target_contract import (
     validate_criterion_targets,
     validate_targets_for_seal,
 )
+from .frontmatter import parse_frontmatter
+from .git_status import parse_porcelain_v1_z
+from .persistence import WriteOnceConflictError, atomic_write_once
 from .validation import validate_ticket_fields
 
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -950,10 +949,11 @@ def _require_ancestor(repository: Path, ancestor: str, descendant: str, message:
 
 def pin_basis_refs(
     project_root: Path | str,
-    contract: TargetContract | AcceptanceBasis,
+    contract: AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
+    exact_ticket_heads: bool = False,
 ) -> dict[str, str]:
     """Validate canonical routing and resolve mutable Ticket refs once."""
     root = Path(project_root).resolve()
@@ -964,55 +964,77 @@ def pin_basis_refs(
         raise ContractOperationError("Acceptance Basis participants do not match this project")
     sources: dict[str, str] = {}
     for role, participant in participants.items():
-        ticket_ref = participant.ticket_ref
-        destination_ref = participant.destination_ref
-        if role == "outer" and destination_ref != f"refs/heads/{destination_branch}":
-            raise ContractOperationError(
-                f"Acceptance Basis outer destination does not match Ticket {slug!r}"
-            )
         repository = root if role == "outer" else source
         if repository is None:
-            raise ContractOperationError(f"sealed {role} repository is unavailable")
-        sealed = _full_commit(repository, participant.sealed_sha)
-        destination_identity = _full_commit(repository, participant.destination_sha)
-        destination = _full_commit(repository, destination_ref)
-        source_sha = _full_commit(repository, ticket_ref)
-        _require_ancestor(
+            raise ContractOperationError(f"Acceptance Basis {role} repository is unavailable")
+        sources[role] = _validate_basis_participant(
             repository,
-            sealed,
-            source_sha,
-            f"ticket ref {ticket_ref!r} does not descend from sealed {role} commit {sealed}",
+            participant,
+            slug=slug,
+            destination_branch=destination_branch,
+            exact_ticket_head=exact_ticket_heads,
         )
-        _require_ancestor(
-            repository,
-            destination_identity,
-            destination,
-            f"destination ref {destination_ref!r} rewrote its sealed history",
-        )
-        _require_ancestor(
-            repository,
-            destination_identity,
-            sealed,
-            f"sealed {role} commit does not descend from its destination identity",
-        )
-        sources[role] = source_sha
     return sources
+
+
+def _validate_basis_participant(
+    repository: Path,
+    participant: BasisParticipant,
+    *,
+    slug: str,
+    destination_branch: str,
+    exact_ticket_head: bool,
+) -> str:
+    role = participant.role
+    ticket_ref = participant.ticket_ref
+    destination_ref = participant.destination_ref
+    if role == "outer" and destination_ref != f"refs/heads/{destination_branch}":
+        raise ContractOperationError(
+            f"Acceptance Basis outer destination does not match Ticket {slug!r}"
+        )
+    authoring = _full_commit(repository, participant.authoring_sha)
+    destination_identity = _full_commit(repository, participant.destination_sha)
+    destination = _full_commit(repository, destination_ref)
+    source_sha = _full_commit(repository, ticket_ref)
+    if exact_ticket_head and source_sha != authoring:
+        raise ContractOperationError(f"ticket ref {ticket_ref!r} moved after enqueue preparation")
+    _require_ancestor(
+        repository,
+        authoring,
+        source_sha,
+        f"ticket ref {ticket_ref!r} does not descend from authored {role} commit {authoring}",
+    )
+    _require_ancestor(
+        repository,
+        destination_identity,
+        destination,
+        f"destination ref {destination_ref!r} rewrote its recorded history",
+    )
+    _require_ancestor(
+        repository,
+        destination_identity,
+        authoring,
+        f"authored {role} commit does not descend from its destination identity",
+    )
+    return source_sha
 
 
 def validate_basis_refs(
     project_root: Path | str,
-    contract: TargetContract | AcceptanceBasis,
+    contract: AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
+    exact_ticket_heads: bool = False,
 ) -> list[str]:
-    """Verify canonical sealed refs without requiring materialized worktrees."""
+    """Verify canonical Acceptance Basis refs without materialized worktrees."""
     try:
         pin_basis_refs(
             project_root,
             contract,
             slug=slug,
             destination_branch=destination_branch,
+            exact_ticket_heads=exact_ticket_heads,
         )
     except (ContractOperationError, ValueError) as exc:
         return [str(exc)]
@@ -1022,7 +1044,7 @@ def validate_basis_refs(
 def reset_basis_worktrees(
     project_root: Path | str,
     slug: str,
-    contract: TargetContract | AcceptanceBasis,
+    contract: AcceptanceBasis,
     requested_branch: str,
 ) -> None:
     """Discard implementation state and restore the recorded authoring checkouts."""
@@ -1045,9 +1067,7 @@ def reset_basis_worktrees(
         )
 
 
-def _validate_reset_project_source(
-    source: Path | None, contract: TargetContract | AcceptanceBasis
-) -> None:
+def _validate_reset_project_source(source: Path | None, contract: AcceptanceBasis) -> None:
     if contract.project_sha and source is None:
         raise ContractOperationError("Acceptance Basis project repository is unavailable")
     if source is not None and not contract.project_sha:
@@ -1061,7 +1081,7 @@ def _restore_project_contract(
     outer: Path,
     slug: str,
     requested_branch: str,
-    contract: TargetContract | AcceptanceBasis,
+    contract: AcceptanceBasis,
 ) -> None:
     if source is None:
         return

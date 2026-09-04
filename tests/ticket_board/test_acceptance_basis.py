@@ -14,6 +14,7 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
+    assert_inputs_unchanged,
     authored_ticket_record,
     load_acceptance_basis,
     load_basis_receipt,
@@ -112,7 +113,27 @@ def test_authored_record_pins_complete_ticket_projection() -> None:
     record = authored_ticket_record(fields, "exact body", ())
 
     assert record["schema"] == 1
-    assert record["ticket"] == {"frontmatter": fields, "body": "exact body"}
+    pinned = record["ticket"]["frontmatter"]
+    assert pinned["summary"] == fields["summary"]
+    assert pinned["criteria"] == fields["criteria"]
+    assert pinned["dependencies"] == []
+    assert pinned["spec"] == ""
+    assert pinned["on_success"]["merge"] is True
+    assert record["ticket"]["body"] == "exact body"
+
+
+def test_authored_record_rejects_malformed_remove_targets() -> None:
+    with pytest.raises(AcceptanceBasisError, match="remove_targets"):
+        authored_ticket_record(
+            {
+                "summary": "demo",
+                "type": "feature",
+                "branch": "main",
+                "on_success": {"remove_targets": 7},
+            },
+            "body",
+            (),
+        )
 
 
 def test_no_manual_contract_commands_remain() -> None:
@@ -196,6 +217,8 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     evidence = load_basis_receipt(root, "automatic-basis", basis.as_dict())
     assert evidence["basis_id"] == basis.basis_id
     assert evidence["record"]["sha256"]
+    assert len(evidence["source_sha256"]) == 64
+    assert len(evidence["operation_id"]) == 32
 
 
 def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
@@ -247,6 +270,13 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     assert _git(root, "rev-parse", keepalive) == old_basis.outer_sha
     archived_worktree = _git(root, "worktree", "list", "--porcelain")
     assert old_basis.participant("outer").ticket_ref in archived_worktree
+
+    assert tio.enqueue_ticket("new-generation")
+    queued_again = project_dir / "tickets/board/queue/new-generation.md"
+    blocked_again = project_dir / "tickets/board/blocked/new-generation.md"
+    queued_again.replace(blocked_again)
+    reopened_again = tio.return_to_draft("new-generation")
+    assert reopened_again["generation"] != reopened["generation"]
 
 
 def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, Path, TicketIO]:
@@ -328,6 +358,42 @@ def test_enqueue_retry_finishes_interrupted_board_publication(
     assert transitions.read_text(encoding="utf-8").count("enqueue operation") == 1
 
 
+def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
+    assert tio.enqueue_ticket("transaction")
+    queued = project_dir / "tickets/board/queue/transaction.md"
+    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    fields.pop("acceptance_basis")
+    runtime_ticket = project_dir / "tickets/logs/transaction/ticket.md"
+    runtime_ticket.parent.mkdir(parents=True, exist_ok=True)
+    runtime_ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
+
+    with pytest.raises(AcceptanceBasisError, match="acceptance_basis"):
+        tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
+
+
+def test_enqueue_recovery_rejects_advanced_ticket_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    prepare = tio._prepare_enqueue_publication
+
+    def advance_ref(*args, **kwargs):
+        journal = prepare(*args, **kwargs)
+        worktree = project_dir / "worktrees/transaction"
+        (worktree / "unexpected.txt").write_text("advanced\n", encoding="utf-8")
+        _git(worktree, "add", "unexpected.txt")
+        _git(worktree, "commit", "-m", "advance after prepare")
+        return journal
+
+    monkeypatch.setattr(tio, "_prepare_enqueue_publication", advance_ref)
+
+    with pytest.raises(RuntimeError, match="moved after enqueue preparation"):
+        tio.enqueue_ticket("transaction")
+    assert (project_dir / "tickets/board/drafts/transaction.md").exists()
+    assert _git(root, "branch", "--show-current") == "main"
+
+
 def test_partial_keepalive_creation_rolls_back(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -386,6 +452,38 @@ def test_malformed_committed_record_fails_with_basis_error(tmp_path: Path) -> No
         load_basis_record(root, "malformed", basis)
 
 
+def test_protected_parent_symlink_change_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    hook = root / ".booley_project/hooks/run.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("print('baseline')\n", encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "protected hook")
+    sha = _git(root, "rev-parse", "HEAD")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                sha,
+                "refs/heads/booley-generation/0123456789abcdef/symlink",
+                "refs/heads/main",
+                sha,
+            ),
+        )
+    )
+    hook.unlink()
+    hook.parent.rmdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".booley_project/hooks").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(AcceptanceBasisError, match="protected path"):
+        assert_inputs_unchanged(basis, root)
+
+
 def test_return_to_draft_rejects_live_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,7 +516,7 @@ def test_return_to_draft_rejects_jobs_and_acceptance_publication(
         tio.return_to_draft("blocked-again")
 
 
-def test_return_to_draft_recovers_after_board_cutover(
+def test_return_to_draft_recovers_before_board_cutover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.ticket_board import draft_transition
@@ -442,7 +540,7 @@ def test_return_to_draft_recovers_after_board_cutover(
     monkeypatch.setattr(draft_transition, "_publish_generation", interrupt)
     with pytest.raises(OSError, match="descriptor cutover"):
         tio.return_to_draft("blocked-again")
-    assert not blocked.exists()
+    assert blocked.exists()
     monkeypatch.setattr(draft_transition, "_publish_generation", publish_generation)
 
     reopened = tio.return_to_draft("blocked-again")

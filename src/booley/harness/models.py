@@ -56,8 +56,8 @@ class TicketContext:
     base_sha: str = ""
     # Generation stamped atomically when this harness execution activates the ticket.
     execution_id: str = ""
-    # Published acceptance identity; kept under the internal compatibility name.
-    target_contract: AcceptanceBasis | None = None
+    # Published acceptance identity for this executable Ticket generation.
+    acceptance_basis: AcceptanceBasis | None = None
     # Intake defers recorded criteria state until the authoring checkout is ready.
     criteria_state_needs_init: bool = False
 
@@ -66,13 +66,13 @@ class TicketContext:
         """Working directory: worktree if available, else project root."""
         return self.worktree_path or self.project_root
 
-    def sealed_contract_fields(self) -> dict[str, Any]:
-        """Return the complete Ticket projection used for contract validation."""
-        contract = self.target_contract
-        if contract is None:
+    def acceptance_basis_fields(self) -> dict[str, Any]:
+        """Return the complete Ticket projection used for basis validation."""
+        basis = self.acceptance_basis
+        if basis is None:
             raise ValueError("Ticket has no Acceptance Basis")
         return {
-            "acceptance_basis": contract.as_dict(),
+            "acceptance_basis": basis.as_dict(),
             "criteria": self.criteria,
             "scope": self.scope_raw,
             "on_success": {

@@ -122,6 +122,8 @@ def _validate_journal_payload(journal: EnqueueJournal) -> None:
     basis_id = basis.basis_id
     if journal.receipt.get("operation_id") != journal.operation_id:
         raise EnqueuePublicationError("enqueue journal Acceptance Basis receipt is invalid")
+    if journal.receipt.get("source_sha256") != journal.source_sha256:
+        raise EnqueuePublicationError("enqueue journal source fingerprint changed")
     if journal.receipt.get("basis_id") != basis_id:
         raise EnqueuePublicationError("enqueue journal Acceptance Basis identity changed")
     if journal.receipt.get("participants") != journal.basis.get("participants"):

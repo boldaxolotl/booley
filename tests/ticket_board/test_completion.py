@@ -13,9 +13,7 @@ import pytest
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.frontmatter import format_frontmatter
-from booley.ticket_board.target_contract import (
+from booley.ticket_board.acceptance_targets import (
     SCHEMA_VERSION,
     ContractParticipant,
     ContractTargetBinding,
@@ -23,16 +21,14 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     surface_entries,
 )
+from booley.ticket_board.completion import complete_review_ticket
+from booley.ticket_board.frontmatter import format_frontmatter
 
 
 @pytest.fixture(autouse=True)
 def _reset_project_cache(monkeypatch: pytest.MonkeyPatch):
     contracts: dict[Path, AcceptanceBasis] = {}
 
-    def load_test_basis(project_root, _slug, _fields, _body):
-        return contracts[Path(project_root).resolve()]
-
-    monkeypatch.setattr(completion, "load_acceptance_basis", load_test_basis)
     monkeypatch.setattr(_TicketIO, "_contracts", contracts, raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     reset_cache()
@@ -121,6 +117,9 @@ class _TicketIO:
     def find_ticket(self, _slug: str) -> dict[str, Any]:
         return self.entry
 
+    def load_basis(self, _slug: str) -> AcceptanceBasis:
+        return self._contracts[self._project_root.resolve()]
+
     def move_and_update(self, _slug: str, to_dir: str, _updates: dict[str, Any], **kwargs) -> bool:
         self.entry["status"] = "done"
         self.transitions.append(kwargs["transition"])
@@ -135,6 +134,9 @@ class _BoundaryTicketIO:
 
     def find_ticket(self, _slug: str) -> dict[str, Any] | None:
         return self.entry
+
+    def load_basis(self, _slug: str) -> AcceptanceBasis:
+        return AcceptanceBasis.from_mapping((self.entry or {}).get("acceptance_basis"))
 
 
 def _contract(

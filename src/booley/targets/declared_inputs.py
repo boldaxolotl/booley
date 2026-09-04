@@ -27,6 +27,7 @@ def referenced_program_paths(
     *,
     search_roots: Iterable[Path],
     project_root: Path,
+    strict: bool = False,
 ) -> tuple[Path, ...]:
     """Return existing in-Project programs directly referenced by configuration."""
     root = project_root.resolve()
@@ -41,11 +42,21 @@ def referenced_program_paths(
             path = PurePosixPath(candidate)
             if not _looks_like_program_path(path, candidate):
                 continue
+            matched = False
             for search_root in search_roots:
                 resolved = (search_root / candidate).resolve()
+                if not resolved.is_relative_to(root):
+                    if strict:
+                        raise ValueError(
+                            f"referenced program cannot be mapped to the Project: {candidate}"
+                        )
+                    continue
                 if resolved.is_relative_to(root) and resolved.is_file():
                     candidates.add(resolved)
+                    matched = True
                     break
+            if strict and not matched:
+                raise ValueError(f"referenced program is unavailable: {candidate}")
     return tuple(sorted(candidates))
 
 

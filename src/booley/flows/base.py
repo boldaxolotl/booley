@@ -151,7 +151,7 @@ class BooleyFlow(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
-        self._target_contract = None
+        self._acceptance_basis = None
         location_error = runtime_context.container_only_error(f"booley flow {self.name}")
         if location_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=location_error)
@@ -162,20 +162,23 @@ class BooleyFlow(McpTool):
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
+        from booley.runtime.project_dir import resolve_project_dir
         from booley.ticket_board.acceptance_basis import (
             BLOCK_REASON,
             AcceptanceBasisError,
             assert_inputs_unchanged,
-            load_acceptance_basis,
         )
-        from booley.ticket_board.frontmatter import parse_frontmatter
         from booley.ticket_board.helpers import detect_project_root
+        from booley.ticket_board.io import TicketIO
 
         try:
             ticket_path = Path(ticket_file)
-            fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
-            contract = load_acceptance_basis(detect_project_root(), ticket_path.stem, fields, body)
-            self._target_contract = contract
+            project_root = detect_project_root()
+            contract = TicketIO(
+                resolve_project_dir(project_root) / "tickets",
+                project_root=project_root,
+            ).load_basis(ticket_path.stem, runtime_ticket_path=ticket_path)
+            self._acceptance_basis = contract
             work_dir = Path(self.args.work_dir)
             assert_inputs_unchanged(contract, work_dir)
         except (OSError, AcceptanceBasisError) as exc:
