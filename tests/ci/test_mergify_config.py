@@ -34,6 +34,15 @@ def test_merge_queue_uses_mergify_integration_for_updates_and_merges() -> None:
     assert "merge_bot_account:" not in config
 
 
+def test_merge_queue_timeout_covers_cold_runtime_build() -> None:
+    config = _load_config()
+    queue_rules = require_list(config.get("queue_rules"), field="queue_rules")
+    default_rule = require_dict(queue_rules[0], field="queue_rules[0]")
+
+    assert default_rule["name"] == "default"
+    assert default_rule["checks_timeout"] == "90 minutes"
+
+
 def test_merge_queue_prioritizes_urgent_and_ci_fixes() -> None:
     config = _load_config()
 
