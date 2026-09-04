@@ -576,6 +576,14 @@ For the full comparison and known `slang` limitations, see
 - no critical condition remains: zero latches beyond `expected_latches`, zero
   combinational loops, zero multi-driven nets, and zero unmapped processes.
 
+The loop and multi-driver counts come from a dedicated final Yosys `check`
+artifact emitted after technology mapping and optimization. Yosys runs its own
+`check` pass several times during `synth`; those earlier warnings remain in the
+warning inventory, but they may describe repeated or transient conditions and
+therefore do not decide the final structural verdict. Missing or stale final
+check evidence makes `structural_checks_complete` false and cannot produce a
+passing synthesis result.
+
 Timeouts, infrastructure errors, and metric-less nonzero exits are Flow
 failures; critical conditions on an otherwise clean run are design failures.
 Either way the failing stage's own output (a missing liberty file, a
@@ -602,9 +610,23 @@ For each Target, the Flow writes:
 The full synthesis output is persisted as `run.log` in the per-target Edalize
 work dir, on pass and fail alike.
 
+Each current and baseline result also carries a bounded `warning_summary`:
+`total_warnings` counts warning-record occurrences, `unique_warnings` counts
+groups normalized by EDA tool, stable code, category, disposition, and complete
+diagnostic text, and the `by_tool`, `by_category`, and `by_disposition` maps
+retain the corresponding occurrence counts. A bounded `representatives` list
+contains one diagnostic per group; `artifacts.log` remains the source for the
+complete output. Structural warnings are always reported and become fatal when
+confirmed by the final check. Other actionable warnings produce grade `warn`
+while retaining `passed: true` and exit zero. An explicitly benign warning is
+still counted and includes its disposition rationale, but does not downgrade a
+clean result. Unknown warning forms default to actionable rather than benign.
+
 The Criteria detail includes:
 
 - `area_um2`, `area_kge`, `cells`, `wire_count`
+- `total_warnings` and `warning_summary` (grouped counts, dispositions, and
+  bounded representatives)
 - `estimated_fmax_mhz` in logical mode; `per_clock` (per-clock
   `critical_path_ps` / `fmax_mhz` / `wns_ns` /
   `whs_ns`), aggregate `wns_ns` / `whs_ns`, `reg2reg_fmax_mhz`, `reg2reg_slack_ns`

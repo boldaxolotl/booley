@@ -148,6 +148,10 @@ class TestWriteScript:
         text = self._write(tmp_path)
         assert "STA_WORST_SLACK_NS: %.6f" in text
         assert "find_timing_paths" in text
+        path_queries = [line for line in text.splitlines() if "find_timing_paths" in line]
+        assert path_queries
+        assert all("-group_path_count 1" in line for line in path_queries)
+        assert all("-group_count" not in line for line in path_queries)
         assert "report_design_area" in text
 
     def test_no_bare_exit(self, tmp_path):
