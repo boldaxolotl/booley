@@ -15,6 +15,7 @@ from pathlib import Path
 INTERNAL_KIND_ENV = "BOOLEY_INTERNAL_SELFTEST_KIND"
 BAD_KIND = "bad"
 _BAD_OVERLAY_DIR = "bad-overlay"
+BAD_RUN_CWD_DIR = ".booley-doctor-run-cwd"
 
 
 class SelftestOverlayError(RuntimeError):
@@ -64,3 +65,79 @@ def stage_bad_overlay(project_dir: Path, flow_name: str, build_root: Path) -> in
         shutil.copy2(source, destination)
         copied += 1
     return copied
+
+
+def _remove_shadow(path: Path) -> None:
+    """Remove one stale Doctor-owned shadow without following its symlinks."""
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _mirror_runtime_dir(
+    source_dir: Path,
+    shadow_dir: Path,
+    overlay_parts: set[tuple[str, ...]],
+    shadow_root: Path,
+) -> None:
+    """Mirror *source_dir* cheaply, materializing only overlay ancestors."""
+    shadow_dir.mkdir(parents=True, exist_ok=True)
+    branches: dict[str, set[tuple[str, ...]]] = {}
+    for parts in overlay_parts:
+        branches.setdefault(parts[0], set()).add(parts[1:])
+
+    if source_dir.is_dir():
+        for source in source_dir.iterdir():
+            if source == shadow_root:
+                continue
+            remainders = branches.get(source.name)
+            destination = shadow_dir / source.name
+            if remainders is None:
+                destination.symlink_to(source.resolve(), target_is_directory=source.is_dir())
+                continue
+            if source.is_symlink():
+                raise SelftestOverlayError(
+                    f"self-test overlay crosses a symlinked runtime path: {source}"
+                )
+            deeper = {parts for parts in remainders if parts}
+            if deeper:
+                if not source.is_dir():
+                    raise SelftestOverlayError(
+                        f"self-test overlay runtime ancestor is not a directory: {source}"
+                    )
+                _mirror_runtime_dir(source, destination, deeper, shadow_root)
+
+    for name, remainders in branches.items():
+        deeper = {parts for parts in remainders if parts}
+        if deeper and not (shadow_dir / name).exists():
+            _mirror_runtime_dir(source_dir / name, shadow_dir / name, deeper, shadow_root)
+
+
+def stage_bad_run_overlay(
+    project_dir: Path,
+    flow_name: str,
+    run_cwd: Path,
+    shadow_root: Path,
+) -> int:
+    """Create an isolated runtime view and apply the bad fixture within it.
+
+    Simulators deliberately run from a project-configured directory because
+    testbenches often open firmware or vectors relative to their process cwd.
+    FuseSoC can also stage those same inputs beneath its build tree.  A Doctor
+    overlay therefore needs both views: the ordinary runtime tree remains
+    visible through symlinks, while overlay paths are private real files in the
+    per-build shadow.  The project-owned inputs are never modified.
+    """
+    source_root = bad_overlay_dir(project_dir, flow_name)
+    files = [
+        path for path in sorted(source_root.rglob("*")) if path.is_file() and not path.is_symlink()
+    ]
+    if not files:
+        return 0
+    if not run_cwd.is_dir():
+        raise SelftestOverlayError(f"simulation run_cwd is not a directory: {run_cwd}")
+    overlay_parts = {path.relative_to(source_root).parts for path in files}
+    _remove_shadow(shadow_root)
+    _mirror_runtime_dir(run_cwd, shadow_root, overlay_parts, shadow_root)
+    return stage_bad_overlay(project_dir, flow_name, shadow_root)

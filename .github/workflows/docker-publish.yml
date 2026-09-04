@@ -199,6 +199,7 @@ jobs:
         run: |
           python -m pip install --user .
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          sudo install -o root -g root -m 0755 "${HOME}/.local/bin/booley" "/usr/bin/booley"
 
       - name: Provision pinned Nangate45 PDK
         id: nangate
@@ -291,19 +292,27 @@ jobs:
         run: |
           set -o pipefail
           init_log="$(mktemp)"
-          booley init --skip-credentials | tee "${init_log}"
+          /usr/bin/booley init --skip-credentials | tee "${init_log}"
           if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
             echo "booley init did not finish cleanly" >&2
             exit 1
           fi
 
       # GitHub's runner uses uid 1001 while the production image deliberately
-      # runs as uid 1000. Doctor validates that bind-mount ownership seam and
-      # also writes host-side reports, so retain runner access through its group.
+      # runs as uid 1000. Doctor requires one identity to own both its trusted
+      # host state and bind mounts, so emulate a normal uid-1000 Linux host for
+      # this probe and restore the runner-owned paths immediately afterward.
       - name: Prepare staged demo ownership
         run: |
-          sudo chown -R 1000:"$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
-          sudo chmod -R u+rwX,g+rwX,o-rwx "${RUNNER_TEMP}/booley-picorv32-demo"
+          doctor_gid="$(getent passwd 1000 | cut -d: -f4)"
+          test -n "${doctor_gid}"
+          getent group "${doctor_gid}" >/dev/null
+          echo "DOCTOR_GID=${doctor_gid}" >> "${GITHUB_ENV}"
+          sudo chown -R "1000:${doctor_gid}" "${HOME}/.agents"
+          sudo chown -R "1000:${doctor_gid}" "${HOME}/.config/booley"
+          sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-ci-bin"
+          sudo chown -R "1000:${doctor_gid}" "${RUNNER_TEMP}/booley-picorv32-demo"
+          sudo chmod -R u+rwX "${RUNNER_TEMP}/booley-picorv32-demo"
 
       # This must run on the host: in-container Doctor cannot launch the
       # short-lived issued-image probe and therefore skips this exact seam.
@@ -312,9 +321,24 @@ jobs:
         run: |
           set -o pipefail
           doctor_log="$(mktemp)"
-          booley doctor --deep --skip-agent-checks | tee "${doctor_log}"
+          runner_groups="$(id -G | tr ' ' ',')"
+          sudo /usr/bin/env \
+            HOME="${HOME}" \
+            PYTHONUSERBASE="${HOME}/.local" \
+            PATH="${HOME}/.local/bin:${PATH}" \
+            /usr/bin/setpriv \
+            --reuid=1000 --regid="${DOCTOR_GID}" \
+            --groups="${DOCTOR_GID},${runner_groups}" \
+            -- "/usr/bin/booley" doctor --deep --skip-agent-checks | tee "${doctor_log}"
           grep -Eq 'MCP server exposes [0-9]+ MCP tool\(s\)' "${doctor_log}"
           grep -Fq "0 failed." "${doctor_log}"
+
+      - name: Restore runner ownership after host Doctor
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" "${HOME}/.agents"
+          sudo chown -R "$(id -u):$(id -g)" "${HOME}/.config/booley"
+          sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-ci-bin"
 
       - name: Measure release image storage contract
         env:
