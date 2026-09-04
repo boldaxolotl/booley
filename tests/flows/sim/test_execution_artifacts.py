@@ -47,5 +47,27 @@ def test_recursive_trace_glob_rejects_symlink_escape(tmp_path: Path) -> None:
         patterns=("**/*.fst",),
     )
 
-    with pytest.raises(ArtifactValidationError, match="escapes"):
+    with pytest.raises(ArtifactValidationError, match="symbolic link"):
         policy.validate_reported(str(link / "wave.fst"))
+
+
+def test_in_root_trace_symlink_cannot_bypass_freshness(tmp_path: Path) -> None:
+    run_cwd = tmp_path / "run"
+    build_root = tmp_path / "build"
+    run_cwd.mkdir()
+    build_root.mkdir()
+    target = run_cwd / "old.data"
+    target.write_bytes(b"stale waveform")
+    trace = run_cwd / "wave.fst"
+    try:
+        trace.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks are unavailable: {exc}")
+    policy = TraceArtifactPolicy.capture(
+        run_cwd=run_cwd,
+        build_root=build_root,
+        patterns=(),
+    )
+
+    with pytest.raises(ArtifactValidationError, match="symbolic link"):
+        policy.validate_reported(str(trace))

@@ -9,7 +9,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .freshness import ArtifactEvidence, ArtifactStamp, snapshot_artifact, validate_fresh_artifact
+from .freshness import (
+    ArtifactEvidence,
+    ArtifactStamp,
+    ArtifactValidationError,
+    snapshot_artifact,
+    validate_fresh_artifact,
+)
 
 _SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _TRACE_FILE_PATTERNS = ("**/*.fst", "**/*.vcd")
@@ -100,7 +106,11 @@ class TraceArtifactPolicy:
         path = Path(reported)
         if not path.is_absolute():
             path = self.run_cwd / path
-        resolved = path.resolve()
+        resolved = _without_symlink_escape(path)
+        if resolved is None:
+            raise ArtifactValidationError(
+                f"Simulation trace path traverses a symbolic link: {path}"
+            )
         configured = resolved in _configured_trace_paths(self.patterns, self.roots)
         return validate_fresh_artifact(
             path,
