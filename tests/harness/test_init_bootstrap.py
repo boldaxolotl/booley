@@ -35,6 +35,10 @@ def test_project_init_coordinator_fits_on_a_screen() -> None:
     assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50
 
 
+def test_project_init_preflight_coordinator_fits_on_a_screen() -> None:
+    assert len(inspect.getsourcelines(init_cmd._run_init_unlocked)[0]) <= 50
+
+
 def test_bootstrap_failure_precedes_every_project_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -101,7 +105,7 @@ def test_check_only_continues_project_planning_and_returns_pending(
     monkeypatch.setattr(
         init_cmd,
         "_resolve_agent_selection",
-        lambda _ctx, _args: (selection, tmp_path / ".booley_project" / "booley.toml"),
+        lambda _ctx, _args, _path: selection,
     )
     monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
     planned: list[bool] = []
