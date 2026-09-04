@@ -1,23 +1,22 @@
 # Session Runtime image contract
 
-This document is the compatibility boundary for Booley's standard and RISC-V
+This contract defines the required behavior of Booley's standard and RISC-V
 Session Runtime images. Image-size work may change packaging, layers, debug
-symbols, and implementation details, but it must not remove the behavior below
-without a separately reviewed contract change.
+symbols, and implementation details. Removing required behavior needs a separately
+reviewed contract change.
 
 The executable version of this contract is
-[`session-runtime.toml`](../../.github/contracts/session-runtime.toml). CI runs
-[`image_contract.py`](../../.github/scripts/image_contract.py) against built
-images and retains JSON evidence. Focused image integration tests remain the
-authority for behavior that cannot be represented by command and file probes.
+[`session-runtime.toml`](../../.github/contracts/session-runtime.toml). CI tests
+built images with [`image_contract.py`](../../.github/scripts/image_contract.py)
+and retains JSON evidence. Focused image integration tests remain authoritative
+for behavior that command and file probes cannot represent.
 
 ## Common runtime contract
 
 The image runs as the unprivileged `agent` user (UID/GID 1000), starts in
 `/work`, and supports writable project bind mounts owned by that user. Booley
-starts Flow subprocesses without network access. Agent traffic is constrained
-by the Session Runtime's egress proxy and by system policy which disables
-provider-hosted web tools.
+denies network access to Flow subprocesses. The Session Runtime's egress proxy
+constrains agent traffic, and system policy disables provider-hosted web tools.
 
 The following command families are required:
 
@@ -28,42 +27,41 @@ The following command families are required:
   Verilator's normal, debug, and coverage commands, cocotb's simulator
   libraries, and B-Wave.
 - Synthesis and lint: Yosys with ABC and slang, sv2v, OpenROAD, and the complete
-  shipped Verible command suite. The complete Verible suite remains contractual
-  until a later contract review narrows it.
+  shipped Verible command suite until a later contract review narrows it.
 - Agent clients: Node.js, npm, Claude Code, and Codex in their publisher-provided
   launch form.
 
-Native C and C++ source must compile, link, and execute in the image. Verilator
-generated C++ must compile with its installed runtime headers. Icarus must keep
+The image must compile, link, and execute native C and C++ source. It must compile
+Verilator-generated C++ with the installed runtime headers. Icarus must retain
 its VPI development header, targets, modules, and cocotb VPI library. OpenROAD
-must keep its OR-Tools shared-library runtime and must perform physical flows;
-falling back to logical Yosys does not satisfy this contract.
+must retain its OR-Tools shared-library runtime and run physical flows. A logical
+Yosys fallback fails the contract.
 
-Claude and Codex must retain version and help diagnostics, offline startup,
+Claude and Codex must provide version and help diagnostics, offline startup,
 their managed web-isolation policy, normal exit status, and signal propagation.
-The Claude Python SDK must resolve the system Claude executable; its duplicate
-bundled executable is intentionally absent. The existing production-image
-agent-policy probe validates publisher package integrity and policy behavior.
+The Claude Python SDK must resolve the system Claude executable. Its duplicate
+bundled executable is intentionally absent. The production-image agent-policy
+probe checks publisher package integrity and policy behavior.
 
-Yosys, ABC, and sv2v are shipped stripped. The two installed B-Wave paths are
-one hard-linked inode. These properties are image-level assertions, not merely
-Dockerfile text checks.
+The image-level assertions require stripped Yosys, ABC, and sv2v binaries and one
+hard-linked inode for the two installed B-Wave paths. Dockerfile text alone does
+not satisfy them.
 
 ## Rust is not included
 
-The standard Session Runtime does **not** provide Cargo, `rustc`, `rustup`, or a
-Rust standard library. B-Wave is compiled in a throwaway builder stage and only
-its runtime binary is copied into the final image. A project which compiles Rust
-must use a reviewed project image that adds the required pinned toolchain.
+The standard Session Runtime excludes Cargo, `rustc`, `rustup`, and the Rust
+standard library. A throwaway builder stage compiles B-Wave, and the final image
+receives only its runtime binary. Projects that compile Rust need a reviewed
+project image with the required pinned toolchain.
 
-This exclusion is deliberate: the Rust toolchain is large and cannot rebuild
-B-Wave from the installed wheel because the crate source is not shipped there.
-Setup guidance must not advertise Rust as a standard-runtime capability.
+The exclusion is deliberate. The Rust toolchain is large, and the installed wheel
+cannot rebuild B-Wave because it omits the crate source. Setup guidance must not
+claim Rust as a standard-runtime capability.
 
 ## RISC-V extension contract
 
-The RISC-V image inherits the standard image and adds, without replacing its
-RootFS history:
+The RISC-V image extends the standard image without replacing its RootFS history.
+It adds:
 
 - the xPack bare-metal compiler under the `riscv-none-elf-` prefix plus complete
   `riscv32-unknown-elf-` and `riscv64-unknown-elf-` helper aliases;
@@ -79,8 +77,8 @@ RV64/LP64D multilibs, checks the multilib count, and executes an RV32 ELF under
 Spike. The PicoRV32 candidate path provides project-level validation.
 
 The RISC-V RootFS DiffIDs must begin with the exact standard-image DiffID list.
-This proves the derived image continues to share the standard layers instead of
-silently copying or rebuilding them.
+This proves that the derived image shares the standard layers and does not copy
+or rebuild them.
 
 ## Evidence and size policy
 
@@ -97,24 +95,24 @@ these metrics independently as exact integer bytes:
 
 The report also records the platform manifest digest, local image ID, OS,
 architecture, runtime user, DiffIDs, timestamp, Docker client/server and
-containerd versions, Buildx and BuildKit versions, and storage driver. These
-represent different storage views and must not be added together. PR 1 records
-baselines but intentionally sets no hard size ceiling; candidate-derived limits
+containerd versions, Buildx and BuildKit versions, and storage driver. Do not add
+the metrics together; they measure different storage views. PR 1 records
+baselines but intentionally sets no hard size ceiling. Candidate-derived limits
 belong to the promotion stage after the optimized images exist.
 
 The committed [0.2.10 Linux/AMD64 baseline](../../.github/evidence/docker-image-baseline-0.2.10-amd64.json)
-is the control for the staged image work. Workflow reports retain the complete
-per-layer and DiffID arrays; the committed control keeps the exact totals,
-digests, environment, counts, and largest-directory inventory used by the plan.
+controls the staged image work. Workflow reports retain the complete per-layer
+and DiffID arrays. The committed control keeps the plan's exact totals, digests,
+environment, counts, and largest-directory inventory.
 
-The proposed 3.1–3.4 GB standard and 4.6–4.9 GB RISC-V visible-filesystem
+The proposed 3.1 to 3.4 GB standard and 4.6 to 4.9 GB RISC-V visible-filesystem
 endpoints remain design targets, not measured results or CI limits, until the
 candidate images prove them.
 
-This first contract stage is not the complete optimization-promotion gate. It
-establishes exact storage evidence, image identity, command/file invariants,
-representative compiler and Spike execution, and a real PicoRV32 lint/simulation
-run. Before a PR changes the shipped runtime payload, the promotion gate must
-also cover the Ibex demo, Spike differential and extension-loading behavior,
-agent-client signal and exit propagation, OpenROAD physical execution, cold
-start time, and representative peak RSS as specified by the image-size audit.
+This first contract stage establishes exact storage evidence, image identity,
+command/file invariants, representative compiler and Spike execution, and a real
+PicoRV32 lint/simulation run. The complete optimization-promotion gate must also
+cover the Ibex demo, Spike differential and extension-loading behavior,
+agent-client signal and exit propagation, OpenROAD physical execution, cold start
+time, and representative peak RSS specified by the image-size audit before a PR
+changes the shipped runtime payload.

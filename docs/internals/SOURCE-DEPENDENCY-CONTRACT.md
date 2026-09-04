@@ -1,9 +1,9 @@
 # Source Dependency Contract
 
-This is the source of truth for Booley's intended Python source-dependency
-directions. It records a small set of stable rules without treating the current
-package graph as a universal allowlist. The executable analyzer is test-only: it
-describes source knowledge and does not add a production abstraction layer.
+This contract defines Booley's intended Python source-dependency directions. Its
+stable rules do not make the current package graph a universal allowlist. The
+test-only analyzer describes source knowledge without adding a production
+abstraction layer.
 
 ## Source map
 
@@ -23,41 +23,41 @@ The package layout serves the canonical concepts in [CONTEXT.md](../CONTEXT.md):
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Answer structured waveform questions and control human viewing. |
 
-Supporting mechanism packages keep their existing names: `booley.audit` owns typed
+Supporting mechanism packages keep their names. `booley.audit` owns typed
 environment and configuration analysis; `booley.config` owns configuration;
 `booley.eda` owns trusted EDA registrations and Grants; `booley.review` owns review
 evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
 dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.data`,
-and `booley.feedback` own their named supporting mechanisms. These descriptions do
-not create new domain concepts.
+and `booley.feedback` own their named mechanisms. These descriptions create no new
+domain concepts.
 
 ## Graph semantics
 
-The graph contains facts of the form `importing Python module -> imported
-in-repository Python module`. The analyzer parses every `*.py` file below
-`src/booley` with `ast` and covers `Import` and `ImportFrom` wherever they occur,
-including inside functions, conditions, and `TYPE_CHECKING` blocks.
+The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
+facts of the form `importing Python module -> imported in-repository Python module`
+for every `Import` and `ImportFrom`, including imports inside functions,
+conditions, and `TYPE_CHECKING` blocks.
 
-Relative imports are resolved from the importing package, including package
-`__init__.py` files. For `from package import name`, an importable in-tree submodule
-is preferred over treating `name` as a symbol; otherwise the package or module base
-is the dependency. Aliases do not change identity. Only modules discoverable below
-the selected `booley` source root remain in the graph. A source read or syntax
-failure aborts analysis.
+It resolves relative imports from the importing package, including package
+`__init__.py` files. For `from package import name`, it prefers an importable
+in-tree submodule over treating `name` as a symbol; otherwise the package or module
+base is the dependency. Aliases do not change identity. The graph retains only
+modules discoverable below the selected `booley` source root. A source read or
+syntax failure aborts analysis.
 
-Rules and permissions operate at module granularity. A prefix selector matches the
-named module and its descendants. An exact selector matches only the named module.
-Fan-out is the number of unique target modules imported by one source module.
+Rules and permissions operate at module granularity. A prefix selector matches a
+named module and its descendants; an exact selector matches only the named module.
+Fan-out counts the unique target modules imported by one source module.
 
-The cycle diagnostic deliberately projects each edge to its immediate
-`booley.<package>` owner and discards same-package edges. An approved legacy SCC is
-an exact member set at that projection, not approval of every edge within it.
+The cycle diagnostic projects each edge to its immediate `booley.<package>` owner
+and discards same-package edges. An approved legacy SCC specifies an exact member
+set at that projection; it does not approve every edge within the set.
 
 ## Direction rules
 
-These rules are independently justified policy. The production-tree gate in
-`tests/architecture/test_source_dependency_contract.py` enforces the full table as
-tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
+Each rule states independent policy. The production-tree gate in
+`tests/architecture/test_source_dependency_contract.py` enforces the full table,
+as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 
 | Rule | Source selector | Target selector | Decision | Design reason |
 | --- | --- | --- | --- | --- |
@@ -73,14 +73,13 @@ tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
 
-The approved D9 selector resolves PR 1's ambiguous phrase "direct module
-children" in favor of its Flow-neutral design reason. It includes the root package
-module and direct file modules such as `booley.flows.target_campaign`. It excludes
-child package initializers such as `booley.flows.sim`, because those initializers
-belong to the selected concrete Flow rather than to Flow-neutral policy. This is an
-explicit selector decision, not a blanket exception from other direction rules.
+D9 resolves PR 1's ambiguous phrase "direct module children" according to its
+Flow-neutral design reason. It includes the root package module and direct file
+modules such as `booley.flows.target_campaign`. It excludes child package
+initializers such as `booley.flows.sim`, which belong to the selected concrete
+Flow. This explicit selector grants no exception from other direction rules.
 
-The D10 adapter selector sets are exhaustive for this rule:
+These D10 adapter selector sets are exhaustive:
 
 - S1, Cocotb: exact modules `booley.flows.sim.backends.cocotb` and
   `booley.flows.sim.backends.cocotb_results`.
@@ -89,18 +88,17 @@ The D10 adapter selector sets are exhaustive for this rule:
 - S4, OpenROAD: prefix `booley.flows.synth.backends.openroad`.
 - S5, Yosys: prefix `booley.flows.synth.backends.yosys`.
 
-For each S1-S3 source, D10 forbids targets selected by the other S1-S3 sets. For
-each S4-S5 source, it forbids the other S4-S5 set. Shared backend policy and the
-experimental simulator readers are unclassified, not silently included.
+For each S1-S3 source, D10 forbids targets in the other S1-S3 sets. Each S4-S5
+source cannot target the other S4-S5 set. Shared backend policy and the
+experimental simulator readers remain unclassified.
 
-All other source edges are unclassified pending design work. Their presence is not
-an architectural endorsement, and the checker must never generate permissions from
-them automatically.
+All other source edges remain unclassified pending design work. Their presence
+does not endorse them, and the checker must not generate permissions from them.
 
 ## Exact composition-root permissions
 
 These are the only rule exceptions classified as enforced design. Each permission
-is attached to the named rule; no source module receives a blanket exemption.
+belongs to one named rule and gives no source module a blanket exemption.
 
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
@@ -114,8 +112,8 @@ is attached to the named rule; no source module receives a blanket exemption.
 
 ## Exact legacy waivers
 
-Waivers are exact, live edges. They do not permit a package prefix and cannot be
-copied to a replacement edge. Both current waivers retire through
+Waivers are exact, live edges. They permit no package prefix and cannot transfer
+to a replacement edge. Both current waivers retire through
 [#284](https://github.com/boldaxolotl/booley/issues/284).
 
 | Waiver | Rule | Exact source -> exact target | Design explanation | Retirement work |
@@ -123,14 +121,11 @@ copied to a replacement edge. Both current waivers retire through
 | W1 | D2 | `booley.criteria.actions -> booley.mcp.registry` | Invocation rendering currently discovers the endpoint-to-Criterion relationship from MCP registration. This is legacy mechanism knowledge, not desired policy direction. | #284 |
 | W2 | D2 | `booley.criteria.reference -> booley.mcp.registry` | Generated Criteria reference text currently discovers producing endpoints through the MCP registry. | #284 |
 
-At the 02 SEP 2026 baseline there are 1,378 unique normalized edges: the seven
-composition permissions above are enforced design, the two Criteria edges are exact
-legacy waivers, and the other 1,369 are deliberately unclassified.
-
 ## Dynamic-import inventory
 
-Dynamic resolution is outside the general graph. Current production uses are named
-so they cannot masquerade as statically analyzed coverage:
+The general graph excludes dynamic resolution. This inventory names each current
+production use and its existing proof so the limits of static analysis remain
+explicit:
 
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
@@ -138,15 +133,15 @@ so they cannot masquerade as statically analyzed coverage:
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
 
-`importlib.metadata`, `importlib.resources`, and `importlib.util.find_spec` usages that
-inspect distributions, resources, or module availability do not create hidden
-in-repository source edges. PR 2 should keep the three named mechanisms explicit;
-it must not attempt speculative evaluation of arbitrary Python expressions.
+Uses of `importlib.metadata`, `importlib.resources`, and `importlib.util.find_spec`
+that inspect distributions, resources, or module availability create no hidden
+in-repository source edges. PR 2 should keep the three named mechanisms explicit
+and must not speculate about arbitrary Python expressions.
 
 ## Reproducible baseline
 
-The baseline measures production source at `094d1c5d` (current `main` when PR 1
-began) with the analyzer introduced by PR 1 at `4725cd09`. Reproduce that historical
+The baseline combines production source at `094d1c5d` (current `main` when PR 1
+began) with the analyzer introduced by PR 1 at `4725cd09`. Reproduce this historical
 two-tree combination from any checkout containing both commits:
 
 ```console
@@ -158,7 +153,9 @@ python3 "${baseline_dir}/tests/architecture/report.py" \
 ```
 
 The analyzer parses 370 Python modules and emits 1,761 located dependency facts
-representing 1,378 unique module-to-module edges.
+representing 1,378 unique module-to-module edges. At the 02 SEP 2026 baseline,
+seven edges are enforced composition permissions, two Criteria edges are exact
+legacy waivers, and the other 1,369 remain unclassified by design.
 
 The one approved legacy multi-package SCC has this exact member set:
 
@@ -169,9 +166,9 @@ booley.fusesoc, booley.harness, booley.mcp, booley.projects, booley.review,
 booley.runtime, booley.specialists, booley.targets, booley.ticket_board
 ```
 
-It excludes the currently separate `booley.core`, `booley.data`, and `booley.docker`
-package groups. PR 2's subset ratchet may permit the approved SCC to split, but may
-not let another group join it or merge formerly separate groups.
+The SCC excludes the separate `booley.core`, `booley.data`, and `booley.docker`
+package groups. PR 2's subset ratchet may let the approved SCC split, but it may
+not admit another group or merge groups that were separate.
 
 Current direct mutual top-level package pairs are:
 
@@ -215,24 +212,23 @@ Named composition hotspots use file fan-out only as diagnostic evidence:
 | Mutation Specialist | `booley.specialists.mutation_tester` | 24 |
 | Coverage Specialist | `booley.specialists.coverage_analyst` | 22 |
 
-High fan-out is not a violation. A change to one of these modules records before and
-after output in [#279](https://github.com/boldaxolotl/booley/issues/279) so the later
-fan-out decision can distinguish legitimate composition from unjustified knowledge
-growth.
+High fan-out is diagnostic, not a violation. A change to one of these modules
+records before and after output in
+[#279](https://github.com/boldaxolotl/booley/issues/279), allowing the later fan-out
+decision to distinguish legitimate composition from unjustified knowledge growth.
 
 ## Required gate
 
-The required pytest gate evaluates every normalized production dependency against
-the direction rules, exact composition permissions, and exact legacy waivers above.
-It rejects missing waiver metadata and stale waivers whose exact edge is no longer
-present. Its SCC ratchet rejects every current multi-package SCC that is not a subset
-of one approved legacy member set; approved groups may split, while new acyclic
-singletons need no baseline entry.
+The pytest gate checks every normalized production dependency against the direction
+rules, exact composition permissions, and exact legacy waivers. It rejects missing
+waiver metadata and stale waivers whose exact edge has gone. Its SCC ratchet rejects
+each current multi-package SCC that is not a subset of an approved legacy member
+set. Approved groups may split; new acyclic singletons need no baseline entry.
 
 Direction failures name the source location, normalized edge, rule, and any exact
-permission or waiver applicable to that source under the rule. The deterministic
-report additionally prints all named hotspot fan-out values under an explicitly
-diagnostic-only heading; no fan-out number is a gate.
+permission or waiver for that source under the rule. The deterministic report also
+prints every named hotspot fan-out value under a diagnostic-only heading. Fan-out
+values do not gate changes.
 
 Run the complete architecture check and its report from the repository root:
 
