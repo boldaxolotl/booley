@@ -105,6 +105,7 @@ _ELAB_FAIL_RE = re.compile(
 # failure to the pre-run step instead of blaming the sim/build.
 _PRERUN_FAIL_RE = re.compile(r"\[BOOLEY_PRERUN_FAIL rc=(-?\d+)\]")
 
+
 class MissingExecutableError(RuntimeError):
     """A required EDA binary is absent — a Flow error, never a test failure.
 
@@ -191,6 +192,7 @@ _TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE
 # 12KB-budget default; the effective cap scales with a raised
 # BOOLEY_MCP_MAX_STDOUT_BYTES (see output_budget.scaled).
 _MAX_EXCERPT_LINES = 30
+
 
 @dataclass
 class TestResult:
@@ -1288,7 +1290,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             f"export {name}={shlex.quote(value)}"
             for name, value in self._target_sim_env(target).items()
         ]
-
 
     def _validate_interactive_args(
         self,
@@ -2513,7 +2514,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         print(report_text)
         return report_text
 
-
     def _run_resolved_target(
         self,
         target: str,
@@ -2585,9 +2585,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             detail = (
                 outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
             )
-            missing = (
-                outcome.infrastructure_failure.missing_executable
-                or find_missing_executable(detail)
+            missing = outcome.infrastructure_failure.missing_executable or find_missing_executable(
+                detail
             )
             if missing:
                 raise MissingExecutableError(missing, detail)

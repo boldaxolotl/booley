@@ -13,9 +13,7 @@ def _project(root: Path, marker: str) -> TargetHandle:
     project = root / ".booley_project"
     project.mkdir(parents=True)
     (project / "booley.toml").write_text(
-        "[flows.sim]\n"
-        f'pre_run_commands = ["printf {marker} > hook.txt"]\n'
-        'run_cwd = "."\n',
+        f'[flows.sim]\npre_run_commands = ["printf {marker} > hook.txt"]\nrun_cwd = "."\n',
         encoding="utf-8",
     )
     return cast(
