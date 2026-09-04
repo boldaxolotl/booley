@@ -19,6 +19,13 @@ from .freshness import (
 
 _SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _TRACE_FILE_PATTERNS = ("**/*.fst", "**/*.vcd")
+_COMPATIBILITY_ARTIFACTS = (
+    ("result", "result.json"),
+    ("results_xml", "results.xml"),
+    ("cocotb_results_json", "cocotb_results.json"),
+    ("trace_status", "trace_status.json"),
+    ("trace_incident", "trace_incident.txt"),
+)
 
 
 def _without_symlink_escape(path: Path) -> Path | None:
@@ -33,6 +40,35 @@ def artifact_path_component(value: str) -> str:
         return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return f"~sha256-{digest}"
+
+
+@dataclass(frozen=True)
+class CompatibilityArtifactPolicy:
+    """Snapshot and validate optional adapter files for one attempt."""
+
+    root: Path
+    before: tuple[tuple[str, Path, ArtifactStamp | None], ...]
+
+    @classmethod
+    def capture(cls, build_root: Path) -> CompatibilityArtifactPolicy:
+        """Capture every known compatibility file immediately before dispatch."""
+        root = build_root.resolve()
+        before = tuple(
+            (kind, root / name, snapshot_artifact(root / name))
+            for kind, name in _COMPATIBILITY_ARTIFACTS
+        )
+        return cls(root, before)
+
+    def current(self) -> tuple[tuple[str, ArtifactEvidence], ...]:
+        """Return only files proven new or changed since :meth:`capture`."""
+        evidence: list[tuple[str, ArtifactEvidence]] = []
+        for kind, path, before in self.before:
+            try:
+                validated = validate_fresh_artifact(path, roots=(self.root,), before=before)
+            except ArtifactValidationError:
+                continue
+            evidence.append((kind, validated))
+        return tuple(evidence)
 
 
 def _configured_trace_paths(
@@ -120,4 +156,8 @@ class TraceArtifactPolicy:
         )
 
 
-__all__ = ["TraceArtifactPolicy", "artifact_path_component"]
+__all__ = [
+    "CompatibilityArtifactPolicy",
+    "TraceArtifactPolicy",
+    "artifact_path_component",
+]

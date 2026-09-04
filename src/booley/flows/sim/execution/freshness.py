@@ -26,7 +26,6 @@ class ArtifactEvidence:
 
     path: Path
     size: int
-    modified_ns: int
 
 
 def snapshot_artifact(path: Path) -> ArtifactStamp | None:
@@ -52,7 +51,6 @@ def validate_fresh_artifact(
     roots: tuple[Path, ...],
     before: ArtifactStamp | None,
     explicitly_allowed: tuple[Path, ...] = (),
-    not_before_ns: int | None = None,
 ) -> ArtifactEvidence:
     """Validate identity, containment, regular-file status, and freshness."""
     try:
@@ -69,9 +67,7 @@ def validate_fresh_artifact(
     assert current is not None
     if before is not None and current == before:
         raise ArtifactValidationError(f"Simulation artifact is stale: {path}")
-    if not_before_ns is not None and current.modified_ns < not_before_ns:
-        raise ArtifactValidationError(f"Simulation artifact predates its attempt: {path}")
-    return ArtifactEvidence(path=resolved, size=current.size, modified_ns=current.modified_ns)
+    return ArtifactEvidence(path=resolved, size=current.size)
 
 
 __all__ = [

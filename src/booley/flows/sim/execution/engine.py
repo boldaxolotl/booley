@@ -50,7 +50,7 @@ from booley.flows.sim.workload import build_workload_snapshot, capture_workload_
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import TargetHandle, inspect_target
 
-from .artifacts import TraceArtifactPolicy, artifact_path_component
+from .artifacts import CompatibilityArtifactPolicy, TraceArtifactPolicy, artifact_path_component
 from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invocation
 from .contract import (
     DefaultSelection,
@@ -195,6 +195,7 @@ class SimulationExecution:
             )
             return failure(handle, attempt, pre_run, started)
         trace_policy = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
+        compatibility_policy = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
         adapter_before = _adapter_result_stamps(attempt)
         process = self._invoke(list(attempt.command), timeout=attempt.wrapper_timeout_s)
         processing_started = time.monotonic()
@@ -214,6 +215,7 @@ class SimulationExecution:
                 adapter,
                 pre_run,
                 trace_policy,
+                compatibility_policy,
                 processing_started,
                 started,
             )
@@ -382,12 +384,14 @@ class SimulationExecution:
         adapter: AdapterResult | None,
         pre_run: PreRunEvidence | None,
         trace_policy: TraceArtifactPolicy | None,
+        compatibility_policy: CompatibilityArtifactPolicy,
         processing_started: float,
         started: float,
     ) -> SimulationTargetOutcome:
         output = process.stdout + ("\n" + process.stderr if process.stderr else "")
         logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
         trace = _trace_artifact(attempt, adapter, trace_policy)
+        compatibility = _compatibility_artifacts(attempt, compatibility_policy)
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
         tests = _test_outcomes(
@@ -409,7 +413,7 @@ class SimulationExecution:
             output,
             time.monotonic() - processing_started,
         )
-        artifacts = (*logs, *((trace,) if trace is not None else ()))
+        artifacts = (*logs, *compatibility, *((trace,) if trace is not None else ()))
         diagnostics = adapter.diagnostics if adapter is not None else ()
         return _group_outcome(
             handle,
@@ -1048,6 +1052,16 @@ def _trace_artifact(
         trace.top_scope,
         trace.signal_count,
         trace.total_ticks,
+    )
+
+
+def _compatibility_artifacts(
+    attempt: _Attempt,
+    policy: CompatibilityArtifactPolicy,
+) -> tuple[SimulationArtifactEvidence, ...]:
+    return tuple(
+        SimulationArtifactEvidence(kind, str(item.path), item.size, attempt.test_names)
+        for kind, item in policy.current()
     )
 
 

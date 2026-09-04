@@ -786,6 +786,49 @@ def test_unchanged_declared_trace_is_stale(tmp_path: Path) -> None:
     assert all(artifact.kind != "trace" for artifact in outcome.artifacts)
 
 
+def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    stale = {
+        "results_xml": prepared.build_root / "results.xml",
+        "cocotb_results_json": prepared.build_root / "cocotb_results.json",
+        "trace_status": prepared.build_root / "trace_status.json",
+        "trace_incident": prepared.build_root / "trace_incident.txt",
+    }
+    for path in stale.values():
+        path.write_text("stale", encoding="utf-8")
+    result = prepared.build_root / "result.json"
+    result.write_text("stale", encoding="utf-8")
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        result.write_text("current result", encoding="utf-8")
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    kinds = {item.kind for item in outcome.artifacts}
+    assert "result" in kinds
+    assert kinds.isdisjoint(stale)
+
+
 def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)

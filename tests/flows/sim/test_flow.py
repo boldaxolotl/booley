@@ -22,7 +22,11 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.execution import (
+    SimulationArtifactEvidence,
+    SimulationExecution,
+    SimulationOptions,
+)
 from booley.flows.sim.execution.telemetry import (
     parse_build_seconds,
     parse_run_seconds,
@@ -2028,7 +2032,6 @@ class TestBuildContextReporting:
         failure, so the MCP layer's stdout truncation cut them off on exactly
         the long runs that needed them.
         """
-        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
@@ -2036,14 +2039,24 @@ class TestBuildContextReporting:
         flow._test_names_map = {}
         build_root = tmp_path / "build"
         build_root.mkdir()
-        # Real run order: the prepare half claims the log (opening it fresh),
-        # then the run-half's output lands in it.
-        flow._record_run_log_dir("sim", build_root)
-        write_run_log(build_root, "simulator output\n")
-        (build_root / "result.json").write_text("{}", encoding="utf-8")
-        (build_root / "trace.fst").write_text("fst", encoding="utf-8")
+        log = write_run_log(build_root, "simulator output\n")
+        result = build_root / "result.json"
+        result.write_text("{}", encoding="utf-8")
+        trace = build_root / "trace.fst"
+        trace.write_text("fst", encoding="utf-8")
 
-        flow._write_target_report(TargetResult(target="sim", passed=False, elapsed_s=1.0))
+        flow._write_target_report(
+            TargetResult(
+                target="sim",
+                passed=False,
+                elapsed_s=1.0,
+                artifacts=(
+                    SimulationArtifactEvidence("live_run_log", str(log), log.stat().st_size, ()),
+                    SimulationArtifactEvidence("result", str(result), result.stat().st_size, ()),
+                    SimulationArtifactEvidence("trace", str(trace), trace.stat().st_size, ()),
+                ),
+            )
+        )
 
         artifacts = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())["artifacts"]
         assert artifacts["log"] == "build/run.log"
@@ -2073,9 +2086,6 @@ class TestBuildContextReporting:
         (build_root / "result.json").write_text('{"passed": true}', encoding="utf-8")
         (build_root / "trace.fst").write_text("fst", encoding="utf-8")
         (build_root / "trace_incident.txt").write_text("old incident", encoding="utf-8")
-        # This run claims the log but never completes it.
-        flow._record_run_log_dir("sim", build_root)
-
         flow._write_target_report(TargetResult(target="sim", passed=False, elapsed_s=1.0))
 
         artifacts = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())["artifacts"]
@@ -2085,7 +2095,6 @@ class TestBuildContextReporting:
     def test_trace_pointer_follows_a_custom_dump_path(self, tmp_path: Path):
         """A project's own ``trace_files`` dump path (F-22) still gets cited —
         ``trace.fst`` is the conventional name, not the only one."""
-        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
@@ -2093,8 +2102,6 @@ class TestBuildContextReporting:
         flow._test_names_map = {}
         build_root = tmp_path / "build"
         build_root.mkdir()
-        flow._record_run_log_dir("sim", build_root)
-        write_run_log(build_root, "output\n")
         custom = build_root / "waves" / "dump.fst"
         custom.parent.mkdir()
         custom.write_text("fst", encoding="utf-8")
@@ -2104,13 +2111,11 @@ class TestBuildContextReporting:
                 target="sim",
                 passed=True,
                 elapsed_s=1.0,
-                tests=[
-                    SimTestResult(
-                        name="smoke",
-                        passed=True,
-                        trace_path="build/waves/dump.fst",
-                    )
-                ],
+                artifacts=(
+                    SimulationArtifactEvidence(
+                        "trace", str(custom), custom.stat().st_size, ("smoke",)
+                    ),
+                ),
             )
         )
 

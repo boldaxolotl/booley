@@ -72,6 +72,7 @@ from .build import (
 from .execution import (
     DefaultSelection,
     NamedTests,
+    SimulationArtifactEvidence,
     SimulationExecution,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -260,6 +261,7 @@ class TargetResult:
     phase_timings_s: dict[str, float] = field(default_factory=dict)
     target_identity: str = ""
     diagnostics: tuple[str, ...] = ()
+    artifacts: tuple[SimulationArtifactEvidence, ...] = ()
 
 
 @dataclass
@@ -1474,7 +1476,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         # ``structuredContent`` (base.write_report carries ``detail`` through),
         # which the stdout headline block does not.
         for r in all_results:
-            block = self._artifacts_for(r.target, r)
+            block = self._artifacts_for(r)
             if block:
                 # ``report`` too: the detail copy is what an agent receives over
                 # MCP, and without it the block names every file the run wrote
@@ -2319,46 +2321,14 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return None
         return posix_relpath(log_dir / RUN_LOG_NAME, self.args.work_dir)
 
-    def _artifacts_for(self, target: str, result: TargetResult | None = None) -> dict[str, object]:
-        """Durable files this run left for *target*, as project-relative paths.
-
-        Everything the run-half writes lands in the resolved build root: it is
-        both ``--bin-dir`` and (by default) the run-half's ``--work-dir``, so
-        run.log, result.json, cocotb's results.xml and the whole trace family
-        are siblings there. Absent files are dropped by
-        :func:`artifacts.artifacts_block`, so a non-traced run simply carries
-        no trace keys rather than three dead pointers.
-
-        The WHOLE block is gated on :meth:`_run_log_is_fresh`, not just the
-        ``log`` key. ``begin_run_log`` truncates run.log at the start of a run,
-        but nothing clears its siblings — result.json, results.xml, trace.fst,
-        trace_incident.txt all survive from run to run in a reused build root.
-        So a build that dies before the run-half starts would otherwise report
-        the PREVIOUS run's ``passed: true`` result.json under this run's
-        verdict, which is F-26 verbatim, one file over. They all come from the
-        same run-half: if it never ran, none of them are ours to cite.
-
-        A trace store that landed under a non-default name (a project's own
-        ``trace_files`` dump path, F-22) is taken from *result*'s parsed
-        ``TRACE_OK`` path when one is available, since ``trace.fst`` is only
-        the default.
-        """
-        log_dir = getattr(self, "_run_log_dirs", {}).get(target)
-        if log_dir is None or not self._run_log_is_fresh(target):
-            return {}
-        traces = [t.trace_path for t in (result.tests if result else []) if t.trace_path]
-        return artifacts.artifacts_block(
-            self.args.work_dir,
-            log=log_dir / RUN_LOG_NAME,
-            result=log_dir / "result.json",
-            results_xml=log_dir / "results.xml",
-            cocotb_results_json=log_dir / "cocotb_results.json",
-            # The run-half reports the store it actually produced; fall back to
-            # the conventional name when this run parsed no TRACE_OK marker.
-            trace=traces[0] if traces else log_dir / "trace.fst",
-            trace_status=log_dir / "trace_status.json",
-            trace_incident=log_dir / "trace_incident.txt",
-        )
+    def _artifacts_for(self, result: TargetResult) -> dict[str, object]:
+        """Project execution-validated artifact evidence into report paths."""
+        report_keys = {"live_run_log": "log", "run_log": "log", "trace": "trace"}
+        block: dict[str, object] = {}
+        for item in result.artifacts:
+            key = report_keys.get(item.kind, item.kind)
+            block.setdefault(key, posix_relpath(item.path, self.args.work_dir))
+        return block
 
     def _headline_lines(self, all_results: list[TargetResult]) -> list[str]:
         """Compact per-target verdict block, emitted at the END of report_text.
@@ -2608,6 +2578,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             target_identity=outcome.target_identity,
             diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
             phase_timings_s=dict(outcome.phase_timings_s),
+            artifacts=outcome.artifacts,
         )
 
     def _project_execution_test(self, outcome: Any) -> TestResult:
@@ -2909,7 +2880,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         # ``report`` names the file being written right now: it does not exist
         # yet, so it is added directly rather than through artifacts_block's
         # exists() filter. By the time anyone reads this JSON, it does.
-        artifacts = self._artifacts_for(result.target, result)
+        artifacts = self._artifacts_for(result)
         artifacts["report"] = posix_relpath(report_path, self.args.work_dir)
         report["artifacts"] = artifacts
         return report
