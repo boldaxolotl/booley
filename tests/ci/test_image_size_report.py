@@ -402,6 +402,20 @@ def test_local_size_limits_cover_docker_engine_unpacked_storage_view() -> None:
     assert limits["riscv"]["docker_local_size_bytes"] == 5_350_000_000
 
 
+def test_size_limits_can_select_one_image_variant() -> None:
+    limits = {
+        "sandbox": {"docker_local_size_bytes": 10},
+        "riscv": {"docker_local_size_bytes": 20},
+    }
+
+    assert image_size_report.select_limits(limits, ["sandbox"]) == {
+        "sandbox": {"docker_local_size_bytes": 10},
+    }
+
+    with pytest.raises(ValueError, match="unknown size-limit image"):
+        image_size_report.select_limits(limits, ["missing"])
+
+
 def test_committed_baseline_preserves_exact_bytes_and_environment() -> None:
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     sandbox = baseline["images"]["sandbox"]

@@ -482,12 +482,24 @@ def _named_reference(value: str) -> tuple[str, str]:
     return name, reference
 
 
+def select_limits(
+    limits: dict[str, dict[str, int]], names: list[str]
+) -> dict[str, dict[str, int]]:
+    """Select the explicitly measured image variants from a shared limit file."""
+    unknown = sorted(set(names) - set(limits))
+    if unknown:
+        raise ValueError(f"unknown size-limit image: {', '.join(unknown)}")
+    selected = set(names)
+    return {name: image_limits for name, image_limits in limits.items() if name in selected}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry-image", action="append", default=[], type=_named_reference)
     parser.add_argument("--runtime-image", action="append", default=[], type=_named_reference)
     parser.add_argument("--local-image", action="append", default=[], type=_named_reference)
     parser.add_argument("--limits", type=Path)
+    parser.add_argument("--limit-image", action="append", default=[])
     parser.add_argument("--json", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     args = parser.parse_args()
@@ -509,7 +521,10 @@ def main() -> int:
         environment=measurement_environment(),
         measured_at=utc_now_rfc3339(),
     )
-    errors = apply_size_limits(payload, _load_size_limits(args.limits)) if args.limits else []
+    limits = _load_size_limits(args.limits) if args.limits else {}
+    if args.limit_image:
+        limits = select_limits(limits, args.limit_image)
+    errors = apply_size_limits(payload, limits) if args.limits else []
     args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     args.markdown.write_text(markdown(payload), encoding="utf-8")
     for error in errors:

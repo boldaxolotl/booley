@@ -47,3 +47,29 @@ def test_unique_references_rejects_duplicate_names() -> None:
         image_runtime_resources._unique_references(
             [("sandbox", "image:first"), ("sandbox", "image:second")]
         )
+
+
+def test_report_binds_observations_to_candidate_and_stable_check_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        image_runtime_resources,
+        "measure_image",
+        lambda name, reference, runs: {
+            "reference": reference,
+            "image_id": "sha256:local-image",
+            "cold_container_start": {},
+            "peak_rss_kib": {},
+            "max_representative_peak_rss_kib": 1,
+        },
+    )
+
+    payload = image_runtime_resources.report(
+        {"sandbox": "registry/image@sha256:published"},
+        runs=1,
+        candidate_sha="candidate-sha",
+    )
+
+    assert payload["candidate_sha"] == "candidate-sha"
+    assert payload["checks"] == [
+        {"id": "runtime-resources.sandbox", "status": "pass"},
+    ]
+    assert payload["images"]["sandbox"]["image_id"] == "sha256:local-image"

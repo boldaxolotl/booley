@@ -259,6 +259,20 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     )
 
 
+def test_standard_size_ceiling_runs_without_riscv_gate() -> None:
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+
+    size_contract = next(
+        step for step in steps if step.get("name") == "Enforce standard image size ceiling"
+    )
+
+    assert "if" not in size_contract
+    assert "--runtime-image sandbox=booley-test" in size_contract["run"]
+    assert "--limit-image sandbox" in size_contract["run"]
+    assert "--limits .github/contracts/image-size-limits.toml" in size_contract["run"]
+
+
 def test_riscv_image_lane_is_path_gated() -> None:
     """The slow derived-image contract runs only when its owning inputs change."""
     workflow = _test_workflow()
@@ -510,7 +524,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     """Conditional jobs never leave the stable required check unresolved."""
     workflow = _test_workflow()
     jobs = workflow["jobs"]
-    conditional = set(jobs) - {"changes", "ci-required"}
+    conditional = set(jobs) - {"changes", "release-semantic", "ci-required"}
 
     changes = jobs["changes"]
     rendered_changes = "\n".join(str(step) for step in changes["steps"])
@@ -525,9 +539,13 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
         assert "changes" in needs, job_name
         assert job["if"] == f"fromJSON(needs.changes.outputs.jobs)['{job_name}']", job_name
 
+    semantic = jobs["release-semantic"]
+    assert semantic["needs"] == "changes"
+    assert semantic["timeout-minutes"] == 2
+
     aggregate = jobs["ci-required"]
     assert aggregate["if"] == "always()"
-    assert set(aggregate["needs"]) == {"changes", *conditional}
+    assert set(aggregate["needs"]) == {"changes", "release-semantic", *conditional}
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
     assert "toJSON(needs)" in rendered_aggregate

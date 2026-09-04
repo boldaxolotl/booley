@@ -328,8 +328,9 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     stealth authored-cores dir ``.booley_project/cores/`` (ADR 0036), the one
     subtree of the state dir that holds sources rather than transient state.
 
-    Generated build/cache trees (``build/``, ``.runtime/``) are skipped — a
-    ``.core`` copied there by a prior resolution is an artifact, not a source.
+    Git metadata and generated build/cache trees (``build/``, ``.runtime/``)
+    are skipped — a ``.core`` copied there by a prior resolution is an
+    artifact, not a source.
     The rest of the ``.booley_project/`` state tree is skipped (:data:`_STATE_DIR_NAME`):
     its per-ticket / baseline git worktrees carry stale VLNV-colliding copies of
     the project's cores that must never shadow the authored source. Directories
@@ -505,35 +506,25 @@ def _recursive_symlink_hazards(scan_root: Path, *, skip_state_dir: bool) -> list
 def _scan_core_root(root: Path) -> list[Path]:
     """Collect authored ``.core`` files under one scan root (unsorted)."""
     cores: list[Path] = []
-    for path in root.rglob("*.core"):
-        # Exclusions are judged on the path *relative to* the scan root: when
-        # project_root is itself a ticket worktree under .booley_project/, the
-        # worktree's own authored cores must not be pruned by the absolute
-        # path's ancestry (the F-13 self-exclusion bug).
-        rel_parts = path.relative_to(root).parts
-        if _BUILD_DIR_NAMES.intersection(rel_parts):
+    excluded = {".git", _STATE_DIR_NAME, *_BUILD_DIR_NAMES}
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        directory = Path(current)
+        if "FUSESOC_IGNORE" in filenames:
+            dirnames.clear()
             continue
-        if _STATE_DIR_NAME in rel_parts:  # transient worktree/baseline checkouts
-            continue
-        if path.name.startswith(PROJECTED_CORE_PREFIX):
-            continue  # generated FuseSoC view; authoritative copy is scanned separately
-        if TRACE_OVERLAY_MARKER in path.name:  # a transient trace overlay, not a source
-            continue
-        if _under_fusesoc_ignore(path.parent, root):
-            continue
-        cores.append(path)
+        # Prune before descent so mutable Git object directories cannot race
+        # discovery. Exclusions are relative to this scan root, preserving the
+        # F-13 rule for Project roots that are themselves ticket worktrees.
+        dirnames[:] = [name for name in dirnames if name not in excluded]
+        for name in filenames:
+            if not name.endswith(".core"):
+                continue
+            if name.startswith(PROJECTED_CORE_PREFIX):
+                continue  # generated view; authoritative copy is scanned separately
+            if TRACE_OVERLAY_MARKER in name:  # transient trace overlay, not a source
+                continue
+            cores.append(directory / name)
     return cores
-
-
-def _under_fusesoc_ignore(directory: Path, root: Path) -> bool:
-    """True when *directory* (or any ancestor up to *root*) has FUSESOC_IGNORE."""
-    d = directory
-    while True:
-        if (d / "FUSESOC_IGNORE").is_file():
-            return True
-        if d in (root, d.parent):
-            return False
-        d = d.parent
 
 
 def read_core(core_file: Path | str) -> dict[str, Any]:

@@ -188,14 +188,26 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
 
 
 def test_release_validation_skips_credentials_and_cannot_promote() -> None:
-    workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    host_validation = next(
+        step
+        for step in jobs["host-doctor-runtime"]["steps"]
+        if step.get("name") == "Run isolated host validation"
+    )
+    validation_commands = "\n".join(
+        str(step.get("run", ""))
+        for name, job in jobs.items()
+        if name != "promote"
+        for step in job["steps"]
+    )
 
-    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
-    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
-    assert "set -o pipefail" in workflow
-    assert "booley init --skip-credentials | tee" in workflow
-    assert "OPENAI_API_KEY: ci-presence-check-only" not in workflow
-    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
+    assert "release_validation/host_doctor.py" in host_validation["run"]
+    assert "OPENAI_API_KEY" not in validation_commands
+    assert "imagetools create" not in validation_commands
+    assert jobs["promote"]["if"] == (
+        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+    )
 
 
 def _demo_project(tmp_path: Path) -> Path:
