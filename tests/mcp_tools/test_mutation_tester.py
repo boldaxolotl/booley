@@ -335,6 +335,13 @@ class TestCreatorPrompt:
         p = endpoint._build_creator_prompt()
         assert "do not modify the source" in p
 
+    def test_allows_provider_read_only_shell_inspection(self, tmp_path: Path):
+        endpoint = _make_endpoint(tmp_path)
+        p = endpoint._build_creator_prompt()
+        assert "read-only shell commands" in p
+        assert "Do not edit any file" in p
+        assert "do not run shell commands" not in p
+
     def test_steer_injected(self, tmp_path: Path):
         endpoint = _make_endpoint(tmp_path, steer="Focus on FSMs")
         p = endpoint._build_creator_prompt()

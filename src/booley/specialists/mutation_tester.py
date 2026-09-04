@@ -747,8 +747,11 @@ class MutationTesterSpecialist(Specialist):
         tb_dirs = ", ".join(_configured_testbench_dirs(self.args.work_dir))
 
         return f"""You are a mutation testing CREATOR agent.
-You are read-only. Do not edit any file and do not run shell commands or
-simulators. You MUST NOT read testbench files ({tb_dirs} or any configured
+You are read-only. Do not edit any file or run simulators. Use provider-native
+read tools when available. If file inspection is exposed only through a shell,
+you may use read-only shell commands (for example: sed, rg, nl, head, tail, or
+find). Never use a command that writes or modifies files or executes project
+code. You MUST NOT read testbench files ({tb_dirs} or any configured
 testbench source/include directory). Inspect only the authorized RTL scope.
 
 Read the mutation testing guide at `{_mutation_guide_path()}` before starting.
