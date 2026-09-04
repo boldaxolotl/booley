@@ -687,6 +687,15 @@ jobs:
             --contract .github/contracts/session-runtime.toml \
             --evidence "${RUNNER_TEMP}/docker-build-evidence/runtime-contract.json"
 
+      - name: Record standard runtime resource observations
+        run: |
+          python .github/scripts/image_runtime_resources.py \
+            --image sandbox=booley-test \
+            --json "${RUNNER_TEMP}/docker-build-evidence/runtime-resources.json" \
+            --markdown "${RUNNER_TEMP}/docker-build-evidence/runtime-resources.md"
+          cat "${RUNNER_TEMP}/docker-build-evidence/runtime-resources.md" \
+            >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload Docker build evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -701,6 +710,15 @@ jobs:
         if: needs.changes.outputs.riscv_image == 'true'
         id: riscv-demo
         uses: ./.github/actions/prepare-picorv32-demo
+
+      - name: Prepare exact reviewed Ibex candidate
+        if: needs.changes.outputs.riscv_image == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lowRISC/ibex
+          ref: 34b0705760ef3dfa00e99637432473d2be8f22f3
+          path: ibex-demo
+          persist-credentials: false
 
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
@@ -723,13 +741,27 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy verible isolation fifo native-fst simulator cocotb ticket-mode; do
+          for validation in agent-policy openroad verible isolation fifo native-fst simulator cocotb ticket-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
+          - name: Run OpenROAD physical runtime probe
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/openroad
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-openroad
+              docker run --rm --init --network none --user agent
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-openroad
+              --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly
+              --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/evidence
+              booley-test bash /booley-source/.github/scripts/verify_openroad_runtime.sh
+              /opt/pdk /evidence
+
           # Build the derived image from the exact standard candidate while
           # its independent validations run. Release CI remains the publication
           # gate, not the first place RISC-V behavior is exercised.
@@ -754,9 +786,15 @@ jobs:
               PYTHONPATH=src python .github/scripts/image_size_report.py \
                 --runtime-image sandbox=booley-test \
                 --runtime-image riscv=booley-riscv-test \
+                --limits .github/contracts/image-size-limits.toml \
                 --json "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.json" \
                 --markdown "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md"
+              python .github/scripts/image_runtime_resources.py \
+                --image riscv=booley-riscv-test \
+                --json "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.json" \
+                --markdown "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.md"
               cat "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+              cat "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.md" >> "${GITHUB_STEP_SUMMARY}"
               sudo chown -R 1000:1000 demo
               .github/scripts/run_with_container_cleanup.sh \
                 booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv \
@@ -886,6 +924,24 @@ jobs:
               python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
               -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 
+      - name: Run pinned Ibex lint demo
+        if: needs.changes.outputs.riscv_image == 'true'
+        shell: bash
+        run: |
+          test "$(git -C ibex-demo rev-parse HEAD)" = \
+            34b0705760ef3dfa00e99637432473d2be8f22f3
+          sudo chown -R 1000:1000 ibex-demo
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            docker run --rm --init --network none --user agent \
+            --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work \
+            -w /work \
+            booley-riscv-test bash -euo pipefail -c \
+              'test -f /work/rtl/ibex_core.sv &&
+              fusesoc --cores-root=/work run --target=lint
+              lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal"'
+
       - name: Clean up image validation containers
         if: always()
         shell: bash
@@ -896,11 +952,14 @@ jobs:
             docker rm -f "${containers[@]}"
           fi
 
-      - name: Restore PicoRV32 checkout ownership
+      - name: Restore RISC-V demo checkout ownership
         if: always() && needs.changes.outputs.riscv_image == 'true'
         run: |
           if test -e demo; then
             sudo chown -R "$(id -u):$(id -g)" demo
+          fi
+          if test -e ibex-demo; then
+            sudo chown -R "$(id -u):$(id -g)" ibex-demo
           fi
 
       - name: Upload candidate RISC-V evidence

@@ -279,19 +279,28 @@ def test_riscv_image_lane_is_path_gated() -> None:
         for step in steps
         if step.get("name") == "Prepare exact reviewed PicoRV32 candidate contract"
     )
+    ibex_prepare = next(
+        step for step in steps if step.get("name") == "Prepare exact reviewed Ibex candidate"
+    )
+    ibex_run = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
     restore = next(
-        step for step in steps if step.get("name") == "Restore PicoRV32 checkout ownership"
+        step for step in steps if step.get("name") == "Restore RISC-V demo checkout ownership"
     )
     upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
 
     gate = "needs.changes.outputs.riscv_image == 'true'"
     assert prepare["if"] == gate
     assert steps.index(prepare) < group_index
+    assert ibex_prepare["if"] == gate
+    assert steps.index(ibex_prepare) < group_index
     assert riscv["if"] == gate
     assert "Dockerfile.riscv" in riscv["run"]
     assert "image_contract.py" in riscv["run"]
     assert "image_size_report.py" in riscv["run"]
     assert "verify_picorv32_demo.sh" in riscv["run"]
+    assert ibex_run["if"] == gate
+    assert steps.index(ibex_run) > group_index
+    assert "--network none" in ibex_run["run"]
     assert restore["if"] == f"always() && {gate}"
     assert upload["if"] == f"always() && {gate}"
     assert steps.index(restore) > group_index
@@ -357,15 +366,14 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     """Production-image checks overlap without sharing writable state."""
     workflow = _test_workflow()
     steps = workflow["jobs"]["bwave-smoke"]["steps"]
-    group_index, group = next(
-        (index, step) for index, step in enumerate(steps) if "parallel" in step
-    )
+    group = next(step for step in steps if "parallel" in step)
     validations = [
         step
         for step in group["parallel"]
         if step.get("name") != "Run RISC-V candidate image contract"
     ]
     expected_names = {
+        "Run OpenROAD physical runtime probe",
         "Run installed agent CLI policy probe",
         "Run Verible production-image end-to-end test",
         "Run sandbox isolation suite",
@@ -398,7 +406,13 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "trap cleanup EXIT" in wrapper
     assert "docker rm -f" in wrapper
 
-    cleanup = steps[group_index + 1]
+
+def test_image_validation_parallel_group_has_cleanup() -> None:
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    cleanup = next(
+        step for step in steps if step.get("name") == "Clean up image validation containers"
+    )
     assert cleanup["if"] == "always()"
     assert "docker rm -f" in cleanup["run"]
     assert "github.run_id" in cleanup["run"]

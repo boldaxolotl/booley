@@ -9,6 +9,7 @@ import pytest
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/image_size_report.py"
 BASELINE = Path(__file__).parents[2] / ".github/evidence/docker-image-baseline-0.2.10-amd64.json"
+LIMITS = Path(__file__).parents[2] / ".github/contracts/image-size-limits.toml"
 SPEC = importlib.util.spec_from_file_location("image_size_report", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 image_size_report = importlib.util.module_from_spec(SPEC)
@@ -304,6 +305,101 @@ def test_report_keeps_metrics_distinct_and_deduplicates_registry_layers() -> Non
     rendered = image_size_report.markdown(payload)
     assert "Registry layers" in rendered
     assert "must not be added" in rendered
+
+
+def test_size_limits_cover_local_and_registry_storage_views() -> None:
+    payload = image_size_report.report(
+        {
+            "sandbox": _measurement("base", 100, {"sha256:base": 20}),
+            "riscv": _measurement("riscv", 180, {"sha256:riscv": 30}),
+        }
+    )
+    limits = {
+        "sandbox": {
+            "docker_local_size_bytes": 100,
+            "unpacked_layer_history_bytes": 100,
+            "merged_visible_filesystem_bytes": 90,
+            "registry_compressed_layer_bytes": 20,
+        },
+        "riscv": {
+            "docker_local_size_bytes": 200,
+            "unpacked_layer_history_bytes": 80,
+            "merged_visible_filesystem_bytes": 100,
+            "registry_compressed_layer_bytes": 40,
+        },
+    }
+
+    errors = image_size_report.apply_size_limits(payload, limits)
+
+    assert errors == ["riscv unpacked_layer_history_bytes is 20 bytes over its 80-byte ceiling"]
+    assert payload["size_limits"]["passed"] is False
+    assert payload["size_limits"]["images"]["sandbox"]["merged_visible_filesystem_bytes"] == {
+        "actual_bytes": 90,
+        "max_bytes": 90,
+        "passed": True,
+    }
+
+
+def test_size_limits_fail_closed_when_a_named_image_is_not_measured() -> None:
+    payload = image_size_report.report({"sandbox": _measurement("base", 100, None)})
+
+    errors = image_size_report.apply_size_limits(
+        payload, {"riscv": {"docker_local_size_bytes": 200}}
+    )
+
+    assert errors == ["size-limited image was not measured: riscv"]
+
+
+def test_runtime_measurement_skips_registry_only_limit() -> None:
+    payload = image_size_report.report({"sandbox": _measurement("base", 100, None)})
+
+    errors = image_size_report.apply_size_limits(
+        payload,
+        {
+            "sandbox": {
+                "docker_local_size_bytes": 100,
+                "registry_compressed_layer_bytes": 1,
+            }
+        },
+    )
+
+    assert errors == []
+    assert (
+        payload["size_limits"]["images"]["sandbox"]["registry_compressed_layer_bytes"]["status"]
+        == "not-measured"
+    )
+
+
+def test_committed_size_limits_bound_both_runtime_images_below_baseline() -> None:
+    limits = image_size_report._load_size_limits(LIMITS)
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+
+    assert set(limits) == {"sandbox", "riscv"}
+    for name, image_limits in limits.items():
+        assert set(image_limits) == {
+            "registry_compressed_layer_bytes",
+            "docker_local_size_bytes",
+            "unpacked_layer_history_bytes",
+            "merged_visible_filesystem_bytes",
+        }
+        baseline_image = baseline["images"][name]
+        assert (
+            image_limits["registry_compressed_layer_bytes"]
+            < baseline_image["registry"]["compressed_layer_bytes"]
+        )
+        for metric in (
+            "docker_local_size_bytes",
+            "unpacked_layer_history_bytes",
+            "merged_visible_filesystem_bytes",
+        ):
+            assert image_limits[metric] < baseline_image[metric]
+
+
+def test_local_size_limits_cover_docker_engine_unpacked_storage_view() -> None:
+    limits = image_size_report._load_size_limits(LIMITS)
+
+    assert limits["sandbox"]["docker_local_size_bytes"] == 3_500_000_000
+    assert limits["riscv"]["docker_local_size_bytes"] == 5_350_000_000
 
 
 def test_committed_baseline_preserves_exact_bytes_and_environment() -> None:

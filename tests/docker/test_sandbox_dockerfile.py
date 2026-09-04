@@ -56,6 +56,22 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
         "FROM docker.io/openroad/ubuntu24.04@sha256:"
         "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
     ) in base
+    assert (
+        "FROM docker.io/openroad/ubuntu24.04-dev@sha256:"
+        "1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db "
+        "AS eda-artifacts"
+    ) in base
+    assert (
+        "FROM docker.io/library/ubuntu:24.04@sha256:"
+        "33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517"
+    ) in base
+    assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
+    assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
+    assert (
+        "COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/" in base
+    )
+    assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
+    assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
     assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
@@ -63,7 +79,8 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "COPY src/booley/data/edalize/verible.py" not in base
 
     assert "FROM booley-runtime-base" in candidate
-    assert "COPY dist/booley_rtl-*.whl" in candidate
+    assert "--mount=type=bind,source=dist,target=/tmp/booley-dist,readonly" in candidate
+    assert "COPY dist/booley_rtl-*.whl" not in candidate
     assert "COPY crates/bwave/" in candidate
     assert "COPY src/booley/data/edalize/verible.py" in candidate
     assert "--no-deps" in candidate
@@ -81,6 +98,19 @@ def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
     assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
     assert "cocotb-config --lib-name vpi icarus" not in base
     assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
+
+
+def test_stable_base_keeps_verilator_compiler_launcher_available() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    runtime_install = base[
+        base.index(">>> Installing minimal runtime dependencies") : base.index(
+            "# Copy only installed EDA payloads"
+        )
+    ]
+
+    assert "ccache" in runtime_install
+    assert '"ccache"' in contract
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
@@ -110,11 +140,33 @@ def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
 def test_verible_patch_does_not_depend_on_importing_candidate_package() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     patch_start = dockerfile.index("COPY src/booley/data/edalize/verible.py")
-    wheel_copy = dockerfile.index("COPY dist/booley_rtl-*.whl")
-    patch_region = dockerfile[patch_start:wheel_copy]
+    wheel_install = dockerfile.index("--mount=type=bind,source=dist")
+    patch_region = dockerfile[patch_start:wheel_install]
 
     assert "/tmp/booley-build/verible.py" in patch_region
     assert "import booley" not in patch_region
+
+
+def test_read_only_wheel_mount_is_not_mutated() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    mount_start = dockerfile.index("--mount=type=bind,source=dist")
+    mount_end = dockerfile.index("# bwave", mount_start)
+    mount_region = dockerfile[mount_start:mount_end]
+
+    assert 'rm -f "$WHEEL"' not in mount_region
+    assert "rm -f /tmp/booley-installed-files.txt" in mount_region
+
+
+def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    bwave_start = dockerfile.index("# bwave — VCD waveform parser")
+    bwave_end = dockerfile.index("ENV BOOLEY_BWAVE_BIN", bwave_start)
+    bwave_region = dockerfile[bwave_start:bwave_end]
+
+    assert "RUN --mount=type=bind,from=bwave-builder" in bwave_region
+    assert "COPY --from=bwave-builder" not in bwave_region
+    assert "install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave" in bwave_region
+    assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
 
 
 def test_ci_captures_docker_cache_and_layer_evidence() -> None:
@@ -125,6 +177,14 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker-build-evidence" in workflow
     assert ".github/scripts/image_contract.py" in workflow
     assert "runtime-contract.json" in workflow
+
+
+def test_published_runtime_images_include_sbom_attestations() -> None:
+    release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
+
+    assert release.count("sbom: true") == 2
+    assert base_release.count("sbom: true") == 1
 
 
 def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
@@ -156,13 +216,15 @@ def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
     assert "Node.js, Rust" not in setup
 
 
-def test_readme_uses_measured_registry_baseline_instead_of_rough_estimate() -> None:
+def test_readme_uses_current_slim_image_measurements() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "roughly 6 GB" not in readme
-    assert "4.33 GB of compressed" in readme
-    assert "5.53 GB for RISC-V" in readme
-    assert "adds 1.21 GB" in readme
+    assert "15 GB of Docker storage" not in readme
+    assert "21 GB" not in readme
+    assert "4 GB of Docker storage" in readme
+    assert "6 GB" in readme
+    assert "1.58/2.02 GB" in readme
+    assert "2.82/4.48 GB" in readme
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
@@ -305,10 +367,15 @@ def test_openroad_uses_verified_26q3_oci_artifact() -> None:
         "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
         "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
     ) in dockerfile
-    assert '/OpenROAD/src/rsz/src/Resizer.tcl" | sha256sum -c -' in dockerfile
-    assert "/OpenROAD/build/bin/openroad" in dockerfile
+    assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
+    assert (
+        "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
+        in dockerfile
+    )
+    assert "--exclude='./build'" in dockerfile
+    assert "OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
-    assert "/OpenROAD/src/sta/LICENSE" in dockerfile
+    assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
     assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
     assert "/tmp/openroad.deb" not in dockerfile
 
@@ -339,6 +406,11 @@ def test_agent_runtime_uses_validated_node24_and_executable_policy_probe() -> No
     assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert 'default="24.20.0"' in probe
     assert 'default="11.19.0"' in probe
+    assert '"signal_exit_codes": _assert_signal_propagation(root)' in probe
+    assert '["claude", "mcp", "serve"]' in probe
+    assert '["codex", "mcp-server"]' in probe
+    assert "os.kill(process.pid, signal.SIGTERM)" in probe
+    assert "left descendants running after SIGTERM" in probe
 
 
 def test_source_builds_fetch_immutable_commits() -> None:
@@ -592,10 +664,50 @@ def test_release_reports_registry_and_sidecar_image_sizes_after_initialization()
     assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
     assert '--local-image "proxy=booley-egress-proxy"' in workflow
     assert '--local-image "reaper=booley-reaper"' in workflow
+    assert "--limits .github/contracts/image-size-limits.toml" in workflow
     assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
     assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
     assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
     assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
+
+    pr_workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    assert "--limits .github/contracts/image-size-limits.toml" in pr_workflow
+    assert ".github/scripts/image_runtime_resources.py" in pr_workflow
+    standard_measure = "      - name: Record standard runtime resource observations\n"
+    evidence_upload = "      - name: Upload Docker build evidence\n"
+    assert pr_workflow.index(standard_measure) < pr_workflow.index(evidence_upload)
+    assert "--image sandbox=booley-test" in pr_workflow
+
+
+def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    probe = Path(".github/scripts/verify_openroad_runtime.sh").read_text(encoding="utf-8")
+
+    assert "Run OpenROAD physical runtime probe" in workflow
+    assert "verify_openroad_runtime.sh" in workflow
+    assert (
+        '--mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly'
+        in workflow
+    )
+    assert "global_placement" in probe
+    assert "detailed_placement" in probe
+    assert 'run_openroad "repair-off" 0' in probe
+    assert 'run_openroad "repair-on" 1' in probe
+    assert "repair_timing -setup" in probe
+    assert "report_design_area" in probe
+    assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
+
+
+def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    assert "Prepare exact reviewed Ibex candidate" in workflow
+    assert "repository: lowRISC/ibex" in workflow
+    assert "ref: 34b0705760ef3dfa00e99637432473d2be8f22f3" in workflow
+    assert "Run pinned Ibex lint demo" in workflow
+    assert "--network none" in workflow
+    assert "lowrisc:ibex:ibex_core" in workflow
+    assert '--verilator_options="--Wno-fatal"' in workflow
 
 
 def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:
