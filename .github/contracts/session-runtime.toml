@@ -48,6 +48,8 @@ required_paths = [
   "/etc/claude-code/managed-settings.json",
   "/etc/codex/requirements.toml",
   "/opt/or-tools/lib/libortools.so.9",
+  "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz",
+  "/usr/local/share/doc/openroad/source-manifest.json",
   "/usr/local/include/iverilog/vpi_user.h",
   "/usr/local/lib/ivl/blif-s.conf",
   "/usr/local/lib/ivl/blif.conf",
@@ -87,13 +89,51 @@ required_paths = [
   "/usr/local/share/verilator/include/vltstd/vpi_user.h",
 ]
 absent_paths = [
+  "/OpenROAD",
   "/home/agent/.cargo/bin/rustc",
+  "/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl",
+  "/opt/or-tools/bin",
+  "/opt/or-tools/include",
   "/usr/local/cargo",
   "/usr/local/rustup",
   "/usr/local/lib/python3.13/dist-packages/claude_agent_sdk/_bundled/claude",
 ]
 stripped_elf = [
+  "/usr/local/bin/iverilog",
   "/usr/local/bin/sv2v",
+  "/usr/local/bin/verible-patch-tool",
+  "/usr/local/bin/verible-verilog-diff",
+  "/usr/local/bin/verible-verilog-format",
+  "/usr/local/bin/verible-verilog-kythe-extractor",
+  "/usr/local/bin/verible-verilog-kythe-kzip-writer",
+  "/usr/local/bin/verible-verilog-lint",
+  "/usr/local/bin/verible-verilog-ls",
+  "/usr/local/bin/verible-verilog-obfuscate",
+  "/usr/local/bin/verible-verilog-preprocessor",
+  "/usr/local/bin/verible-verilog-project",
+  "/usr/local/bin/verible-verilog-syntax",
+  "/usr/local/bin/verilator_bin",
+  "/usr/local/bin/verilator_bin_dbg",
+  "/usr/local/bin/verilator_coverage_bin_dbg",
+  "/usr/local/bin/vvp",
+  "/usr/local/lib/ivl/blif.tgt",
+  "/usr/local/lib/ivl/ivl",
+  "/usr/local/lib/ivl/ivlpp",
+  "/usr/local/lib/ivl/null.tgt",
+  "/usr/local/lib/ivl/pcb.tgt",
+  "/usr/local/lib/ivl/sizer.tgt",
+  "/usr/local/lib/ivl/stub.tgt",
+  "/usr/local/lib/ivl/system.vpi",
+  "/usr/local/lib/ivl/v2005_math.vpi",
+  "/usr/local/lib/ivl/v2009.vpi",
+  "/usr/local/lib/ivl/va_math.vpi",
+  "/usr/local/lib/ivl/vhdl.tgt",
+  "/usr/local/lib/ivl/vhdl_sys.vpi",
+  "/usr/local/lib/ivl/vhdl_textio.vpi",
+  "/usr/local/lib/ivl/vhdlpp",
+  "/usr/local/lib/ivl/vlog95.tgt",
+  "/usr/local/lib/ivl/vpi_debug.vpi",
+  "/usr/local/lib/ivl/vvp.tgt",
   "/usr/local/bin/yosys",
   "/usr/local/bin/yosys-abc",
 ]
@@ -184,6 +224,32 @@ required_paths = [
   "/opt/riscv/lib/libriscv.so",
 ]
 
+stripped_elf = [
+  "/opt/riscv/bin/spike",
+  "/opt/riscv/bin/spike-log-parser",
+  "/opt/riscv/bin/termios-xspike",
+  "/opt/riscv/bin/xspike",
+  "/opt/riscv/lib/libcustomext.so",
+  "/opt/riscv/lib/libriscv.so",
+]
+
+[[riscv.probe]]
+name = "xPack duplicate files share storage"
+command = '''
+set -- $(find /opt/riscv/riscv-none-elf/lib -type f -name libg.a)
+test "$#" -eq 32
+for duplicate do
+  original="${duplicate%/libg.a}/libc.a"
+  test "$original" -ef "$duplicate"
+done
+for helper in ar as ld ld.bfd nm objcopy objdump ranlib readelf strip; do
+  test "/opt/riscv/bin/riscv-none-elf-$helper" -ef "/opt/riscv/riscv-none-elf/bin/$helper"
+done
+test /opt/riscv/bin/riscv-none-elf-c++ -ef /opt/riscv/bin/riscv-none-elf-g++
+test /opt/riscv/bin/riscv-none-elf-gcc -ef /opt/riscv/bin/riscv-none-elf-gcc-15.2.0
+test /opt/riscv/bin/riscv-none-elf-ld -ef /opt/riscv/bin/riscv-none-elf-ld.bfd
+'''
+
 [[riscv.probe]]
 name = "RISC-V multilib C and C++ links"
 timeout_seconds = 180
@@ -222,13 +288,28 @@ done
 '''
 
 [[riscv.probe]]
-name = "RV32 ISA execution under Spike"
+name = "Spike arithmetic reference and extlib loading"
 command = '''
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+cat > "$work/extlib.c" <<'C'
+#include <stdio.h>
+#include <stdlib.h>
+__attribute__((constructor)) static void loaded(void) {
+  const char *path = getenv("SPIKE_EXTLIB_MARKER");
+  FILE *stream = path ? fopen(path, "w") : NULL;
+  if (stream) {
+    fputs("loaded\n", stream);
+    fclose(stream);
+  }
+}
+C
+gcc -shared -fPIC "$work/extlib.c" -o "$work/extlib.so"
 printf '%s\n' \
   '.section .text.init' '.globl _start' '_start:' \
-  '  li t0, 1' '  la t1, tohost' '  sw t0, 0(t1)' '1: j 1b' \
+  '  li t0, 7' '  slli t0, t0, 3' '  addi t0, t0, 5' \
+  '  li t1, 61' '  bne t0, t1, 2f' '  li t0, 1' '  j 3f' \
+  '2: li t0, 3' '3: la t1, tohost' '  sw t0, 0(t1)' '1: j 1b' \
   '.section .tohost,"aw",@progbits' '.align 6' '.globl tohost' \
   'tohost: .word 0' '.globl fromhost' 'fromhost: .word 0' > "$work/pass.S"
 printf '%s\n' 'ENTRY(_start)' 'SECTIONS {' '  . = 0x80000000;' \
@@ -236,5 +317,7 @@ printf '%s\n' 'ENTRY(_start)' 'SECTIONS {' '  . = 0x80000000;' \
   '  .tohost : { *(.tohost) }' '}' > "$work/pass.ld"
 riscv-none-elf-gcc -nostdlib -nostartfiles -march=rv32imac -mabi=ilp32 \
   -Wl,-T,"$work/pass.ld" -o "$work/pass.elf" "$work/pass.S"
-timeout 10 spike --isa=rv32imac "$work/pass.elf"
+SPIKE_EXTLIB_MARKER="$work/extlib-loaded" timeout 10 spike \
+  --extlib="$work/extlib.so" --isa=rv32imac "$work/pass.elf"
+test "$(cat "$work/extlib-loaded")" = loaded
 '''

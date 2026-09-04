@@ -40,8 +40,8 @@ RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/b
 # package inventory against the installed distribution before discarding it.
 # Wheel filename uses the PEP 427-normalized distribution name (booley-rtl -> booley_rtl).
 COPY .github/scripts/validate_installed_artifact.py /tmp/booley-build/validate_installed_artifact.py
-COPY dist/booley_rtl-*.whl /tmp/booley-build/
-RUN WHEEL="$(find /tmp/booley-build -maxdepth 1 -name 'booley_rtl-*.whl' -print -quit)" \
+RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
+    WHEEL="$(find /tmp/booley-dist -maxdepth 1 -name 'booley_rtl-*.whl' -print -quit)" \
     && test -n "$WHEEL" \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         --no-deps "$WHEEL" \
@@ -51,15 +51,10 @@ RUN WHEEL="$(find /tmp/booley-build -maxdepth 1 -name 'booley_rtl-*.whl' -print 
         --inventory /tmp/booley-installed-files.txt \
         --forbid-root /work \
         --wheel "$WHEEL" \
-    && rm -f "$WHEEL" /tmp/booley-installed-files.txt
+    && rm -f /tmp/booley-installed-files.txt
 
-# bwave — VCD waveform parser for RTL debug. Built by the `bwave-builder`
-# stage above and copied in as a bare binary, so containers with
-# --network none can use it without downloading crates and without carrying
-# the toolchain that produced it.
-COPY --from=bwave-builder /build/target/release/bwave /tmp/bwave-bin
-
-# The native binary is installed OFF PATH, in two places that are one inode:
+# bwave — VCD waveform parser for RTL debug. The native binary is installed
+# OFF PATH, in two places that are one inode:
 #
 #   1. the installed package's data/bin/ compatibility path, injected by this
 #      image after the platform-neutral wheel is installed;
@@ -77,11 +72,12 @@ COPY --from=bwave-builder /build/target/release/bwave /tmp/bwave-bin
 # ~/.cargo/bin/bwave sat ahead of /usr/local/bin. That toolchain is gone now,
 # but the placement rule is what keeps it gone.)
 USER root
-RUN BWAVE_BIN_DIR="$(python3 -c 'from booley.runtime.paths import package_data_dir; print(package_data_dir())')/bin" \
-    && mkdir -p "$BWAVE_BIN_DIR" /usr/local/libexec/booley \
-    && install -m 755 /tmp/bwave-bin "$BWAVE_BIN_DIR/bwave" \
-    && ln -f "$BWAVE_BIN_DIR/bwave" /usr/local/libexec/booley/bwave \
-    && rm -f /tmp/bwave-bin \
+RUN --mount=type=bind,from=bwave-builder,source=/build/target/release,target=/tmp/bwave,readonly \
+    BWAVE_BIN_DIR="$(python3 -c 'from booley.runtime.paths import package_data_dir; print(package_data_dir())')/bin" \
+    && mkdir -p /usr/local/libexec/booley \
+    && mkdir -p "$BWAVE_BIN_DIR" \
+    && install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave \
+    && ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave" \
     && /usr/local/libexec/booley/bwave --version
 ENV BOOLEY_BWAVE_BIN=/usr/local/libexec/booley/bwave
 

@@ -7,6 +7,8 @@ import argparse
 import json
 import re
 import subprocess
+import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -374,6 +376,68 @@ def report(
     }
 
 
+def apply_size_limits(
+    payload: dict[str, object], limits: dict[str, dict[str, int]]
+) -> list[str]:
+    """Attach and enforce exact-byte ceilings for every named runtime image."""
+    images = require_dict(payload.get("images"), field="report images")
+    results: dict[str, dict[str, object]] = {}
+    errors: list[str] = []
+    for name, image_limits in limits.items():
+        raw_image = images.get(name)
+        if raw_image is None:
+            errors.append(f"size-limited image was not measured: {name}")
+            continue
+        image = require_dict(raw_image, field=f"image {name}")
+        image_results: dict[str, object] = {}
+        for metric, maximum in image_limits.items():
+            if maximum < 0:
+                raise ValueError(f"size limit must not be negative: {name}.{metric}")
+            if metric == "registry_compressed_layer_bytes":
+                registry = as_dict(image.get("registry"))
+                actual = None if registry is None else registry.get("compressed_layer_bytes")
+            else:
+                if metric not in {
+                    "docker_local_size_bytes",
+                    "unpacked_layer_history_bytes",
+                    "merged_visible_filesystem_bytes",
+                }:
+                    raise ValueError(f"unsupported size metric: {name}.{metric}")
+                actual = image.get(metric)
+            if actual is None:
+                image_results[metric] = {"max_bytes": maximum, "status": "not-measured"}
+                continue
+            actual_bytes = require_int(actual, field=f"image {name} {metric}")
+            passed = actual_bytes <= maximum
+            image_results[metric] = {
+                "actual_bytes": actual_bytes,
+                "max_bytes": maximum,
+                "passed": passed,
+            }
+            if not passed:
+                errors.append(
+                    f"{name} {metric} is {actual_bytes - maximum} bytes over its "
+                    f"{maximum}-byte ceiling"
+                )
+        results[name] = image_results
+    payload["size_limits"] = {"passed": not errors, "images": results, "errors": errors}
+    return errors
+
+
+def _load_size_limits(path: Path) -> dict[str, dict[str, int]]:
+    document = require_dict(tomllib.loads(path.read_text(encoding="utf-8")), field="limits")
+    if require_int(document.get("schema"), field="size limits schema") != 1:
+        raise ValueError("size limits schema must be 1")
+    images = require_dict(document.get("images"), field="size limits images")
+    return {
+        name: {
+            metric: require_int(value, field=f"size limit {name}.{metric}")
+            for metric, value in require_dict(raw, field=f"size limits image {name}").items()
+        }
+        for name, raw in images.items()
+    }
+
+
 def _size_text(size: object) -> str:
     if not isinstance(size, int):
         return "n/a"
@@ -425,6 +489,7 @@ def main() -> int:
     parser.add_argument("--registry-image", action="append", default=[], type=_named_reference)
     parser.add_argument("--runtime-image", action="append", default=[], type=_named_reference)
     parser.add_argument("--local-image", action="append", default=[], type=_named_reference)
+    parser.add_argument("--limits", type=Path)
     parser.add_argument("--json", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     args = parser.parse_args()
@@ -446,9 +511,12 @@ def main() -> int:
         environment=measurement_environment(),
         measured_at=utc_now_rfc3339(),
     )
+    errors = apply_size_limits(payload, _load_size_limits(args.limits)) if args.limits else []
     args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     args.markdown.write_text(markdown(payload), encoding="utf-8")
-    return 0
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/The-OpenROAD-Project/OpenROAD.git",
+  "revision": "a9147cf3aebe65e058bb3fa89c1f9e524488dbb8",
+  "submodules": [
+    {
+      "path": "src/sta",
+      "repository": "https://github.com/The-OpenROAD-Project/OpenSTA.git",
+      "revision": "8572175ac45c42ce8d3d772f73bbb059786b9c66"
+    },
+    {
+      "path": "third-party/abc",
+      "repository": "https://github.com/The-OpenROAD-Project/abc.git",
+      "revision": "d527cfab4ad731b767ea0a2be2021d920d3afece"
+    },
+    {
+      "path": "third-party/slang-elab",
+      "repository": "https://github.com/povik/yosys-slang.git",
+      "revision": "82effc8d9541be69e1ed3ec44759a4449f5d9247"
+    },
+    {
+      "path": "third-party/slang-elab/third_party/fmt",
+      "repository": "https://github.com/fmtlib/fmt",
+      "revision": "553ec11ec06fbe0beebfbb45f9dc3c9eabd83d28"
+    },
+    {
+      "path": "third-party/slang-elab/third_party/slang",
+      "repository": "https://github.com/MikePopoloski/slang.git",
+      "revision": "f04e81565793c768b747a8fd058f3e7aeceee1b5"
+    }
+  ]
+}

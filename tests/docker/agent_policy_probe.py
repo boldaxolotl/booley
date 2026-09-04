@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,40 @@ def _assert_diagnostics() -> None:
     report = json.loads(codex.stdout)
     assert report["codexVersion"] == EXPECTED_CODEX
     assert report["checks"]["config.load"]["summary"] == "config loaded"
+
+
+def _assert_signal_propagation(root: Path) -> dict[str, int]:
+    commands = {
+        "claude": ["claude", "mcp", "serve"],
+        "codex": ["codex", "mcp-server"],
+    }
+    exit_codes: dict[str, int] = {}
+    for name, command in commands.items():
+        home = root / f"signal-{name}-home"
+        codex_home = home / ".codex"
+        codex_home.mkdir(parents=True)
+        env = os.environ.copy()
+        env.update({"HOME": str(home), "CODEX_HOME": str(codex_home)})
+        process = subprocess.Popen(
+            command,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        time.sleep(0.5)
+        assert process.poll() is None, f"{name} stdio server exited before signal"
+        os.killpg(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=10)
+        expected_terminations = {0, -signal.SIGTERM, 128 + signal.SIGTERM}
+        assert process.returncode in expected_terminations, (
+            f"{name} did not propagate SIGTERM: {process.returncode}; "
+            f"stdout={stdout[-1000:]!r}; stderr={stderr[-1000:]!r}"
+        )
+        exit_codes[name] = process.returncode
+    return exit_codes
 
 
 def _walk_installed_tree(tree: dict[str, Any]) -> dict[str, str]:
@@ -421,6 +457,7 @@ def main() -> None:
             "booley_configuration": _assert_booley_configuration(root),
             "codex_policy": _assert_codex_policy(root),
             "claude_tools": _assert_claude_policy(root),
+            "signal_exit_codes": _assert_signal_propagation(root),
         }
         _assert_diagnostics()
     rendered = json.dumps(evidence, indent=2, sort_keys=True)

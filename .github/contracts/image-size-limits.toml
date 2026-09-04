@@ -1,0 +1,18 @@
+schema = 1
+
+# Exact-byte ceilings retain roughly 10% headroom above the clean Ubuntu 24.04
+# runtime candidates measured on 2026-09-04. Every ceiling remains well below
+# the committed 0.2.10 control, so accidental restoration of the OpenROAD
+# development tree, Rust toolchain, duplicate CLIs, or unstripped artifacts
+# fails before promotion.
+[images.sandbox]
+registry_compressed_layer_bytes = 1_750_000_000
+docker_local_size_bytes = 1_750_000_000
+unpacked_layer_history_bytes = 3_500_000_000
+merged_visible_filesystem_bytes = 3_100_000_000
+
+[images.riscv]
+registry_compressed_layer_bytes = 2_250_000_000
+docker_local_size_bytes = 2_250_000_000
+unpacked_layer_history_bytes = 5_350_000_000
+merged_visible_filesystem_bytes = 4_950_000_000

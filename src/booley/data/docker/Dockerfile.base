@@ -1,51 +1,25 @@
 # Published Booley EDA/runtime base — invariant tools and Python dependencies.
 # Candidate application code, B-Wave, and repository patches belong in Dockerfile.
 #
-# OpenROAD's public Debian channel ended after the 2024-12-14 release. Its
-# official 26Q3 OCI builder preserves the exact binary dependency closure and
-# Corresponding Source. The immutable index digest's provenance resolves to
-# OpenROAD commit a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.
-FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a
+# OpenROAD's public Debian channel ended after the 2024-12-14 release. Extract
+# the exact 26Q3 binary and Corresponding Source from its official builder, but
+# run from the exact dependency image used by upstream's final stage. The
+# builder is intentionally throwaway: its object files and regression fixtures
+# account for most of the old Session Image.
+FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a AS openroad-artifacts
 
-# The upstream builder defaults to UID 9000 and /OpenROAD. Booley's invariant
-# setup layers install system-wide and its eventual runtime workdir is /work.
+USER root
+ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
+RUN tar --sort=name --mtime='UTC 2026-06-30' --owner=0 --group=0 --numeric-owner \
+        --exclude='./build' -C /OpenROAD -czf \
+        "/tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" .
+
+FROM docker.io/openroad/ubuntu24.04-dev@sha256:1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db AS eda-artifacts
+
+# Heavy compilers and development packages stay in this throwaway stage. The
+# runtime below receives only the installed EDA artifacts.
 USER root
 WORKDIR /
-
-# Tolerate host clock skew during image build (win_test): on Windows hosts the
-# Docker Desktop/WSL2 VM inherits the host clock; a skewed host (common on
-# dual-boot RTC-vs-UTC setups) makes apt reject freshly-published Release
-# files as "not valid yet" and the build dies in the first layer. Date
-# validation adds nothing here — package integrity is still GPG-verified.
-RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
-
-# System deps — Ubuntu 24.04 ships Python 3.12; add deadsnakes for 3.13
-RUN echo ">>> Installing system dependencies and Python 3.13..." \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates build-essential make gcc g++ \
-    software-properties-common \
-    ripgrep unzip xz-utils jq \
-    autoconf flex bison gperf libfl-dev help2man \
-    locales libpixman-1-0 libudev1 \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    python3.13 python3.13-venv python3.13-dev \
-    && locale-gen en_US.UTF-8 \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3 /usr/bin/python
-
-# Worktrees are bind-mounted from the host with different ownership;
-# git refuses to operate without this.  Wildcard covers /work and any
-# path the .git worktree pointer resolves to (e.g. the main repo's
-# .git/worktrees/ directory which lives outside the mount).
-# Identity default is deliberately neutral (A-7): stealth mode's sanitizer
-# keeps product/AI terms out of commit MESSAGES, and a "Booley Agent" author
-# would defeat it in the metadata of every agent commit. Projects override via
-# [agent.git] in booley.toml (applied per-worktree by worktree_create.sh).
-RUN git config --system --add safe.directory '*' \
-    && git config --system user.name "Dev" \
-    && git config --system user.email "dev@localhost"
 
 # Yosys + ABC + native slang frontend, built from source.
 #
@@ -81,36 +55,12 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && yosys -p 'help read_slang' >/dev/null \
     && rm -rf /tmp/yosys
 
-# OpenROAD — physical synthesis: placement, buffering/sizing, and estimated
-# wire RC. The binary and full source tree come from the digest-pinned parent.
-# Its banner predates the quarterly tag by 79 minutes, but the OCI provenance,
-# 26Q3 tag, and source sentinel all resolve to the exact commit below.
-ARG OPENROAD_VERSION=26Q3
-ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
-ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae
-ARG OPENROAD_SOURCE_SENTINEL_SHA256=c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f
-RUN echo ">>> Verifying OpenROAD ${OPENROAD_VERSION} (${OPENROAD_SOURCE_REF})..." \
-    && test -x /OpenROAD/build/bin/openroad \
-    && test "$(/OpenROAD/build/bin/openroad -version | xargs)" = "${OPENROAD_BINARY_VERSION}" \
-    && echo "${OPENROAD_SOURCE_SENTINEL_SHA256}  /OpenROAD/src/rsz/src/Resizer.tcl" | sha256sum -c - \
-    && test -f /OpenROAD/LICENSE \
-    && test -f /OpenROAD/src/sta/LICENSE \
-    && ln -s /OpenROAD/build/bin/openroad /usr/local/bin/openroad \
-    && install -d /usr/local/share/doc/openroad \
-    && printf '%s\n' \
-        "OpenROAD source revision: ${OPENROAD_SOURCE_REF}" \
-        'Corresponding Source: /OpenROAD' \
-        'OpenROAD license: /OpenROAD/LICENSE' \
-        'OpenSTA license: /OpenROAD/src/sta/LICENSE' \
-        > /usr/local/share/doc/openroad/BOOLEY-SOURCE.txt \
-    && openroad -version
-
 # Icarus Verilog is built from source because Ubuntu packages lag releases.
 ARG ICARUS_VERSION=v13_0
 ARG ICARUS_REF=dfeee909ed9f20b4870dd93423156c0170c0e1ff
 RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from source..." \
     && apt-get update && apt-get install -y --no-install-recommends \
-        libreadline-dev zlib1g-dev libbz2-dev \
+        file gperf libreadline-dev zlib1g-dev libbz2-dev \
     && rm -rf /var/lib/apt/lists/* \
     && git init /tmp/iverilog \
     && cd /tmp/iverilog \
@@ -122,6 +72,9 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
     && ./configure --prefix=/usr/local \
     && make -j$(nproc) \
     && make install \
+    && find /usr/local/bin/iverilog /usr/local/bin/vvp /usr/local/lib/ivl \
+        -type f -exec sh -c 'for artifact do case "$(file -b "$artifact")" in ELF*) strip --strip-unneeded "$artifact";; esac; done' sh {} + \
+    && iverilog -V >/dev/null 2>&1 \
     && rm -rf /tmp/iverilog
 
 # Verilator is built from source so host installations do not affect results.
@@ -129,6 +82,8 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
 ARG VERILATOR_VERSION=v5.046
 ARG VERILATOR_REF=24b2ac24c721fdad89bba75a492e02c6aa63f32e
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
+    && apt-get update && apt-get install -y --no-install-recommends help2man \
+    && rm -rf /var/lib/apt/lists/* \
     && git init /tmp/verilator \
     && cd /tmp/verilator \
     && git remote add origin https://github.com/verilator/verilator.git \
@@ -136,8 +91,102 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${VERILATOR_REF}" \
     && autoconf && ./configure --prefix=/usr/local \
-    && make -j$(nproc) && make install \
+    && make -j4 && make install \
+    && find /usr/local/bin -maxdepth 1 -type f -name 'verilator*_bin*' \
+        -exec strip --strip-unneeded {} + \
+    && verilator --version \
     && rm -rf /tmp/verilator
+
+# Minimal Session Runtime. The immutable upstream development image remains the
+# EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
+# headers, or build caches become runtime layers.
+FROM docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/Los_Angeles \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+USER root
+WORKDIR /
+
+# Tolerate host clock skew during image build (win_test): on Windows hosts the
+# Docker Desktop/WSL2 VM inherits the host clock; a skewed host (common on
+# dual-boot RTC-vs-UTC setups) makes apt reject freshly-published Release
+# files as "not valid yet". Package integrity remains GPG-verified.
+RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
+
+# Development support intentionally stops at the native C/C++ toolchain and
+# headers needed by project and Verilator builds. The remaining packages are
+# the audited runtime closure for OpenROAD, Yosys, Icarus, Python, and Booley.
+RUN echo ">>> Installing minimal runtime dependencies and Python 3.13..." \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl file g++ gcc git jq locales make \
+        ripgrep software-properties-common time unzip xz-utils \
+        libbz2-1.0 libffi8 libgomp1 libpixman-1-0 libpython3.12 \
+        libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
+        libgl1 libopengl0 libqt5charts5 libqt5core5a libqt5gui5 \
+        libqt5widgets5 qt5-image-formats-plugins \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.13 python3.13-dev python3.13-venv \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Copy only installed EDA payloads out of the throwaway dependency/build stage.
+COPY --from=eda-artifacts /usr/local/bin/yosys* /usr/local/bin/
+COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/
+COPY --from=eda-artifacts /usr/local/bin/iverilog* /usr/local/bin/vvp /usr/local/bin/
+COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/
+COPY --from=eda-artifacts /usr/local/include/iverilog/ /usr/local/include/iverilog/
+COPY --from=eda-artifacts /usr/local/bin/verilator* /usr/local/bin/
+COPY --from=eda-artifacts /usr/local/share/verilator/ /usr/local/share/verilator/
+COPY --from=eda-artifacts /usr/local/share/pkgconfig/verilator.pc /usr/local/share/pkgconfig/verilator.pc
+COPY --from=eda-artifacts /usr/local/share/man/man1/iverilog* /usr/local/share/man/man1/vvp.1 /usr/local/share/man/man1/
+COPY --from=eda-artifacts /usr/local/share/man/man1/verilator* /usr/local/share/man/man1/
+
+# OpenROAD — physical synthesis: placement, buffering/sizing, and estimated
+# wire RC. The binary remains byte-identical to the digest-pinned builder. Its
+# runtime receives only the OR-Tools library closure, not its 177 MB development
+# headers, examples, executables, or CMake metadata.
+ARG OPENROAD_VERSION=26Q3
+ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
+ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae
+ARG OPENROAD_SOURCE_SENTINEL_SHA256=c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f
+COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad
+COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/
+COPY --from=openroad-artifacts /OpenROAD/LICENSE /usr/local/share/doc/openroad/LICENSE
+COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE /usr/local/share/doc/openroad/OpenSTA-LICENSE
+COPY --from=openroad-artifacts /tmp/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz /usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz
+COPY src/booley/data/docker/openroad-source-manifest.json /usr/local/share/doc/openroad/source-manifest.json
+RUN echo ">>> Verifying OpenROAD ${OPENROAD_VERSION} (${OPENROAD_SOURCE_REF})..." \
+    && test "$(/usr/bin/openroad -version | xargs)" = "${OPENROAD_BINARY_VERSION}" \
+    && test "$(tar -xOf "/usr/local/share/doc/openroad/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" \
+        ./src/rsz/src/Resizer.tcl | sha256sum | awk '{print $1}')" = \
+        "${OPENROAD_SOURCE_SENTINEL_SHA256}" \
+    && python3 -c 'import json; manifest=json.load(open("/usr/local/share/doc/openroad/source-manifest.json")); assert manifest["revision"] == "a9147cf3aebe65e058bb3fa89c1f9e524488dbb8"; assert len(manifest["submodules"]) == 5' \
+    && test -f /usr/local/share/doc/openroad/LICENSE \
+    && test -f /usr/local/share/doc/openroad/OpenSTA-LICENSE \
+    && ln -s /usr/bin/openroad /usr/local/bin/openroad \
+    && printf '%s\n' \
+        "OpenROAD source revision: ${OPENROAD_SOURCE_REF}" \
+        "Corresponding Source: /usr/local/share/doc/openroad/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" \
+        'Recursive source manifest: /usr/local/share/doc/openroad/source-manifest.json' \
+        'OpenROAD license: /usr/local/share/doc/openroad/LICENSE' \
+        'OpenSTA license: /usr/local/share/doc/openroad/OpenSTA-LICENSE' \
+        > /usr/local/share/doc/openroad/BOOLEY-SOURCE.txt \
+    && openroad -version \
+    && yosys -p 'help read_slang' >/dev/null \
+    && iverilog -V >/dev/null 2>&1 \
+    && verilator --version >/dev/null
+
+# Worktrees are bind-mounted from the host with different ownership. Identity
+# defaults remain neutral; projects override these per worktree.
+RUN git config --system --add safe.directory '*' \
+    && git config --system user.name "Dev" \
+    && git config --system user.email "dev@localhost"
 
 # sv2v (pinned release binary)
 ARG SV2V_VERSION=v0.0.13
@@ -160,6 +209,7 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && echo "${VERIBLE_SHA256}  /tmp/verible.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/verible.tar.gz -C /tmp \
     && cp /tmp/verible-${VERIBLE_VERSION}/bin/* /usr/local/bin/ \
+    && strip --strip-unneeded /usr/local/bin/verible-* \
     && rm -rf /tmp/verible.tar.gz /tmp/verible-${VERIBLE_VERSION} \
     && verible-verilog-lint --version
 
@@ -180,6 +230,13 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && apt-get update \
     && apt-get install -y --no-install-recommends bubblewrap \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
+    && CLAUDE_GLIBC=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
+    && CLAUDE_ACTIVE=/opt/agent-clis/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
+    && CLAUDE_MUSL=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl \
+    && test "$CLAUDE_GLIBC" -ef "$CLAUDE_ACTIVE" \
+    && test -x "$CLAUDE_MUSL/claude" \
+    && rm -rf "$CLAUDE_MUSL" \
+    && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
     && test "$(claude --version | awk '{print $1}')" = "2.1.259" \
@@ -315,6 +372,8 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
       io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
       io.booley.openroad.source-revision=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8 \
-      io.booley.openroad.parent-artifact=docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a
+      io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a \
+      io.booley.eda.builder-artifact=docker.io/openroad/ubuntu24.04-dev@sha256:1cfdeba85a28a0bd2a4fca1a5b357fa7f715838941b87a0eeff1686494b1c1db \
+      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 WORKDIR /work
