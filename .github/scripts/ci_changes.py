@@ -91,13 +91,21 @@ _STANDARD_IMAGE_FILES = _RELEASE_SENSITIVE_FILES
 _RISCV_IMAGE_PREFIXES = (".github/actions/prepare-picorv32-demo/", "demo/")
 _RISCV_IMAGE_FILES = {
     ".github/contracts/image-size-limits.toml",
+    ".github/contracts/picorv32-demo-ticket.md",
+    ".github/contracts/picorv32-demo.toml",
     ".github/contracts/session-runtime.toml",
     ".github/scripts/ci_changes.py",
+    ".github/scripts/export_demo_contract.py",
     ".github/scripts/image_contract.py",
     ".github/scripts/image_runtime_resources.py",
     ".github/scripts/image_size_report.py",
+    ".github/scripts/install_demo_ticket.py",
+    ".github/scripts/picorv32_demo_contract.py",
+    ".github/scripts/pull_image_identity.py",
     ".github/scripts/verify_picorv32_demo.sh",
+    ".github/workflows/picorv32-demo.yml",
     ".github/workflows/test.yml",
+    "pyproject.toml",
 }
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
 _SIDECAR_PREFIXES = (

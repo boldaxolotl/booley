@@ -14,6 +14,11 @@ from ci_changes import classify
 
 _REGRESSION_PATHS = {
     ".github/scripts/image_size_report.py": {"release_sensitive", "standard_image", "riscv_image"},
+    ".github/contracts/picorv32-demo.toml": {
+        "release_sensitive",
+        "standard_image",
+        "riscv_image",
+    },
     "src/booley/flows/sim/flow.py": {"release_sensitive", "standard_image"},
     "src/booley/harness/doctor.py": {"release_sensitive", "standard_image"},
     ".github/contracts/image-size-limits.toml": {
