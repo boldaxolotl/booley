@@ -76,6 +76,21 @@ def _ctx(root: Path, *, check_only: bool = False, fix_line_endings: bool = False
     )
 
 
+def _run_git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run one bounded Git command for integration tests."""
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=30,
+    )
+
+
 class TestWorktreePruneGuardStep:
     def test_sets_config_on_git_repo(self, tmp_path: Path):
         _git_init(tmp_path)
@@ -177,6 +192,49 @@ class TestProjectCommitMsgHookVendoring:
         hook = tmp_path / ".git" / "hooks" / "commit-msg"
         assert hook.is_file(), "commit-msg hook not installed"
         assert b"\r" not in hook.read_bytes(), "hook written with CRLF (D0a)"
+
+
+class TestInstalledPrePushGuard:
+    def test_external_runtime_alias_cannot_hide_tracked_project_state(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
+        from booley.runtime.project_dir import reset_cache
+
+        main = tmp_path / "main"
+        origin = tmp_path / "origin"
+        project_dir = tmp_path / "runtime-project-state"
+        _run_git(tmp_path, "init", "-q", str(main))
+        _run_git(tmp_path, "init", "-q", "--bare", str(origin))
+        _run_git(main, "remote", "add", "origin", str(origin))
+        project_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        _step_project_git_hooks(_ctx(main))
+
+        leaked = main / ".booley_project" / "docs" / "example.md"
+        leaked.parent.mkdir(parents=True)
+        leaked.write_text("private project state\n", encoding="utf-8")
+        _run_git(main, "add", "-f", ".booley_project/docs/example.md")
+        _run_git(
+            main,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "docs: add example",
+            "--no-verify",
+        )
+
+        result = _run_git(main, "push", "origin", "HEAD:main", check=False)
+
+        assert result.returncode != 0, "tracked Project state reached the remote"
+        assert "tracked path exposes project state" in result.stderr
+        assert ".booley_project/docs/example.md" in result.stderr
+        refs = _run_git(origin, "for-each-ref", "--format=%(refname)")
+        assert not refs.stdout.strip()
 
 
 class TestCommitMsgHookBody:

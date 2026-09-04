@@ -7,6 +7,19 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## Unreleased
+
+### Bug fixes
+
+- The Stealth pre-push guard now rejects tracked `.booley_project/` paths and
+  committed links into that state even when the Session Runtime exposes it at
+  a different absolute path.
+
+### Upgrade notes
+
+- Existing Projects should rerun `booley init` after upgrading so their
+  vendored pre-push hook receives the corrected project-state guard.
+
 ## 0.2.12 - 04 SEP 2026
 
 ### New features
