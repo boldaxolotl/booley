@@ -51,12 +51,16 @@ jobs:
       - name: Classify changed paths
         id: classify
         env:
+          # github.sha is the synthetic PR merge commit. Its first parent is
+          # the matching current base even if the event payload base is stale.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
           FORCE_ALL: ${{ github.event_name != 'pull_request' }}
           HEAD_SHA: ${{ github.sha }}
         run: >-
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
+          --event-name "${EVENT_NAME}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
 
   release-semantic:
@@ -295,7 +299,7 @@ jobs:
         if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: >-
           diff-cover coverage.xml --compare-branch="${BASE_SHA}" --fail-under=90
           --format html:diff-cover.html,markdown:diff-cover.md
