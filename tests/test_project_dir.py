@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
+    project_dir_for_init,
     reset_cache,
     resolve_checkout_project_dir,
     resolve_project_dir,
@@ -25,6 +26,30 @@ def _clear_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     yield
     reset_cache()
+
+
+class TestProjectDirForInit:
+    def test_uses_selected_checkout_despite_ancestor_env_and_cache(self, tmp_path, monkeypatch):
+        ancestor = tmp_path / ".booley_project"
+        ancestor.mkdir()
+        child = tmp_path / "child"
+        child.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(ancestor))
+        assert resolve_project_dir() == ancestor.resolve()
+
+        assert project_dir_for_init(child) == child.resolve() / ".booley_project"
+
+    def test_rejects_booley_source_checkout(self, tmp_path):
+        root = tmp_path / "booley-source"
+        (root / "src" / "booley").mkdir(parents=True)
+        (root / "src" / "booley" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
+            project_dir_for_init(root)
 
 
 # ---------------------------------------------------------------------------

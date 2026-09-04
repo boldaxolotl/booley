@@ -129,7 +129,7 @@ from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
 from booley.runtime.project_dir import (
-    PROJECT_DIR_NAME,
+    project_dir_for_init,
     reset_cache,
     resolve_checkout_project_dir,
     resolve_project_dir,
@@ -358,7 +358,7 @@ def _step_project_dir(ctx: InitContext) -> None:
     # resolve), but that behavior is wrong for init's *creation* decision: a
     # sibling project's .booley_project/ one level up must not suppress scaffolding
     # for the repo the user actually ran init on.
-    target = ctx.project_root / ".booley_project"
+    target = project_dir_for_init(ctx.project_root)
 
     if target.is_dir():
         if os.name != "nt" and stat.S_IMODE(target.stat().st_mode) != 0o700:
@@ -523,12 +523,14 @@ class AgentSelection:
     write_auth: bool = False
 
 
-def _agent_config_path(project_root: Path) -> Path:
-    """Return the resolved project config, or the future default on first init."""
+def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
+    """Select the config path for full initialization or checkout-aware seeding."""
+    if not seed:
+        return project_dir_for_init(project_root) / "booley.toml"
     try:
         project_dir = resolve_checkout_project_dir(project_root)
     except FileNotFoundError:
-        project_dir = project_root / PROJECT_DIR_NAME
+        project_dir = project_dir_for_init(project_root)
     return project_dir / "booley.toml"
 
 
@@ -595,10 +597,11 @@ def _resolve_selection_value(
 
 
 def _resolve_agent_selection(
-    ctx: InitContext, args: argparse.Namespace
-) -> tuple[AgentSelection, Path] | None:
+    ctx: InitContext,
+    args: argparse.Namespace,
+    config_path: Path,
+) -> AgentSelection | None:
     """Resolve flags, config, prompts, and documented agent defaults."""
-    config_path = _agent_config_path(ctx.project_root)
     try:
         provider, auth = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
@@ -627,7 +630,7 @@ def _resolve_agent_selection(
     if auth is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    return AgentSelection(provider, auth, write_provider, write_auth), config_path
+    return AgentSelection(provider, auth, write_provider, write_auth)
 
 
 def _insert_agent_fields(content: str, fields: list[str]) -> str:
@@ -2192,9 +2195,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ctx.record(name, "skip", finding.detail)
 
 
-def _project_config_migration_preflight(ctx: InitContext) -> bool:
+def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:
     """Reject retired Project policy before any Project filesystem mutation."""
-    path = _agent_config_path(ctx.project_root)
     if not path.is_file():
         return True
     try:
@@ -2293,7 +2295,47 @@ def _run_project_init_steps(
     return _print_summary(ctx)
 
 
-def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle refusal
+def _reconcile_init_bootstrap(
+    ctx: InitContext,
+    args: argparse.Namespace,
+) -> BootstrapResult | None:
+    """Reconcile Host Bootstrap and report whether Project init may continue."""
+    seed = getattr(args, "seed", False)
+    intent = (
+        ImageLifecycleIntent.CHECK
+        if ctx.check_only or seed
+        else ImageLifecycleIntent.REFRESH
+        if ctx.force
+        else ImageLifecycleIntent.ENSURE
+    )
+    result = reconcile_bootstrap(intent, verbose=ctx.verbose)
+    _record_bootstrap(ctx, result)
+    if seed and not result.ready:
+        err("Host Bootstrap is not current; run `booley bootstrap` on the host, then retry seed.")
+        if not ctx.check_only and not any(item.status == "err" for item in ctx.results):
+            ctx.record("bootstrap", "err", "run booley bootstrap")
+        return None
+    if not ctx.check_only and not result.ready:
+        if not any(item.status == "err" for item in ctx.results):
+            ctx.record("bootstrap", "err", "Host Bootstrap did not converge")
+        return None
+    return result
+
+
+def _project_checkout_ready(ctx: InitContext) -> bool:
+    """Reject Booley source before Host Bootstrap or Project mutation."""
+    from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
+    try:
+        require_project_checkout(ctx.project_root)
+    except SourceCheckoutProjectError as exc:
+        err(str(exc))
+        ctx.record("checkout_role", "err", "Booley source is not a Project")
+        return False
+    return True
+
+
+def _run_init_unlocked(
     args: argparse.Namespace,
     project_root: Path,
 ) -> int:
@@ -2302,42 +2344,24 @@ def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle 
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 
-    from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
-
-    try:
-        require_project_checkout(ctx.project_root)
-    except SourceCheckoutProjectError as exc:
-        err(str(exc))
-        ctx.record("checkout_role", "err", "Booley source is not a Project")
+    if not _project_checkout_ready(ctx):
         return _print_summary(ctx)
 
-    bootstrap_intent = (
-        ImageLifecycleIntent.CHECK
-        if ctx.check_only or getattr(args, "seed", False)
-        else ImageLifecycleIntent.REFRESH
-        if ctx.force
-        else ImageLifecycleIntent.ENSURE
+    bootstrap_result = _reconcile_init_bootstrap(ctx, args)
+    if bootstrap_result is None:
+        return _print_summary(ctx)
+
+    agent_config_path = _agent_config_path(
+        ctx.project_root,
+        seed=getattr(args, "seed", False),
     )
-    bootstrap_result = reconcile_bootstrap(bootstrap_intent, verbose=ctx.verbose)
-    _record_bootstrap(ctx, bootstrap_result)
-    if getattr(args, "seed", False) and not bootstrap_result.ready:
-        err("Host Bootstrap is not current; run `booley bootstrap` on the host, then retry seed.")
-        if not ctx.check_only and not any(result.status == "err" for result in ctx.results):
-            ctx.record("bootstrap", "err", "run booley bootstrap")
-        return _print_summary(ctx)
-    if not ctx.check_only and not bootstrap_result.ready:
-        if not any(result.status == "err" for result in ctx.results):
-            ctx.record("bootstrap", "err", "Host Bootstrap did not converge")
-        return _print_summary(ctx)
-
-    migration_ready = _project_config_migration_preflight(ctx)
+    migration_ready = _project_config_migration_preflight(ctx, agent_config_path)
     if not migration_ready and not ctx.check_only:
         return _print_summary(ctx)
 
-    resolved_selection = _resolve_agent_selection(ctx, args)
-    if resolved_selection is None:
+    selection = _resolve_agent_selection(ctx, args, agent_config_path)
+    if selection is None:
         return _print_summary(ctx)
-    selection, agent_config_path = resolved_selection
 
     guidance_plan, may_proceed = _plan_existing_guidance(ctx)
     if not may_proceed:

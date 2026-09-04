@@ -1,11 +1,13 @@
-"""Single resolution point for the project-specific data directory.
+"""Project-specific data-directory selection.
 
-All project-path lookups route through resolve_project_dir() with 4-step
-discovery:
+Runtime lookups route through :func:`resolve_project_dir` with 4-step discovery:
   1. $BOOLEY_PROJECT_DIR env var (CI, Docker, tests)
   2. Walk up from start dir to find booley.toml [project] dir override
   3. Walk up from start dir looking for .booley_project/
   4. Raise with actionable error
+
+Full initialization instead uses :func:`project_dir_for_init` because it owns
+the prospective directory in the explicitly selected checkout.
 
 Stdlib-only (tomllib). Module-level cache with reset_cache() for tests.
 """
@@ -29,6 +31,16 @@ logger = logging.getLogger(__name__)
 PROJECT_DIR_NAME = ".booley_project"
 
 _cache: Path | None = None
+
+
+def project_dir_for_init(project_root: Path) -> Path:
+    """Return the checkout-local Project directory owned by full initialization.
+
+    Unlike runtime and seed resolution, full initialization must not inherit an
+    ancestor Project, an environment override, or a cached result. The directory
+    may not exist yet; this is the path initialization will create.
+    """
+    return require_project_checkout(project_root) / PROJECT_DIR_NAME
 
 
 def _resolve_from_toml(current: Path) -> Path | None:
