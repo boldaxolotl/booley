@@ -41,7 +41,8 @@ supported. You need:
 - Python 3.11+
 - [Git 2.37.2+](https://git-scm.com/downloads)
 - [Docker](https://www.docker.com/)
-- [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+- [VS Code](https://code.visualstudio.com/); `booley bootstrap` installs its
+  [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex
 - About **15 GB of Docker storage** for the standard Booley image or at least
   **21 GB** for the complete RISC-V demo stack, plus space for project build
@@ -80,10 +81,11 @@ should run the CLI natively, not inside WSL. See
 [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
 for first-run, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
-`booley bootstrap` prepares reusable host resources: skills, the shared PDK
-cache, the base Session Image, and global Interactive Mode services. It is
-recommended after installation and upgrades, but optional before Project work:
-ordinary `booley init` performs the same reconciliation first.
+`booley bootstrap` prepares reusable host resources: the VS Code Dev Containers
+extension, skills, the shared PDK cache, the base Session Image, and global
+Interactive Mode services. It is recommended after installation and upgrades,
+but optional before Project work: ordinary `booley init` performs the same
+reconciliation first.
 
 ## Quick Start
 
