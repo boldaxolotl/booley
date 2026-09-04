@@ -13,6 +13,10 @@ from typing import Any
 import pytest
 import yaml
 
+sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
+
+from picorv32_ci_inputs import PICORV32_PULL_REQUEST_PATHS
+
 from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
 from booley.dev_support.demo_contract import (
@@ -35,20 +39,6 @@ EXPORT_SCRIPT = Path(".github/scripts/export_demo_contract.py")
 INSTALL_SCRIPT = Path(".github/scripts/install_demo_ticket.py")
 VERIFY_SCRIPT = Path(".github/scripts/verify_picorv32_demo.sh")
 
-_PULL_REQUEST_PATHS = {
-    ".github/actions/prepare-picorv32-demo/**",
-    ".github/contracts/picorv32-demo.toml",
-    ".github/contracts/picorv32-demo-ticket.md",
-    ".github/scripts/export_demo_contract.py",
-    ".github/scripts/install_demo_ticket.py",
-    ".github/scripts/picorv32_demo_contract.py",
-    ".github/scripts/pull_image_identity.py",
-    ".github/scripts/verify_picorv32_demo.sh",
-    ".github/workflows/picorv32-demo.yml",
-    "pyproject.toml",
-    "src/booley/**",
-}
-
 
 def _workflow_events() -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -69,7 +59,7 @@ def _workflow_commands(path: Path) -> str:
 def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
     events = _workflow_events()
 
-    assert set(events["pull_request"]["paths"]) == _PULL_REQUEST_PATHS
+    assert set(events["pull_request"]["paths"]) == PICORV32_PULL_REQUEST_PATHS
     assert events["push"] == {"branches": ["main"]}
     assert events["merge_group"] is None
     assert events["schedule"] == [{"cron": "23 3 * * *"}]

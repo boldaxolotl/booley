@@ -7,8 +7,14 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+_ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_ROOT / "src"))
+
+from booley.core.boundary import is_str_list, require_dict, require_list, require_str
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
@@ -32,17 +38,15 @@ def repository(reference: str) -> str:
 
 def image_identity(reference: str, document: object) -> ImageIdentity:
     """Select the unique immutable identity for ``reference`` from inspect JSON."""
-    if not isinstance(document, list) or len(document) != 1:
-        count = len(document) if isinstance(document, list) else "invalid"
-        raise ValueError(f"Docker returned {count} inspect rows for {reference!r}")
-    inspected = document[0]
-    if not isinstance(inspected, dict):
-        raise ValueError(f"Docker returned an invalid inspect row for {reference!r}")
-    image_id = inspected.get("Id")
+    rows = require_list(document, field=f"Docker inspect rows for {reference!r}")
+    if len(rows) != 1:
+        raise ValueError(f"Docker returned {len(rows)} inspect rows for {reference!r}")
+    inspected = require_dict(rows[0], field=f"Docker inspect row for {reference!r}")
+    image_id = require_str(inspected, "Id")
     digests = inspected.get("RepoDigests")
-    if not isinstance(image_id, str) or _DIGEST.fullmatch(image_id) is None:
+    if _DIGEST.fullmatch(image_id) is None:
         raise ValueError(f"Docker returned an invalid image ID for {reference!r}")
-    if not isinstance(digests, list) or not all(isinstance(item, str) for item in digests):
+    if not is_str_list(digests):
         raise ValueError(f"Docker returned invalid RepoDigests for {reference!r}")
     prefix = f"{repository(reference)}@"
     matches = sorted(

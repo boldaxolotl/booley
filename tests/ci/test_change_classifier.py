@@ -11,6 +11,10 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_ROOT / ".github/scripts"))
+
+from picorv32_ci_inputs import RISCV_IMAGE_FILES
+
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
 
@@ -327,25 +331,16 @@ def test_image_related_test_requires_image_smoke(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "path",
-    [
-        ".dockerignore",
-        "src/booley/data/docker/Dockerfile",
-        "src/booley/data/docker/Dockerfile.riscv",
-        ".github/contracts/session-runtime.toml",
-        ".github/contracts/picorv32-demo.toml",
-        ".github/contracts/picorv32-demo-ticket.md",
-        ".github/scripts/export_demo_contract.py",
-        ".github/scripts/image_contract.py",
-        ".github/scripts/image_size_report.py",
-        ".github/scripts/install_demo_ticket.py",
-        ".github/scripts/picorv32_demo_contract.py",
-        ".github/scripts/pull_image_identity.py",
-        ".github/scripts/verify_picorv32_demo.sh",
-        ".github/workflows/picorv32-demo.yml",
-        ".github/actions/prepare-picorv32-demo/action.yml",
-        "demo/picorv32.core",
-        "pyproject.toml",
-    ],
+    sorted(
+        RISCV_IMAGE_FILES
+        | {
+            ".dockerignore",
+            "src/booley/data/docker/Dockerfile",
+            "src/booley/data/docker/Dockerfile.riscv",
+            ".github/actions/prepare-picorv32-demo/action.yml",
+            "demo/picorv32.core",
+        }
+    ),
 )
 def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: str) -> None:
     repo, base = _repository(tmp_path)
