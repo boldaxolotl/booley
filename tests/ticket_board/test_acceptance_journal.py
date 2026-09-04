@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -16,6 +15,12 @@ from booley.ticket_board.acceptance_journal import (
     advance_acceptance,
 )
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
+from booley.ticket_board.acceptance_journal._repository import LocalAcceptanceRepositories
+from booley.ticket_board.acceptance_journal._store import (
+    AcceptanceCheckpoint,
+    FaultingAcceptanceStore,
+    FileAcceptanceStore,
+)
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.target_contract import ContractParticipant
 from tests.ticket_board.test_completion import (
@@ -95,6 +100,8 @@ def test_done_ticket_cannot_start_unpublished_acceptance(tmp_path: Path) -> None
         advance_acceptance(request)
 
     assert _git(root, "rev-parse", "main") == base
+    journal = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    assert not journal.exists()
 
 
 def test_invalid_ticket_status_cannot_create_or_publish_acceptance(tmp_path: Path) -> None:
@@ -151,19 +158,17 @@ def test_source_keepalive_preserves_pinned_commit_before_preparation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, tio, request, _base = _single_repository_acceptance(tmp_path)
-    validate_surface = acceptance_impl._validate_source_surface
-
-    def interrupt(*_args: object, **_kwargs: object) -> None:
-        raise AcceptanceOperationError("interrupt after source pinning")
-
-    monkeypatch.setattr(acceptance_impl, "_validate_source_surface", interrupt)
+    store = FaultingAcceptanceStore(
+        FileAcceptanceStore(), AcceptanceCheckpoint.SOURCES_PINNED, "after"
+    )
+    runner = acceptance_impl._AcceptanceRunner(store, LocalAcceptanceRepositories())
     complete = tio.find_ticket("change-target")
     assert complete is not None
     assert complete["status"] == "review"
-    with pytest.raises(AcceptanceOperationError, match="after source pinning"):
-        advance_acceptance(request)
+    with pytest.raises(OSError, match="after sources-pinned checkpoint"):
+        runner.advance(request)
 
-    journal_path = acceptance_impl._journal_path(root, "change-target")
+    journal_path = FileAcceptanceStore().path(root, "change-target")
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     source = journal["sources"]["outer"]
     source_ref = f"refs/booley/acceptance/{journal['transaction']}/source-outer"
@@ -175,7 +180,6 @@ def test_source_keepalive_preserves_pinned_commit_before_preparation(
     assert _git(root, "cat-file", "-t", source) == "commit"
 
     _git(root, "update-ref", "refs/heads/change-target", source)
-    monkeypatch.setattr(acceptance_impl, "_validate_source_surface", validate_surface)
 
     def reject_mutable_ref_read(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("journaled source identities must not be re-read")
@@ -202,25 +206,14 @@ def test_prepared_ref_survives_checkpoint_interruption_and_gc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, _tio, request, _base = _single_repository_acceptance(tmp_path)
-    write_journal = acceptance_impl._write_journal
-    interrupted = False
+    store = FaultingAcceptanceStore(
+        FileAcceptanceStore(), AcceptanceCheckpoint.CANDIDATES_PREPARED, "before"
+    )
+    runner = acceptance_impl._AcceptanceRunner(store, LocalAcceptanceRepositories())
+    with pytest.raises(OSError, match="before candidates-prepared checkpoint"):
+        runner.advance(request)
 
-    def interrupt_candidate_checkpoint(
-        path: Path,
-        journal: dict[str, Any],
-        checkpoint: Any,
-    ) -> None:
-        nonlocal interrupted
-        if journal["candidates"] and not interrupted:
-            interrupted = True
-            raise OSError("before candidate checkpoint")
-        write_journal(path, journal, checkpoint)
-
-    monkeypatch.setattr(acceptance_impl, "_write_journal", interrupt_candidate_checkpoint)
-    with pytest.raises(OSError, match="before candidate checkpoint"):
-        advance_acceptance(request)
-
-    journal_path = acceptance_impl._journal_path(root, "change-target")
+    journal_path = FileAcceptanceStore().path(root, "change-target")
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     prepared_ref = f"refs/booley/acceptance/{journal['transaction']}/outer"
     prepared = _git(root, "rev-parse", prepared_ref)
@@ -231,7 +224,6 @@ def test_prepared_ref_survives_checkpoint_interruption_and_gc(
     assert _git(root, "cat-file", "-t", prepared) == "commit"
 
     _git(root, "update-ref", "refs/heads/change-target", source)
-    monkeypatch.setattr(acceptance_impl, "_write_journal", write_journal)
     assert advance_acceptance(request).outcome is AcceptanceOutcome.APPROVAL_REQUIRED
 
 

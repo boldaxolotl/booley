@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal, Protocol
 
+from booley.runtime.file_lock import nonblocking_file_lock
 from booley.runtime.project_dir import runtime_dir
 
-from ._model import AcceptanceJournal
+from ._model import AcceptanceJournal, load_journal, load_persisted_journal
 
 
 class AcceptanceCheckpoint(StrEnum):
@@ -49,7 +54,7 @@ def write_journal(
     temporary_path = Path(temporary)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(journal, handle, indent=2, sort_keys=True)
+            json.dump(journal.as_dict(), handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -63,3 +68,131 @@ def write_journal(
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+class AcceptanceStore(Protocol):
+    """Persistence and serialization seam for one Acceptance Journal."""
+
+    def path(self, root: Path, slug: str) -> Path: ...
+
+    def locked(self, path: Path) -> AbstractContextManager[None]: ...
+
+    def load(
+        self,
+        path: Path,
+        slug: str,
+        participants: list[dict[str, str]],
+        *,
+        cleanup: bool,
+        removal_targets: tuple[str, ...],
+    ) -> AcceptanceJournal: ...
+
+    def load_persisted(self, path: Path) -> AcceptanceJournal: ...
+
+    def journals(self, directory: Path) -> tuple[Path, ...]: ...
+
+    def write(
+        self,
+        path: Path,
+        journal: AcceptanceJournal,
+        checkpoint: AcceptanceCheckpoint,
+    ) -> None: ...
+
+
+class FileAcceptanceStore:
+    """Production Acceptance Journal store backed by atomic JSON files."""
+
+    def path(self, root: Path, slug: str) -> Path:
+        return journal_path(root, slug)
+
+    @contextmanager
+    def locked(self, path: Path) -> Iterator[None]:
+        lock_path = path.parent / ".lock"
+        lock_path.touch(exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+            yield
+
+    def load(
+        self,
+        path: Path,
+        slug: str,
+        participants: list[dict[str, str]],
+        *,
+        cleanup: bool,
+        removal_targets: tuple[str, ...],
+    ) -> AcceptanceJournal:
+        return load_journal(
+            path,
+            slug,
+            participants,
+            cleanup=cleanup,
+            removal_targets=removal_targets,
+        )
+
+    def load_persisted(self, path: Path) -> AcceptanceJournal:
+        return load_persisted_journal(path)
+
+    def journals(self, directory: Path) -> tuple[Path, ...]:
+        return tuple(directory.glob("*.json"))
+
+    def write(
+        self,
+        path: Path,
+        journal: AcceptanceJournal,
+        checkpoint: AcceptanceCheckpoint,
+    ) -> None:
+        write_journal(path, journal, checkpoint)
+
+
+@dataclass
+class FaultingAcceptanceStore:
+    """Test decorator that interrupts one semantic durability boundary."""
+
+    delegate: AcceptanceStore
+    checkpoint: AcceptanceCheckpoint
+    timing: Literal["before", "after"]
+    triggered: bool = False
+
+    def path(self, root: Path, slug: str) -> Path:
+        return self.delegate.path(root, slug)
+
+    def locked(self, path: Path) -> AbstractContextManager[None]:
+        return self.delegate.locked(path)
+
+    def load(
+        self,
+        path: Path,
+        slug: str,
+        participants: list[dict[str, str]],
+        *,
+        cleanup: bool,
+        removal_targets: tuple[str, ...],
+    ) -> AcceptanceJournal:
+        return self.delegate.load(
+            path,
+            slug,
+            participants,
+            cleanup=cleanup,
+            removal_targets=removal_targets,
+        )
+
+    def load_persisted(self, path: Path) -> AcceptanceJournal:
+        return self.delegate.load_persisted(path)
+
+    def journals(self, directory: Path) -> tuple[Path, ...]:
+        return self.delegate.journals(directory)
+
+    def write(
+        self,
+        path: Path,
+        journal: AcceptanceJournal,
+        checkpoint: AcceptanceCheckpoint,
+    ) -> None:
+        should_interrupt = checkpoint is self.checkpoint and not self.triggered
+        if should_interrupt and self.timing == "before":
+            self.triggered = True
+            raise OSError(f"before {checkpoint} checkpoint")
+        self.delegate.write(path, journal, checkpoint)
+        if should_interrupt and self.timing == "after":
+            self.triggered = True
+            raise OSError(f"after {checkpoint} checkpoint")

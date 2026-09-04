@@ -152,12 +152,20 @@ def _finish_progress(
 ) -> AcceptanceProgress:
     if progress.outcome is not AcceptanceOutcome.APPROVAL_REQUIRED:
         return progress
+    approval_error: Exception | None = None
     try:
-        _approve(tio, slug)
-    except (OSError, ValueError):
-        current = _ticket_after_approval(tio, slug)
+        approved = _approve(tio, slug)
+    except Exception as exc:  # noqa: BLE001 - TicketIO is an external adapter boundary.
+        approval_error = exc
     else:
+        if not approved:
+            approval_error = CompletionError("Ticket Board approval returned no durable result")
+    try:
         current = _ticket_after_approval(tio, slug)
+    except Exception as status_error:
+        if approval_error is not None:
+            raise status_error from approval_error
+        raise
     return advance_acceptance(_request(tio, slug, current, contract, cleanup=cleanup))
 
 
