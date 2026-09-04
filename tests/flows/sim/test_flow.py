@@ -1426,10 +1426,10 @@ class TestEdalizeSimPath:
         for command in commands:
             assert command[command.index("--run-cwd") + 1] == "."
 
-    def test_doctor_bad_run_commands_keep_configured_runtime_cwd(
+    def test_doctor_bad_run_commands_use_isolated_runtime_overlay(
         self, tmp_path: Path, monkeypatch
     ):
-        """The bad build fixture must not move runtime assets into the build tree."""
+        """The bad fixture sees runtime assets without mutating their real cwd."""
         from booley.fusesoc import selftest_overlay
 
         flow = _make_flow(tmp_path)
@@ -1441,8 +1441,14 @@ class TestEdalizeSimPath:
             flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
         )
 
-        for command in commands:
-            assert command[command.index("--run-cwd") + 1] == "assets"
+        for command, build_dir in zip(
+            commands,
+            ("build/verilator", "build/icarus", "build/cocotb"),
+            strict=True,
+        ):
+            assert command[command.index("--run-cwd") + 1] == (
+                f"{build_dir}/{selftest_overlay.BAD_RUN_CWD_DIR}"
+            )
 
     def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
         """Icarus runs are re-homed to booley.flows.sim.backends.icarus (the edalize
@@ -1831,6 +1837,9 @@ class TestEdalizeSimPath:
         )
         overlay_file.parent.mkdir(parents=True)
         overlay_file.write_text("bad\n", encoding="utf-8")
+        runtime_file = tmp_path / "runtime-assets" / "firmware" / "firmware.hex"
+        runtime_file.parent.mkdir(parents=True)
+        runtime_file.write_text("good\n", encoding="utf-8")
         expected_root = (
             tmp_path
             / ".booley_project"
@@ -1862,7 +1871,11 @@ class TestEdalizeSimPath:
             cmd = flow._prepare_sim_command("lite", "known_bad", {})
 
         assert staged.read_text(encoding="utf-8") == "bad\n"
-        assert "--run-cwd runtime-assets" in cmd[2]
+        shadow = staged.parents[1] / selftest_overlay.BAD_RUN_CWD_DIR
+        assert (shadow / "firmware" / "firmware.hex").read_text(encoding="utf-8") == "bad\n"
+        assert runtime_file.read_text(encoding="utf-8") == "good\n"
+        shadow_rel = shadow.relative_to(tmp_path).as_posix()
+        assert f"--run-cwd {shadow_rel}" in cmd[2]
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
         from booley.flows.sim.build import _stage_doctor_overlay
