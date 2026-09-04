@@ -1384,22 +1384,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             and metrics.synth_mode.runs_openroad
             and metrics.has_timing_evidence
         )
-        legacy_inline = (
-            not outcome.yosys_complete
-            and not outcome.diagnostics.structural.complete
-            and metrics.has_metrics
-            and bool(result.stdout.strip())
-            and "BOOLEY_STAGE:" not in result.stdout
-        )
-        metrics.structural_checks_complete = (
-            outcome.diagnostics.structural.complete or legacy_inline
-        )
-        if outcome.diagnostics.structural.complete:
-            metrics.comb_loops = outcome.diagnostics.structural.comb_loops
-            metrics.multi_driven = outcome.diagnostics.structural.multi_driven
-        elif not legacy_inline:
-            metrics.comb_loops = 0
-            metrics.multi_driven = 0
+        self._apply_structural_completion(metrics, outcome, result.stdout)
         if metrics.synth_mode is not None and metrics.synth_mode.runs_openroad:
             metrics.ppa_complete = (
                 metrics.termination == "completed"
@@ -1410,6 +1395,29 @@ class AsicSynthesizeFlow(BooleyFlow):
             metrics.ppa_complete = (
                 metrics.termination == "completed" and metrics.area_source == "yosys_mapped"
             )
+
+    @staticmethod
+    def _apply_structural_completion(
+        metrics: SynthMetrics,
+        outcome: Any,
+        stdout: str,
+    ) -> None:
+        """Apply authoritative final-check evidence or legacy inline evidence."""
+        structural = outcome.diagnostics.structural
+        legacy_inline = (
+            not outcome.yosys_complete
+            and not structural.complete
+            and metrics.has_metrics
+            and bool(stdout.strip())
+            and "BOOLEY_STAGE:" not in stdout
+        )
+        metrics.structural_checks_complete = structural.complete or legacy_inline
+        if structural.complete:
+            metrics.comb_loops = structural.comb_loops
+            metrics.multi_driven = structural.multi_driven
+        elif not legacy_inline:
+            metrics.comb_loops = 0
+            metrics.multi_driven = 0
 
     def _record_boundary_diagnostics(
         self,
@@ -2185,12 +2193,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             stdout_lines, failed_targets, targets, current_results, baseline_results
         )
         self._append_fatal_timing_failure(failed_targets, violated)
-        eda_warnings = [
-            f"{target}: {current_results[target].warning_summary.actionable_warnings} "
-            "actionable EDA warning(s)"
-            for target in targets
-            if current_results[target].warning_summary.actionable_warnings
-        ]
+        eda_warnings = self._eda_warning_headlines(targets, current_results)
         stdout_lines.extend(
             ["", _result_line(failed_targets, selfcompare_msg, violated, eda_warnings)]
         )
@@ -2210,6 +2213,19 @@ class AsicSynthesizeFlow(BooleyFlow):
             display_lines=_first_valid_display(targets, current_results),
             detail=detail,
         )
+
+    @staticmethod
+    def _eda_warning_headlines(
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+    ) -> list[str]:
+        """Return concise actionable-warning summaries for the result headline."""
+        return [
+            f"{target}: {current_results[target].warning_summary.actionable_warnings} "
+            "actionable EDA warning(s)"
+            for target in targets
+            if current_results[target].warning_summary.actionable_warnings
+        ]
 
     def _aggregate_prefix(
         self,

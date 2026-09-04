@@ -330,6 +330,21 @@ class TestReportFetch:
         assert _report_mcp_tool_def() is None
 
 
+def _oversized_warning_summary(total_warnings: int = 40) -> dict[str, object]:
+    """Return warning evidence large enough to exercise payload reduction."""
+    return {
+        "total_warnings": total_warnings,
+        "unique_warnings": 3,
+        "by_tool": {"yosys": total_warnings},
+        "by_category": {"combinational_loop": 16, "multi_driver": 24},
+        "by_disposition": {"structural": total_warnings},
+        "representatives": [
+            {"tool": "yosys", "message": "x" * 4_000, "count": 1}
+            for _ in range(30)
+        ],
+    }
+
+
 class TestStructuredContent:
     """structuredContent attachment via the SDK's (blocks, dict) tuple return.
 
@@ -660,18 +675,7 @@ class TestStructuredContent:
         )
 
     def test_warning_reduction_keeps_counts_conditions_and_log_pointer(self):
-        representatives = [
-            {"tool": "yosys", "message": "x" * 4_000, "count": 1}
-            for _ in range(30)
-        ]
-        warning_summary = {
-            "total_warnings": 40,
-            "unique_warnings": 3,
-            "by_tool": {"yosys": 40},
-            "by_category": {"combinational_loop": 16, "multi_driver": 24},
-            "by_disposition": {"structural": 40},
-            "representatives": representatives,
-        }
+        warning_summary = _oversized_warning_summary()
         implementation = {
             "schema_version": 1,
             "identity": {"flow": "synth", "target": "asic"},
