@@ -93,6 +93,43 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestFullInitRerun:
+    def test_reconciles_stopped_headless_runtime_after_issuing(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch.object(
+            sr,
+            "reconcile_stopped_headless_runtime",
+            return_value=True,
+            create=True,
+        ) as reconcile:
+            _run_full_init(repo)
+
+        reconcile.assert_called_once()
+        assert "removed stopped Session Runtime from its prior issuance" in capsys.readouterr().out
+
+    def test_runtime_reconciliation_failure_makes_init_incomplete(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _run_full_init(repo)
+        capsys.readouterr()
+        ctx = InitContext(project_root=repo)
+        with patch.object(
+            sr,
+            "reconcile_stopped_headless_runtime",
+            side_effect=sr.SessionError("container became active"),
+        ):
+            init_cmd._step_interactive(
+                ctx,
+                nangate_pdk_root=repo.parent / "pdk",
+                agent_app="none",
+            )
+        ctx.record("advisories", "ok", "configured")
+
+        assert init_cmd._print_summary(ctx) == 2
+        output = capsys.readouterr().out
+        assert "could not reconcile stopped Session Runtime" in output
+        assert "this project is ready" not in output
+
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
         project_dir = repo / ".booley_project"
         project_dir.mkdir()

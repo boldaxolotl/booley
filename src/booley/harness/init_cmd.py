@@ -1679,12 +1679,25 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     # Write the untracked spec and hide it (+ .booley_project, .claude) from git history.
     path = dc.write_devcontainer(ctx.project_root, spec)
     try:
-        eda_runtime_spec.issue(ctx.project_root, spec, path)
+        issuance = eda_runtime_spec.issue(ctx.project_root, spec, path)
     except eda_runtime_spec.RuntimeSpecError as exc:
         path.unlink(missing_ok=True)
         err(f"could not issue Session Runtime specification: {exc}")
         ctx.record("interactive", "err", str(exc))
         return
+    from booley.harness import session_runtime
+
+    try:
+        reconciled = session_runtime.reconcile_stopped_headless_runtime(
+            ctx.project_root,
+            issuance,
+        )
+    except session_runtime.SessionError as exc:
+        err(f"could not reconcile stopped Session Runtime: {exc}")
+        ctx.record("interactive", "err", str(exc))
+        return
+    if reconciled:
+        ok("removed stopped Session Runtime from its prior issuance")
     ok(f"wrote {path.relative_to(ctx.project_root)} (app={app})")
     _report_seeded_mounts(app, bool(auth_source), bool(config_seed), host_skills, mask_paths)
     # Only Booley-owned top-level artifacts. A bare `build`/`util` entry would

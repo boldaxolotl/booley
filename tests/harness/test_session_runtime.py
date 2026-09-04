@@ -1061,6 +1061,53 @@ def _refresh_state(
     }
 
 
+class TestInitReconciliation:
+    def test_removes_only_a_stopped_owned_runtime_from_an_old_issuance(
+        self, workspace: Path
+    ) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert changed
+        remove.assert_called_once_with(sr.session_container_name(workspace))
+
+    @pytest.mark.parametrize("running", [True, False])
+    def test_preserves_active_or_current_runtime(self, workspace: Path, running: bool) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=running)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=not running),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert not changed
+        remove.assert_not_called()
+
+    def test_preserves_foreign_container(self, workspace: Path) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(labels={"booley.role": "interactive"})
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            pytest.raises(sr.SessionError, match="was not modified"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        remove.assert_not_called()
+
+
 def _recorded_parked(**overrides) -> sr.ParkedSession:
     values = {
         "name": "session",

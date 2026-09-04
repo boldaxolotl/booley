@@ -210,6 +210,31 @@ def test_active_sessions_block_stale_container_replacement(
     assert not any(call[:2] == ["rm", "-f"] for call in docker.calls)
 
 
+def test_active_session_blocker_names_project_and_scoped_shutdown_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDocker()
+    project = "/projects/acme cpu"
+    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ("session-a",))
+    monkeypatch.setattr(
+        sidecars,
+        "_inspect_container",
+        lambda *_args: sidecars._ContainerState(
+            True,
+            running=True,
+            labels={sidecars.ROLE_LABEL: sidecars.SESSION_ROLE},
+            project_root=project,
+        ),
+    )
+
+    with pytest.raises(sidecars.SidecarError) as raised:
+        sidecars._replace_stale_container("booley-reaper", ["run"], docker)
+
+    assert project in str(raised.value)
+    assert "booley session down --project-root '/projects/acme cpu'" in str(raised.value)
+    assert docker.calls == []
+
+
 def test_session_enumeration_failure_is_not_treated_as_empty() -> None:
     docker = FakeDocker(_cp(1, stderr="daemon unavailable"))
     with pytest.raises(sidecars.SidecarError, match="cannot enumerate"):
@@ -275,7 +300,7 @@ def test_active_sessions_block_stale_network_replacement(
 
     assert finding.state is sidecars.SidecarState.ERROR
     assert "session-a" in finding.detail
-    assert docker.calls == []
+    assert not any(call[0] in {"rm", "start", "run"} for call in docker.calls)
 
 
 def test_reconcile_sidecars_returns_early_for_image_network_and_proxy_errors(
@@ -591,12 +616,15 @@ def test_inspect_container_handles_missing_failure_valid_and_incomplete() -> Non
         sidecars._inspect_container("name", FakeDocker(_cp(1, stderr="daemon down")))
     document = (
         '{"Image":"sha","Config":{"Labels":{"booley.role":"role"}},'
-        '"State":{"Running":true},"NetworkSettings":{"Networks":{"network":{}}}}'
+        '"State":{"Running":true},"NetworkSettings":{"Networks":{"network":{}}},'
+        '"Mounts":[{"Type":"bind","Source":"/projects/acme",'
+        '"Destination":"/work","RW":true}]}'
     )
     state = sidecars._inspect_container("name", FakeDocker(_cp(stdout=document)))
     assert state.image_id == "sha"
     assert state.running
     assert state.networks == frozenset({"network"})
+    assert state.project_root == "/projects/acme"
     with pytest.raises(sidecars.SidecarError, match="incomplete inspection"):
         sidecars._inspect_container("name", FakeDocker(_cp(stdout="{}")))
 

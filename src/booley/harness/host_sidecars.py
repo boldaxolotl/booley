@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -20,6 +22,7 @@ from booley.core.boundary import (
 )
 from booley.harness import interactive_docker as legacy
 from booley.harness.image_lifecycle import Intent
+from booley.runtime.platform_paths import host_path_from_docker_mount
 
 IMAGE_SCHEMA = "1"
 POLICY_SCHEMA = 1
@@ -30,6 +33,8 @@ LABEL_BOOLEY_VERSION = "io.booley.sidecar.booley-version"
 LABEL_POLICY_FINGERPRINT = "io.booley.sidecar.policy-fingerprint"
 ROLE_LABEL = "booley.role"
 SESSION_ROLE = "interactive"
+_DEVCONTAINER_FOLDER_LABEL = "devcontainer.local_folder"
+_WORKSPACE_MOUNT_TARGET = "/work"
 
 
 class SidecarState(StrEnum):
@@ -95,6 +100,7 @@ class _ContainerState:
     running: bool = False
     labels: dict[str, str] | None = None
     networks: frozenset[str] = frozenset()
+    project_root: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,7 +372,8 @@ def _replace_stale_network(state: _NetworkState, docker: _DockerPort) -> None:
     if active:
         raise SidecarError(
             f"cannot replace stale {legacy.EGRESS_NETWORK} while active Booley Sessions "
-            f"exist: {', '.join(active)}; shut them down and retry `booley bootstrap`"
+            f"exist: {_active_session_summary(active, docker)}; shut down each listed "
+            "Project and retry `booley bootstrap`"
         )
     foreign = tuple(name for name in state.attached_names if name != legacy.PROXY_CONTAINER)
     if foreign:
@@ -506,10 +513,10 @@ def _apply_container(
 def _replace_stale_container(name: str, run_args: list[str], docker: _DockerPort) -> None:
     active = _active_session_names(docker)
     if active:
-        joined = ", ".join(active)
         raise SidecarError(
-            f"cannot replace stale {name} while active Booley Sessions exist: {joined}; "
-            "shut them down with `booley session down` and retry `booley bootstrap`"
+            f"cannot replace stale {name} while active Booley Sessions exist: "
+            f"{_active_session_summary(active, docker)}; shut down each listed Project "
+            "and retry `booley bootstrap`"
         )
     removed = docker.run(["rm", "-f", name])
     if removed.returncode:
@@ -550,13 +557,61 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
         attached_names = _string_keys(attached, f"container {name} networks")
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned incomplete inspection for container {name}") from exc
+    labels = _string_labels(config.get("Labels"), f"container {name}")
     return _ContainerState(
         True,
         image_id,
         running,
-        _string_labels(config.get("Labels"), f"container {name}"),
+        labels,
         frozenset(attached_names),
+        _project_root_from_inspection(document, labels),
     )
+
+
+def _project_root_from_inspection(document: dict[str, Any], labels: dict[str, str]) -> str | None:
+    """Return the host Project mounted by an Interactive Mode container."""
+    if folder := labels.get(_DEVCONTAINER_FOLDER_LABEL):
+        return folder
+    mounts = document.get("Mounts")
+    if not isinstance(mounts, list):
+        return None
+    for mount in mounts:
+        if (
+            isinstance(mount, dict)
+            and mount.get("Type") == "bind"
+            and mount.get("Destination") == _WORKSPACE_MOUNT_TARGET
+            and isinstance(mount.get("Source"), str)
+            and mount["Source"]
+        ):
+            host_path = host_path_from_docker_mount(mount["Source"])
+            return str(host_path) if host_path is not None else None
+    return None
+
+
+def _active_session_summary(names: tuple[str, ...], docker: _DockerPort) -> str:
+    """Describe active Sessions with a copyable Project-scoped shutdown command."""
+    descriptions = []
+    for name in names:
+        try:
+            state = _inspect_container(name, docker)
+        except SidecarError:
+            # The already-verified active listing remains sufficient to block a
+            # destructive replacement. Losing the optional path enrichment must
+            # not obscure the Session name or weaken that refusal.
+            descriptions.append(name)
+            continue
+        if (
+            not state.exists
+            or not state.running
+            or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE
+            or state.project_root is None
+        ):
+            descriptions.append(name)
+            continue
+        argv = ["booley", "session", "down", "--project-root", state.project_root]
+        command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        descriptions.append(f"{name} (Project {state.project_root}; run `{command}`)")
+    return ", ".join(descriptions)
 
 
 def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:

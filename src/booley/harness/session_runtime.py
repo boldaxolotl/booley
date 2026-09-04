@@ -1000,7 +1000,7 @@ def _up_unlocked(
         expected_payload_fingerprint=expected_payload_fingerprint,
     )
     for name in stale_vscode:
-        _remove_stopped_vscode_container(name)
+        _remove_stopped_session_container(name)
     # Last, so it judges the container that actually ended up running (a
     # just-created one trivially matches its image and stays silent).
     _warn_on_stale_session_containers(request.spec, workspace)
@@ -1393,7 +1393,7 @@ def _reconcile_stopped_vscode_containers(
         issuance,
         remove_unavailable_current=remove_unavailable_current,
     ):
-        _remove_stopped_vscode_container(name)
+        _remove_stopped_session_container(name)
 
 
 def _stopped_vscode_reconcile_candidates(
@@ -1435,7 +1435,7 @@ def _stopped_vscode_reconcile_candidates(
     return candidates
 
 
-def _remove_stopped_vscode_container(name: str) -> None:
+def _remove_stopped_session_container(name: str) -> None:
     """Remove one inspected-stopped container without crossing a start race."""
     result = _run(["docker", "rm", name])
     if result.returncode != 0:
@@ -1446,6 +1446,35 @@ def _remove_stopped_vscode_container(name: str) -> None:
             "container and retry"
         )
     logger.info("removed stopped stale Session Runtime %r", name)
+
+
+def reconcile_stopped_headless_runtime(
+    workspace: Path,
+    issuance: Issuance,
+) -> bool:
+    """Remove a stopped headless Runtime that predates *issuance*.
+
+    ``booley init`` regenerates and reissues the Session Runtime spec. A stopped
+    canonical container cannot adopt that new issuance, so preserving it would
+    make the next ``session up`` fail. Active containers are left alone, and the
+    canonical name is never modified until its Project ownership is proven.
+    """
+    name = session_container_name(workspace)
+    state = _strict_refresh_container(name)
+    if state is None:
+        return False
+    _assert_refresh_container_owned(name, state, _refresh_project_id(issuance))
+    if state["State"]["Running"]:
+        return False
+    if _refresh_candidate_matches(state, issuance):
+        return False
+
+    _remove_stopped_session_container(name)
+    relay = _relay_resources(workspace)
+    if _relay_objects_exist(relay):
+        _remove_license_relay(relay)
+    logger.info("reconciled stopped headless Session Runtime %r", name)
+    return True
 
 
 def _container_has_unavailable_bind(name: str, state: dict) -> bool:
