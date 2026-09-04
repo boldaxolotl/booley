@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -2769,14 +2771,9 @@ class TestMangledArgWarning:
         # The warning is advisory: we must not rewrite the user's argv (only the
         # caller knows which arguments are paths). Exec gets exactly what it got.
         cmd = ["python3", "-c", "print(1)", "--out", "C:/Temp/x"]
-        with (
-            patch.object(sr, "up", return_value="booley-session-x"),
-            patch("booley.harness.runtime_attachment.run_command") as run,
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            sr.enter(workspace, cmd, tty=False)
-        assert run.call_args.args[2] == cmd
-        assert run.call_args.kwargs == {"tty": False}
+        with patch.object(sr, "run_project_command", return_value=0) as run:
+            assert sr.enter(workspace, cmd, tty=False) == 0
+        run.assert_called_once_with(workspace, cmd, tty=False)
 
 
 class TestRunProjectCommand:
@@ -2904,8 +2901,63 @@ class TestRunProjectCommand:
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
 
-        recover.assert_called_once_with(workspace, "booley auth")
+        recover.assert_called_once_with(workspace, None)
         select.assert_not_called()
+
+    def test_parallel_enters_wait_then_execute_concurrently(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness import lifecycle_lock
+
+        first_selecting = threading.Event()
+        release_first = threading.Event()
+        second_waiting = threading.Event()
+        select_guard = threading.Lock()
+        execution_barrier = threading.Barrier(2)
+        select_calls = 0
+
+        def select_runtime(_workspace: Path) -> tuple[str, dict[str, str]]:
+            nonlocal select_calls
+            with select_guard:
+                select_calls += 1
+                call = select_calls
+            if call == 1:
+                first_selecting.set()
+                assert release_first.wait(timeout=2)
+            return "runtime", self.COMMAND_ENV
+
+        real_wait = lifecycle_lock.wait_for_file_lock
+
+        def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
+            if first_selecting.is_set():
+                second_waiting.set()
+            real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
+
+        def run_command(*_args, **_kwargs) -> SimpleNamespace:
+            execution_barrier.wait(timeout=2)
+            return SimpleNamespace(exit_code=0)
+
+        monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
+        monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
+        monkeypatch.setattr(sr, "_select_or_start_project_runtime", select_runtime)
+        monkeypatch.setattr(
+            "booley.harness.runtime_attachment.run_command",
+            run_command,
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(sr.enter, workspace, ["bwave", "first"], tty=False)
+            assert first_selecting.wait(timeout=2)
+            second = executor.submit(sr.enter, workspace, ["bwave", "second"], tty=False)
+            assert second_waiting.wait(timeout=2)
+            assert not second.done()
+            release_first.set()
+            assert first.result(timeout=5) == 0
+            assert second.result(timeout=5) == 0
+
+        assert select_calls == 2
 
     def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
         request = self._request(workspace)
@@ -2978,7 +3030,13 @@ class TestEnterAlwaysSetsTERM:
     def _argv(self, workspace: Path, *, tty: bool, term_env: str | None) -> list[str]:
         env = {} if term_env is None else {"TERM": term_env}
         with (
-            patch.object(sr, "up", return_value="booley-session-x"),
+            patch.object(
+                sr,
+                "_select_or_start_project_runtime",
+                return_value=("booley-session-x", {}),
+            ),
+            patch.object(sr, "_recover_before_lifecycle"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch("booley.harness.runtime_attachment.run_command") as run,
             patch.dict(sr.os.environ, env, clear=(term_env is None)),
         ):
