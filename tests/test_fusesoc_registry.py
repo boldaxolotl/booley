@@ -198,6 +198,14 @@ class TestDiscovery:
         found = discover_cores(tmp_path)
         assert [p.parent.name for p in found] == ["ip"]
 
+    def test_skips_git_internal_trees(self, tmp_path: Path):
+        _write_core(tmp_path / "ip")
+        _write_core(tmp_path / ".git" / "objects" / "ab")
+
+        found = discover_cores(tmp_path)
+
+        assert [path.parent.name for path in found] == ["ip"]
+
     def test_skips_fusesoc_ignore_trees(self, tmp_path: Path):
         # Mirrors FuseSoC's scanner convention: a FUSESOC_IGNORE marker file
         # excludes that directory and everything below it.
