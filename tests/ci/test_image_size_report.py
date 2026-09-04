@@ -191,6 +191,35 @@ def test_measure_records_exact_local_history_and_identity(
     assert measured.repository_digests == ("example@sha256:manifest",)
 
 
+@pytest.mark.parametrize("config", ({}, {"User": ""}))
+def test_measure_accepts_default_root_runtime_user(
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, str],
+) -> None:
+    inspect = [
+        {
+            "Id": "sha256:image",
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Config": config,
+            "Size": 123,
+            "RepoDigests": [],
+            "RootFS": {"Layers": ["sha256:one"]},
+        }
+    ]
+
+    def docker_output(argv: list[str], **_kwargs: object) -> str:
+        if argv[:2] == ["image", "inspect"]:
+            return json.dumps(inspect)
+        return '{"Size":"123"}\n'
+
+    monkeypatch.setattr(image_size_report, "_docker_output", docker_output)
+
+    measured = image_size_report.measure("helper", registry_manifest=False)
+
+    assert measured.runtime_user == ""
+
+
 def test_filesystem_measurement_keeps_exact_root_and_largest_directories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
