@@ -24,7 +24,7 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
 )
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import (
@@ -559,13 +559,13 @@ def _apply_contract_selectors(
 
 
 def _matching_contract_bindings(
-    bindings: tuple[ContractTargetBinding, ...],
+    bindings: tuple[AcceptanceTargetBinding, ...],
     *,
     criterion_key: str,
     authored: object,
-) -> dict[tuple[str, str], ContractTargetBinding]:
+) -> dict[tuple[str, str], AcceptanceTargetBinding]:
     """Return unique sealed bindings selected by one authored Target value."""
-    matches: dict[tuple[str, str], ContractTargetBinding] = {}
+    matches: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for binding in bindings:
         if not binding.candidate_selector:
             continue
@@ -603,7 +603,7 @@ def _derive_scalar_tb_review_binding(
         and isinstance(spec.params.get("tb_path"), str)
         and isinstance(spec.params.get(TARGET_IDENTITY_PARAM), str)
     }
-    owners: dict[tuple[str, str], ContractTargetBinding] = {}
+    owners: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for authored in sorted(authored_targets):
         unique = _matching_contract_bindings(
             contract.bindings,

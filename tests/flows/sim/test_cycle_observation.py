@@ -20,7 +20,7 @@ from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_contract_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
@@ -85,7 +85,7 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
 def _sealed_contract() -> AcceptanceBasis:
     return AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
                 criterion="cycle_count",
                 baseline=_TARGET_IDENTITY,

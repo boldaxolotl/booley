@@ -12,7 +12,6 @@ from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_basis import (
-    AcceptanceBasis,
     AcceptanceBasisError,
     assert_inputs_unchanged,
 )
@@ -64,17 +63,23 @@ def _checkout_statuses(root: Path) -> tuple[str, ...]:
     return tuple(statuses)
 
 
-def _validate_checkout_contract(root: Path, fields: dict[str, object]) -> list[str]:
-    """Validate a seal from a clean checkout without authoring worktrees."""
+def _validate_checkout_basis(
+    root: Path,
+    tickets_dir: Path,
+    slug: str,
+    fields: dict[str, object],
+) -> list[str]:
+    """Load the authoritative basis, then validate its clean authoring checkout."""
     if not (root / ".git").exists():
         return []
     if fields.get("target_contract") is not None:
         return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
-    raw = fields.get("acceptance_basis")
-    if raw is None:
-        return []
+    if fields.get("acceptance_basis") is None:
+        return ["executable Ticket has no Acceptance Basis"]
     try:
-        contract = AcceptanceBasis.from_mapping(raw)
+        from .io import TicketIO
+
+        contract = TicketIO(tickets_dir, project_root=root).load_basis(slug)
         resolve_commit(root, contract.outer_sha)
         if contract.project_sha:
             project_repository = resolve_inner_project_repo(root)
@@ -147,7 +152,7 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
     )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
-    errors.extend(_validate_checkout_contract(root, fields))
+    errors.extend(_validate_checkout_basis(root, tickets_dir, slug, fields))
     if not errors:
         with tempfile.TemporaryDirectory(prefix="booley-ready-") as build_root:
             errors.extend(validate_targets_for_seal(fields, root, build_root))

@@ -774,6 +774,16 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
     )
 
 
+def _acceptance_failure_detail(tio: Any, slug: str) -> str:
+    try:
+        current = tio.find_ticket(slug)
+    except (OSError, ValueError):
+        current = None
+    if current is not None and current.get("status") == "review":
+        return "ticket stays in review"
+    return "inspect the Ticket and Acceptance Journal before retrying"
+
+
 def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     """Refuse destructive terminal actions when durable acceptance is broken."""
     from .acceptance_ledger import (
@@ -880,10 +890,12 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         return False
 
     if on_success.merge:
-        from .completion import cleanup_finished, complete_review_ticket
+        from .acceptance_journal import cleanup_finished
+        from .completion import complete_review_ticket
 
         if not complete_review_ticket(tio, slug, on_success):
-            print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+            detail = _acceptance_failure_detail(tio, slug)
+            print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
             return False
         finished_cleanup = on_success.cleanup and cleanup_finished(
             Path(tio._project_root).resolve(), slug
@@ -1170,15 +1182,39 @@ def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
     return file_path if _queue_destination_available(tio, file_path) else None
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
+def _validated_reset_context(
+    tio: Any, slug: str
+) -> tuple[Path, dict[str, Any], Any | None] | None:
+    """Reload the reset target and its authoritative basis while locked."""
+    file_path = _locked_reset_candidate(tio, slug)
+    if file_path is None:
+        return None
+    current = tio.find_ticket(slug)
+    if current is None:
+        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        return None
+    if current.get("acceptance_basis") is None:
+        return file_path, current, None
+    from .acceptance_basis import AcceptanceBasisError
+
+    try:
+        basis = tio._load_basis_unlocked(slug)
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
+        print(
+            f"Error: reset could not validate the Acceptance Basis for '{slug}': {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return file_path, current, basis
+
+
+def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
     """Reset under the ticket lock, publishing queue state only at the end."""
     with tio._ticket_lock(slug):
-        # Recheck after waiting for the ticket lock. This closes the stale
-        # pre-lock observation that could otherwise erase a job which became
-        # active while reset was blocked on another ticket operation.
-        file_path = _locked_reset_candidate(tio, slug)
-        if file_path is None:
+        context = _validated_reset_context(tio, slug)
+        if context is None:
             return False
+        file_path, current, basis = context
 
         try:
             _reset_runtime_state(tio, slug)
@@ -1188,7 +1224,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> b
                 file=sys.stderr,
             )
             return False
-        if not _reset_ticket_branches(tio._project_root, slug, entry):
+        if not _reset_ticket_branches(tio._project_root, slug, current, basis):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -1196,7 +1232,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> b
 
         tio._append_transition_unlocked(
             slug,
-            f"{entry.get('status', 'unknown')}:{entry.get('step', '')}",
+            f"{current.get('status', 'unknown')}:{current.get('step', '')}",
             "queued:reset",
             "ticket-triage",
             reason,
@@ -1227,20 +1263,26 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
     return True
 
 
-def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any]) -> bool:
+def _reset_ticket_branches(
+    project_root: Path,
+    slug: str,
+    entry: dict[str, Any],
+    basis: Any | None,
+) -> bool:
     """Restore an Acceptance Basis generation or remove draft branches."""
     raw_contract = entry.get("acceptance_basis")
     if raw_contract is None:
         return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
-    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+    from .acceptance_basis import AcceptanceBasisError
     from .contract_ops import ContractOperationError, reset_basis_worktrees
 
     try:
-        contract = AcceptanceBasis.from_mapping(raw_contract)
+        if basis is None:
+            raise AcceptanceBasisError("authoritative Acceptance Basis is unavailable")
         reset_basis_worktrees(
             project_root,
             slug,
-            contract,
+            basis,
             str(entry.get("branch", "")),
         )
     except (ContractOperationError, AcceptanceBasisError, OSError) as exc:
@@ -1288,4 +1330,4 @@ def op_reset(
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
         return False
-    return _perform_reset(tio, canonical_slug, entry, reason)
+    return _perform_reset(tio, canonical_slug, reason)

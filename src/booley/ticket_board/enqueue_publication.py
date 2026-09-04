@@ -8,8 +8,15 @@ import re
 from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool,
+    require_dict,
+    require_int,
+    require_str,
+)
 from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
@@ -73,11 +80,34 @@ def load_enqueue_journal(project_root: Path, slug: str) -> EnqueueJournal | None
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        journal = EnqueueJournal(**value)
-    except (OSError, TypeError, json.JSONDecodeError) as exc:
+        journal = _parse_enqueue_journal(value)
+    except (BoundaryError, OSError, json.JSONDecodeError) as exc:
         raise EnqueuePublicationError(f"enqueue journal is unreadable: {path}: {exc}") from exc
     _validate_journal(project_root, slug, journal)
     return journal
+
+
+def _parse_enqueue_journal(value: Any) -> EnqueueJournal:
+    mapping = require_dict(value, field="enqueue journal")
+    if set(mapping) != set(EnqueueJournal.__dataclass_fields__):
+        raise BoundaryError("enqueue journal has invalid fields")
+    state = require_str(mapping, "state")
+    return EnqueueJournal(
+        schema=require_int(mapping.get("schema"), field="enqueue journal schema"),
+        operation_id=require_str(mapping, "operation_id"),
+        slug=require_str(mapping, "slug"),
+        state=cast(Literal["prepared", "published", "transitioned", "done"], state),
+        source=require_str(mapping, "source"),
+        source_sha256=require_str(mapping, "source_sha256"),
+        destination=require_str(mapping, "destination"),
+        candidate=require_str(mapping, "candidate"),
+        candidate_sha256=require_str(mapping, "candidate_sha256"),
+        backup=require_str(mapping, "backup"),
+        has_unmet=require_bool(mapping, "has_unmet"),
+        created=require_str(mapping, "created"),
+        basis=require_dict(mapping.get("basis"), field="enqueue journal basis"),
+        receipt=require_dict(mapping.get("receipt"), field="enqueue journal receipt"),
+    )
 
 
 def _validate_journal(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
@@ -107,14 +137,8 @@ def _validate_board_paths(project_root: Path, slug: str, journal: EnqueueJournal
 
 def _validate_journal_payload(journal: EnqueueJournal) -> None:
     digests = (journal.source_sha256, journal.candidate_sha256)
-    if not all(
-        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in digests
-    ):
+    if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise EnqueuePublicationError("enqueue journal content identity is invalid")
-    if not isinstance(journal.has_unmet, bool) or not isinstance(journal.created, str):
-        raise EnqueuePublicationError("enqueue journal publication metadata is invalid")
-    if not all(isinstance(value, dict) for value in (journal.basis, journal.receipt)):
-        raise EnqueuePublicationError("enqueue journal Acceptance Basis receipt is invalid")
     try:
         basis = AcceptanceBasis.from_mapping(journal.basis)
     except AcceptanceBasisError as exc:

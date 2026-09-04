@@ -15,6 +15,7 @@ import pytest
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -22,6 +23,20 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
     env["BOOLEY_SLUG"] = slug
     env["BOOLEY_STATE_FILE"] = str(state_file)
     return env
+
+
+def _flow_acceptance_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
+        participants=(
+            BasisParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/booley-generation/1234567890abcdef/ticket",
+                "refs/heads/main",
+                "b" * 40,
+            ),
+        )
+    )
 
 
 class EchoFlow(BooleyFlow):
@@ -155,24 +170,10 @@ class TestBooleyFlowExecution:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
-        from booley.ticket_board.acceptance_basis import (
-            AcceptanceBasis,
-            AcceptanceBasisError,
-            BasisParticipant,
-        )
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
         from booley.ticket_board.frontmatter import format_frontmatter
 
-        basis = AcceptanceBasis(
-            participants=(
-                BasisParticipant(
-                    "outer",
-                    "a" * 40,
-                    "refs/heads/booley-generation/1234567890abcdef/ticket",
-                    "refs/heads/main",
-                    "b" * 40,
-                ),
-            )
-        )
+        basis = _flow_acceptance_basis()
         ticket = tmp_path / "ticket.md"
         ticket.write_text(
             format_frontmatter({"acceptance_basis": basis.as_dict()}, "ticket"),

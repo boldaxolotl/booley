@@ -18,7 +18,7 @@ from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,7 +67,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
 
     contract = AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="lint",
                 criterion="lint_clean",
                 baseline="acme:ip:uart:1.0#lint_uart",
@@ -75,7 +75,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
                 baseline_selector="uart#lint_uart",
                 candidate_selector="uart#lint_uart",
             ),
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
                 criterion="review_tb_quality",
                 baseline="acme:ip:uart:1.0#sim_uart",
@@ -141,7 +141,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
     identity = "acme:ip:uart:1.0#sim_uart"
     contract = AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
                 criterion="sim_pass",
                 baseline=identity,

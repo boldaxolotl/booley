@@ -24,8 +24,8 @@ from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 
 from .acceptance_targets import (
-    ContractTargetBinding,
-    canonical_contract_bindings,
+    AcceptanceTargetBinding,
+    canonical_acceptance_bindings,
     criterion_targets,
 )
 
@@ -59,7 +59,7 @@ class TargetRemovalPlan:
         return tuple(item.canonical for item in self.targets)
 
 
-def _bound_targets(bindings: Iterable[ContractTargetBinding]) -> set[str]:
+def _bound_targets(bindings: Iterable[AcceptanceTargetBinding]) -> set[str]:
     return {target for row in bindings for target in (row.baseline, row.candidate)}
 
 
@@ -98,7 +98,7 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
 def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
-    bindings: Iterable[ContractTargetBinding],
+    bindings: Iterable[AcceptanceTargetBinding],
 ) -> TargetRemovalPlan:
     """Resolve selectors and prove every edit is criterion-bound and unambiguous."""
     root = Path(project_root).resolve()
@@ -145,7 +145,9 @@ def canonical_remove_targets(
     selectors = on_success.get("remove_targets", [])
     if not isinstance(selectors, list) or not selectors:
         return ()
-    bindings = canonical_contract_bindings(project_root, criterion_targets(fields.get("criteria")))
+    bindings = canonical_acceptance_bindings(
+        project_root, criterion_targets(fields.get("criteria"))
+    )
     return plan_target_removals(project_root, selectors, bindings).canonical_targets
 
 

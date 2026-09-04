@@ -276,7 +276,7 @@ class TestAcceptanceProgress:
                         }
                     ],
                     cleanup=True,
-                )
+                ).as_dict()
             ),
             encoding="utf-8",
         )
@@ -1444,54 +1444,62 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
     _write_transitions_log(tio, slug, lines)
 
 
+def _handoff_basis_receipt():
+    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/booley-generation/1234567890abcdef/t1",
+                "refs/heads/main",
+                "b" * 40,
+            ),
+        )
+    )
+    receipt = {
+        "schema": 1,
+        "basis_id": basis.basis_id,
+        "participants": [basis.participant("outer").as_dict()],
+        "record": {"role": "outer", "locator": "record.json", "sha256": "c" * 64},
+        "source_sha256": "d" * 64,
+        "operation_id": "e" * 32,
+    }
+    return basis, receipt
+
+
+def _write_ready_acceptance_state(tio: TicketIO) -> None:
+    from booley.criteria.state import DevelopmentState
+
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "t1", "booley_state.json"))
+    state.slug = "t1"
+    state.ticket_type = "feature"
+    state.init_criteria({"sim_pass": True, "_report_submitted": True})
+    state.set_criterion("sim_pass", True)
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
+    prep_dir.mkdir(parents=True)
+    briefing = prep_dir / "briefing.json"
+    briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
+    (prep_dir / "manifest.json").write_text(
+        json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+        encoding="utf-8",
+    )
+
+
 class TestOpHandoff:
     def test_freezes_live_acceptance_before_review(self, tmp_path, monkeypatch):
-        import json
-
-        from booley.criteria.state import DevelopmentState
         from booley.ticket_board import acceptance_basis as basis_module
-        from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        basis = AcceptanceBasis(
-            (
-                BasisParticipant(
-                    "outer",
-                    "a" * 40,
-                    "refs/heads/booley-generation/1234567890abcdef/t1",
-                    "refs/heads/main",
-                    "b" * 40,
-                ),
-            )
-        )
-        receipt = {
-            "schema": 1,
-            "basis_id": basis.basis_id,
-            "participants": [basis.participant("outer").as_dict()],
-            "record": {"role": "outer", "locator": "record.json", "sha256": "c" * 64},
-            "source_sha256": "d" * 64,
-            "operation_id": "e" * 32,
-        }
+        basis, receipt = _handoff_basis_receipt()
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
         monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
-        state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
-        state = DevelopmentState.load(state_path)
-        state.slug = "t1"
-        state.ticket_type = "feature"
-        state.init_criteria({"sim_pass": True, "_report_submitted": True})
-        state.set_criterion("sim_pass", True)
-        state.set_criterion("_report_submitted", True)
-        state.save()
-        prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
-        prep_dir.mkdir(parents=True)
-        briefing = prep_dir / "briefing.json"
-        briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
-        (prep_dir / "manifest.json").write_text(
-            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
-            encoding="utf-8",
-        )
+        _write_ready_acceptance_state(tio)
 
         assert op_handoff(tio, "t1") is True
 
@@ -2470,6 +2478,34 @@ class TestOpReset:
         assert progress.get("error") is None
         assert progress.get("failed_step") is None
         assert progress["workspace_intent"] == "fresh"
+
+    def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations as operations_module
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+            extra_fields={"acceptance_basis": {"schema": 1}},
+        )
+        monkeypatch.setattr(
+            tio,
+            "_load_basis_unlocked",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AcceptanceBasisError("receipt mismatch")
+            ),
+        )
+        monkeypatch.setattr(
+            operations_module,
+            "_reset_runtime_state",
+            lambda *_args: pytest.fail("runtime mutation preceded basis validation"),
+        )
+
+        assert op_reset(tio, "my-ticket") is False
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
 
     def test_reset_force_deletes_the_ticket_branch(self, tmp_path):
         tio = make_tio(tmp_path)

@@ -1188,6 +1188,19 @@ def _validate_git_state(
     return errors
 
 
+def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
+    raw_basis = fields.get("acceptance_basis")
+    if raw_basis is None:
+        return []
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+
+    try:
+        AcceptanceBasis.from_mapping(raw_basis)
+    except AcceptanceBasisError as exc:
+        return [str(exc)]
+    return []
+
+
 def validate_ticket_fields(
     fields: dict[str, Any],
     body: str,
@@ -1206,14 +1219,7 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
-    raw_basis = fields.get("acceptance_basis")
-    if raw_basis is not None:
-        from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
-
-        try:
-            AcceptanceBasis.from_mapping(raw_basis)
-        except AcceptanceBasisError as exc:
-            errors.append(str(exc))
+    errors.extend(_validate_acceptance_basis_field(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

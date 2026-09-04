@@ -12,6 +12,7 @@ on:
       - src/booley/data/docker/claude-managed-settings.json
       - src/booley/data/docker/codex-requirements.toml
       - src/booley/data/docker/export_project_dependencies.py
+      - src/booley/data/docker/openroad-source-manifest.json
       - src/booley/data/docker/vivado-wrapper
       - src/booley/harness/docker_base_contract.py
       - src/booley/data/docker/stable-base-inputs.txt
@@ -60,6 +61,7 @@ jobs:
           context: .
           file: src/booley/data/docker/Dockerfile.base
           push: true
+          sbom: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           build-args: |

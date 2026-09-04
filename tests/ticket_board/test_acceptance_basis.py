@@ -11,10 +11,16 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.ticket_board import contract_ops, draft_transition, enqueue_publication
+from booley.ticket_board import (
+    acceptance_targets,
+    contract_ops,
+    draft_transition,
+    enqueue_publication,
+)
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
+    AcceptancePathPolicy,
     BasisParticipant,
     assert_inputs_unchanged,
     authored_ticket_record,
@@ -24,7 +30,7 @@ from booley.ticket_board.acceptance_basis import (
 )
 from booley.ticket_board.acceptance_journal import JournalState
 from booley.ticket_board.acceptance_targets import (
-    ContractTargetBinding,
+    AcceptanceTargetBinding,
     validate_binding_selectors,
 )
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
@@ -167,12 +173,13 @@ def _git(repository: Path, *args: str) -> str:
         cwd=repository,
         capture_output=True,
         text=True,
+        timeout=30,
         check=True,
     )
     return result.stdout.strip()
 
 
-def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path) -> None:
+def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -186,7 +193,11 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     _git(root, "add", "-A")
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
-    tio = TicketIO(project_dir / "tickets", project_root=root)
+    return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
+def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
 
     ticket = tio.create_ticket_file(
         "automatic-basis",
@@ -227,23 +238,10 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     assert len(evidence["operation_id"]) == 32
 
 
-def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(  # noqa: PLR0915
+def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    project_dir = root / ".booley_project"
-    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
-    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
-    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
-    (root / "README.md").write_text("demo\n", encoding="utf-8")
-    _git(root, "add", "-A")
-    _git(root, "add", "-f", ".booley_project")
-    _git(root, "commit", "-m", "initial")
-    tio = TicketIO(project_dir / "tickets", project_root=root)
+    root, project_dir, tio = _basis_project(tmp_path)
     ticket = tio.create_ticket_file(
         "new-generation",
         TicketFileSpec(
@@ -567,6 +565,50 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
         assert_inputs_unchanged(basis, root)
 
 
+def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".gitignore").write_text("/.booley_project/\n", encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", ".gitignore")
+    _git(root, "commit", "-m", "baseline")
+    sha = _git(root, "rev-parse", "HEAD")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                sha,
+                "refs/heads/booley-generation/0123456789abcdef/ignored-control",
+                "refs/heads/main",
+                sha,
+            ),
+        )
+    )
+    hook = root / ".booley_project/hooks/pre-run.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("print('changed')\n", encoding="utf-8")
+
+    with pytest.raises(AcceptanceBasisError, match="protected path"):
+        assert_inputs_unchanged(basis, root)
+
+
+def test_protected_input_git_discovery_failure_is_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed = subprocess.CompletedProcess(
+        ["git", "ls-files"],
+        returncode=128,
+        stdout="",
+        stderr="broken index",
+    )
+    monkeypatch.setattr(acceptance_targets.subprocess, "run", lambda *_args, **_kwargs: failed)
+
+    with pytest.raises(AcceptanceBasisError, match="protected-input discovery failed"):
+        AcceptancePathPolicy().discover(tmp_path)
+
+
 def test_referenced_program_paths_include_redirecting_symlink(tmp_path: Path) -> None:
     root = tmp_path / "project"
     real = root / "real-hooks"
@@ -588,7 +630,7 @@ def test_referenced_program_paths_include_redirecting_symlink(tmp_path: Path) ->
 def test_binding_selector_validation_rejects_changed_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    binding = ContractTargetBinding(
+    binding = AcceptanceTargetBinding(
         "sim", "sim_pass", "acme:lib:old#sim", "acme:lib:old#sim", "sim", "sim"
     )
     monkeypatch.setattr(

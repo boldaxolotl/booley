@@ -36,7 +36,7 @@ _FLOW_BY_CRITERION = {
 
 
 @dataclass(frozen=True, order=True)
-class ContractTargetBinding:
+class AcceptanceTargetBinding:
     """Canonical directed Target identities and their callable selectors."""
 
     flow: str
@@ -205,7 +205,10 @@ def _tracked_gitlinks(root: Path) -> set[str]:
         check=False,
     )
     if result.returncode != 0:
-        return set()
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
+        raise BoundaryError(
+            f"git ls-files failed during protected-input discovery in {root}: {detail}"
+        )
     return {
         record.partition("\t")[2]
         for record in result.stdout.split("\0")
@@ -610,18 +613,18 @@ def _validate_binding(
     return errors
 
 
-def canonical_contract_bindings(
+def canonical_acceptance_bindings(
     project_root: Path | str,
     bindings: Iterable[CriterionTarget],
-) -> tuple[ContractTargetBinding, ...]:
+) -> tuple[AcceptanceTargetBinding, ...]:
     """Resolve bindings to durable identities and current callable selectors."""
     root = Path(project_root)
-    rows: set[ContractTargetBinding] = set()
+    rows: set[AcceptanceTargetBinding] = set()
     for binding in bindings:
         baseline = select_target(root, binding.baseline)
         candidate = select_target(root, binding.target)
         rows.add(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow=binding.flow,
                 criterion=binding.key,
                 baseline=baseline.identity,
@@ -634,7 +637,7 @@ def canonical_contract_bindings(
 
 
 def validate_binding_selectors(
-    project_root: Path | str, bindings: Iterable[ContractTargetBinding]
+    project_root: Path | str, bindings: Iterable[AcceptanceTargetBinding]
 ) -> list[str]:
     """Require every persisted selector to resolve to its persisted identity."""
     root = Path(project_root)

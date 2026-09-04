@@ -35,7 +35,7 @@ from .acceptance_basis import (
     record_relative_path,
 )
 from .acceptance_targets import (
-    canonical_contract_bindings,
+    canonical_acceptance_bindings,
     contract_control_paths,
     criterion_targets,
     resolve_commit,
@@ -801,7 +801,7 @@ def _write_authored_record(
     body: str,
 ) -> tuple:
     binding_specs = criterion_targets(fields.get("criteria"))
-    bindings = canonical_contract_bindings(prepared.outer, binding_specs)
+    bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
     try:
         payload = canonical_json(authored_ticket_record(fields, body, bindings))
     except AcceptanceBasisError as exc:

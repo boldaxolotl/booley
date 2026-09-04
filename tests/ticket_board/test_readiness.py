@@ -124,3 +124,26 @@ def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.Mon
 
     with pytest.raises(RuntimeError, match="not a repository"):
         readiness_module._checkout_statuses(root)
+
+
+def test_executable_readiness_uses_authoritative_basis_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    (root / ".git").mkdir(parents=True)
+    tickets = root / ".booley_project/tickets"
+
+    def reject_missing_receipt(*_args: object, **_kwargs: object) -> None:
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+        raise AcceptanceBasisError("Acceptance Basis receipt mismatch")
+
+    monkeypatch.setattr(TicketIO, "load_basis", reject_missing_receipt)
+    errors = readiness_module._validate_checkout_basis(
+        root,
+        tickets,
+        "demo",
+        {"acceptance_basis": {"schema": 1}},
+    )
+
+    assert errors == ["Acceptance Basis receipt mismatch"]

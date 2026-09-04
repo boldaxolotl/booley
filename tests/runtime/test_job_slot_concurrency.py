@@ -4,11 +4,33 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from booley.runtime import job_slots
+
+
+def test_job_slot_import_does_not_require_fusesoc_api(tmp_path: Path) -> None:
+    """Spawned slot workers must not load acceptance repository adapters."""
+    fake_fusesoc = tmp_path / "fusesoc"
+    fake_fusesoc.mkdir()
+    (fake_fusesoc / "__init__.py").write_text("", encoding="utf-8")
+    source_root = Path(__file__).parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(source_root)))
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import booley.runtime.job_slots"],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _hold_single_slot(

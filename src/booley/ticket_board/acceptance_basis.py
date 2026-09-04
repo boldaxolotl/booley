@@ -20,7 +20,7 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
 )
 
-from .acceptance_targets import ContractTargetBinding
+from .acceptance_targets import AcceptanceTargetBinding
 from .contract_path_policy import is_static_contract_path
 from .persistence import WriteOnceConflictError, atomic_write_once
 
@@ -89,7 +89,12 @@ class AcceptancePathPolicy:
             raise AcceptanceBasisError(f"unsupported Acceptance Path Policy {self.schema}")
         from .acceptance_targets import contract_control_paths
 
-        return contract_control_paths(project_root)
+        try:
+            return contract_control_paths(project_root)
+        except (OSError, ValueError) as exc:
+            raise AcceptanceBasisError(
+                f"{BLOCK_REASON}: protected-input discovery failed in {project_root}: {exc}"
+            ) from exc
 
 
 PATH_POLICY = AcceptancePathPolicy()
@@ -120,7 +125,7 @@ class AcceptanceBasis:
     """Minimal immutable pointer stored in Ticket frontmatter."""
 
     participants: tuple[BasisParticipant, ...]
-    bindings: tuple[ContractTargetBinding, ...] = ()
+    bindings: tuple[AcceptanceTargetBinding, ...] = ()
     removal_targets: tuple[str, ...] = ()
     schema: int = SCHEMA_VERSION
 
@@ -256,7 +261,7 @@ def authored_ticket_record(fields: Mapping[str, Any], body: str, bindings: Any) 
     }
 
 
-def _binding_to_record(binding: ContractTargetBinding) -> dict[str, str]:
+def _binding_to_record(binding: AcceptanceTargetBinding) -> dict[str, str]:
     return {
         "flow": binding.flow,
         "criterion": binding.criterion,
@@ -293,7 +298,7 @@ def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     return canonical
 
 
-def _binding_from_record(value: Any) -> ContractTargetBinding:
+def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
     if not isinstance(value, Mapping):
         raise AcceptanceBasisError("Acceptance Basis binding must be a mapping")
     expected = {
@@ -306,7 +311,7 @@ def _binding_from_record(value: Any) -> ContractTargetBinding:
     }
     if set(value) != expected or not all(isinstance(value[key], str) for key in expected):
         raise AcceptanceBasisError("Acceptance Basis binding has an invalid schema")
-    return ContractTargetBinding(
+    return AcceptanceTargetBinding(
         flow=value["flow"],
         criterion=value["criterion"],
         baseline=value["baseline_identity"],
@@ -491,23 +496,25 @@ def _validate_receipt(
 ) -> dict[str, Any]:
     path = _receipt_path(project_root, slug, basis)
     try:
-        actual = json.loads(path.read_text(encoding="utf-8"))
+        decoded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise AcceptanceBasisError(f"Acceptance Basis receipt is unavailable: {path}") from exc
+    try:
+        actual = require_dict(decoded, field="Acceptance Basis receipt")
+        source_identity = require_str(actual, "source_sha256")
+        operation_identity = require_str(actual, "operation_id")
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(f"{BLOCK_REASON}: Acceptance Basis receipt mismatch") from exc
     expected = _receipt_payload(
         project_root,
         slug,
         basis,
         record,
-        source_sha256=str(actual.get("source_sha256", "")),
-        operation_id=str(actual.get("operation_id", "")),
+        source_sha256=source_identity,
+        operation_id=operation_identity,
     )
-    source_identity = actual.get("source_sha256")
-    operation_identity = actual.get("operation_id")
     identities_valid = (
-        isinstance(source_identity, str)
-        and re.fullmatch(r"[0-9a-f]{64}", source_identity) is not None
-        and isinstance(operation_identity, str)
+        re.fullmatch(r"[0-9a-f]{64}", source_identity) is not None
         and re.fullmatch(r"[0-9a-f]{32}", operation_identity) is not None
     )
     if not identities_valid or actual != expected or canonical_json(actual) != path.read_bytes():
@@ -547,6 +554,7 @@ def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) ->
         root,
         basis.outer_sha,
         outer_protected,
+        excluded_prefixes=(prefix,) if project is not None else (),
     )
     if project is None:
         return
@@ -572,10 +580,10 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
     """Discover protected paths from both baseline and effective composite trees."""
     try:
         current = set(discover(root))
-    except FileNotFoundError:
-        current = set()
-    except ValueError as exc:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: {exc}") from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: protected-input discovery failed in {root}: {exc}"
+        ) from exc
     with tempfile.TemporaryDirectory(prefix="booley-basis-controls-") as raw_directory:
         baseline = Path(raw_directory) / "outer"
         _clone_commit(root, baseline, basis.outer_sha)
@@ -586,10 +594,10 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
             _clone_commit(source, baseline / project_relative, project.authoring_sha)
         try:
             current.update(discover(baseline))
-        except FileNotFoundError:
-            pass
-        except ValueError as exc:
-            raise AcceptanceBasisError(f"{BLOCK_REASON}: {exc}") from exc
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise AcceptanceBasisError(
+                f"{BLOCK_REASON}: protected-input discovery failed in {baseline}: {exc}"
+            ) from exc
     return current
 
 
@@ -633,10 +641,29 @@ def _assert_repository_inputs_unchanged(
     protected: set[str],
     *,
     ticket_prefix: str = "",
+    excluded_prefixes: tuple[str, ...] = (),
 ) -> None:
     changed = _git_paths(repository, "diff", "--name-only", "-z", authoring_sha)
     changed.update(_git_paths(repository, "diff", "--cached", "--name-only", "-z", authoring_sha))
     changed.update(_git_paths(repository, "ls-files", "--others", "--exclude-standard", "-z"))
+    changed.update(
+        _git_paths(
+            repository,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        )
+    )
+    changed = {
+        path
+        for path in changed
+        if not any(
+            path.rstrip("/") == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")
+            for prefix in excluded_prefixes
+        )
+    }
     violations = sorted(
         path
         for path in changed

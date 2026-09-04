@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import fusesoc_registry
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
@@ -24,9 +24,9 @@ def _write_core(path: Path, *, vlnv: str, targets: str) -> None:
     )
 
 
-def _binding(*targets: str) -> tuple[ContractTargetBinding, ...]:
+def _binding(*targets: str) -> tuple[AcceptanceTargetBinding, ...]:
     return tuple(
-        ContractTargetBinding("synth", "synthesis_ok", target, target) for target in targets
+        AcceptanceTargetBinding("synth", "synthesis_ok", target, target) for target in targets
     )
 
 

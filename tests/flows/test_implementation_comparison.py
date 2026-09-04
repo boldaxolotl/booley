@@ -18,7 +18,7 @@ from booley.flows.implementation_comparison import (
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import select_target
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 
 def test_missing_metadata_preserves_equal_target_behavior() -> None:
@@ -65,7 +65,7 @@ targets:
     )
     return AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="synth",
                 criterion="synthesis_ok",
                 baseline="acme:lib:toy:1.0#synth_before",
@@ -142,7 +142,7 @@ def test_synth_and_fpga_share_current_schema_pair_plan_contract(
 ) -> None:
     contract = _sealed_project(tmp_path, schema=4)
     vlnv = "acme:lib:toy:1.0"
-    binding = ContractTargetBinding(
+    binding = AcceptanceTargetBinding(
         flow=flow,
         criterion=criterion,
         baseline=f"{vlnv}#{baseline_name}",
@@ -187,7 +187,7 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
         "  synth_after: {flow: generic, flow_options: {tool: yosys}}\n",
         encoding="utf-8",
     )
-    binding = ContractTargetBinding(
+    binding = AcceptanceTargetBinding(
         flow="synth",
         criterion="synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",
@@ -260,7 +260,7 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
 
 def _contract_with_binding(
     contract: AcceptanceBasis,
-    binding: ContractTargetBinding,
+    binding: AcceptanceTargetBinding,
 ) -> AcceptanceBasis:
     return AcceptanceBasis(
         bindings=(binding,),
@@ -275,7 +275,7 @@ def test_plan_has_no_public_authority_constructor() -> None:
 
 def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path, schema=4)
-    empty_selector_binding = ContractTargetBinding(
+    empty_selector_binding = AcceptanceTargetBinding(
         flow="synth",
         criterion="synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",
@@ -468,7 +468,7 @@ def test_doctor_private_candidate_cannot_enter_sealed_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = _sealed_project(tmp_path, schema=4)
-    binding = ContractTargetBinding(
+    binding = AcceptanceTargetBinding(
         flow="synth",
         criterion="synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",

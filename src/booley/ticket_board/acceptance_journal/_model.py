@@ -6,9 +6,11 @@ import hashlib
 import json
 import re
 import uuid
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, TypedDict
+from types import MappingProxyType
+from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 
@@ -41,13 +43,35 @@ _JOURNAL_FIELDS = (
 )
 
 
-class Candidate(TypedDict):
+@dataclass(frozen=True)
+class Candidate:
     """One validated pair of prepared and finalized acceptance identities."""
 
     prepared_sha: str | None
     finalized_sha: str | None
     staging_ref: str
     expected_destination_sha: str
+
+    def __getitem__(self, key: str) -> str | None:
+        """Retain compact field access inside repository mechanics."""
+        return getattr(self, key)
+
+    def with_prepared(self, sha: str) -> Candidate:
+        """Return this candidate with its recovered prepared identity."""
+        return replace(self, prepared_sha=sha)
+
+    def with_finalized(self, sha: str) -> Candidate:
+        """Return this candidate with its finalized identity."""
+        return replace(self, finalized_sha=sha)
+
+    def as_dict(self) -> dict[str, str | None]:
+        """Return the schema-5 candidate serialization shape."""
+        return {
+            "prepared_sha": self.prepared_sha,
+            "finalized_sha": self.finalized_sha,
+            "staging_ref": self.staging_ref,
+            "expected_destination_sha": self.expected_destination_sha,
+        }
 
 
 def _removal_digest(removal_targets: tuple[str, ...]) -> str:
@@ -110,28 +134,152 @@ class JournalState(StrEnum):
         return order if cleanup else []
 
 
-class AcceptancePolicy(TypedDict):
-    """The immutable publication and cleanup choices for one acceptance."""
+@dataclass(frozen=True)
+class AcceptanceJournal:
+    """Immutable, validated state for one recoverable acceptance."""
 
-    merge: bool
-    cleanup: bool
-
-
-class AcceptanceJournal(TypedDict):
-    """Validated mutable state for one recoverable acceptance transaction."""
-
-    schema: int
     transaction: str
     ticket: str
     state: JournalState
-    policy: AcceptancePolicy
-    participants: list[dict[str, str]]
-    sources: dict[str, str]
-    candidates: dict[str, Candidate]
-    published: list[str]
-    cleaned: list[str]
-    removal_targets: list[str]
+    cleanup: bool
+    participants: tuple[MappingProxyType[str, str], ...]
+    sources: MappingProxyType[str, str]
+    candidates: MappingProxyType[str, Candidate]
+    published: tuple[str, ...]
+    cleaned: tuple[str, ...]
+    removal_targets: tuple[str, ...]
     removal_digest: str
+    schema: int = 5
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        """Return participant roles in contract order."""
+        return tuple(item["role"] for item in self.participants)
+
+    @property
+    def transition_order(self) -> tuple[str, ...]:
+        """Return the project-before-outer publication and cleanup order."""
+        return tuple(role for role in ("project", "outer") if role in self.roles)
+
+    def __getitem__(self, key: str) -> Any:
+        """Keep read-only repository mechanics concise during the migration."""
+        if key == "policy":
+            return MappingProxyType({"merge": True, "cleanup": self.cleanup})
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Provide read-only mapping-style access for scanners."""
+        try:
+            return self[key]
+        except AttributeError:
+            return default
+
+    def with_sources(self, sources: dict[str, str]) -> AcceptanceJournal:
+        """Record all pinned sources before candidate preparation."""
+        if self.state is not JournalState.INITIALIZING or self.sources:
+            raise AcceptanceJournalError("pinned sources can only be recorded while initializing")
+        if set(sources) != set(self.roles):
+            raise AcceptanceJournalError("pinned sources must cover every participant")
+        return replace(self, sources=MappingProxyType(dict(sources)))
+
+    def with_candidate(self, role: str, candidate: Candidate) -> AcceptanceJournal:
+        """Record one prepared candidate while initialization is active."""
+        if self.state is not JournalState.INITIALIZING or role not in self.roles:
+            raise AcceptanceJournalError("candidate preparation is not legal in this state")
+        candidates = dict(self.candidates)
+        candidates[role] = candidate
+        return replace(self, candidates=MappingProxyType(candidates))
+
+    def with_prepared_identity(self, role: str, sha: str) -> AcceptanceJournal:
+        """Restore a prepared identity omitted by an older journal schema."""
+        candidates = dict(self.candidates)
+        candidates[role] = candidates[role].with_prepared(sha)
+        return replace(self, candidates=MappingProxyType(candidates))
+
+    def with_finalized_identity(self, role: str, sha: str) -> AcceptanceJournal:
+        """Record one finalized candidate without mutating the durable record."""
+        if self.state is not JournalState.PREPARED:
+            raise AcceptanceJournalError("candidate finalization requires prepared state")
+        candidates = dict(self.candidates)
+        candidates[role] = candidates[role].with_finalized(sha)
+        return replace(self, candidates=MappingProxyType(candidates))
+
+    def mark_prepared(self) -> AcceptanceJournal:
+        """Enter prepared after every participant has a candidate."""
+        if self.state is not JournalState.INITIALIZING:
+            raise AcceptanceJournalError("preparation can only finish while initializing")
+        if set(self.candidates) != set(self.roles):
+            raise AcceptanceJournalError("preparation requires every participant candidate")
+        return replace(self, state=JournalState.PREPARED)
+
+    def mark_published(self, role: str) -> AcceptanceJournal:
+        """Record the next legal project-before-outer publication."""
+        expected = self.transition_order[len(self.published) : len(self.published) + 1]
+        if expected != (role,) or self.state not in {
+            JournalState.PREPARED,
+            JournalState.PUBLISHED_PROJECT,
+        }:
+            raise AcceptanceJournalError(f"publication of {role!r} is not legal in this state")
+        return replace(
+            self,
+            published=(*self.published, role),
+            state=JournalState(f"published-{role}"),
+        )
+
+    def mark_accepted(self) -> AcceptanceJournal:
+        """Record durable Ticket approval after outer publication."""
+        if self.state is not JournalState.PUBLISHED_OUTER:
+            raise AcceptanceJournalError("acceptance requires outer publication")
+        return replace(self, state=JournalState.ACCEPTED)
+
+    def mark_cleaned(self, role: str) -> AcceptanceJournal:
+        """Record the next legal project-before-outer cleanup."""
+        expected = self.transition_order[len(self.cleaned) : len(self.cleaned) + 1]
+        if (
+            not self.cleanup
+            or expected != (role,)
+            or self.state
+            not in {
+                JournalState.ACCEPTED,
+                JournalState.CLEANUP_PROJECT,
+            }
+        ):
+            raise AcceptanceJournalError(f"cleanup of {role!r} is not legal in this state")
+        return replace(
+            self,
+            cleaned=(*self.cleaned, role),
+            state=JournalState(f"cleanup-{role}"),
+        )
+
+    def mark_done(self) -> AcceptanceJournal:
+        """Enter the terminal state only after the configured cleanup."""
+        expected = self.transition_order if self.cleanup else ()
+        if self.state is JournalState.DONE:
+            return self
+        if self.state not in {JournalState.ACCEPTED, JournalState.CLEANUP_OUTER}:
+            raise AcceptanceJournalError("done is not legal in this state")
+        if self.cleaned != expected:
+            raise AcceptanceJournalError("done requires configured cleanup to finish")
+        return replace(self, state=JournalState.DONE)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return an independent schema-5 JSON object."""
+        return {
+            "schema": self.schema,
+            "transaction": self.transaction,
+            "ticket": self.ticket,
+            "state": self.state,
+            "policy": {"merge": True, "cleanup": self.cleanup},
+            "participants": [dict(item) for item in self.participants],
+            "sources": dict(self.sources),
+            "candidates": {
+                role: candidate.as_dict() for role, candidate in self.candidates.items()
+            },
+            "published": list(self.published),
+            "cleaned": list(self.cleaned),
+            "removal_targets": list(self.removal_targets),
+            "removal_digest": self.removal_digest,
+        }
 
 
 def initial_journal(
@@ -142,20 +290,19 @@ def initial_journal(
     removal_targets: tuple[str, ...] = (),
 ) -> AcceptanceJournal:
     """Return a new journal before any repository mutation."""
-    return {
-        "schema": 5,
-        "transaction": uuid.uuid4().hex,
-        "ticket": slug,
-        "state": JournalState.INITIALIZING,
-        "policy": {"merge": True, "cleanup": cleanup},
-        "participants": participants,
-        "sources": {},
-        "candidates": {},
-        "published": [],
-        "cleaned": [],
-        "removal_targets": list(removal_targets),
-        "removal_digest": _removal_digest(removal_targets),
-    }
+    return AcceptanceJournal(
+        transaction=uuid.uuid4().hex,
+        ticket=slug,
+        state=JournalState.INITIALIZING,
+        cleanup=cleanup,
+        participants=tuple(MappingProxyType(dict(item)) for item in participants),
+        sources=MappingProxyType({}),
+        candidates=MappingProxyType({}),
+        published=(),
+        cleaned=(),
+        removal_targets=removal_targets,
+        removal_digest=_removal_digest(removal_targets),
+    )
 
 
 def _validated_participants(value: Any) -> list[dict[str, str]]:
@@ -206,12 +353,12 @@ def _validated_candidates(value: Any, roles: set[str], transaction: str) -> dict
         }
         if set(candidate) != expected:
             raise BoundaryError(f"acceptance journal candidate {role!r} has invalid fields")
-        result[role] = {
-            "prepared_sha": _optional_sha(candidate, role, "prepared_sha"),
-            "finalized_sha": _optional_sha(candidate, role, "finalized_sha"),
-            "staging_ref": require_str(candidate, "staging_ref"),
-            "expected_destination_sha": require_str(candidate, "expected_destination_sha"),
-        }
+        result[role] = Candidate(
+            prepared_sha=_optional_sha(candidate, role, "prepared_sha"),
+            finalized_sha=_optional_sha(candidate, role, "finalized_sha"),
+            staging_ref=require_str(candidate, "staging_ref"),
+            expected_destination_sha=require_str(candidate, "expected_destination_sha"),
+        )
         _validate_candidate(result[role], role, transaction)
     return result
 
@@ -226,15 +373,15 @@ def _optional_sha(candidate: dict[str, Any], role: str, key: str) -> str | None:
 
 
 def _validate_candidate(candidate: Candidate, role: str, transaction: str) -> None:
-    if candidate["prepared_sha"] is None and candidate["finalized_sha"] is None:
+    if candidate.prepared_sha is None and candidate.finalized_sha is None:
         raise BoundaryError(f"acceptance journal candidate {role!r} has no recorded identity")
-    expected_destination = candidate["expected_destination_sha"]
+    expected_destination = candidate.expected_destination_sha
     if not _SHA_RE.fullmatch(expected_destination):
         raise BoundaryError(
             f"acceptance journal candidates.{role}.expected_destination_sha is invalid"
         )
     expected_ref = f"refs/booley/acceptance/{transaction}/{role}"
-    if candidate["staging_ref"] != expected_ref:
+    if candidate.staging_ref != expected_ref:
         raise BoundaryError(
             f"acceptance journal candidates.{role}.staging_ref must be {expected_ref!r}"
         )
@@ -287,7 +434,7 @@ def _validate_progress(
             f"acceptance journal state {str(state)!r} conflicts with cleaned roles"
         )
     finalized = bool(candidates) and all(
-        candidate["finalized_sha"] is not None for candidate in candidates.values()
+        candidate.finalized_sha is not None for candidate in candidates.values()
     )
     if published and not finalized:
         raise BoundaryError("acceptance journal cannot publish unfinalized candidates")
@@ -333,7 +480,7 @@ def validate_journal(
     if require_str(journal, "ticket") != slug:
         raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
     if journal.get("participants") != participants:
-        raise BoundaryError("sealed repository participants changed after acceptance began")
+        raise BoundaryError("recorded repository participants changed after acceptance began")
     if set(journal) != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
     if journal.get("schema") != 5:
@@ -393,20 +540,21 @@ def _normalized(
     cleaned: list[Any],
     removal_targets: tuple[str, ...],
 ) -> AcceptanceJournal:
-    return {
-        "schema": 5,
-        "transaction": journal["transaction"],
-        "ticket": journal["ticket"],
-        "state": state,
-        "policy": {"merge": True, "cleanup": cleanup},
-        "participants": journal["participants"],
-        "sources": sources,
-        "candidates": candidates,
-        "published": published,
-        "cleaned": cleaned,
-        "removal_targets": list(removal_targets),
-        "removal_digest": _removal_digest(removal_targets),
-    }
+    return AcceptanceJournal(
+        transaction=journal["transaction"],
+        ticket=journal["ticket"],
+        state=state,
+        cleanup=cleanup,
+        participants=tuple(
+            MappingProxyType(dict(participant)) for participant in journal["participants"]
+        ),
+        sources=MappingProxyType(dict(sources)),
+        candidates=MappingProxyType(dict(candidates)),
+        published=tuple(published),
+        cleaned=tuple(cleaned),
+        removal_targets=removal_targets,
+        removal_digest=_removal_digest(removal_targets),
+    )
 
 
 def read_json(path: Path) -> Any:
@@ -469,4 +617,4 @@ def acceptance_state(tickets_dir: Path, slug: str) -> JournalState | None:
     path = tickets_dir.parent / ".runtime" / "acceptance" / f"{slug}.json"
     if not path.exists():
         return None
-    return JournalState(load_persisted_journal(path)["state"])
+    return load_persisted_journal(path).state

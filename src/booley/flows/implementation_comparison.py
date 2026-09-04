@@ -12,7 +12,7 @@ from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target import TargetHandle, select_target
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
-from booley.ticket_board.acceptance_targets import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 
 class ImplementationComparisonError(ValueError):
@@ -38,7 +38,7 @@ class TargetPairPlan:
     flow: str
     baseline: TargetExecutionRef
     candidate: TargetExecutionRef
-    binding: ContractTargetBinding | None
+    binding: AcceptanceTargetBinding | None
     _factory_key: InitVar[object]
 
     def __post_init__(self, _factory_key: object) -> None:
@@ -67,7 +67,7 @@ def _make_plan(
     flow: str,
     baseline: TargetExecutionRef,
     candidate: TargetExecutionRef,
-    binding: ContractTargetBinding | None,
+    binding: AcceptanceTargetBinding | None,
 ) -> TargetPairPlan:
     return TargetPairPlan(flow, baseline, candidate, binding, _PLAN_FACTORY_KEY)
 
@@ -164,7 +164,7 @@ def _binding_for_candidate(
     flow: str,
     criterion: str,
     candidate: TargetExecutionRef,
-) -> ContractTargetBinding:
+) -> AcceptanceTargetBinding:
     matches = tuple(
         binding
         for binding in contract.bindings

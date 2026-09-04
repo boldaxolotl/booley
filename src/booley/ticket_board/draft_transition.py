@@ -12,8 +12,15 @@ import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool,
+    require_dict,
+    require_int,
+    require_str,
+)
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
@@ -98,11 +105,34 @@ def _load_journal(root: Path, logs_dir: Path, slug: str) -> DraftTransitionJourn
     if not path.exists():
         return None
     try:
-        journal = DraftTransitionJournal(**json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, TypeError, json.JSONDecodeError) as exc:
+        journal = _parse_journal(json.loads(path.read_text(encoding="utf-8")))
+    except (BoundaryError, OSError, json.JSONDecodeError) as exc:
         raise DraftTransitionError(f"return-to-draft journal is unreadable: {path}") from exc
     _validate_journal(root, logs_dir, slug, journal)
     return journal
+
+
+def _parse_journal(value: Any) -> DraftTransitionJournal:
+    mapping = require_dict(value, field="return-to-draft journal")
+    if set(mapping) != set(DraftTransitionJournal.__dataclass_fields__):
+        raise BoundaryError("return-to-draft journal has invalid fields")
+    state = require_str(mapping, "state")
+    return DraftTransitionJournal(
+        schema=require_int(mapping.get("schema"), field="return-to-draft journal schema"),
+        operation_id=require_str(mapping, "operation_id"),
+        slug=require_str(mapping, "slug"),
+        state=cast(Literal["initializing", "prepared", "cutover-ready", "published"], state),
+        basis=require_dict(mapping.get("basis"), field="return-to-draft journal basis"),
+        basis_id=require_str(mapping, "basis_id"),
+        blocked_ticket=require_str(mapping, "blocked_ticket"),
+        blocked_sha256=require_str(mapping, "blocked_sha256"),
+        draft_ticket=require_str(mapping, "draft_ticket"),
+        draft_sha256=require_str(mapping, "draft_sha256"),
+        generation=require_str(mapping, "generation"),
+        generation_sha256=require_str(mapping, "generation_sha256"),
+        archive_dir=require_str(mapping, "archive_dir"),
+        has_project=require_bool(mapping, "has_project"),
+    )
 
 
 def transition_pending(project_root: Path | str, slug: str) -> bool:
@@ -134,9 +164,7 @@ def _validate_journal(
         journal.draft_sha256,
         journal.generation_sha256,
     )
-    if not all(
-        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in digests
-    ):
+    if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise DraftTransitionError("return-to-draft content identity is invalid")
     blocked = Path(journal.blocked_ticket).resolve()
     if blocked != (board / "blocked" / f"{slug}.md").resolve():
@@ -146,11 +174,7 @@ def _validate_journal(
     operation = _operation_dir(root, journal.operation_id).resolve()
     if operation.parent != _transition_root(root).resolve():
         raise DraftTransitionError("return-to-draft operation path is invalid")
-    if (
-        not isinstance(journal.has_project, bool)
-        or archive.parent != archive_root
-        or re.fullmatch(r"[0-9]{3}", archive.name) is None
-    ):
+    if archive.parent != archive_root or re.fullmatch(r"[0-9]{3}", archive.name) is None:
         raise DraftTransitionError("return-to-draft publication metadata is invalid")
 
 
