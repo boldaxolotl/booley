@@ -53,6 +53,8 @@ _HOOK_SHELL = ("bash", "-lc")
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
+_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS = 120.0
+
 
 class SessionError(RuntimeError):
     """A precondition for running the Session Runtime is missing."""
@@ -1005,14 +1007,13 @@ def _up_unlocked(
     return request.name
 
 
-def _recover_before_lifecycle(workspace: Path, retry_command: str) -> None:
+def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
     from booley.harness.session_refresh import RecoveryOutcome, recover_project_locked
 
     recovered = recover_project_locked(workspace)
     if recovered.outcome is not RecoveryOutcome.NONE:
-        raise SessionError(
-            f"recovered an interrupted Session refresh; run `{retry_command}` again"
-        )
+        retry = f"run `{retry_command}` again" if retry_command else "retry the command"
+        raise SessionError(f"recovered an interrupted Session refresh; {retry}")
 
 
 def up(
@@ -2000,8 +2001,11 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
     """Run one command in this Project's validated Session Runtime."""
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
-    with host_lifecycle_lock("session command"):
-        _recover_before_lifecycle(workspace, "booley auth")
+    with host_lifecycle_lock(
+        "session command",
+        wait_timeout_s=_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS,
+    ):
+        _recover_before_lifecycle(workspace, None)
         name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
     from booley.harness.runtime_attachment import run_command
@@ -2025,12 +2029,9 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
     first if it exists but is stopped, so this is the one entry point a script
     needs.
     """
-    name = up(workspace)
     if command:
-        _warn_on_mangled_args(command)
-        from booley.harness.runtime_attachment import run_command
-
-        return run_command(workspace, name, list(command), tty=tty).exit_code
+        return run_project_command(workspace, command, tty=tty)
+    name = up(workspace)
     argv = exec_argv(name, ["/bin/bash", "-l"], tty=tty)
     return _run(argv, capture=False).returncode
 
