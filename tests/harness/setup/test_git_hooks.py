@@ -76,6 +76,21 @@ def _ctx(root: Path, *, check_only: bool = False, fix_line_endings: bool = False
     )
 
 
+def _run_git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run one bounded Git command for integration tests."""
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=30,
+    )
+
+
 class TestWorktreePruneGuardStep:
     def test_sets_config_on_git_repo(self, tmp_path: Path):
         _git_init(tmp_path)
@@ -189,12 +204,9 @@ class TestInstalledPrePushGuard:
         main = tmp_path / "main"
         origin = tmp_path / "origin"
         project_dir = tmp_path / "runtime-project-state"
-        _git_init(main)
-        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(
-            ["git", "-C", str(main), "remote", "add", "origin", str(origin)],
-            check=True,
-        )
+        _run_git(tmp_path, "init", "-q", str(main))
+        _run_git(tmp_path, "init", "-q", "--bare", str(origin))
+        _run_git(main, "remote", "add", "origin", str(origin))
         project_dir.mkdir()
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
         reset_cache()
@@ -203,43 +215,25 @@ class TestInstalledPrePushGuard:
         leaked = main / ".booley_project" / "docs" / "example.md"
         leaked.parent.mkdir(parents=True)
         leaked.write_text("private project state\n", encoding="utf-8")
-        subprocess.run(
-            ["git", "-C", str(main), "add", "-f", ".booley_project/docs/example.md"],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(main),
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-qm",
-                "docs: add example",
-                "--no-verify",
-            ],
-            check=True,
+        _run_git(main, "add", "-f", ".booley_project/docs/example.md")
+        _run_git(
+            main,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "docs: add example",
+            "--no-verify",
         )
 
-        result = subprocess.run(
-            ["git", "-C", str(main), "push", "origin", "HEAD:main"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = _run_git(main, "push", "origin", "HEAD:main", check=False)
 
         assert result.returncode != 0, "tracked Project state reached the remote"
         assert "tracked path exposes project state" in result.stderr
         assert ".booley_project/docs/example.md" in result.stderr
-        refs = subprocess.run(
-            ["git", "-C", str(origin), "for-each-ref", "--format=%(refname)"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        refs = _run_git(origin, "for-each-ref", "--format=%(refname)")
         assert not refs.stdout.strip()
 
 

@@ -230,7 +230,7 @@ def _inside_project_state(path: Path, project_dir: Path | None) -> bool:
     return normalized == state or state in normalized.parents
 
 
-def _inside_project_state_view(
+def _inside_checkout_or_runtime_project_state(
     path: Path,
     repository_root: Path,
     project_dir: Path | None,
@@ -269,7 +269,7 @@ def _tree_offenses(
                 f"tracked path has banned terms ({', '.join(sorted(set(path_leaks)))}): "
                 f"{entry.path}"
             )
-        if _inside_project_state_view(tracked_path, repository_root, project_dir):
+        if _inside_checkout_or_runtime_project_state(tracked_path, repository_root, project_dir):
             offenses.append(f"tracked path exposes project state: {entry.path}")
         if entry.mode != _SYMLINK_MODE:
             continue
@@ -285,7 +285,7 @@ def _tree_offenses(
                 f"symlink target has banned terms ({', '.join(sorted(set(target_leaks)))}): "
                 f"{entry.path} -> {target}"
             )
-        if _inside_project_state_view(target_path, repository_root, project_dir):
+        if _inside_checkout_or_runtime_project_state(target_path, repository_root, project_dir):
             offenses.append(f"symlink target exposes project state: {entry.path} -> {target}")
     return list(dict.fromkeys(offenses))
 
