@@ -59,6 +59,9 @@ _ZERO_SHA_PREFIX = "0000000"
 _MAX_COMMITS_SCANNED = 500
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
+# Kept local because this module is vendored into Projects and must run without
+# an installed Booley package.
+_PROJECT_DIR_NAME = ".booley_project"
 
 
 @dataclass(frozen=True)
@@ -227,6 +230,26 @@ def _inside_project_state(path: Path, project_dir: Path | None) -> bool:
     return normalized == state or state in normalized.parents
 
 
+def _inside_checkout_or_runtime_project_state(
+    path: Path,
+    repository_root: Path,
+    project_dir: Path | None,
+) -> bool:
+    """Whether *path* uses either checkout or runtime spelling for state."""
+    normalized = Path(os.path.normpath(path.absolute()))
+    root = Path(os.path.normpath(repository_root.absolute()))
+    try:
+        relative = normalized.relative_to(root)
+    except ValueError:
+        relative = None
+    inside_checkout_state = (
+        relative is not None
+        and bool(relative.parts)
+        and relative.parts[0].casefold() == _PROJECT_DIR_NAME.casefold()
+    )
+    return inside_checkout_state or _inside_project_state(path, project_dir)
+
+
 def _tree_offenses(
     sha: str,
     repository_root: Path,
@@ -246,7 +269,7 @@ def _tree_offenses(
                 f"tracked path has banned terms ({', '.join(sorted(set(path_leaks)))}): "
                 f"{entry.path}"
             )
-        if _inside_project_state(tracked_path, project_dir):
+        if _inside_checkout_or_runtime_project_state(tracked_path, repository_root, project_dir):
             offenses.append(f"tracked path exposes project state: {entry.path}")
         if entry.mode != _SYMLINK_MODE:
             continue
@@ -262,7 +285,7 @@ def _tree_offenses(
                 f"symlink target has banned terms ({', '.join(sorted(set(target_leaks)))}): "
                 f"{entry.path} -> {target}"
             )
-        if _inside_project_state(target_path, project_dir):
+        if _inside_checkout_or_runtime_project_state(target_path, repository_root, project_dir):
             offenses.append(f"symlink target exposes project state: {entry.path} -> {target}")
     return list(dict.fromkeys(offenses))
 
