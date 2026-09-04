@@ -100,6 +100,19 @@ def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
     assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
 
 
+def test_stable_base_keeps_verilator_compiler_launcher_available() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    runtime_install = base[
+        base.index(">>> Installing minimal runtime dependencies") : base.index(
+            "# Copy only installed EDA payloads"
+        )
+    ]
+
+    assert "ccache" in runtime_install
+    assert '"ccache"' in contract
+
+
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
     """The whitelist context cannot silently omit a newly introduced COPY."""
     allowed = [

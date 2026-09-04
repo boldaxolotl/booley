@@ -45,8 +45,8 @@ supported. You need:
 - Credentials for Claude (the default) or Codex
 - Reserve about **4 GB of Docker storage** for the standard image or **6 GB**
   for the complete RISC-V demo stack, plus project artifacts and temporary
-  upgrade/build data. The current Linux/AMD64 images measure 1.58/2.02 GB in
-  Docker local size and expose 2.82/4.48 GB filesystems; see the
+  upgrade/build data. On the measured containerd store, the current Linux/AMD64
+  images occupy 1.58/2.02 GB and expose 2.82/4.48 GB filesystems; see the
   [exact evidence and metric definitions](docs/internals/SESSION-RUNTIME-CONTRACT.md#evidence-and-size-policy).
 
 Install the CLI on the host:

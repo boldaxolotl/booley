@@ -1704,8 +1704,8 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
 
 Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
 Project artifacts and temporary upgrade/build data. The current Linux/AMD64
-image measures 2.02 GB in Docker local size and exposes a 4.48 GB filesystem;
-its standard-image layers are shared rather than additive.
+image occupies 2.02 GB on the measured containerd store and exposes a 4.48 GB
+filesystem; its standard-image layers are shared rather than additive.
 
 Point a project at it with the normal image selector:
 

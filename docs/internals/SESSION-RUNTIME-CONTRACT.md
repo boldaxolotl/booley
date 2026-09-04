@@ -116,10 +116,12 @@ controls the staged image work. Workflow reports retain the complete per-layer
 and DiffID arrays. The committed control keeps the plan's exact totals, digests,
 environment, counts, and largest-directory inventory.
 
-The clean-runtime candidates measured on 2026-09-04 produced these local
-results. They are measurements, not limits:
+The clean-runtime candidates measured on the containerd image store on
+2026-09-04 produced these local results. They are measurements, not limits;
+Docker Engine's overlay2 store reports `.Size` closer to the unpacked layer
+total, so that backend-dependent ceiling matches the unpacked-history ceiling.
 
-| Image | Docker local | Unpacked history | Visible filesystem |
+| Image | Docker local (containerd) | Unpacked history | Visible filesystem |
 | --- | ---: | ---: | ---: |
 | standard | 1,577,191,573 B | 3,180,724,224 B | 2,821,029,888 B |
 | RISC-V | 2,022,419,977 B | 4,841,689,088 B | 4,480,544,768 B |

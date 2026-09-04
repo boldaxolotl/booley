@@ -62,8 +62,8 @@ the same reconciliation before it changes a Project.
 
 Reserve about 4 GB of Docker storage for the standard sandbox or 6 GB for the
 complete RISC-V demo stack, plus Project artifacts and temporary upgrade/build
-data. The current Linux/AMD64 images measure 1.58/2.02 GB in Docker local size
-and expose 2.82/4.48 GB filesystems; shared layers are not additive.
+data. On the measured containerd store, the current Linux/AMD64 images occupy
+1.58/2.02 GB and expose 2.82/4.48 GB filesystems; shared layers are not additive.
 
 ## Initialize the Project · host
 

@@ -7,12 +7,12 @@ schema = 1
 # fails before promotion.
 [images.sandbox]
 registry_compressed_layer_bytes = 1_750_000_000
-docker_local_size_bytes = 1_750_000_000
+docker_local_size_bytes = 3_500_000_000
 unpacked_layer_history_bytes = 3_500_000_000
 merged_visible_filesystem_bytes = 3_100_000_000
 
 [images.riscv]
 registry_compressed_layer_bytes = 2_250_000_000
-docker_local_size_bytes = 2_250_000_000
+docker_local_size_bytes = 5_350_000_000
 unpacked_layer_history_bytes = 5_350_000_000
 merged_visible_filesystem_bytes = 4_950_000_000

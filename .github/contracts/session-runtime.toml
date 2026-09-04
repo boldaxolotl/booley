@@ -6,6 +6,7 @@ required_commands = [
   "sh",
   "git",
   "make",
+  "ccache",
   "gcc",
   "g++",
   "python",
