@@ -2640,8 +2640,41 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return preflight
         targets = preflight
         results = self._run_elab_only_campaign(targets)
+        missing = self._elab_only_missing_executable(results)
+        if missing is not None:
+            target, exc = missing
+            result = self._missing_executable_result(exc, target)
+            result.detail["mode"] = "elab_only"
+            result.detail["targets"] = [
+                self._elab_only_detail(target_result) for target_result in results
+            ]
+            artifacts = {
+                target_result.target: {"log": target_result.log_path}
+                for target_result in results
+                if target_result.log_path
+            }
+            if artifacts:
+                result.detail["artifacts"] = artifacts
+            self._write_elab_only_progress(targets, results, phase="complete", complete=True)
+            return result
         exit_code, standalone = self._run_optional_standalone(targets, results)
         return self._elab_only_result(targets, results, exit_code, standalone)
+
+    @staticmethod
+    def _elab_only_missing_executable(
+        results: list[ElabOnlyTargetResult],
+    ) -> tuple[str, MissingExecutableError] | None:
+        """Return the first absent binary from an inconclusive build attempt."""
+        for result in results:
+            if result.outcome.failure_kind != "infrastructure":
+                continue
+            binary = find_missing_executable(result.outcome.output)
+            if binary is not None:
+                return result.target, MissingExecutableError(
+                    binary,
+                    context=result.outcome.output,
+                )
+        return None
 
     def _elab_only_preflight(self) -> list[str] | McpToolResult:
         """Validate compile-only mode and return its selected Targets."""

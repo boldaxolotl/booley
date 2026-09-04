@@ -297,6 +297,14 @@ jobs:
             exit 1
           fi
 
+      # GitHub's runner uses uid 1001 while the production image deliberately
+      # runs as uid 1000. Doctor validates that bind-mount ownership seam and
+      # also writes host-side reports, so retain runner access through its group.
+      - name: Prepare staged demo ownership
+        run: |
+          sudo chown -R 1000:"$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
+          sudo chmod -R u+rwX,g+rwX,o-rwx "${RUNNER_TEMP}/booley-picorv32-demo"
+
       # This must run on the host: in-container Doctor cannot launch the
       # short-lived issued-image probe and therefore skips this exact seam.
       - name: Run host Doctor issued-image probe
@@ -340,13 +348,6 @@ jobs:
           name: booley-image-sizes-${{ steps.version.outputs.version }}
           path: ${{ runner.temp }}/booley-image-evidence/
           if-no-files-found: error
-
-      # actions/checkout files belong to the runner user (uid 1001), while the
-      # production image deliberately runs as `agent` (uid 1000). The demo
-      # writes generated firmware and Flow reports, so make its checkout match
-      # the same ownership a normal Linux user's bind mount has.
-      - name: Prepare demo checkout ownership
-        run: sudo chown -R 1000:1000 "${RUNNER_TEMP}/booley-picorv32-demo"
 
       - name: Run demo Doctor and ticket-authoring surface smoke
         env:
