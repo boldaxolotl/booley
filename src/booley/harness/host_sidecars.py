@@ -18,6 +18,7 @@ from booley.core.boundary import (
     as_str,
     require_bool,
     require_dict,
+    require_list,
     require_str,
 )
 from booley.harness import interactive_docker as legacy
@@ -101,6 +102,12 @@ class _ContainerState:
     labels: dict[str, str] | None = None
     networks: frozenset[str] = frozenset()
     project_root: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveSession:
+    name: str
+    project_root: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,11 +375,11 @@ def _create_network(docker: _DockerPort) -> None:
 
 
 def _replace_stale_network(state: _NetworkState, docker: _DockerPort) -> None:
-    active = _active_session_names(docker)
+    active = _active_sessions(docker)
     if active:
         raise SidecarError(
             f"cannot replace stale {legacy.EGRESS_NETWORK} while active Booley Sessions "
-            f"exist: {_active_session_summary(active, docker)}; shut down each listed "
+            f"exist: {_active_session_summary(active)}; shut down each listed "
             "Project and retry `booley bootstrap`"
         )
     foreign = tuple(name for name in state.attached_names if name != legacy.PROXY_CONTAINER)
@@ -511,11 +518,11 @@ def _apply_container(
 
 
 def _replace_stale_container(name: str, run_args: list[str], docker: _DockerPort) -> None:
-    active = _active_session_names(docker)
+    active = _active_sessions(docker)
     if active:
         raise SidecarError(
             f"cannot replace stale {name} while active Booley Sessions exist: "
-            f"{_active_session_summary(active, docker)}; shut down each listed Project "
+            f"{_active_session_summary(active)}; shut down each listed Project "
             "and retry `booley bootstrap`"
         )
     removed = docker.run(["rm", "-f", name])
@@ -555,66 +562,49 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
             networks.get("Networks"), field=f"container {name}.NetworkSettings.Networks"
         )
         attached_names = _string_keys(attached, f"container {name} networks")
+        labels = _string_labels(config.get("Labels"), f"container {name}")
+        project_root = _project_root_from_inspection(document, labels, name)
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned incomplete inspection for container {name}") from exc
-    labels = _string_labels(config.get("Labels"), f"container {name}")
     return _ContainerState(
         True,
         image_id,
         running,
         labels,
         frozenset(attached_names),
-        _project_root_from_inspection(document, labels),
+        project_root,
     )
 
 
-def _project_root_from_inspection(document: dict[str, Any], labels: dict[str, str]) -> str | None:
+def _project_root_from_inspection(
+    document: dict[str, Any], labels: dict[str, str], name: str
+) -> str | None:
     """Return the host Project mounted by an Interactive Mode container."""
     if folder := labels.get(_DEVCONTAINER_FOLDER_LABEL):
         return folder
-    mounts = document.get("Mounts")
-    if not isinstance(mounts, list):
-        return None
-    for mount in mounts:
-        if (
-            isinstance(mount, dict)
-            and mount.get("Type") == "bind"
-            and mount.get("Destination") == _WORKSPACE_MOUNT_TARGET
-            and isinstance(mount.get("Source"), str)
-            and mount["Source"]
-        ):
-            host_path = host_path_from_docker_mount(mount["Source"])
+    mounts = require_list(document.get("Mounts"), field=f"container {name}.Mounts")
+    for index, raw in enumerate(mounts):
+        mount = require_dict(raw, field=f"container {name}.Mounts[{index}]")
+        kind = require_str(mount, "Type")
+        destination = require_str(mount, "Destination")
+        if kind == "bind" and destination == _WORKSPACE_MOUNT_TARGET:
+            source = require_str(mount, "Source")
+            host_path = host_path_from_docker_mount(source)
             return str(host_path) if host_path is not None else None
     return None
 
 
-def _active_session_summary(names: tuple[str, ...], docker: _DockerPort) -> str:
+def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     """Describe active Sessions with a copyable Project-scoped shutdown command."""
     descriptions = []
-    for name in names:
-        try:
-            state = _inspect_container(name, docker)
-        except SidecarError:
-            # The already-verified active listing remains sufficient to block a
-            # destructive replacement. Losing the optional path enrichment must
-            # not obscure the Session name or weaken that refusal.
-            descriptions.append(name)
-            continue
-        if (
-            not state.exists
-            or not state.running
-            or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE
-            or state.project_root is None
-        ):
-            descriptions.append(name)
-            continue
-        argv = ["booley", "session", "down", "--project-root", state.project_root]
+    for session in sessions:
+        argv = ["booley", "session", "down", "--project-root", session.project_root]
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
-        descriptions.append(f"{name} (Project {state.project_root}; run `{command}`)")
+        descriptions.append(f"{session.name} (Project {session.project_root}; run `{command}`)")
     return ", ".join(descriptions)
 
 
-def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
+def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
     result = docker.run(
         [
             "ps",
@@ -629,7 +619,7 @@ def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
         raise SidecarError(
             f"cannot enumerate active Booley Sessions safely: {_failure_detail(result)}"
         )
-    names: list[str] = []
+    sessions: list[_ActiveSession] = []
     for line in result.stdout.splitlines():
         fields = line.split("\t")
         if len(fields) != 2 or not all(field.strip() for field in fields):
@@ -642,8 +632,10 @@ def _active_session_names(docker: _DockerPort) -> tuple[str, ...]:
             or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE
         ):
             raise SidecarError(f"cannot prove active Session ownership for {name}")
-        names.append(name)
-    return tuple(sorted(names))
+        if state.project_root is None:
+            raise SidecarError(f"cannot identify owning Project for active Session {name}")
+        sessions.append(_ActiveSession(name, state.project_root))
+    return tuple(sorted(sessions, key=lambda session: session.name))
 
 
 def _proxy_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[str]:

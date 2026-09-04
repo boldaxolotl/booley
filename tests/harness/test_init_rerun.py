@@ -105,7 +105,10 @@ class TestFullInitRerun:
             _run_full_init(repo)
 
         reconcile.assert_called_once()
-        assert "removed stopped Session Runtime from its prior issuance" in capsys.readouterr().out
+        assert (
+            "reconciled stopped Session Runtime resources from their prior issuance"
+            in capsys.readouterr().out
+        )
 
     def test_runtime_reconciliation_failure_makes_init_incomplete(
         self, repo: Path, capsys: pytest.CaptureFixture[str]

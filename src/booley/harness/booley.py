@@ -761,7 +761,6 @@ def _add_session_subparser(sub) -> None:
     session_p = sub.add_parser(
         "session",
         help="Start/enter/stop the Session Runtime container without VS Code",
-        parents=[root_opt],
     )
     session_sub = session_p.add_subparsers(
         dest="session_command",
@@ -770,7 +769,6 @@ def _add_session_subparser(sub) -> None:
     up_p = session_sub.add_parser(
         "up",
         help="Create or start the Session Runtime (default subcommand)",
-        parents=[root_opt],
     )
     up_p.add_argument(
         "--rebuild",
@@ -780,7 +778,6 @@ def _add_session_subparser(sub) -> None:
     enter_p = session_sub.add_parser(
         "enter",
         help="Open a shell in the Session Runtime, or run `-- <cmd>` in it",
-        parents=[root_opt],
     )
     enter_p.add_argument(
         "exec_cmd",
@@ -788,17 +785,16 @@ def _add_session_subparser(sub) -> None:
         help="Optional command, e.g. `booley session enter -- booley doctor`",
     )
     session_sub.add_parser("down", help="Stop and remove the Session Runtime", parents=[root_opt])
-    session_sub.add_parser("status", help="Print running/stopped/absent", parents=[root_opt])
+    session_sub.add_parser("status", help="Print running/stopped/absent")
     session_sub.add_parser(
         "validate",
         help="Validate the host-issued runtime specification",
-        parents=[root_opt],
     )
-    session_sub.add_parser("prepare", parents=[root_opt])
+    prepare_p = session_sub.add_parser("prepare")
+    prepare_p.add_argument("--project-root", help=argparse.SUPPRESS)
     session_sub.add_parser(
         "refresh",
         help="Rebuild the configured image from current Booley sources and recreate the session",
-        parents=[root_opt],
     )
 
 

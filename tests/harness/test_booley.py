@@ -2507,7 +2507,6 @@ def test_hidden_session_prepare_accepts_explicit_workspace_root():
 @pytest.mark.parametrize(
     "argv",
     [
-        ["session", "--project-root", "/tmp/project", "down"],
         ["session", "down", "--project-root", "/tmp/project"],
     ],
 )
@@ -2519,3 +2518,11 @@ def test_session_down_accepts_explicit_project_root(argv):
     assert args.command == "session"
     assert args.session_command == "down"
     assert args.project_root == "/tmp/project"
+
+
+@pytest.mark.parametrize("command", ["up", "enter", "status", "validate", "refresh"])
+def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
+    parser = tlr._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["session", command, "--project-root", "/tmp/project"])
