@@ -207,6 +207,29 @@ Target's `cocotb_module` flow option (never from `tests.toml`); cocotb Targets
 support Icarus and Verilator and drive test selection through `COCOTB_TEST_FILTER`
 rather than a plusarg.
 
+### Internal adapter boundary
+
+Simulation's private adapter boundary is split deliberately. `sim.build`
+prepares and authenticates the shared Edalize build stage. The
+`sim.execution` package owns caller invariants, Project-root-scoped Pre-Run and
+artifact-integrity policy, and the sole adapter composition point. The three
+leaf modules under `sim.backends` render and execute only their own simulator
+invocation; no leaf imports a sibling adapter or `sim.flow`.
+
+Parent-to-child result transport is a versioned JSON document bound to an
+unpredictable attempt token, adapter name, durable Target identity, and ordered
+selected-test set. Adapters write it atomically and retain the historical
+`[SIM_SUMMARY]`, `[COCOTB_RESULTS]`, `result.json`, and `results.xml` outputs for
+compatibility. A consumer validates the complete identity and rejects malformed,
+stale, reordered, duplicate, or contradictory evidence. Trace artifacts are
+additionally checked for containment, regular-file status, and freshness;
+Project-configured absolute trace paths must be explicitly allowlisted.
+
+`TargetHandle.project_root` is authoritative at this boundary. Test registry
+fields and `[flows.sim]` settings are loaded for that checkout on each current
+or Cycle Count baseline invocation rather than borrowed from the lazy
+active-Project cache.
+
 ### Configuration boundary
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
@@ -241,15 +264,26 @@ Each test resolves to exactly one of five verdicts:
 - `elab_error`: build/elaboration/compile failure, or a failed Pre-Run Command (the sim never ran).
 - `timeout`: the per-test budget was exceeded.
 
-The authority is the `[SIM_SUMMARY]` JSON line, not the exit code alone. Raw
-Verilator/Icarus runs emit no summary, so Booley re-derives one from
-`[SIM_RESULT]` sentinels (plus project sentinels) and the exit code, with a
-**fail sentinel winning over a pass sentinel**. cocotb is the exception: its
-verdict comes from the JUnit `results.xml`, since the process exit code is
-untrustworthy in both directions; even so, an all-pass XML after a nonzero
-exit still folds down to FAIL. Stale artifacts never leak in: cocotb runs unlink
-`results.xml` before each run, and HDL runs ignore result files older than the
-current invocation.
+`SimulateFlow` delegates execution through one `SimulationExecution.run` /
+`preview` boundary. The boundary resolves each `TargetHandle` from its own
+Project root, prepares the shared build, fires Pre-Run Commands, invokes one
+leaf adapter, and returns immutable build, test, workload, log, trace, and
+infrastructure evidence. The Flow retains campaign concerns: Target/test
+selection, Cycle Count baselines, Criteria, report rendering, and public exit
+codes.
+
+The parent-side authority is the adapter's authenticated, versioned terminal
+result, not an output marker or exit code alone. Every result is bound to an
+unpredictable attempt token, adapter, durable Target identity, and complete
+ordered selected-test set; the decoder rejects contradictions and rejects a
+result artifact that predates the invocation or escapes its build root. Leaf
+adapters may use `[SIM_SUMMARY]` and `[SIM_RESULT]` as inputs to normalization.
+For Cocotb, per-test verdicts originate in the current run's JUnit
+`results.xml`; unexpected entries remain diagnostics and cannot affect the
+selected tests' verdicts. A nonzero process/build outcome still outranks an
+adapter pass. A requested trace must independently validate as a fresh regular
+file in an allowed location or an otherwise passing run becomes
+`inconclusive`.
 
 Only a true target-level `pass` satisfies `sim_pass_{target}`; an
 `inconclusive` target skips the Criterion rather than failing it. Flow crashes
@@ -295,11 +329,11 @@ list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
 `error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
 and a workload fingerprint when resolved inputs are available. For native HDL Targets, every entry also carries
 `artifacts.run_log`, a work-directory-relative pointer to an atomic,
-unabridged copy of that test's simulator output. A grouped run preserves this
-copy before starting the next test, including for failed, timed-out, and
-inconclusive tests that produced output. The Target build directory retains its
-compatibility `run.log` (the latest test's output, tail-truncated to 10 MB) and
-`result.json`; cocotb adds its `results.xml`.
+unabridged, attempt-specific copy of that test's simulator output. A grouped
+run preserves this copy before starting the next test, including for failed,
+timed-out, and inconclusive tests that produced output. The Target build
+directory retains its compatibility `run.log` (the latest test's output,
+tail-truncated to 10 MB) and `result.json`; Cocotb adds its `results.xml`.
 
 `sim` adds one stricter invariant: it omits the entire block unless the current
 run's header proves the pointers are fresh. A build that dies before the

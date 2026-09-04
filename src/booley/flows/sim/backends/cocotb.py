@@ -54,6 +54,7 @@ import re
 import shutil
 import subprocess
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,12 +63,26 @@ if TYPE_CHECKING:
     from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
 
 from booley.flows.run_log import write_run_log
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    AdapterTestResult,
+    AdapterTraceResult,
+    AdapterTransportIdentity,
+    add_transport_arguments,
+    partial_result_identity,
+    transport_identity_from_args,
+    work_transport_arguments,
+    write_adapter_result,
+)
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
+    TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
     find_import_failure,
     format_results_line,
+    parse_results_line,
     parse_results_xml,
     reconcile,
     recover_timeout_progress,
@@ -87,6 +102,172 @@ from booley.flows.sim.result import (
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
 
+
+def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
+    """Render one parent-side Cocotb adapter invocation."""
+    if work.adapter != "cocotb":
+        raise ValueError(f"Cocotb adapter cannot prepare {work.adapter!r} work")
+    cmd = [
+        "python3",
+        "-m",
+        "booley.flows.sim.backends.cocotb",
+        "--build-dir",
+        work.build_dir,
+        "--eda-tool",
+        work.eda_tool,
+        "--cocotb-module",
+        work.cocotb_module,
+        "--timeout",
+        str(work.timeout_s),
+    ]
+    cmd += [f"--test={name}" for name in work.tests]
+    cmd += ["--result-verbosity", work.result_verbosity]
+    cmd += ["--sim-time-grace", str(work.sim_time_grace_s)]
+    if work.max_rundir_bytes > 0:
+        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
+    if work.run_cwd:
+        cmd += ["--run-cwd", work.run_cwd]
+    if work.trace:
+        cmd += ["--trace", "--expected-trace-scope", work.trace_scope]
+    cmd += [f"--plusarg={value}" for value in work.plusargs]
+    cmd += work_transport_arguments(work)
+    return cmd
+
+
+def _publish_adapter_result(
+    identity: AdapterTransportIdentity | None,
+    output: str,
+    passed: bool,
+    *,
+    failure_kind: str = "",
+    detail: str = "",
+    trace: AdapterTraceResult | None = None,
+) -> None:
+    if identity is None:
+        return
+    results = parse_results_line(output)
+    discovered = tuple(test.name for test in results.tests if test.name) if results else ()
+    names = identity.selected_tests or discovered
+    extras = tuple(name for name in discovered if name not in names)
+    sva_errors = count_sva_errors(output)
+    test_results = _adapter_test_results(results, names)
+    test_results = _apply_design_evidence(test_results, sva_errors, failure_kind, detail)
+    functional_failed = any(test.verdict == "fail" for test in test_results)
+    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
+    test_results, detail, trace_failed = _apply_trace_evidence(
+        test_results, trace, detail, preserve_failure=preserve_failure
+    )
+    inconclusive = any(test.verdict == "inconclusive" for test in test_results) or (
+        not passed and (results is None or results.state != STATE_OK)
+    )
+    timed_out = any(test.verdict == "timeout" for test in test_results)
+    normalized_passed = (
+        passed
+        and sva_errors == 0
+        and not trace_failed
+        and bool(test_results)
+        and all(test.verdict == "pass" for test in test_results)
+    )
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=normalized_passed,
+            inconclusive=inconclusive,
+            sva_errors=sva_errors,
+            tests=tuple(names),
+            failure_kind=failure_kind
+            or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
+            detail=detail,
+            test_results=test_results,
+            diagnostics=_extra_test_diagnostics(extras),
+            trace=trace,
+        ),
+    )
+
+
+def _extra_test_diagnostics(extras: tuple[str, ...]) -> tuple[str, ...]:
+    if not extras:
+        return ()
+    return (
+        "results.xml reports extra non-selected test(s): "
+        f"{', '.join(extras)} — logged, not verdict-bearing",
+    )
+
+
+def _apply_design_evidence(
+    tests: tuple[AdapterTestResult, ...],
+    sva_errors: int,
+    failure_kind: str,
+    detail: str,
+) -> tuple[AdapterTestResult, ...]:
+    if sva_errors:
+        reason = f"{sva_errors} SVA assertion error(s)"
+    elif failure_kind == "design":
+        reason = detail or "simulator process failed outside Cocotb results"
+    else:
+        return tests
+    return tuple(
+        replace(test, verdict="fail", detail=reason) if test.verdict == "pass" else test
+        for test in tests
+    )
+
+
+def _apply_trace_evidence(
+    tests: tuple[AdapterTestResult, ...],
+    trace: AdapterTraceResult | None,
+    detail: str,
+    *,
+    preserve_failure: bool,
+) -> tuple[tuple[AdapterTestResult, ...], str, bool]:
+    trace_failed = trace is not None and trace.status == "incident"
+    if not trace_failed or preserve_failure:
+        return tests, detail, trace_failed
+    normalized = tuple(
+        replace(test, verdict="inconclusive", detail=trace.detail)
+        if test.verdict == "pass"
+        else test
+        for test in tests
+    )
+    return normalized, detail or trace.detail, True
+
+
+def _cocotb_failure_kind(
+    timed_out: bool,
+    functional_failed: bool,
+    trace_failed: bool,
+    inconclusive: bool,
+) -> str:
+    if timed_out:
+        return "timeout"
+    if functional_failed:
+        return "design"
+    if trace_failed:
+        return "artifact"
+    return "inconclusive" if inconclusive else ""
+
+
+def _adapter_test_results(
+    results: CocotbResults | None,
+    names: tuple[str, ...],
+) -> tuple[AdapterTestResult, ...]:
+    """Normalize Cocotb's result line into the shared per-test transport."""
+    if results is None:
+        return tuple(
+            AdapterTestResult(name, "inconclusive", detail="missing results") for name in names
+        )
+    verdicts = reconcile(list(names), results)
+    elapsed = {test.name: test.elapsed_s for test in results.tests}
+    return tuple(
+        AdapterTestResult(
+            name,
+            "timeout" if detail == TIMEOUT_ACTIVE_DETAIL else verdict,
+            elapsed.get(name, 0.0),
+            detail,
+        )
+        for name, verdict, detail in verdicts
+    )
+
+
 # The dump/trace file name in the run cwd — identical for both EDA tools: Icarus's
 # booley_vcd_dump module hardcodes $dumpfile("dump.vcd"); Verilator's cocotb
 # main receives it via --trace-file.
@@ -103,6 +284,47 @@ COCOTB_CONFIG_MISSING_MSG = (
     "cocotb-config not found — the sandbox image predates cocotb support; "
     "rebuild the sandbox image (src/booley/data/docker/build.sh)"
 )
+
+
+def _partial_result_publisher(
+    identity: AdapterTransportIdentity | None,
+    selected: list[str],
+    results_file: Path,
+) -> Callable[[str], None] | None:
+    """Publish authenticated Cocotb progress while terminal cleanup is pending."""
+    if identity is None:
+        return None
+    partial = partial_result_identity(identity)
+    lines: deque[str] = deque(maxlen=5_000)
+
+    def publish(line: str) -> None:
+        if line:
+            lines.append(line)
+        if line and "cocotb.regression" not in line:
+            return
+        output = "".join(lines)
+        recovered = recover_timeout_progress(
+            output,
+            selected,
+            parse_results_xml(results_file),
+        )
+        names = tuple(selected) or tuple(test.name for test in recovered.tests)
+        tests = _adapter_test_results(recovered, names)
+        write_adapter_result(
+            partial,
+            AdapterResult(
+                passed=False,
+                inconclusive=any(test.verdict == "inconclusive" for test in tests),
+                sva_errors=count_sva_errors(output),
+                tests=names,
+                failure_kind="timeout",
+                detail="cocotb batch ended before terminal adapter transport",
+                test_results=tests,
+            ),
+        )
+
+    publish("")
+    return publish
 
 
 def build_cocotb_test_filter(module: str, names: list[str]) -> str:
@@ -250,6 +472,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     *,
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = 0.0,
+    on_line: Callable[[str], None] | None = None,
 ) -> tuple[deque[str], subprocess.Popen, bool]:
     """Run the sim, stream stdout live, enforce *timeout* (seconds).
 
@@ -306,6 +529,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         for line in stdout:
             print(line, end="")
             lines.append(line)
+            if on_line is not None:
+                on_line(line)
             # F-25: track the simulator's own clock, so a cocotb/simulator
             # run-loop mismatch (time frozen at 0.00 ns) aborts with a
             # diagnosis instead of burning the whole wall-clock budget.
@@ -394,6 +619,19 @@ class _TraceFinalization:
 
     output: str = ""
     failure_reason: str = ""
+    evidence: AdapterTraceResult | None = None
+
+
+@dataclass(frozen=True)
+class _CocotbRun:
+    build_dir: Path
+    run_cwd: Path
+    work_dir: Path
+    results_file: Path
+    tests: list[str]
+    env: dict[str, str]
+    command: list[str]
+    trace: TraceSession | None
 
 
 def _persist_result_transport(
@@ -569,7 +807,7 @@ def _prepare_invocation(
     work_dir: Path,
     plusargs: list[str],
     vcd: bool,
-) -> tuple[dict[str, str], list[str]] | None:
+) -> tuple[dict[str, str], list[str]] | str:
     """Resolve the sim env + command; ``None`` means the failure was reported.
 
     D3: an image built before the cocotb pip layer has no cocotb-config —
@@ -591,7 +829,7 @@ def _prepare_invocation(
         )
     except FileNotFoundError:
         _report_infra_failure(work_dir, COCOTB_CONFIG_MISSING_MSG)
-        return None
+        return COCOTB_CONFIG_MISSING_MSG
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
         detail = (
@@ -600,14 +838,14 @@ def _prepare_invocation(
             + f" — {COCOTB_CONFIG_MISSING_MSG}"
         )
         _report_infra_failure(work_dir, detail)
-        return None
+        return detail
     if cmd is None:
-        _report_infra_failure(
-            work_dir,
+        detail = (
             f"no built cocotb sim found in {build_dir} "
-            f"({'no vvp image (*.scr)' if eda_tool == 'icarus' else 'no Vtop binary'})",
+            f"({'no vvp image (*.scr)' if eda_tool == 'icarus' else 'no Vtop binary'})"
         )
-        return None
+        _report_infra_failure(work_dir, detail)
+        return detail
     return env, cmd
 
 
@@ -651,6 +889,118 @@ def _print_run_banner(
     print(f"CMD: {' '.join(cmd)}\n")
 
 
+def _prepare_cocotb_run(
+    build_dir: Path,
+    run_cwd: Path | None,
+    work_dir: Path | None,
+    eda_tool: str,
+    module: str,
+    tests: list[str],
+    plusargs: list[str],
+    vcd: bool,
+    trace_scope: str,
+) -> _CocotbRun | str:
+    build = Path(build_dir).resolve()
+    run = Path(run_cwd).resolve() if run_cwd is not None else build
+    work = Path(work_dir).resolve() if work_dir is not None else build
+    work.mkdir(parents=True, exist_ok=True)
+    results = _reset_result_transports(work)
+    if vcd and not trace_scope.strip():
+        detail = (
+            "trace requested without an expected DUT scope; the waveform identity "
+            "cannot be validated"
+        )
+        _report_infra_failure(work, detail)
+        return detail
+    prepared = _prepare_invocation(
+        build_dir=build,
+        eda_tool=eda_tool,
+        cocotb_module=module,
+        tests=tests,
+        results_file=results,
+        work_dir=work,
+        plusargs=plusargs,
+        vcd=vcd,
+    )
+    if isinstance(prepared, str):
+        return prepared
+    env, command = prepared
+    trace = TraceSession(work, trace_scope, backend="iverilog") if vcd else None
+    if trace is not None:
+        trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
+    return _CocotbRun(build, run, work, results, tests, env, command, trace)
+
+
+def _execute_cocotb_run(
+    run: _CocotbRun,
+    timeout: int,
+    max_rundir_bytes: int,
+    sim_time_grace_s: float,
+    transport: AdapterTransportIdentity | None,
+):
+    from booley.runtime.heartbeat import Heartbeat
+
+    heartbeat = Heartbeat("cocotb sim", interval=60)
+    heartbeat.start()
+    try:
+        publish = _partial_result_publisher(transport, run.tests, run.results_file)
+        return _stream_output(
+            run.command,
+            run.run_cwd,
+            run.env,
+            timeout,
+            max_rundir_bytes=max_rundir_bytes,
+            sim_time_grace_s=sim_time_grace_s,
+            on_line=publish,
+        )
+    finally:
+        heartbeat.stop()
+
+
+def _complete_cocotb_run(
+    run: _CocotbRun,
+    lines,
+    proc,
+    timed_out: bool,
+    result_verbosity: str,
+    transport: AdapterTransportIdentity | None,
+) -> int:
+    output = "".join(lines)
+    trace_result = (
+        _finalize_cocotb_trace(run.trace, run.run_cwd, proc)
+        if run.trace is not None
+        else _TraceFinalization()
+    )
+    if trace_result.output:
+        print(trace_result.output)
+        output = f"{output}\n{trace_result.output}"
+    output, passed = _evaluate_verdict(
+        output,
+        proc.returncode,
+        timed_out,
+        run.work_dir,
+        run.results_file,
+        run.tests,
+        result_verbosity,
+        trace_result.failure_reason,
+    )
+    failure_kind = (
+        "timeout"
+        if timed_out
+        else "design"
+        if proc.returncode != 0 or count_sva_errors(output)
+        else ""
+    )
+    _publish_adapter_result(
+        transport,
+        output,
+        passed,
+        failure_kind=failure_kind,
+        trace=trace_result.evidence,
+    )
+    return 0 if passed else 1
+
+
 def run_cocotb_sim(
     *,
     build_dir: Path,
@@ -666,83 +1016,35 @@ def run_cocotb_sim(
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
     result_verbosity: str = "compact",
     expected_trace_scope: str = "",
+    transport: AdapterTransportIdentity | None = None,
 ) -> int:
-    """Run the edalize-built cocotb sim once; return the process exit code.
-
-    *build_dir* holds the built sim (vvp image / ``Vtop``) plus the
-    ``copyto``-staged Python testbench; *run_cwd* is where the sim runs from
-    (TB vector/firmware base), defaulting to *build_dir*; *work_dir* is the
-    result/trace output dir (``results.xml``, ``result.json``, ``run.log``,
-    the ``.fst`` store), defaulting to *build_dir*. *sim_time_grace_s* is the
-    frozen-clock watchdog's grace period (F-25; 0 disables it).
-    """
-    from booley.runtime.heartbeat import Heartbeat
-
-    build_dir = Path(build_dir).resolve()
-    run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir
-    work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
-    work_dir.mkdir(parents=True, exist_ok=True)
-    results_file = _reset_result_transports(work_dir)
+    """Run the edalize-built Cocotb simulator once."""
     tests = list(tests or [])
-    if vcd and not expected_trace_scope.strip():
-        _report_infra_failure(
-            work_dir,
-            "trace requested without an expected DUT scope; the waveform identity "
-            "cannot be validated",
-        )
-        return 1
-
-    prepared = _prepare_invocation(
-        build_dir=build_dir,
-        eda_tool=eda_tool,
-        cocotb_module=cocotb_module,
+    run = _prepare_cocotb_run(
+        build_dir,
+        run_cwd,
+        work_dir,
+        eda_tool,
+        cocotb_module,
         tests=tests,
-        results_file=results_file,
-        work_dir=work_dir,
         plusargs=list(plusargs or []),
         vcd=vcd,
+        trace_scope=expected_trace_scope,
     )
-    if prepared is None:
-        return 1
-    env, cmd = prepared
-
-    trace = TraceSession(work_dir, expected_trace_scope, backend="iverilog") if vcd else None
-    if trace:
-        trace.reset_for_run((run_cwd / _DEFAULT_VCD_NAME,))
-
-    _print_run_banner(env, cmd, run_cwd, cocotb_module, eda_tool, tests)
-
-    hb = Heartbeat("cocotb sim", interval=60)
-    hb.start()
-    try:
-        lines, proc, timed_out = _stream_output(
-            cmd,
-            run_cwd,
-            env,
-            timeout,
-            max_rundir_bytes=max_rundir_bytes,
-            sim_time_grace_s=sim_time_grace_s,
+    if isinstance(run, str):
+        _publish_adapter_result(
+            transport,
+            "",
+            False,
+            failure_kind="infrastructure",
+            detail=run,
         )
-    finally:
-        hb.stop()
-
-    output = "".join(lines)
-    trace_result = _finalize_cocotb_trace(trace, run_cwd, proc) if trace else _TraceFinalization()
-    if trace_result.output:
-        print(trace_result.output)
-        output = f"{output}\n{trace_result.output}"
-    output, passed = _evaluate_verdict(
-        output,
-        proc.returncode,
-        timed_out,
-        work_dir,
-        results_file,
-        tests,
-        result_verbosity,
-        trace_result.failure_reason,
+        return 1
+    _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
+    lines, proc, timed_out = _execute_cocotb_run(
+        run, timeout, max_rundir_bytes, sim_time_grace_s, transport
     )
-
-    return 0 if passed else 1
+    return _complete_cocotb_run(run, lines, proc, timed_out, result_verbosity, transport)
 
 
 def _finalize_cocotb_trace(
@@ -761,10 +1063,20 @@ def _finalize_cocotb_trace(
         return _TraceFinalization(
             output=f"ERROR: {reason}\nTRACE_INCIDENT: {incident}",
             failure_reason=reason,
+            evidence=AdapterTraceResult("incident", path=str(incident), detail=reason),
         )
     artifact = inspection.artifact
     assert artifact is not None
-    return _TraceFinalization(output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}")
+    return _TraceFinalization(
+        output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}",
+        evidence=AdapterTraceResult(
+            "ok",
+            path=str(artifact.path),
+            top_scope=artifact.top_scope,
+            signal_count=artifact.signal_count,
+            total_ticks=artifact.total_ticks,
+        ),
+    )
 
 
 def _positive_int(value: str) -> int:
@@ -849,11 +1161,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="resolved DUT toplevel required to validate a requested trace",
     )
+    add_transport_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    transport = transport_identity_from_args(args, "cocotb")
     return run_cocotb_sim(
         build_dir=Path(args.build_dir),
         eda_tool=args.eda_tool,
@@ -868,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
         sim_time_grace_s=args.sim_time_grace_s,
         result_verbosity=args.result_verbosity,
         expected_trace_scope=args.expected_trace_scope,
+        transport=transport,
     )
 
 

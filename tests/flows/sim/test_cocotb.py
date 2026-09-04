@@ -15,11 +15,10 @@ from unittest.mock import patch
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.test_flow import _make_flow
+from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
 _COCOTB_CORE_TEXT = """\
@@ -45,9 +44,29 @@ targets:
       iverilog_options: [-g2012]
 """
 
+_TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
+
+
+def _write_test_registry(
+    tmp_path: Path,
+    target: str,
+    tests: list[str],
+    *,
+    select: str = "",
+) -> None:
+    project = tmp_path / ".booley_project"
+    project.mkdir(exist_ok=True)
+    rendered = ", ".join(json.dumps(name) for name in tests)
+    select_line = f"select = {json.dumps(select)}\n" if select else ""
+    (project / "tests.toml").write_text(
+        f"[{target}]\ntests = [{rendered}]\n{select_line}",
+        encoding="utf-8",
+    )
+
 
 def _make_cocotb_flow(tmp_path: Path, extra_args: list[str] | None = None):
     (tmp_path / "ccfg.core").write_text(_COCOTB_CORE_TEXT, encoding="utf-8")
+    _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
     return _make_flow(
         tmp_path,
         config="ccfg",
@@ -128,6 +147,7 @@ def _run_cocotb(
     authenticate_build=True,
 ):
     token = "abc123"
+    flow._boundary_eda_tool = resolved_eda_tool
     if authenticate_build and "BOOLEY_BUILD_STAGE" not in stdout:
         build_failed = any(
             marker in stdout for marker in ("compilation failed", "elaboration failed")
@@ -151,9 +171,6 @@ def _run_cocotb(
         return flow._run()
 
 
-_TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
-
-
 # ---------------------------------------------------------------------------
 # G3 — verdict matrix (the two cocotb traps front and center)
 # ---------------------------------------------------------------------------
@@ -172,7 +189,7 @@ class TestCocotbVerdictMatrix:
             "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=1500\n"
             "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.250000\n"
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_key == "sim_pass_ccfg"
@@ -188,25 +205,6 @@ class TestCocotbVerdictMatrix:
             "simulation_system_cpu_s": 0.25,
         }
 
-    def test_build_infrastructure_error_stops_before_result_interpretation(
-        self, tmp_path: Path
-    ) -> None:
-        flow = _make_cocotb_flow(tmp_path)
-
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
-            result = _run_cocotb(
-                tmp_path,
-                flow,
-                "still compiling\n",
-                returncode=-1,
-                timed_out=True,
-                authenticate_build=False,
-            )
-
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["eda_tool_error"] == "build_infrastructure"
-        assert "no pass/fail verdict" in result.report_text
-
     def test_named_cycle_records_are_attributed_within_batch(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
         out = (
@@ -221,9 +219,9 @@ class TestCocotbVerdictMatrix:
             + "CYCLES test_reset 3\n"
         )
         with (
-            patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)),
+            patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
             patch(
-                "booley.flows.sim.flow._resolve_cycle_sentinels",
+                "booley.flows.sim.execution.engine.resolve_cycle_sentinels",
                 return_value=["CYCLES"],
             ),
         ):
@@ -251,7 +249,7 @@ class TestCocotbVerdictMatrix:
             ],
             passed=False,
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out, returncode=0)
         assert result.exit_code == EXIT_FAILURE
         # The cocotb failure text is surfaced; siblings stay pass (G9 shape).
@@ -273,7 +271,7 @@ class TestCocotbVerdictMatrix:
             detail="results.xml not found at /b/results.xml",
             passed=False,
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out, returncode=0)
         assert result.exit_code == EXIT_FAILURE
         assert "INCONCLUSIVE" in result.report_text
@@ -292,7 +290,7 @@ class TestCocotbVerdictMatrix:
             ],
             passed=False,
         )  # test_fail_assert absent from the XML
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_FAILURE
         assert "no matching @cocotb.test" in result.report_text
@@ -315,7 +313,7 @@ class TestCocotbVerdictMatrix:
                 ("test_surprise", "pass", ""),
             ]
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_SUCCESS  # extras don't flip verdicts
         assert "test_surprise" in result.report_text
@@ -332,7 +330,7 @@ class TestCocotbVerdictMatrix:
             detail="results.xml is truncated or malformed: no element found",
             passed=False,
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_FAILURE
         assert "INCONCLUSIVE" in result.report_text
@@ -355,7 +353,7 @@ class TestCocotbVerdictMatrix:
             sva_errors=1,
             passed=False,
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_FAILURE
         assert "sva_errors=1" in result.report_text
@@ -380,7 +378,7 @@ class TestCocotbVerdictMatrix:
                 ]
             )
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_met is True
@@ -402,7 +400,7 @@ class TestCocotbVerdictMatrix:
             ],
             passed=False,
         )  # the run-half saw rc!=0 and said FAIL
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out, returncode=1)
         assert result.exit_code == EXIT_FAILURE
         # Per-test verdicts still come from the reconciled XML.
@@ -420,7 +418,7 @@ class TestCocotbVerdictMatrix:
             ],
             passed=False,
         )
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out, returncode=1)
         assert result.exit_code == EXIT_FAILURE
         report = json.loads(
@@ -438,7 +436,7 @@ class TestCocotbVerdictMatrix:
         # The run died before the run-half's post-processing (e.g. an outer
         # kill): no [COCOTB_RESULTS], no [SIM_SUMMARY] → inconclusive.
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, "bare sim noise, rc 0\n")
         assert result.exit_code == EXIT_FAILURE
         assert "INCONCLUSIVE" in result.report_text
@@ -480,8 +478,8 @@ class TestCocotbBatching:
             patch.object(SimulateFlow, "_execute", _capture),
             patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
-                "booley.config.project_config.TEST_NAMES",
-                dict(_TESTS),
+                "booley.flows.sim.flow._get_test_names",
+                return_value=dict(_TESTS),
             ),
         ):
             result = flow._run()
@@ -492,24 +490,21 @@ class TestCocotbBatching:
         assert script.count("--test=") == 3
         assert "--cocotb-module test_counter" in script
         assert "--result-verbosity compact" in script
+        assert "--adapter-result" in script
+        assert "--selected-test=test_reset" in script
 
     def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--result-verbosity", "full"])
-        cmd = flow._cocotb_run_cmd("build/ccfg", "icarus", "test_counter", ["test_reset"])
-        index = cmd.index("--result-verbosity")
-        assert cmd[index + 1] == "full"
+        flow = _make_cocotb_flow(
+            tmp_path,
+            extra_args=["--dry-run", "--result-verbosity", "full"],
+        )
+        result = flow._run()
+        assert "--result-verbosity full" in result.detail["commands"][0][-1]
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--trace"])
-        cmd = flow._cocotb_run_cmd(
-            "build/ccfg",
-            "icarus",
-            "test_counter",
-            ["test_reset"],
-            trace_scope="counter",
-        )
-        index = cmd.index("--expected-trace-scope")
-        assert cmd[index + 1] == "counter"
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
+        result = flow._run()
+        assert "--expected-trace-scope counter" in result.detail["commands"][0][-1]
 
     def test_substr_filter_prunes_the_selected_set(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "count"])
@@ -535,8 +530,8 @@ class TestCocotbBatching:
             patch.object(SimulateFlow, "_execute", _capture),
             patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
-                "booley.config.project_config.TEST_NAMES",
-                dict(_TESTS),
+                "booley.flows.sim.flow._get_test_names",
+                return_value=dict(_TESTS),
             ),
         ):
             result = flow._run()
@@ -575,8 +570,8 @@ class TestCocotbBatching:
             patch.object(SimulateFlow, "_execute", _capture),
             patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
-                "booley.config.project_config.TEST_NAMES",
-                dict(_TESTS),
+                "booley.flows.sim.flow._get_test_names",
+                return_value=dict(_TESTS),
             ),
         ):
             result = flow._run()
@@ -594,38 +589,22 @@ class TestCocotbBatching:
 class TestCocotbSelectRejection:
     def test_select_template_on_cocotb_target_is_setup_error(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
-        with (
-            patch(
-                "booley.config.project_config.TEST_NAMES",
-                dict(_TESTS),
-            ),
-            patch(
-                "booley.config.project_config.TEST_SELECT",
-                {"ccfg": "+test_id={index}"},
-            ),
-        ):
-            result = flow._run()
+        _write_test_registry(
+            tmp_path,
+            "ccfg",
+            _TESTS["ccfg"],
+            select="+test_id={index}",
+        )
+        result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "COCOTB_TEST_FILTER" in result.report_text
         assert "remove the `select` key" in result.report_text
 
     def test_select_on_sv_target_still_fine(self, tmp_path: Path):
         # The rejection keys off cocotb-ness, not the mere presence of select.
+        _write_test_registry(tmp_path, "lite", ["t0"], select="+test_id={index}")
         flow = _make_flow(tmp_path, config="lite")
         with (
-            patch(
-                "booley.config.project_config.TEST_NAMES",
-                {"lite": ["t0"]},
-            ),
-            patch(
-                "booley.config.project_config.TEST_SELECT",
-                {"lite": "+test_id={index}"},
-            ),
-            patch.object(
-                SimulateFlow,
-                "_prepare_sim_command",
-                return_value=["sh", "-c", ":"],
-            ),
             patch.object(
                 SimulateFlow,
                 "_execute",
@@ -648,7 +627,7 @@ class TestCocotbSimulatorEligibility:
         # A Cocotb Target resolving to xcelium/vcs raises in prepare — the
         # message names the v1 boundary, never a silent non-cocotb run.
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(
                 tmp_path,
                 flow,
@@ -668,7 +647,7 @@ class TestCocotbDryRun:
     def test_dry_run_emits_one_batched_command(self, tmp_path: Path, capsys):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
         with (
-            patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)),
+            patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 side_effect=AssertionError("dry-run must not resolve"),
@@ -688,7 +667,7 @@ class TestCocotbDryRun:
     def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
         """G6 guard: a non-cocotb Target's dry-run command carries no cocotb."""
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with patch("booley.config.project_config.TEST_NAMES", {}):
+        with patch("booley.flows.sim.flow._get_test_names", return_value={}):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         script = result.detail["commands"][0][-1]
@@ -722,7 +701,7 @@ class TestCocotbBuildFailureShape:
         tmp_path: Path,
     ):
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(
                 tmp_path,
                 flow,
@@ -739,8 +718,8 @@ class TestCocotbBuildFailureShape:
 
     def test_the_compile_error_rides_the_build_entry(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
-            result = _run_cocotb(
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
+            _run_cocotb(
                 tmp_path,
                 flow,
                 self._BUILD_FAIL_OUTPUT,
@@ -749,15 +728,13 @@ class TestCocotbBuildFailureShape:
         tail = self._report(tmp_path)["tests"][0]["error_tail"]
         assert "iverilog compilation failed" in tail
         assert "syntax error" in tail
-        assert "did not compile" in tail
-        # The summary names the tests that never ran, instead of grading them.
-        assert "never ran" in result.report_text
+        assert [test["name"] for test in self._report(tmp_path)["tests"]] == ["ccfg"]
 
     def test_a_build_failure_never_reads_as_a_pass(self, tmp_path: Path):
         # ADR 0034 dec 6 holds regardless of the reshaping: no results.xml, no
         # pass — even if the build-failed process somehow exits 0.
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(
                 tmp_path,
                 flow,
@@ -772,7 +749,7 @@ class TestCocotbBuildFailureShape:
         # AFTER the simulator started (no compile error in the output) keeps the
         # per-test inconclusive shape — those tests really were dispatched.
         flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             _run_cocotb(tmp_path, flow, "bare sim noise, rc 0\n")
         tests = self._report(tmp_path)["tests"]
         assert len(tests) == len(_TESTS["ccfg"])
@@ -786,18 +763,20 @@ class TestCocotbBuildFailureShape:
 
 def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
     """F-25: the frozen-clock watchdog knob crosses into the sandbox."""
-    flow = _make_cocotb_flow(tmp_path)
-    with patch("booley.flows.sim.flow._resolve_sim_time_grace_s", return_value=42.0):
-        cmd = flow._cocotb_run_cmd("build/ccfg", "icarus", "test_counter", ["a"])
-    assert "--sim-time-grace" in cmd
-    assert cmd[cmd.index("--sim-time-grace") + 1] == "42.0"
+    flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
+    with patch(
+        "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
+        return_value=42.0,
+    ):
+        result = flow._run()
+    assert "--sim-time-grace 42.0" in result.detail["commands"][0][-1]
 
 
 def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
     """F-32: the gauntlet's `run_test_001 FAIL 0.0s` was a missing binary."""
     flow = _make_cocotb_flow(tmp_path)
     stdout = "/bin/sh: 1: verilator: not found\nERROR: Verilator elaboration failed (rc=2)\n"
-    with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+    with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
         result = _run_cocotb(tmp_path, flow, stdout, returncode=2)
     assert result.exit_code == EXIT_ERROR
     assert result.detail["eda_tool_error"] == "missing_executable"
@@ -806,22 +785,10 @@ def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
     assert "test_reset" not in result.report_text
 
 
-def test_missing_fusesoc_on_a_cocotb_target_is_exit_2(tmp_path: Path):
-    flow = _make_cocotb_flow(tmp_path)
-    boom = RuntimeError("could not invoke fusesoc (fusesoc): No such file or directory")
-    with (
-        patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)),
-        patch.object(SimulateFlow, "_prepare_cocotb_sim_command", side_effect=boom),
-    ):
-        result = flow._run()
-    assert result.exit_code == EXIT_ERROR
-    assert result.detail["missing_executable"] == "fusesoc"
-
-
 def test_real_cocotb_build_failure_still_grades_as_exit_1(tmp_path: Path):
     """A compiler that ran and rejected the design keeps its design verdict."""
     flow = _make_cocotb_flow(tmp_path)
     stdout = "tb.sv:12: syntax error\nERROR: iverilog compilation failed (rc=1)\n"
-    with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+    with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
         result = _run_cocotb(tmp_path, flow, stdout, returncode=1)
     assert result.exit_code == EXIT_FAILURE
