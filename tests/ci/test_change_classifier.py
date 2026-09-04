@@ -106,7 +106,12 @@ def test_pure_docker_change_requires_only_image_build_path(tmp_path: Path) -> No
     outputs = _classify(repo, base, head)
 
     assert outputs["docker_toolchain"] == "true"
-    assert _required(outputs) == {"changes", "package-artifacts", "bwave-smoke"}
+    assert _required(outputs) == {
+        "changes",
+        "release-semantic",
+        "package-artifacts",
+        "bwave-smoke",
+    }
 
 
 def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) -> None:
@@ -120,6 +125,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     assert outputs["build_stable_base"] == "true"
     assert _required(outputs) == {
         "changes",
+        "release-semantic",
         "lint",
         "test",
         "package-artifacts",
@@ -135,7 +141,7 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
     outputs = _classify(repo, base, head)
 
     assert outputs["docs"] == "true"
-    assert _required(outputs) == {"changes", "docs-check"}
+    assert _required(outputs) == {"changes", "release-semantic", "docs-check"}
     assert _jobs(outputs)["docs-check"] is True
     assert _jobs(outputs)["test"] is False
 
@@ -170,7 +176,8 @@ def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
 
     assert outputs["docs"] == "true"
     assert outputs["python_source"] == "true"
-    assert {"test", "package-artifacts", "bwave-smoke"} <= _required(outputs)
+    assert {"test", "package-artifacts"} <= _required(outputs)
+    assert "bwave-smoke" not in _required(outputs)
     assert base != head
 
 
@@ -226,7 +233,52 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
     assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
 
 
-def test_ordinary_python_source_does_not_request_riscv_image(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("path", "riscv"),
+    [
+        # PR #298: image-contract code accepted an invalid runtime user.
+        (".github/scripts/image_size_report.py", True),
+        # PR #308: Simulation runtime overlays leaked into the issued image.
+        ("src/booley/flows/sim/flow.py", False),
+        # PR #315: host Doctor and Session Runtime identity diverged.
+        ("src/booley/harness/doctor.py", False),
+        ("src/booley/harness/session_runtime.py", False),
+        ("src/booley/mcp/server.py", False),
+        # PR #350: shared size/resource contracts own both image variants.
+        (".github/contracts/image-size-limits.toml", True),
+        (".github/scripts/image_runtime_resources.py", True),
+        # PR #351: synthesis changes must exercise the OpenROAD promotion probe.
+        ("src/booley/flows/synth/flow.py", False),
+    ],
+)
+def test_release_regression_paths_request_focused_image_smoke(
+    tmp_path: Path, path: str, riscv: bool
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "release-sensitive regression path")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["release_sensitive"] == "true"
+    assert outputs["standard_image"] == "true"
+    assert outputs["riscv_image"] == str(riscv).lower()
+    assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
+
+
+def test_openroad_probe_is_standard_image_only(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, ".github/scripts/verify_openroad_runtime.sh")
+    head = _commit(repo, "OpenROAD release probe")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["release_sensitive"] == "true"
+    assert outputs["standard_image"] == "true"
+    assert outputs["riscv_image"] == "false"
+
+
+def test_ordinary_python_source_skips_release_image_smoke(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "ordinary Python source")
@@ -234,8 +286,10 @@ def test_ordinary_python_source_does_not_request_riscv_image(tmp_path: Path) -> 
     outputs = _classify(repo, base, head)
 
     assert outputs["python_source"] == "true"
+    assert outputs["release_sensitive"] == "false"
+    assert outputs["standard_image"] == "false"
     assert outputs["riscv_image"] == "false"
-    assert "bwave-smoke" in _required(outputs)
+    assert "bwave-smoke" not in _required(outputs)
 
 
 @pytest.mark.parametrize(
@@ -309,7 +363,7 @@ def test_both_changelog_paths_are_release_inputs(tmp_path: Path) -> None:
     outputs = _classify(repo, base, head)
 
     assert outputs["release"] == "true"
-    assert _required(outputs) == set(_jobs(outputs)) | {"changes"}
+    assert _required(outputs) == set(_jobs(outputs)) | {"changes", "release-semantic"}
 
 
 def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None:
@@ -322,6 +376,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
 
     expected = {
         "changes",
+        "release-semantic",
         "docs-check",
         "lint",
         "test",
