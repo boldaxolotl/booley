@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -46,7 +46,7 @@ def project_dir_for_init(project_root: Path) -> Path:
 
 
 @contextmanager
-def init_project_dir_scope(project_root: Path) -> Iterator[Path]:
+def init_project_dir_scope(project_root: Path) -> Generator[Path]:
     """Keep every full-init lookup bound to the selected checkout.
 
     Init calls helpers that use the normal runtime resolver. Temporarily publish
