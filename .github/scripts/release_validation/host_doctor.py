@@ -120,7 +120,10 @@ def validate(
         "candidate": {"sha": candidate_sha, "image_digest": image_digest},
         "identity": identity,
         "checks": checks,
-        "cleanup": {"editor_probe_removed": not probe.exists()},
+        "cleanup": {
+            "editor_probe_removed": not probe.exists(),
+            "editor_marker_removed": not _editor_marker(home).exists(),
+        },
     }
 
 

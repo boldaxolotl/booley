@@ -28,6 +28,7 @@ jobs:
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      runtime-base: ${{ steps.runtime-base.outputs.image }}
       version: ${{ steps.version.outputs.version }}
 
     steps:
@@ -181,6 +182,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -195,14 +197,18 @@ jobs:
       - name: Validate provenance, runtime, size, and resources
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
+          EXPECTED_PARENT: ${{ needs.build-and-push.outputs.runtime-base }}
         run: |
           mkdir -p "${RUNNER_TEMP}/standard-image-evidence"
-          expected="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.provenance.schema" }}' booley-sandbox)" = 2
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.payload.fingerprint" }}' booley-sandbox)" = "${expected}"
-          test -n "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.recipe-fingerprint" }}' booley-sandbox)"
-          actual="$(docker run --rm --entrypoint python3 booley-sandbox -I -c 'from booley.runtime.build_metadata import current_build_metadata; print(current_build_metadata().payload_fingerprint)')"
-          test "${actual}" = "${expected}"
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
+          python .github/scripts/release_validation/image_provenance.py \
+            --image "${IMAGE}" --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${IMAGE_DIGEST}" --expected-payload "${expected_payload}" \
+            --expected-recipe "${expected_recipe}" --expected-parent "${EXPECTED_PARENT}" \
+            --expected-revision "$(git rev-parse --short HEAD)" \
+            --evidence "${RUNNER_TEMP}/standard-image-evidence/provenance.json"
           PYTHONPATH=src python .github/scripts/image_contract.py \
             --image "${IMAGE}" --flavor standard \
             --contract .github/contracts/session-runtime.toml \
@@ -267,6 +273,13 @@ jobs:
             --mount type=bind,src="${VALIDATION_TMP}",dst=/evidence \
             booley-sandbox bash /booley-source/.github/scripts/verify_openroad_runtime.sh \
             /opt/pdk /evidence
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" \
+            --image "sandbox=${{ needs.build-and-push.outputs.image-digest }}" \
+            --check openroad.gui-runtime --check openroad.placement \
+            --check openroad.repair-timing --uid 1000 --gid 1000 \
+            --cleanup container-removed --cleanup temporary-work-removed \
+            --evidence "${VALIDATION_TMP}/summary.json"
       - name: Retain OpenROAD evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -402,13 +415,15 @@ jobs:
 
   helper-image-metadata:
     name: Helper image metadata
-    needs: [build-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
       - name: Build and inspect helper images
         run: bash .github/scripts/sidecar-build-evidence.sh
       - name: Retain helper image evidence
@@ -432,6 +447,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -441,10 +457,19 @@ jobs:
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
           mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
           docker pull "${BASE_IMAGE}"
           docker pull "${RISCV_IMAGE}"
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+          python .github/scripts/release_validation/image_provenance.py \
+            --image "${RISCV_IMAGE}" --candidate-sha "${GITHUB_SHA}" \
+            --image-digest "${RISCV_DIGEST}" --expected-payload "${expected_payload}" \
+            --expected-recipe "${expected_recipe}" --expected-parent "${BASE_IMAGE}" \
+            --expected-revision "$(git rev-parse --short HEAD)" \
+            --evidence "${RUNNER_TEMP}/riscv-image-evidence/provenance.json"
           PYTHONPATH=src python .github/scripts/image_contract.py \
             --image "${RISCV_IMAGE}" --base-image "${BASE_IMAGE}" --flavor riscv \
             --contract .github/contracts/session-runtime.toml \
@@ -458,8 +483,6 @@ jobs:
             --candidate-sha "${GITHUB_SHA}" --image "riscv=${RISCV_IMAGE}" \
             --json "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.json" \
             --markdown "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.md"
-          expected_parent="${BASE_IMAGE}"
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' "${RISCV_IMAGE}")" = "${expected_parent}"
       - name: Retain RISC-V image evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -557,6 +580,7 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+          BOOLEY_RUN_PICORV32_FLOWS: "1"
         run: |
           mkdir -p "${RUNNER_TEMP}/picorv32-evidence"
           sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/picorv32-evidence"
@@ -570,7 +594,7 @@ jobs:
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
-            -e TICKET_SLUG "${IMAGE}" bash -euo pipefail -c \
+            -e TICKET_SLUG -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
             'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
       - name: Restore demo ownership
         if: always()
@@ -578,13 +602,24 @@ jobs:
           for path in demo "${RUNNER_TEMP}/picorv32-evidence"; do
             if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
           done
+      - name: Record PicoRV32 evidence
+        env:
+          IMAGE_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
+            --check picorv32.ticket-ready --check picorv32.contract \
+            --check picorv32.lint --check picorv32.simulation \
+            --uid 1000 --gid 1000 --cleanup container-removed \
+            --cleanup workspace-ownership-restored \
+            --evidence "${RUNNER_TEMP}/picorv32-evidence/summary.json"
       - name: Retain PicoRV32 evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-picorv32-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/picorv32-evidence/
-          if-no-files-found: warn
+          if-no-files-found: error
 
   ibex-lint-demo:
     name: Ibex lint demo
@@ -612,22 +647,41 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
+          mkdir -p "${RUNNER_TEMP}/ibex-evidence"
           test "$(git -C ibex-demo rev-parse HEAD)" = 34b0705760ef3dfa00e99637432473d2be8f22f3
-          sudo chown -R 1000:1000 ibex-demo
+          sudo chown -R 1000:1000 ibex-demo "${RUNNER_TEMP}/ibex-evidence"
           .github/scripts/run_with_container_cleanup.sh \
             booley-release-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
             docker run --rm --init --network none --user agent \
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
             --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work -w /work \
+            --mount type=bind,src="${RUNNER_TEMP}/ibex-evidence",dst=/evidence \
             "${IMAGE}" bash -euo pipefail -c \
             'test -f /work/rtl/ibex_core.sv && fusesoc --cores-root=/work run \
-            --target=lint lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal"'
+            --target=lint lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal" \
+            2>&1 | tee /evidence/ibex-lint.log'
       - name: Restore Ibex ownership
         if: always()
         run: |
-          if test -e ibex-demo; then
-            sudo chown -R "$(id -u):$(id -g)" ibex-demo
-          fi
+          for path in ibex-demo "${RUNNER_TEMP}/ibex-evidence"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+      - name: Record Ibex evidence
+        env:
+          IMAGE_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          python .github/scripts/release_validation/evidence.py \
+            --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
+            --check ibex.revision-pin --check ibex.lint --uid 1000 --gid 1000 \
+            --cleanup container-removed --cleanup workspace-ownership-restored \
+            --evidence "${RUNNER_TEMP}/ibex-evidence/summary.json"
+      - name: Retain Ibex evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-ibex-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ibex-evidence/
+          if-no-files-found: error
 
   # Retag the already-tested manifests by digest. No Dockerfile or source
   # context is available to this job, so promotion cannot rebuild candidates.

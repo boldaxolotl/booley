@@ -5,10 +5,16 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import demo_surface
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="release container validation requires POSIX executables"
+)
 
 
 def _executable(path: Path, body: str) -> Path:

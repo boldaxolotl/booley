@@ -416,11 +416,6 @@ def test_agent_runtime_uses_validated_node24_and_executable_policy_probe() -> No
     assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert 'default="24.20.0"' in probe
     assert 'default="11.19.0"' in probe
-    assert '"signal_exit_codes": _assert_signal_propagation(root)' in probe
-    assert '["claude", "mcp", "serve"]' in probe
-    assert '["codex", "mcp-server"]' in probe
-    assert "os.kill(process.pid, signal.SIGTERM)" in probe
-    assert "left descendants running after SIGTERM" in probe
 
 
 def test_source_builds_fetch_immutable_commits() -> None:

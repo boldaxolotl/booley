@@ -12,6 +12,11 @@ sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import host_doctor
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="host release validation requires POSIX identity and executables",
+)
+
 
 def _fake_booley(root: Path) -> tuple[Path, Path]:
     log = root / "commands.jsonl"
@@ -79,7 +84,10 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
         "id": "host-doctor.deep-issued-image",
         "status": "pass",
     }
-    assert evidence["cleanup"] == {"editor_probe_removed": True}
+    assert evidence["cleanup"] == {
+        "editor_probe_removed": True,
+        "editor_marker_removed": True,
+    }
     assert not (home / "bin" / "code").exists()
     assert not (home / ".booley-ci-dev-containers").exists()
 

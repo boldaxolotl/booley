@@ -56,6 +56,17 @@ def _commands(job: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(step.get("run", "")) for step in steps if isinstance(step, dict))
 
 
+def _steps(job: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    raw = job.get("steps", [])
+    if not isinstance(raw, list):
+        return ()
+    return tuple(step for step in raw if isinstance(step, dict))
+
+
+def _named_step(job: dict[str, Any], name: str) -> dict[str, Any] | None:
+    return next((step for step in _steps(job) if step.get("name") == name), None)
+
+
 def _strings(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
@@ -80,6 +91,48 @@ def validate_pr_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     return tuple(errors)
 
 
+def _evidence_errors(jobs: dict[str, Any], expected: set[str]) -> list[str]:
+    errors: list[str] = []
+    for name in expected:
+        job = _mapping(jobs[name], name)
+        uploads = [
+            step
+            for step in _steps(job)
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+        if len(uploads) != 1:
+            errors.append(f"{name} must upload one evidence artifact")
+        elif (
+            _mapping(uploads[0].get("with"), f"{name} upload inputs").get("if-no-files-found")
+            != "error"
+        ):
+            errors.append(f"{name} must reject missing evidence")
+    return errors
+
+
+def _picorv32_errors(jobs: dict[str, Any]) -> list[str]:
+    picorv32 = _mapping(jobs["picorv32-demo-flows"], "picorv32-demo-flows")
+    flow_step = _named_step(picorv32, "Run exact reviewed demo flows")
+    if flow_step is None:
+        return ["picorv32-demo-flows misses its execution step"]
+    errors: list[str] = []
+    environment = _mapping(flow_step.get("env"), "PicoRV32 flow environment")
+    if environment.get("BOOLEY_RUN_PICORV32_FLOWS") != "1":
+        errors.append("picorv32-demo-flows must enable lint and simulation")
+    if "-e BOOLEY_RUN_PICORV32_FLOWS" not in str(flow_step.get("run", "")):
+        errors.append("picorv32-demo-flows must pass its flow flag into the container")
+    return errors
+
+
+def _provenance_errors(jobs: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for name in ("standard-image-contract", "riscv-image-contract"):
+        command = "\n".join(_commands(_mapping(jobs[name], name)))
+        if "release_validation/image_provenance.py" not in command:
+            errors.append(f"{name} must validate shared provenance and SBOM evidence")
+    return errors
+
+
 def validate_release_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     jobs = _mapping(workflow.get("jobs"), "release workflow jobs")
     expected = _STANDARD_RELEASE_JOBS | _RISCV_RELEASE_JOBS
@@ -97,6 +150,9 @@ def validate_release_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     for name in _RISCV_RELEASE_JOBS:
         if "build-and-push-riscv" not in _needs(_mapping(jobs[name], name)):
             errors.append(f"{name} must depend on build-and-push-riscv")
+    errors.extend(_evidence_errors(jobs, expected))
+    errors.extend(_picorv32_errors(jobs))
+    errors.extend(_provenance_errors(jobs))
     promote = _mapping(jobs.get("promote"), "promote job")
     required = expected | {"build-and-push", "build-and-push-riscv"}
     if _needs(promote) != required:

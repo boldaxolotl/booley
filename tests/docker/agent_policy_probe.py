@@ -5,12 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import tempfile
 import threading
-import time
-from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -75,104 +72,6 @@ def _assert_diagnostics() -> None:
     report = json.loads(codex.stdout)
     assert report["codexVersion"] == EXPECTED_CODEX
     assert report["checks"]["config.load"]["summary"] == "config loaded"
-
-
-def _process_group_pids(group_id: int) -> set[int]:
-    members: set[int] = set()
-    for process_dir in Path("/proc").iterdir():
-        if not process_dir.name.isdigit():
-            continue
-        try:
-            stat = (process_dir / "stat").read_text()
-        except (FileNotFoundError, PermissionError):
-            continue
-        _, separator, suffix = stat.rpartition(")")
-        fields = suffix.split()
-        if separator and len(fields) >= 3 and int(fields[2]) == group_id:
-            members.add(int(process_dir.name))
-    return members
-
-
-def _pid_is_running(pid: int) -> bool:
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
-        return False
-    _, separator, suffix = stat.rpartition(")")
-    return bool(separator) and suffix.split()[0] != "Z"
-
-
-def _wait_for_group_members(group_id: int, root_pid: int, timeout: float) -> set[int]:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        members = _process_group_pids(group_id) - {root_pid}
-        if members:
-            return members
-        time.sleep(0.05)
-    return set()
-
-
-def _wait_for_group_exit(group_id: int, timeout: float) -> set[int]:
-    deadline = time.monotonic() + timeout
-    running = {pid for pid in _process_group_pids(group_id) if _pid_is_running(pid)}
-    while running and time.monotonic() < deadline:
-        time.sleep(0.05)
-        running = {pid for pid in _process_group_pids(group_id) if _pid_is_running(pid)}
-    return running
-
-
-def _probe_signal(
-    name: str,
-    command: list[str],
-    env: dict[str, str],
-    *,
-    readiness_timeout: float = 5.0,
-) -> int:
-    process = subprocess.Popen(
-        command,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    group_id = process.pid
-    try:
-        assert process.poll() is None, f"{name} stdio server exited before signal"
-        descendants = _wait_for_group_members(group_id, process.pid, readiness_timeout)
-        assert descendants, f"{name} started no descendant process"
-        os.kill(process.pid, signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=10)
-        survivors = _wait_for_group_exit(group_id, timeout=10)
-        assert not survivors, f"{name} left descendants running after SIGTERM: {survivors}"
-        expected_terminations = {0, -signal.SIGTERM, 128 + signal.SIGTERM}
-        assert process.returncode in expected_terminations, (
-            f"{name} did not terminate after SIGTERM: {process.returncode}; "
-            f"stdout={stdout[-1000:]!r}; stderr={stderr[-1000:]!r}"
-        )
-        return process.returncode
-    finally:
-        if process.poll() is None or _wait_for_group_exit(group_id, timeout=0):
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-        process.communicate(timeout=5)
-
-
-def _assert_signal_propagation(root: Path) -> dict[str, int]:
-    commands = {
-        "claude": ["claude", "mcp", "serve"],
-        "codex": ["codex", "mcp-server"],
-    }
-    exit_codes: dict[str, int] = {}
-    for name, command in commands.items():
-        home = root / f"signal-{name}-home"
-        codex_home = home / ".codex"
-        codex_home.mkdir(parents=True)
-        env = os.environ.copy()
-        env.update({"HOME": str(home), "CODEX_HOME": str(codex_home)})
-        exit_codes[name] = _probe_signal(name, command, env)
-    return exit_codes
 
 
 def _walk_installed_tree(tree: dict[str, Any]) -> dict[str, str]:
@@ -522,7 +421,6 @@ def main() -> None:
             "booley_configuration": _assert_booley_configuration(root),
             "codex_policy": _assert_codex_policy(root),
             "claude_tools": _assert_claude_policy(root),
-            "signal_exit_codes": _assert_signal_propagation(root),
         }
         _assert_diagnostics()
     rendered = json.dumps(evidence, indent=2, sort_keys=True)

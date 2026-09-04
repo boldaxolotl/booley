@@ -10,6 +10,10 @@ sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import simulation_selftest
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="release container validation requires POSIX executables"
+)
+
 
 def _doctor(root: Path, output: str) -> Path:
     executable = root / "booley"

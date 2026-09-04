@@ -89,3 +89,44 @@ def test_release_topology_rejects_riscv_output_reference_in_standard_job() -> No
     assert semantic.validate_release_topology(workflow) == (
         "standard release job openroad-runtime references the RISC-V build output",
     )
+
+
+def test_release_topology_requires_real_picorv32_flows_and_evidence() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    job = workflow["jobs"]["picorv32-demo-flows"]
+    flow = next(
+        step for step in job["steps"] if step.get("name") == "Run exact reviewed demo flows"
+    )
+    flow["env"]["BOOLEY_RUN_PICORV32_FLOWS"] = "0"
+    upload = next(
+        step
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+    upload["with"]["if-no-files-found"] = "warn"
+
+    errors = semantic.validate_release_topology(workflow)
+
+    assert "picorv32-demo-flows must enable lint and simulation" in errors
+    assert "picorv32-demo-flows must reject missing evidence" in errors
+
+
+def test_release_topology_requires_shared_provenance_validation() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    standard = workflow["jobs"]["standard-image-contract"]
+    validation = next(
+        step
+        for step in standard["steps"]
+        if step.get("name") == "Validate provenance, runtime, size, and resources"
+    )
+    validation["run"] = validation["run"].replace(
+        "release_validation/image_provenance.py", "release_validation/missing.py"
+    )
+
+    assert "standard-image-contract must validate shared provenance and SBOM evidence" in (
+        semantic.validate_release_topology(workflow)
+    )
