@@ -52,6 +52,7 @@ from booley.flows.sim.workload import build_workload_snapshot
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.target import TargetHandle, inspect_target
 
+from .artifacts import artifact_path_component, configured_trace_path
 from .composition import prepare_adapter_invocation
 from .contract import (
     DefaultSelection,
@@ -65,13 +66,14 @@ from .contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from .failures import find_missing_executable
 from .freshness import ArtifactValidationError, validate_fresh_artifact
 from .pre_run import run_pre_run_commands
+from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 ProcessInvoker = Callable[..., SubprocessResult]
 _TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
 _TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
-_BUILD_SECONDS_RE = re.compile(r"^BOOLEY_BUILD_SECONDS: (\d+)", re.MULTILINE)
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
@@ -86,10 +88,15 @@ class _Attempt:
     test_names: tuple[str, ...]
     adapter: str
     trace_requested: bool
+    setup_s: float
 
 
 class AdapterEvidenceError(RuntimeError):
     """A completed adapter supplied no trustworthy terminal result."""
+
+
+class SimulationArtifactPersistenceError(RuntimeError):
+    """A completed attempt could not preserve its required run evidence."""
 
 
 def read_completed_adapter_result(
@@ -98,10 +105,10 @@ def read_completed_adapter_result(
     build: BuildOutcome,
 ) -> AdapterResult | None:
     """Compatibility wrapper for callers testing phase precedence directly."""
-    if build.design_failed or process.timed_out:
+    if build.design_failed:
         return None
     if not identity.result_path.exists():
-        if process.dispatched_unix <= 0:
+        if process.dispatched_unix <= 0 or process.timed_out:
             return None
         raise AdapterEvidenceError(
             "adapter completed without authenticated terminal result evidence"
@@ -120,9 +127,16 @@ def read_completed_adapter_result(
 class SimulationExecution:
     """Resolve, preview, and execute one Target behind a two-method interface."""
 
-    def __init__(self, *, invoke: ProcessInvoker, options: SimulationOptions) -> None:
+    def __init__(
+        self,
+        *,
+        invoke: ProcessInvoker,
+        options: SimulationOptions,
+        artifact_root: Path | None = None,
+    ) -> None:
         self._invoke = invoke
         self._options = options
+        self._artifact_root = artifact_root
         self._reset_trace_roots: set[Path] = set()
 
     def run(
@@ -134,15 +148,12 @@ class SimulationExecution:
         started = time.monotonic()
         try:
             inspection = inspect_target(handle.project_root, handle)
-            groups = _work_groups(selection, _is_cocotb(inspection.flow_options))
+        except fusesoc_registry.FuseSocError as exc:
+            return _setup_failure(handle, str(exc), started)
+        groups = _work_groups(selection, _is_cocotb(inspection.flow_options))
+        try:
             results = [self._run_group(handle, names) for names in groups]
-        except (
-            SimulationBuildPreparationError,
-            fusesoc_registry.FuseSocError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ) as exc:
+        except SimulationBuildPreparationError as exc:
             return _setup_failure(handle, str(exc), started)
         failure = next(
             (result.infrastructure_failure for result in results if result.infrastructure_failure),
@@ -187,9 +198,12 @@ class SimulationExecution:
         attempt = self._prepare_attempt(handle, test_names)
         pre_run = self._run_pre_run(handle, attempt)
         if pre_run is not None and pre_run.status != "passed":
+            if pre_run.status == "spawn_error":
+                return _pre_run_infrastructure_failure(handle, attempt, pre_run, started)
             return _pre_run_failure(handle, attempt, pre_run, started)
         dispatched_ns = time.time_ns()
         process = self._invoke(list(attempt.command), timeout=self._wrapper_timeout_s(handle))
+        processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
         if build.failure_kind == "infrastructure":
             return _infrastructure_failure(handle, attempt, build, pre_run, started)
@@ -197,18 +211,23 @@ class SimulationExecution:
             adapter = self._read_adapter_result(attempt, process, build, dispatched_ns)
         except (AdapterTransportError, ArtifactValidationError) as exc:
             return _transport_failure(handle, attempt, build, pre_run, str(exc), started)
-        return self._completed_group(
-            handle,
-            attempt,
-            process,
-            build,
-            adapter,
-            pre_run,
-            dispatched_ns,
-            started,
-        )
+        try:
+            return self._completed_group(
+                handle,
+                attempt,
+                process,
+                build,
+                adapter,
+                pre_run,
+                dispatched_ns,
+                processing_started,
+                started,
+            )
+        except SimulationArtifactPersistenceError as exc:
+            return _artifact_failure(handle, attempt, build, pre_run, str(exc), started)
 
     def _prepare_attempt(self, handle: TargetHandle, test_names: tuple[str, ...]) -> _Attempt:
+        started = time.monotonic()
         prepared, trace_mode = self._prepare_build(handle)
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         token = new_attempt_token()
@@ -221,19 +240,24 @@ class SimulationExecution:
         )
         begin_run_log(prepared.build_root, flow="sim", target=handle.selector)
         work = self._prepared_work(handle, prepared, identity, trace_mode)
+        try:
+            invocation = prepare_adapter_invocation(work)
+        except ValueError as exc:
+            raise SimulationBuildPreparationError(str(exc)) from exc
         script = build_stage_script(
             prepared.make_argv,
             token,
-            run_line=shlex.join(prepare_adapter_invocation(work)),
+            run_line=shlex.join(invocation),
             environment=_target_environment(handle),
         )
         return _Attempt(
-            prepared,
-            identity,
-            ("sh", "-c", script),
-            test_names,
-            adapter,
-            self._options.trace,
+            prepared=prepared,
+            identity=identity,
+            command=("sh", "-c", script),
+            test_names=test_names,
+            adapter=adapter,
+            trace_requested=self._options.trace,
+            setup_s=time.monotonic() - started,
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
@@ -317,9 +341,11 @@ class SimulationExecution:
         build: BuildOutcome,
         dispatched_ns: int,
     ) -> AdapterResult | None:
-        if build.design_failed or process.timed_out:
+        if build.design_failed:
             return None
         if not attempt.identity.result_path.exists():
+            if process.timed_out:
+                return None
             raise AdapterTransportError("adapter completed without authenticated terminal result")
         validate_fresh_artifact(
             attempt.identity.result_path,
@@ -343,14 +369,14 @@ class SimulationExecution:
         adapter: AdapterResult | None,
         pre_run: PreRunEvidence | None,
         dispatched_ns: int,
+        processing_started: float,
         started: float,
     ) -> SimulationTargetOutcome:
         output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-        logs = _persist_run_logs(handle, attempt, output)
-        trace = _trace_artifact(handle, output, attempt.test_names, dispatched_ns)
+        logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
+        trace = _trace_artifact(handle, attempt, output, dispatched_ns)
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
-        archive = next((item for item in logs if item.kind == "run_log"), None)
         tests = _test_outcomes(
             handle,
             attempt,
@@ -358,8 +384,17 @@ class SimulationExecution:
             build,
             adapter,
             output,
-            archive,
+            logs,
             trace,
+        )
+        tests = _attach_group_telemetry(
+            tests,
+            attempt,
+            process,
+            build,
+            pre_run,
+            output,
+            time.monotonic() - processing_started,
         )
         artifacts = (*logs, *((trace,) if trace is not None else ()))
         diagnostics = adapter.diagnostics if adapter is not None else ()
@@ -372,6 +407,7 @@ class SimulationExecution:
             artifacts,
             started,
             diagnostics,
+            adapter.passed if adapter is not None else None,
         )
 
     def _preview_group(
@@ -552,21 +588,48 @@ def _pre_run_failure(
     started: float,
 ) -> SimulationTargetOutcome:
     names = attempt.test_names or (handle.selector,)
-    timed_out = evidence.status == "timed_out"
     detail = evidence.detail or f"pre-run commands {evidence.status}"
     tests = tuple(
         SimulationTestOutcome(
             name=name,
-            verdict="timeout" if timed_out else "elab_error",
+            verdict="elab_error",
             passed=False,
             elapsed_s=evidence.elapsed_s,
             error_tail=f"pre-run commands failed ({evidence.status}): {detail}",
-            timed_out=timed_out,
             elab_failed=True,
         )
         for name in names
     )
+    tests = (
+        replace(
+            tests[0],
+            phase_timings_s={
+                "setup": round(attempt.setup_s, 3),
+                "pre_run": round(evidence.elapsed_s, 3),
+                "build": 0.0,
+                "run": 0.0,
+                "result_processing": 0.0,
+            },
+        ),
+        *tests[1:],
+    )
     return _group_outcome(handle, attempt, tests, None, evidence, (), started)
+
+
+def _pre_run_infrastructure_failure(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    evidence: PreRunEvidence,
+    started: float,
+) -> SimulationTargetOutcome:
+    detail = evidence.detail or "could not start Pre-Run Commands"
+    failure = SimulationInfrastructureFailure(
+        "pre_run",
+        "Pre-Run Commands could not start",
+        missing_executable=find_missing_executable(detail) or "",
+        detail=detail,
+    )
+    return _error_outcome(handle, attempt, None, evidence, failure, started)
 
 
 def _infrastructure_failure(
@@ -592,10 +655,22 @@ def _transport_failure(
     return _error_outcome(handle, attempt, build, pre_run, failure, started)
 
 
-def _error_outcome(
+def _artifact_failure(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome,
+    pre_run: PreRunEvidence | None,
+    detail: str,
+    started: float,
+) -> SimulationTargetOutcome:
+    failure = SimulationInfrastructureFailure("artifact_persistence", detail, detail=detail)
+    return _error_outcome(handle, attempt, build, pre_run, failure, started)
+
+
+def _error_outcome(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    build: BuildOutcome | None,
     pre_run: PreRunEvidence | None,
     failure: SimulationInfrastructureFailure,
     started: float,
@@ -609,7 +684,7 @@ def _error_outcome(
         verdict="error",
         elapsed_s=time.monotonic() - started,
         tests=(),
-        builds=(build,),
+        builds=(build,) if build is not None else (),
         pre_runs=(pre_run,) if pre_run is not None else (),
         infrastructure_failure=failure,
     )
@@ -644,9 +719,16 @@ def _group_outcome(
     artifacts: tuple[SimulationArtifactEvidence, ...],
     started: float,
     diagnostics: tuple[str, ...] = (),
+    adapter_passed: bool | None = None,
 ) -> SimulationTargetOutcome:
     inconclusive = any(test.inconclusive for test in tests)
-    passed = bool(tests) and all(test.passed for test in tests) and not inconclusive
+    passed = (
+        bool(tests)
+        and all(test.passed for test in tests)
+        and not inconclusive
+        and adapter_passed is not False
+    )
+    elapsed_s = time.monotonic() - started
     return SimulationTargetOutcome(
         target=handle.selector,
         target_identity=handle.identity,
@@ -654,12 +736,13 @@ def _group_outcome(
         eda_tool=attempt.prepared.eda_tool,
         passed=passed,
         verdict="pass" if passed else "inconclusive" if inconclusive else "fail",
-        elapsed_s=time.monotonic() - started,
+        elapsed_s=elapsed_s,
         tests=tests,
         builds=(build,) if build is not None else (),
         pre_runs=(pre_run,) if pre_run is not None else (),
         artifacts=artifacts,
         diagnostics=diagnostics,
+        phase_timings_s=_target_phase_timings(tests, elapsed_s),
     )
 
 
@@ -675,11 +758,17 @@ def _aggregate(
     started: float,
 ) -> SimulationTargetOutcome:
     inconclusive = any(test.inconclusive for test in tests)
-    passed = bool(tests) and all(test.passed for test in tests) and failure is None
+    passed = (
+        bool(tests)
+        and all(test.passed for test in tests)
+        and all(group.passed for group in groups)
+        and failure is None
+    )
     eda_tool = next((group.eda_tool for group in groups if group.eda_tool), "")
     verdict = (
         "error" if failure else "pass" if passed else "inconclusive" if inconclusive else "fail"
     )
+    elapsed_s = time.monotonic() - started
     return SimulationTargetOutcome(
         target=handle.selector,
         target_identity=handle.identity,
@@ -687,14 +776,28 @@ def _aggregate(
         eda_tool=eda_tool,
         passed=passed,
         verdict=verdict,
-        elapsed_s=time.monotonic() - started,
+        elapsed_s=elapsed_s,
         tests=tests,
         builds=builds,
         pre_runs=pre_runs,
         artifacts=artifacts,
         diagnostics=tuple(note for group in groups for note in group.diagnostics),
         infrastructure_failure=failure,
+        phase_timings_s=_target_phase_timings(tests, elapsed_s),
     )
+
+
+def _target_phase_timings(
+    tests: tuple[SimulationTestOutcome, ...],
+    elapsed_s: float,
+) -> dict[str, float]:
+    phases: dict[str, float] = {}
+    for test in tests:
+        for name, duration in test.phase_timings_s.items():
+            phases[name] = phases.get(name, 0.0) + duration
+    phases["unattributed"] = max(0.0, elapsed_s - sum(phases.values()))
+    phases["execution_total"] = elapsed_s
+    return {name: round(duration, 3) for name, duration in phases.items()}
 
 
 def _test_outcomes(
@@ -704,11 +807,12 @@ def _test_outcomes(
     build: BuildOutcome,
     adapter: AdapterResult | None,
     output: str,
-    log: SimulationArtifactEvidence | None,
+    logs: tuple[SimulationArtifactEvidence, ...],
     trace: SimulationArtifactEvidence | None,
 ) -> tuple[SimulationTestOutcome, ...]:
     if build.design_failed:
-        return (_build_failure_test(handle, attempt, process, build, log),)
+        name = attempt.test_names[0] if attempt.test_names else handle.selector
+        return (_build_failure_test(handle, attempt, process, build, _run_log_for(logs, name)),)
     names = _outcome_names(handle, attempt, adapter)
     by_name = {test.name: test for test in adapter.test_results} if adapter else {}
     results = []
@@ -730,8 +834,9 @@ def _test_outcomes(
                 verdict,
                 cycle_status,
                 cycles,
-                log if index == 0 else None,
+                _run_log_for(logs, name),
                 trace if index == 0 else None,
+                adapter.sva_errors if adapter is not None and index == 0 else 0,
             )
         )
     return tuple(results)
@@ -768,11 +873,14 @@ def _test_outcome(
     cycles: int | None,
     log: SimulationArtifactEvidence | None,
     trace: SimulationArtifactEvidence | None,
+    sva_errors: int,
 ) -> SimulationTestOutcome:
     inconclusive = verdict == "inconclusive"
-    passed = verdict == "pass" and adapter is not None and adapter.sva_errors == 0
+    passed = verdict == "pass" and adapter is not None and sva_errors == 0
     detail = item.detail if item else adapter.detail if adapter else ""
     reason = detail
+    if verdict == "timeout" and not reason:
+        reason = f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
     if inconclusive and not reason:
         reason = _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
     return SimulationTestOutcome(
@@ -780,19 +888,22 @@ def _test_outcome(
         verdict=verdict,
         passed=passed,
         elapsed_s=item.elapsed_s if item and item.elapsed_s else process.duration_s,
-        build_s=_build_seconds(process.stdout),
         cycles=cycles,
         cycle_status=cycle_status,
         inconclusive=inconclusive,
         reason=reason,
-        sva_errors=adapter.sva_errors if adapter else 0,
+        sva_errors=sva_errors,
         error_tail="" if passed else reason or _output_tail(process, build.design_failed),
-        timed_out=verdict == "timeout" or process.timed_out,
+        timed_out=verdict == "timeout",
         build=build,
         artifacts=tuple(item for item in (log, trace) if item is not None),
         run_log_path=log.path if log is not None else "",
         workload_snapshot=_workload_snapshot(handle, attempt, name),
     )
+
+
+def _timeout_ms(process: SubprocessResult) -> int:
+    return max(1, round(process.duration_s * 1000))
 
 
 def _build_failure_test(
@@ -834,46 +945,84 @@ def _workload_snapshot(handle: TargetHandle, attempt: _Attempt, name: str) -> Ma
     )
 
 
+def _run_log_for(
+    artifacts: tuple[SimulationArtifactEvidence, ...],
+    name: str,
+) -> SimulationArtifactEvidence | None:
+    return next(
+        (
+            item
+            for item in artifacts
+            if item.kind == "run_log" and item.test_names == (name,)
+        ),
+        None,
+    )
+
+
 def _persist_run_logs(
     handle: TargetHandle,
     attempt: _Attempt,
     output: str,
+    artifact_root: Path | None,
 ) -> tuple[SimulationArtifactEvidence, ...]:
     build_root = attempt.prepared.build_root
     try:
         live_path = write_run_log(build_root, output)
-        archive_dir = build_root / ".booley-runs" / attempt.identity.attempt_token
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        begin_run_log(archive_dir, flow="sim", target=handle.selector)
-        archive_path = write_run_log(archive_dir, output, max_bytes=None)
         live = validate_fresh_artifact(live_path, roots=(build_root,), before=None)
-        archive = validate_fresh_artifact(archive_path, roots=(build_root,), before=None)
-    except (OSError, ArtifactValidationError):
-        return ()
-    names = attempt.test_names
-    return (
-        SimulationArtifactEvidence("live_run_log", str(live.path), live.size, names),
-        SimulationArtifactEvidence("run_log", str(archive.path), archive.size, names),
+        archives = _archive_run_logs(handle, attempt, output, artifact_root)
+    except (OSError, ArtifactValidationError) as exc:
+        raise SimulationArtifactPersistenceError(f"could not preserve run log: {exc}") from exc
+    live_evidence = SimulationArtifactEvidence(
+        "live_run_log", str(live.path), live.size, attempt.test_names
     )
+    return (live_evidence, *archives)
+
+
+def _archive_run_logs(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    output: str,
+    artifact_root: Path | None,
+) -> tuple[SimulationArtifactEvidence, ...]:
+    if artifact_root is None or not output:
+        return ()
+    names = attempt.test_names or (handle.selector,)
+    target = artifact_path_component(f"sim_{handle.selector}")
+    evidence: list[SimulationArtifactEvidence] = []
+    for name in names:
+        test = artifact_path_component(name)
+        directory = artifact_root / "artifacts" / target / "tests" / test
+        directory.mkdir(parents=True, exist_ok=True)
+        path = write_run_log(directory, output, max_bytes=None)
+        validated = validate_fresh_artifact(path, roots=(artifact_root,), before=None)
+        evidence.append(
+            SimulationArtifactEvidence("run_log", str(validated.path), validated.size, (name,))
+        )
+    return tuple(evidence)
 
 
 def _trace_artifact(
     handle: TargetHandle,
+    attempt: _Attempt,
     output: str,
-    test_names: tuple[str, ...],
     dispatched_ns: int,
 ) -> SimulationArtifactEvidence | None:
     matches = _TRACE_OK_RE.findall(output)
     if not matches:
         return None
     path = Path(matches[-1])
+    run_cwd = Path(resolve_run_cwd(handle.project_root))
+    if not run_cwd.is_absolute():
+        run_cwd = handle.project_root / run_cwd
     if not path.is_absolute():
-        path = handle.project_root / path
-    allowed = _explicit_trace_paths(handle.project_root)
+        path = run_cwd / path
+    search_roots = (run_cwd.resolve(), attempt.prepared.build_root.resolve())
+    patterns = tuple(resolve_trace_files(handle.project_root))
+    allowed = (path,) if configured_trace_path(path, patterns, search_roots) else ()
     try:
         evidence = validate_fresh_artifact(
             path,
-            roots=(handle.project_root,),
+            roots=search_roots,
             before=None,
             explicitly_allowed=allowed,
             not_before_ns=dispatched_ns,
@@ -885,7 +1034,7 @@ def _trace_artifact(
         "trace",
         str(evidence.path),
         evidence.size,
-        test_names,
+        attempt.test_names,
         scope,
         signals,
         ticks,
@@ -906,14 +1055,6 @@ def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:
         failure_kind="artifact",
         detail=_NO_WAVEFORM,
         test_results=tests,
-    )
-
-
-def _explicit_trace_paths(root: Path) -> tuple[Path, ...]:
-    return tuple(
-        (root / value).resolve()
-        for value in resolve_trace_files(root)
-        if "*" not in value and "?" not in value
     )
 
 
@@ -951,9 +1092,35 @@ def _cycle_records(output: str, sentinels: list[str]) -> list[list[str]]:
     return records
 
 
-def _build_seconds(output: str) -> float:
-    match = _BUILD_SECONDS_RE.search(output)
-    return float(match.group(1)) if match else 0.0
+def _attach_group_telemetry(
+    tests: tuple[SimulationTestOutcome, ...],
+    attempt: _Attempt,
+    process: SubprocessResult,
+    build: BuildOutcome,
+    pre_run: PreRunEvidence | None,
+    output: str,
+    result_processing_s: float,
+) -> tuple[SimulationTestOutcome, ...]:
+    if not tests:
+        return tests
+    build_s = parse_build_seconds(output)
+    run_s = parse_run_seconds(output)
+    if run_s is None:
+        run_s = max(0.0, process.duration_s - build_s) if build.passed else 0.0
+    phases = {
+        "setup": round(attempt.setup_s, 3),
+        "pre_run": round(pre_run.elapsed_s if pre_run else 0.0, 3),
+        "build": round(build_s, 3),
+        "run": round(run_s, 3),
+        "result_processing": round(result_processing_s, 3),
+    }
+    first = replace(
+        tests[0],
+        build_s=build_s,
+        phase_timings_s=phases,
+        resources=process_resources(output, process),
+    )
+    return (first, *tests[1:])
 
 
 def _output_tail(process: SubprocessResult, build_failed: bool) -> str:

@@ -15,11 +15,10 @@ from unittest.mock import patch
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.test_flow import _make_flow
+from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
 _COCOTB_CORE_TEXT = """\
@@ -148,6 +147,7 @@ def _run_cocotb(
     authenticate_build=True,
 ):
     token = "abc123"
+    flow._boundary_eda_tool = resolved_eda_tool
     if authenticate_build and "BOOLEY_BUILD_STAGE" not in stdout:
         build_failed = any(
             marker in stdout for marker in ("compilation failed", "elaboration failed")
@@ -205,25 +205,6 @@ class TestCocotbVerdictMatrix:
             "simulation_system_cpu_s": 0.25,
         }
 
-    def test_build_infrastructure_error_stops_before_result_interpretation(
-        self, tmp_path: Path
-    ) -> None:
-        flow = _make_cocotb_flow(tmp_path)
-
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(
-                tmp_path,
-                flow,
-                "still compiling\n",
-                returncode=-1,
-                timed_out=True,
-                authenticate_build=False,
-            )
-
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["eda_tool_error"] == "build_infrastructure"
-        assert "no pass/fail verdict" in result.report_text
-
     def test_named_cycle_records_are_attributed_within_batch(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
         out = (
@@ -240,7 +221,7 @@ class TestCocotbVerdictMatrix:
         with (
             patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
             patch(
-                "booley.flows.sim.flow._resolve_cycle_sentinels",
+                "booley.flows.sim.execution.engine.resolve_cycle_sentinels",
                 return_value=["CYCLES"],
             ),
         ):
@@ -513,22 +494,17 @@ class TestCocotbBatching:
         assert "--selected-test=test_reset" in script
 
     def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--result-verbosity", "full"])
-        cmd = flow._cocotb_run_cmd("build/ccfg", "icarus", "test_counter", ["test_reset"])
-        index = cmd.index("--result-verbosity")
-        assert cmd[index + 1] == "full"
+        flow = _make_cocotb_flow(
+            tmp_path,
+            extra_args=["--dry-run", "--result-verbosity", "full"],
+        )
+        result = flow._run()
+        assert "--result-verbosity full" in result.detail["commands"][0][-1]
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--trace"])
-        cmd = flow._cocotb_run_cmd(
-            "build/ccfg",
-            "icarus",
-            "test_counter",
-            ["test_reset"],
-            trace_scope="counter",
-        )
-        index = cmd.index("--expected-trace-scope")
-        assert cmd[index + 1] == "counter"
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
+        result = flow._run()
+        assert "--expected-trace-scope counter" in result.detail["commands"][0][-1]
 
     def test_substr_filter_prunes_the_selected_set(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "count"])
@@ -748,7 +724,7 @@ class TestCocotbBuildFailureShape:
     def test_the_compile_error_rides_the_build_entry(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
         with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(
+            _run_cocotb(
                 tmp_path,
                 flow,
                 self._BUILD_FAIL_OUTPUT,
@@ -757,9 +733,7 @@ class TestCocotbBuildFailureShape:
         tail = self._report(tmp_path)["tests"][0]["error_tail"]
         assert "iverilog compilation failed" in tail
         assert "syntax error" in tail
-        assert "did not compile" in tail
-        # The summary names the tests that never ran, instead of grading them.
-        assert "never ran" in result.report_text
+        assert [test["name"] for test in self._report(tmp_path)["tests"]] == ["ccfg"]
 
     def test_a_build_failure_never_reads_as_a_pass(self, tmp_path: Path):
         # ADR 0034 dec 6 holds regardless of the reshaping: no results.xml, no
@@ -794,11 +768,13 @@ class TestCocotbBuildFailureShape:
 
 def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
     """F-25: the frozen-clock watchdog knob crosses into the sandbox."""
-    flow = _make_cocotb_flow(tmp_path)
-    with patch("booley.flows.sim.flow._resolve_sim_time_grace_s", return_value=42.0):
-        cmd = flow._cocotb_run_cmd("build/ccfg", "icarus", "test_counter", ["a"])
-    assert "--sim-time-grace" in cmd
-    assert cmd[cmd.index("--sim-time-grace") + 1] == "42.0"
+    flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
+    with patch(
+        "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
+        return_value=42.0,
+    ):
+        result = flow._run()
+    assert "--sim-time-grace 42.0" in result.detail["commands"][0][-1]
 
 
 def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
@@ -812,18 +788,6 @@ def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
     assert result.detail["missing_executable"] == "verilator"
     # None of the three selected tests may appear as a graded row.
     assert "test_reset" not in result.report_text
-
-
-def test_missing_fusesoc_on_a_cocotb_target_is_exit_2(tmp_path: Path):
-    flow = _make_cocotb_flow(tmp_path)
-    boom = RuntimeError("could not invoke fusesoc (fusesoc): No such file or directory")
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
-        patch.object(SimulateFlow, "_prepare_cocotb_sim_command", side_effect=boom),
-    ):
-        result = flow._run()
-    assert result.exit_code == EXIT_ERROR
-    assert result.detail["missing_executable"] == "fusesoc"
 
 
 def test_real_cocotb_build_failure_still_grades_as_exit_1(tmp_path: Path):

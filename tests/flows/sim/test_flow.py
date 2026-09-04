@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import time
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -14,86 +14,56 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import write_run_log
-from booley.flows.sim.build import BuildOutcome, SimulationBuildPreparationError
-from booley.flows.sim.execution import NamedTests, SimulationPreview
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    AdapterTestResult,
+    write_adapter_result,
+)
+from booley.flows.sim.backends import cocotb_results
+from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.execution.telemetry import (
+    parse_build_seconds,
+    parse_run_seconds,
+    parse_sim_cpu_seconds,
+)
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
-    SimulateFlow,
     TargetResult,
     _append_batch_output_lines,
     _append_error_excerpt,
     _artifact_path_component,
-    _attach_process_telemetry,
     _build_display_lines,
     _build_run_script,
     _filter_tests,
     _resolve_sim_campaign_work_units,
     _test_status_line,
-    parse_build_seconds,
     parse_cycles,
-    parse_run_seconds,
-    parse_sim_cpu_seconds,
     parse_sva_errors,
+)
+from booley.flows.sim.flow import (
+    SimulateFlow as ProductionSimulateFlow,
 )
 from booley.flows.sim.flow import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
+from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
+from booley.flows.sim.trace_recipe import TraceMode
+from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime.project_dir import reset_cache
+from booley.targets.target import inspect_target
 
 # Built-in Flow execution inside the Session Runtime.
 _FLOW_ENABLED = True
 
 
-def test_qualified_target_uses_declared_icarus_tool(tmp_path: Path) -> None:
-    flow = object.__new__(SimulateFlow)
-    flow._args = MagicMock(work_dir=tmp_path)
-    with patch(
-        "booley.flows.sim.flow.select_target",
-        return_value=MagicMock(eda_tool="icarus"),
-    ) as select:
-        assert flow._eda_tool_for_target("::fifo:0#sim") == "icarus"
-    select.assert_called_once_with(tmp_path, "::fifo:0#sim", for_flow="sim")
+class SimulateFlow(ProductionSimulateFlow):
+    """Test shell retaining names patched by pre-boundary campaign tests."""
 
-
-@pytest.mark.parametrize("invocation", ["sim", "::sim_demo:0#sim"])
-def test_run_target_stamps_identity_for_selector_or_qualified_invocation(
-    tmp_path: Path,
-    invocation: str,
-) -> None:
-    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
-    flow = _make_flow(
-        tmp_path,
-        config=invocation,
-        seed_core=False,
-    )
-    targets = flow._resolve_requested_targets()
-    assert targets == ["sim"]
-    flow.is_cocotb_target = MagicMock(return_value=True)
-    flow._run_target_cocotb = MagicMock(return_value=TargetResult(target="sim"))
-
-    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
-
-    assert result.target == "sim"
-    assert result.target_identity == "::sim_demo:0#sim"
-
-
-def test_native_run_target_stamps_selected_identity(tmp_path: Path) -> None:
-    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
-    flow = _make_flow(tmp_path, config="sim", seed_core=False)
-    assert flow._resolve_requested_targets() == ["sim"]
-    flow.is_cocotb_target = MagicMock(return_value=False)
-    flow._resolve_tests_to_run = MagicMock(return_value=["smoke"])
-    flow._skipped_tests = MagicMock(return_value=[])
-    flow._run_single_test = MagicMock(return_value=SimTestResult(name="smoke", passed=True))
-    flow._drain_pre_run_lines = MagicMock(return_value=[])
-    flow._run_log_is_fresh = MagicMock(return_value=False)
-    flow._eda_tool_for = MagicMock(return_value="verilator")
-
-    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
-
-    assert result.target_identity == "::sim_demo:0#sim"
+    _prepare_sim_command = None
+    _prepare_cocotb_sim_command = None
+    _dry_run_command = None
 
 
 def test_target_metadata_resolution_is_counted_as_setup(tmp_path: Path) -> None:
@@ -314,52 +284,180 @@ def _make_flow(
     with patch.dict(os.environ, env):
         flow.parse_args(argv)
     flow.read_state()
-    flow._simulation_execution_override = _LegacyFlowExecution(flow)
+    flow._simulation_execution_override = _BoundaryHarness(flow)
     return flow
 
 
-class _LegacyFlowExecution:
-    """Common-interface fake retained while Flow compatibility tests migrate."""
+class _BoundaryHarness(SimulationExecution):
+    """Real execution engine with only its external build/process edges faked."""
 
     def __init__(self, flow: SimulateFlow) -> None:
         self._flow = flow
+        self._attempt = None
+        super().__init__(
+            invoke=self._invoke_test_process,
+            artifact_root=flow.args.report_dir,
+            options=SimulationOptions(
+                trace=flow.args.trace,
+                timeout_ms=int(flow.args.timeout) if flow.args.timeout else None,
+                result_verbosity=flow.args.result_verbosity,
+            ),
+        )
 
-    def run(self, handle, selection):
-        names = list(selection.names) if isinstance(selection, NamedTests) else [None]
-        test_map = {handle.selector: [name for name in names if name is not None]}
-        if self._flow.is_cocotb_target(handle.selector):
-            selected = [name for name in names if name is not None]
-            output_lines: list[str] = []
-            result = self._flow._stamp_target_identity(
-                self._flow._run_target_cocotb(
-                    handle.selector,
-                    self._flow._tb_top_for_target(handle.selector),
-                    {handle.selector: selected},
-                    output_lines,
-                )
+    def _prepare_build(self, handle):
+        inspection = inspect_target(handle.project_root, handle)
+        eda_tool = getattr(self._flow, "_boundary_eda_tool", None) or inspection.eda_tool or "verilator"
+        if eda_tool not in {"icarus", "verilator"}:
+            from booley.flows.sim.build import SimulationBuildPreparationError
+
+            raise SimulationBuildPreparationError(
+                f"simulator {eda_tool!r} is not supported by the public sim Flow; "
+                "select a Verilator or Icarus Target"
             )
-            result.diagnostics = tuple(line for line in output_lines if "(note:" in line)
-            return result
-        tests = [self._flow._run_single_test(handle.selector, name, test_map) for name in names]
-        return self._flow._native_target_result(
+        build_root = handle.project_root / "build" / handle.selector
+        build_root.mkdir(parents=True, exist_ok=True)
+        resolved = ResolvedTarget(
+            name=handle.selector,
+            vlnv=handle.vlnv,
+            toplevel=inspection.toplevel,
+            eda_tool=eda_tool,
+            files=(),
+            parameters=dict(inspection.parameters),
+            build_root=build_root,
+            edam_path=build_root / "test.eda.yml",
+            flow_options=dict(inspection.flow_options),
+            cocotb_module=inspection.flow_options.get("cocotb_module"),
+        )
+        prepared = PreparedSimulationBuild(
             handle.selector,
-            self._flow._tb_top_for_target(handle.selector),
-            sum(test.elapsed_s for test in tests),
-            tests,
+            handle.identity,
+            resolved,
+            build_root,
+            build_root,
+            eda_tool,
+            inspection.toplevel,
+            ("make", "-C", str(build_root)),
+        )
+        return prepared, TraceMode.VCD_FIFO
+
+    def _prepare_attempt(self, handle, test_names):
+        attempt = super()._prepare_attempt(handle, test_names)
+        self._attempt = attempt
+        return attempt
+
+    def _invoke_test_process(self, command, *, timeout):
+        del timeout
+        process = self._flow._execute(command)
+        assert self._attempt is not None
+        combined = process.stdout + ("\n" + process.stderr if process.stderr else "")
+        lowered = combined.lower()
+        build_failed = (
+            "compilation failed" in lowered
+            or "elaboration failed" in lowered
+            or "%error" in lowered
+        )
+        marker = (
+            f"BOOLEY_BUILD_STAGE token={self._attempt.identity.attempt_token} "
+            f"rc={1 if build_failed else 0}\n"
+        )
+        stdout = f"{process.stdout}\n{marker}" if build_failed else f"{marker}{process.stdout}"
+        if not build_failed:
+            write_adapter_result(
+                self._attempt.identity,
+                _adapter_result_for_test_process(self._attempt.identity.selected_tests, process),
+            )
+            fresh_ns = time.time_ns()
+            os.utime(self._attempt.identity.result_path, ns=(fresh_ns, fresh_ns))
+        return SubprocessResult(
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=process.stderr,
+            timed_out=process.timed_out,
+            duration_s=process.duration_s,
+            peak_rss_mb=process.peak_rss_mb,
+            oom_kill_delta=process.oom_kill_delta,
         )
 
-    def preview(self, handle, selection):
-        names = list(selection.names) if isinstance(selection, NamedTests) else [None]
-        test_map = {handle.selector: [name for name in names if name is not None]}
-        if self._flow.is_cocotb_target(handle.selector):
-            command = self._flow._dry_run_cocotb_command(
-                handle.selector, test_map[handle.selector]
+
+def _adapter_result_for_test_process(
+    names: tuple[str, ...],
+    process: SubprocessResult,
+) -> AdapterResult:
+    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
+    try:
+        summary = parse_summary_line(output)
+    except ValueError:
+        summary = None
+    parsed = cocotb_results.parse_results_line(output)
+    if parsed is not None:
+        if "cocotb simulation timed out" in output.lower() or process.timed_out:
+            parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
+        reconciled = cocotb_results.reconcile(list(names), parsed)
+        elapsed = {test.name: test.elapsed_s for test in parsed.tests}
+        tests = tuple(
+            AdapterTestResult(
+                name,
+                "timeout" if detail == cocotb_results.TIMEOUT_ACTIVE_DETAIL else verdict,
+                elapsed.get(name, process.duration_s),
+                detail,
             )
-            return SimulationPreview((tuple(command),))
-        commands = tuple(
-            tuple(self._flow._dry_run_command(handle.selector, name, test_map)) for name in names
+            for name, verdict, detail in reconciled
         )
-        return SimulationPreview(commands)
+        discovered = tuple(test.name for test in parsed.tests if test.name)
+        extras = tuple(name for name in discovered if name not in names)
+        diagnostics = (
+            "results.xml reports extra non-selected test(s): "
+            f"{', '.join(extras)} — logged, not verdict-bearing",
+        ) if extras else ()
+        sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
+        inconclusive = any(test.verdict == "inconclusive" for test in tests)
+        passed = bool(
+            process.returncode == 0
+            and summary is not None
+            and summary["passed"]
+            and sva_errors == 0
+            and tests
+            and all(test.verdict == "pass" for test in tests)
+        )
+    else:
+        sentinel = parse_sim_verdict(output)
+        passed_by_sentinel = bool(
+            process.returncode == 0
+            and (summary["passed"] if summary is not None else sentinel is True)
+        )
+        inconclusive_by_sentinel = summary is None and sentinel is None and not process.timed_out
+        verdict = (
+            "timeout"
+            if process.timed_out
+            else "pass"
+            if passed_by_sentinel
+            else "inconclusive"
+            if inconclusive_by_sentinel
+            else "fail"
+        )
+        tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
+        diagnostics = ()
+        sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
+        inconclusive = inconclusive_by_sentinel
+        passed = passed_by_sentinel
+    timed_out = any(test.verdict == "timeout" for test in tests)
+    return AdapterResult(
+        passed=passed,
+        inconclusive=inconclusive,
+        sva_errors=sva_errors,
+        tests=names,
+        failure_kind=(
+            "timeout"
+            if timed_out
+            else "inconclusive"
+            if inconclusive
+            else "design"
+            if not passed
+            else ""
+        ),
+        test_results=tests,
+        diagnostics=diagnostics,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -450,47 +548,6 @@ class TestBuildTimeAttribution:
     def test_parse_sim_cpu_seconds_extracts_user_and_system_time(self):
         output = "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.125000"
         assert parse_sim_cpu_seconds(output) == (1.25, 0.125)
-
-    def test_process_telemetry_normalizes_phases_and_resources(self):
-        from booley.flows.sim.build import BuildOutcome
-
-        result = SimTestResult(name="smoke", passed=True)
-        proc = SubprocessResult(
-            returncode=0,
-            stdout="",
-            duration_s=2.0,
-            peak_rss_mb=128.5,
-            oom_kill_delta=0,
-        )
-        output = (
-            "BOOLEY_BUILD_MILLISECONDS: 250\n"
-            "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=1750\n"
-            "BOOLEY_SIM_CPU_SECONDS: user=1.500000 system=0.250000"
-        )
-
-        _attach_process_telemetry(
-            result,
-            output,
-            proc,
-            BuildOutcome(ran=True, verdict="pass", failure_kind=None),
-            setup_s=0.01,
-            pre_run_s=0.02,
-            result_processing_s=0.03,
-        )
-
-        assert result.phase_timings_s == {
-            "setup": 0.01,
-            "pre_run": 0.02,
-            "build": 0.25,
-            "run": 1.75,
-            "result_processing": 0.03,
-        }
-        assert result.resources == {
-            "command_peak_rss_mb": 128.5,
-            "command_oom_kill_delta": 0,
-            "simulation_user_cpu_s": 1.5,
-            "simulation_system_cpu_s": 0.25,
-        }
 
     def test_parse_build_seconds_absent_marker_is_zero(self):
         assert parse_build_seconds("no marker here") == 0.0
@@ -830,8 +887,9 @@ class TestDryRun:
         commands = json.loads(captured.out)
         assert isinstance(commands, list)
         assert len(commands) == 1
-        assert "--config" in commands[0]
-        assert "lite" in commands[0]
+        assert commands[0][:2] == ["sh", "-c"]
+        assert "--top alu_tb" in commands[0][2]
+        assert "BOOLEY_TARGET=lite" in commands[0][2]
 
     @patch(
         "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
@@ -875,7 +933,7 @@ class TestDryRun:
         captured = capsys.readouterr()
         commands = json.loads(captured.out)
         assert len(commands) == 1
-        assert "smoke" in commands[0]
+        assert "BOOLEY_TEST_NAMES=smoke" in commands[0][2]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -1221,14 +1279,12 @@ class TestReportGeneration:
             peak_rss_mb=42.5,
             oom_kill_delta=0,
         )
-        build_outcome = BuildOutcome(ran=True, verdict="pass", failure_kind=None)
         flow = _make_flow(tmp_path, config="lite")
         with (
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(flow, "_execute", return_value=proc),
-            patch.object(flow, "_build_outcome", return_value=build_outcome),
         ):
             result = flow._run()
 
@@ -1308,9 +1364,7 @@ class TestReportGeneration:
     ):
         """Each HDL process gets durable evidence before the next one starts."""
         flow = _make_flow(tmp_path, config="lite")
-        build_root = tmp_path / "build"
-        build_root.mkdir()
-        flow._record_run_log_dir("lite", build_root)
+        build_root = tmp_path / "build" / "lite"
         first_path = tmp_path / "reports/artifacts/sim_lite/tests/smoke/run.log"
         first_bytes: bytes | None = None
         calls = 0
@@ -1463,7 +1517,7 @@ class TestReportGeneration:
                 ]
             )
         flow.read_state()
-        flow._simulation_execution_override = _LegacyFlowExecution(flow)
+        flow._simulation_execution_override = _BoundaryHarness(flow)
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
@@ -1506,16 +1560,7 @@ class TestTimeout:
                 oom_kill_delta=1,
             )
 
-        build_outcome = BuildOutcome(
-            ran=True,
-            verdict="pass",
-            failure_kind=None,
-            elapsed_s=0.25,
-        )
-        with (
-            patch.object(SimulateFlow, "_execute", _timeout_execute),
-            patch.object(SimulateFlow, "_build_outcome", return_value=build_outcome),
-        ):
+        with patch.object(SimulateFlow, "_execute", _timeout_execute):
             flow = _make_flow(tmp_path, config="lite")
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
@@ -1624,908 +1669,6 @@ def _mock_execute_raw_verilator_pass(self, cmd: list[str]) -> SubprocessResult:
     )
 
 
-class TestEdalizeSimPath:
-    """ADR 0019: Verilator/Icarus pass-fail runs go through the Edalize flow,
-    and the thin post-processor recovers the [SIM_SUMMARY] the bypassed runner
-    used to print."""
-
-    # test_use_edalize_sim_gates_on_backend_and_trace was deleted with
-    # `_use_edalize_sim` itself (ADR 0037): every selection rides the Edalize
-    # flow.
-
-    def test_unset_run_cwd_is_explicit_project_root(self, tmp_path: Path):
-        """An omitted config cannot inherit the run-half's build-dir fallback."""
-        flow = _make_flow(tmp_path)
-        commands = (
-            flow._verilator_run_cmd("build/verilator", "tb", []),
-            flow._icarus_run_cmd("build/icarus", []),
-            flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
-        )
-
-        for command in commands:
-            assert command[command.index("--run-cwd") + 1] == "."
-
-    def test_doctor_bad_run_commands_use_isolated_runtime_overlay(
-        self, tmp_path: Path, monkeypatch
-    ):
-        """The bad fixture sees runtime assets without mutating their real cwd."""
-        from booley.fusesoc import selftest_overlay
-
-        flow = _make_flow(tmp_path)
-        monkeypatch.setattr("booley.flows.sim.flow.resolve_run_cwd", lambda _root: "assets")
-        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        commands = (
-            flow._verilator_run_cmd("build/verilator", "tb", []),
-            flow._icarus_run_cmd("build/icarus", []),
-            flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
-        )
-
-        for command, build_dir in zip(
-            commands,
-            ("build/verilator", "build/icarus", "build/cocotb"),
-            strict=True,
-        ):
-            assert command[command.index("--run-cwd") + 1] == (
-                f"{build_dir}/{selftest_overlay.BAD_RUN_CWD_DIR}"
-            )
-
-    def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
-        """Icarus runs are re-homed to booley.flows.sim.backends.icarus (the edalize
-        Icarus run-half) — the mirror of the verilator_run wiring, not `make run`.
-        --trace rides along; the run-half adds the +trace plusarg itself."""
-        traced = _make_flow(tmp_path, extra_args=["--trace"])
-        cmd = traced._icarus_run_cmd("build/rel/dir", ["test_id=2"])
-        assert cmd[:3] == ["python3", "-m", "booley.flows.sim.backends.icarus"]
-        assert cmd[cmd.index("--build-dir") + 1] == "build/rel/dir"
-        assert "--top" not in cmd  # vvp image is discovered, no toplevel needed
-        assert "--trace" in cmd
-        assert "--plusarg=test_id=2" in cmd
-        # A non-trace run omits --trace (no waveform lifecycle).
-        plain = _make_flow(tmp_path)._icarus_run_cmd("d", [])
-        assert "--trace" not in plain
-
-    def test_run_cmds_forward_configured_sentinels(self, tmp_path: Path):
-        """Configured verdict sentinels ride the run-half command into the sandbox."""
-        with patch(
-            "booley.flows.sim.flow._resolve_sim_sentinels",
-            return_value=(["ALL TESTS PASSED."], ["ERROR!", "TIMEOUT"]),
-        ):
-            ic = _make_flow(tmp_path)._icarus_run_cmd("d", [])
-            vl = _make_flow(tmp_path)._verilator_run_cmd("d", "tb", [])
-        for cmd in (ic, vl):
-            # `=` form (F-12): one token per sentinel, same encoding as
-            # mutation_tester's forwarding of the same flags.
-            passes = [a.split("=", 1)[1] for a in cmd if a.startswith("--pass-sentinel=")]
-            fails = [a.split("=", 1)[1] for a in cmd if a.startswith("--fail-sentinel=")]
-            assert passes == ["ALL TESTS PASSED."]
-            assert fails == ["ERROR!", "TIMEOUT"]
-
-    def test_run_cmds_omit_sentinel_flags_when_unset(self, tmp_path: Path):
-        """No config -> no sentinel flags (run-half falls back to built-in markers)."""
-        with patch(
-            "booley.flows.sim.flow._resolve_sim_sentinels",
-            return_value=([], []),
-        ):
-            cmd = _make_flow(tmp_path)._icarus_run_cmd("d", [])
-        assert not any(a.startswith(("--pass-sentinel", "--fail-sentinel")) for a in cmd)
-
-    def test_resolve_sim_sentinels_reads_booley_toml(self, tmp_path: Path):
-        """[flows.sim].pass_sentinels/fail_sentinels are read from booley.toml."""
-        from booley.flows.sim.flow import _resolve_sim_sentinels
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\n"
-            'pass_sentinels = ["ALL TESTS PASSED."]\n'
-            'fail_sentinels = ["ERROR!", "TIMEOUT"]\n',
-            encoding="utf-8",
-        )
-        passes, fails = _resolve_sim_sentinels(tmp_path)
-        assert passes == ["ALL TESTS PASSED."]
-        assert fails == ["ERROR!", "TIMEOUT"]
-        # Unconfigured project -> empty lists (built-in markers used downstream).
-        assert _resolve_sim_sentinels(tmp_path / "nowhere") == ([], [])
-
-    def test_resolve_cycle_sentinels_reads_booley_toml(self, tmp_path: Path):
-        """[flows.sim].cycle_sentinels are read from booley.toml."""
-        from booley.flows.sim.flow import _resolve_cycle_sentinels
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:", "EXECUTED_CYCLES"]\n',
-            encoding="utf-8",
-        )
-        assert _resolve_cycle_sentinels(tmp_path) == [
-            "CoreMark completed in:",
-            "EXECUTED_CYCLES",
-        ]
-        # Unconfigured project -> built-in marker used by parse_cycles.
-        assert _resolve_cycle_sentinels(tmp_path / "nowhere") == []
-
-    def test_run_cmds_forward_configured_trace_args(self, tmp_path: Path):
-        """[flows.sim].trace_args rides both run-half commands when tracing.
-
-        F-15: Ibex's VerilatorSimCtrl takes only getopt `--trace=FILE`, so
-        Booley's generic plusarg pair produced a header-only FST that still
-        reported PASS. The contract has to reach both Runtime run-halves.
-        """
-        with patch(
-            "booley.flows.sim.flow.resolve_trace_args",
-            return_value=["--trace={file}"],
-        ):
-            ic = _make_flow(tmp_path, extra_args=["--trace"])._icarus_run_cmd("d", [])
-            vl = _make_flow(tmp_path, extra_args=["--trace"])._verilator_run_cmd("d", "tb", [])
-        for cmd in (ic, vl):
-            # The `=` form keeps argparse from reading the value as an option.
-            assert "--trace-arg=--trace={file}" in cmd
-
-    def test_run_cmds_omit_trace_args_when_not_tracing(self, tmp_path: Path):
-        """No --trace -> no trace contract flags, even when configured."""
-        with patch(
-            "booley.flows.sim.flow.resolve_trace_args",
-            return_value=["--trace={file}"],
-        ):
-            cmd = _make_flow(tmp_path)._verilator_run_cmd("d", "tb", [])
-        assert not any(a.startswith("--trace-arg") for a in cmd)
-
-    def test_resolve_trace_args_reads_booley_toml(self, tmp_path: Path):
-        """[flows.sim].trace_args is read from booley.toml; unset -> empty."""
-        from booley.flows.sim.config import resolve_trace_args
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            '[flows.sim]\ntrace_args = ["--trace={file}"]\n',
-            encoding="utf-8",
-        )
-        assert resolve_trace_args(tmp_path) == ["--trace={file}"]
-        # Unconfigured -> empty, so the run-half keeps its own convention.
-        assert resolve_trace_args(tmp_path / "nowhere") == []
-
-    def test_run_cmds_forward_rundir_budget(self, tmp_path: Path):
-        """The disk-budget knob (SETUP-25) rides both run-half commands."""
-        with patch(
-            "booley.flows.sim.flow._resolve_max_rundir_bytes",
-            return_value=2048,
-        ):
-            ic = _make_flow(tmp_path)._icarus_run_cmd("d", [])
-            vl = _make_flow(tmp_path)._verilator_run_cmd("d", "tb", [])
-        for cmd in (ic, vl):
-            assert cmd[cmd.index("--max-rundir-bytes") + 1] == "2048"
-
-    def test_run_cmds_omit_rundir_budget_when_disabled(self, tmp_path: Path):
-        """A 0 budget disables the guard -> no flag (run-half default is off)."""
-        with patch(
-            "booley.flows.sim.flow._resolve_max_rundir_bytes",
-            return_value=0,
-        ):
-            ic = _make_flow(tmp_path)._icarus_run_cmd("d", [])
-            vl = _make_flow(tmp_path)._verilator_run_cmd("d", "tb", [])
-        assert "--max-rundir-bytes" not in ic
-        assert "--max-rundir-bytes" not in vl
-
-    def test_resolve_max_rundir_bytes_reads_booley_toml(self, tmp_path: Path):
-        """[flows.sim].max_rundir_bytes overrides the default; unset -> default."""
-        from booley.flows.sim.flow import (
-            _DEFAULT_MAX_RUNDIR_BYTES,
-            _resolve_max_rundir_bytes,
-        )
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\nmax_rundir_bytes = 123456\n",
-            encoding="utf-8",
-        )
-        assert _resolve_max_rundir_bytes(tmp_path) == 123456
-        # Unconfigured project -> the sane multi-GB default (guard on by default).
-        assert _resolve_max_rundir_bytes(tmp_path / "nowhere") == _DEFAULT_MAX_RUNDIR_BYTES
-
-    def test_resolve_sim_timeout_ms_reads_booley_toml(self, tmp_path: Path):
-        """[flows.sim].timeout_ms overrides the default; unset -> default (F4)."""
-        from booley.flows.sim.flow import (
-            _DEFAULT_TIMEOUT_MS,
-            _resolve_sim_timeout_ms,
-        )
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\ntimeout_ms = 1800000\n",
-            encoding="utf-8",
-        )
-        assert _resolve_sim_timeout_ms(tmp_path) == 1800000
-        # Unconfigured project -> the built-in 600s default.
-        assert _resolve_sim_timeout_ms(tmp_path / "nowhere") == _DEFAULT_TIMEOUT_MS
-
-    def test_sim_config_numeric_boundaries_reject_booleans(self, tmp_path: Path):
-        from booley.flows.sim.flow import (
-            _DEFAULT_MAX_RUNDIR_BYTES,
-            _DEFAULT_TIMEOUT_MS,
-            _resolve_max_rundir_bytes,
-            _resolve_pre_run_commands,
-            _resolve_sim_time_grace_s,
-            _resolve_sim_timeout_ms,
-        )
-        from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\n"
-            "pre_run_commands = true\n"
-            "max_rundir_bytes = true\n"
-            "timeout_ms = true\n"
-            "sim_time_grace_s = true\n",
-            encoding="utf-8",
-        )
-
-        assert _resolve_pre_run_commands(tmp_path) == []
-        assert _resolve_max_rundir_bytes(tmp_path) == _DEFAULT_MAX_RUNDIR_BYTES
-        assert _resolve_sim_timeout_ms(tmp_path) == _DEFAULT_TIMEOUT_MS
-        assert _resolve_sim_time_grace_s(tmp_path) == DEFAULT_SIM_TIME_GRACE_S
-
-    def test_effective_timeout_ms_precedence(self, tmp_path: Path):
-        """--timeout arg wins over [flows.sim].timeout_ms wins over default (F4)."""
-        from booley.flows.sim.flow import _DEFAULT_TIMEOUT_MS
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\ntimeout_ms = 1800000\n",
-            encoding="utf-8",
-        )
-        # No --timeout arg -> the configured knob is honored.
-        flow = _make_flow(tmp_path)
-        assert flow.args.timeout is None
-        assert flow._effective_timeout_ms() == 1800000
-        # Explicit --timeout arg wins over the configured knob.
-        flow_arg = _make_flow(tmp_path, extra_args=["--timeout", "42000"])
-        assert flow_arg._effective_timeout_ms() == 42000
-        # Neither set -> the built-in default.
-        bare = tmp_path / "bare"
-        bare.mkdir()
-        assert _make_flow(bare)._effective_timeout_ms() == _DEFAULT_TIMEOUT_MS
-
-    def test_sim_plusargs_resolves_test_id(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        names = {"lite": ["smoke", "stress", "boot"]}
-        assert flow._sim_plusargs("lite", "stress", names) == ["test_id=1"]
-        # Unknown test name -> no selector (binary runs its default test).
-        assert flow._sim_plusargs("lite", "adhoc", names) == []
-        assert flow._sim_plusargs("lite", None, names) == []
-
-    def test_sim_plusargs_honors_tests_toml_select_template(self, tmp_path: Path):
-        """A Target's tests.toml `select` template overrides the default (dec. 16)."""
-        flow = _make_flow(tmp_path)
-        project = tmp_path / ".booley_project"
-        project.mkdir()
-        (project / "tests.toml").write_text(
-            '[lite]\ntests = ["smoke", "stress", "boot"]\nselect = "+test={name}"\n',
-            encoding="utf-8",
-        )
-        names = {"lite": ["smoke", "stress", "boot"]}
-        # `+test={name}` renders the test name; `+` is stripped (sim_run_command
-        # re-adds it). Targets without a template stay on the default +test_id=N.
-        assert flow._sim_plusargs("lite", "stress", names) == ["test=stress"]
-        assert flow._sim_plusargs("lite", None, names) == []
-
-    def test_sim_plusargs_forwards_resolved_typed_parameters(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        parameters = {
-            "BAUD": {"datatype": "int", "paramtype": "plusarg", "default": 115200},
-            "VERBOSE": {"datatype": "bool", "paramtype": "plusarg", "default": True},
-            "LABEL": {"datatype": "str", "paramtype": "plusarg", "default": "fast run"},
-            "DECLARE_ONLY": {"datatype": "str", "paramtype": "plusarg"},
-            "WIDTH": {"datatype": "int", "paramtype": "vlogparam", "default": 32},
-        }
-        assert flow._sim_plusargs("lite", None, {}, parameters) == [
-            "BAUD=115200",
-            "VERBOSE=1",
-            "LABEL=fast run",
-        ]
-
-    def test_test_selector_overrides_same_named_target_plusarg(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        parameters = {
-            "test_id": {"datatype": "int", "paramtype": "plusarg", "default": 9},
-            "BAUD": {"datatype": "int", "paramtype": "plusarg", "default": 57600},
-        }
-        assert flow._sim_plusargs("lite", "stress", {"lite": ["smoke", "stress"]}, parameters) == [
-            "BAUD=57600",
-            "test_id=1",
-        ]
-
-    @staticmethod
-    def _fake_resolved(tmp_path: Path, *, toplevel: str = "tb_counter", parameters=None):
-        """A ResolvedTarget under simulate's work root (FuseSoC's build dir)."""
-        from booley.fusesoc import fusesoc_registry
-
-        build_root = (
-            tmp_path
-            / ".booley_project"
-            / ".runtime"
-            / "edalize"
-            / "sim"
-            / "lite"
-            / "sim_demo_0"
-            / "sim"
-        )
-        return fusesoc_registry.ResolvedTarget(
-            name="lite",
-            vlnv="::sim_demo:0",
-            toplevel=toplevel,
-            eda_tool="verilator",
-            files=(),
-            parameters=parameters or {},
-            build_root=build_root,
-            edam_path=build_root / "sim_demo_0.eda.yml",
-        )
-
-    def test_prepare_sim_command_resolves_then_builds_and_runs(self, tmp_path: Path):
-        """Resolve the sim Target, then `make` (build) + run `V<top>` in one step."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        captured = {}
-
-        def fake_resolve(target, *, project_root, build_root, **kw):
-            captured.update(target=target, build_root=build_root)
-            return self._fake_resolved(tmp_path)
-
-        with (
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=fake_resolve,
-            ),
-            patch("booley.flows.sim.build.validate_top_parameter_intent") as guard,
-        ):
-            cmd = flow._prepare_sim_command(
-                "lite",
-                None,
-                {},
-            )
-        guard.assert_called_once()
-
-        # Resolution forwards the Target name and simulate's isolated build root.
-        assert captured["target"] == "lite"
-        assert captured["build_root"] == (
-            tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite"
-        )
-        assert cmd[:2] == ["sh", "-c"]
-        script = cmd[2]
-        # The authenticated terminal record separates build from run; the run
-        # binary only fires after a clean build.
-        assert "BOOLEY_BUILD_STAGE token=" in script
-        assert "Verilator elaboration failed" not in script
-        assert "make" in script
-        assert ".booley_project/.runtime/edalize/sim/lite/sim_demo_0/sim" in script
-        # Verilator run half ships through booley.flows.sim.backends.verilator, which builds
-        # V<top> from --top (decision 12) over the FuseSoC build dir.
-        assert "booley.flows.sim.backends.verilator" in script
-        assert "--top tb_counter" in script
-        assert "--adapter-result" in script
-        assert "--attempt-token" in script
-        assert "--target-identity" in script
-
-    def test_prepare_sim_command_forwards_test_plusarg(self, tmp_path: Path):
-        """The run half forwards the resolved `+test_id=N` selector (run kept)."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        names = {"lite": ["smoke", "stress", "boot"]}
-        with patch.object(
-            fusesoc_registry,
-            "resolve_target",
-            side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
-        ):
-            cmd = flow._prepare_sim_command(
-                "lite",
-                "stress",
-                names,
-            )
-        # verilator_run re-adds the leading `+`, so the selector ships stripped.
-        assert "--plusarg=test_id=1" in cmd[2]
-
-    def test_prepare_sim_command_forwards_target_plusarg_parameters(self, tmp_path: Path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        resolved = self._fake_resolved(
-            tmp_path,
-            parameters={
-                "uart_baudrate": {
-                    "datatype": "int",
-                    "paramtype": "plusarg",
-                    "default": 57600,
-                }
-            },
-        )
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved):
-            cmd = flow._prepare_sim_command("lite", None, {})
-        assert "--plusarg=uart_baudrate=57600" in cmd[2]
-
-    def test_prepare_sim_command_applies_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
-        from booley.fusesoc import fusesoc_registry, selftest_overlay
-
-        flow = _make_flow(tmp_path)
-        project_dir = tmp_path / ".booley_project"
-        (project_dir / "booley.toml").parent.mkdir(parents=True, exist_ok=True)
-        (project_dir / "booley.toml").write_text(
-            '[flows.sim]\nrun_cwd = "runtime-assets"\n', encoding="utf-8"
-        )
-        overlay_file = (
-            selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
-        )
-        overlay_file.parent.mkdir(parents=True)
-        overlay_file.write_text("bad\n", encoding="utf-8")
-        runtime_file = tmp_path / "runtime-assets" / "firmware" / "firmware.hex"
-        runtime_file.parent.mkdir(parents=True)
-        runtime_file.write_text("good\n", encoding="utf-8")
-        expected_root = (
-            tmp_path
-            / ".booley_project"
-            / ".runtime"
-            / "edalize"
-            / "sim"
-            / "lite-doctor-selftest-bad"
-        )
-        staged = expected_root / "sim_demo_0" / "sim" / "firmware" / "firmware.hex"
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        reset_cache()
-
-        def fake_resolve(target, *, project_root, build_root, **kwargs):
-            assert build_root == expected_root
-            resolved = self._fake_resolved(tmp_path)
-            return fusesoc_registry.ResolvedTarget(
-                name=resolved.name,
-                vlnv=resolved.vlnv,
-                toplevel=resolved.toplevel,
-                eda_tool=resolved.eda_tool,
-                files=resolved.files,
-                parameters=resolved.parameters,
-                build_root=staged.parents[1],
-                edam_path=staged.parents[1] / "sim_demo_0.eda.yml",
-            )
-
-        with patch.object(fusesoc_registry, "resolve_target", side_effect=fake_resolve):
-            cmd = flow._prepare_sim_command("lite", "known_bad", {})
-
-        assert staged.read_text(encoding="utf-8") == "bad\n"
-        shadow = staged.parents[1] / selftest_overlay.BAD_RUN_CWD_DIR
-        assert (shadow / "firmware" / "firmware.hex").read_text(encoding="utf-8") == "bad\n"
-        assert runtime_file.read_text(encoding="utf-8") == "good\n"
-        shadow_rel = shadow.relative_to(tmp_path).as_posix()
-        assert f"--run-cwd {shadow_rel}" in cmd[2]
-
-    def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
-        from booley.flows.sim.build import _stage_doctor_overlay
-        from booley.fusesoc import selftest_overlay
-
-        project_dir = tmp_path / ".booley_project"
-        overlay_file = (
-            selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
-        )
-        overlay_file.parent.mkdir(parents=True)
-        overlay_file.write_text("bad\n", encoding="utf-8")
-        build_root = tmp_path / "build"
-        staged = build_root / "firmware" / "firmware.hex"
-        staged.parent.mkdir(parents=True)
-        staged.write_text("good\n", encoding="utf-8")
-        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
-
-        _stage_doctor_overlay(tmp_path, build_root)
-
-        assert staged.read_text(encoding="utf-8") == "good\n"
-
-    def test_run_cmds_accept_getopt_style_test_selector(self, tmp_path: Path):
-        """Option-like selectors stay values of the run-half's --plusarg."""
-        selector = "--meminit=ram,firmware.elf"
-        flow = _make_flow(tmp_path)
-        ic = flow._icarus_run_cmd("d", [selector])
-        vl = flow._verilator_run_cmd("d", "tb", [selector])
-        for cmd in (ic, vl):
-            assert f"--plusarg={selector}" in cmd
-
-    def test_prepare_sim_command_trace_builds_overlay_and_ships_trace_flag(
-        self,
-        tmp_path: Path,
-    ):
-        """`--trace` generates a trace overlay Target, resolves *that* under its own
-        trace-variant build root, and ships the run half through verilator_run."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        overlay_file = tmp_path / "demo.booleytrace.core"
-        overlay_file.write_text("CAPI=2:\nname: ::sim_demo-booleytrace:0\n")
-        overlay = fusesoc_registry.TraceOverlay(
-            core_file=overlay_file,
-            vlnv="::sim_demo-booleytrace:0",
-            mode=fusesoc_registry.TraceMode.NATIVE_FST,
-        )
-        trace_build_root = (
-            tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
-        )
-        trace_build_root.mkdir(parents=True)
-        (trace_build_root / "stale-model-and-waveform").write_text("old RTL", encoding="utf-8")
-        captured: dict = {}
-
-        def fake_resolve(target, *, project_root, build_root, vlnv=None, **kw):
-            assert not build_root.exists(), "trace resolution must not see an earlier staged model"
-            captured.update(target=target, build_root=build_root, vlnv=vlnv)
-            return self._fake_resolved(tmp_path)
-
-        with (
-            patch.object(
-                fusesoc_registry,
-                "write_trace_overlay",
-                return_value=overlay,
-            ) as mk_overlay,
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=fake_resolve,
-            ),
-        ):
-            cmd = flow._prepare_sim_command(
-                "lite",
-                None,
-                {},
-            )
-        # The overlay is generated for the requested Target, resolved by its derived
-        # VLNV under the distinct trace-variant build root, then cleaned up.
-        mk_overlay.assert_called_once()
-        assert captured["vlnv"] == "::sim_demo-booleytrace:0"
-        assert captured["build_root"] == (
-            tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
-        )
-        assert not overlay_file.exists()  # cleanup() removed the transient overlay
-        script = cmd[2]
-        assert "booley.flows.sim.backends.verilator" in script
-        assert "--trace" in script
-        assert "--trace-mode native_fst" in script
-        assert "--trace-scope" not in script  # full-hierarchy trace, no scope knob
-
-    def test_trace_build_root_is_reset_once_for_a_multi_test_run(self, tmp_path: Path):
-        """Selected tests share one fresh trace build, never a pre-run stale one."""
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        build_root = tmp_path / "trace-build"
-        build_root.mkdir()
-        (build_root / "stale.fst").write_text("old trace", encoding="utf-8")
-
-        flow._reset_trace_build_root(build_root)
-        assert not build_root.exists()
-
-        build_root.mkdir()
-        current_model = build_root / "Vcurrent"
-        current_model.write_text("fresh model", encoding="utf-8")
-        flow._reset_trace_build_root(build_root)
-
-        assert current_model.exists(), "later tests must reuse this invocation's fresh build"
-
-    def test_cocotb_rejects_authored_native_fst_recipe(self, tmp_path: Path):
-        """Cocotb's current runner owns a VCD dump and cannot consume FST."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        overlay_file = tmp_path / "demo.booleytrace.core"
-        overlay_file.write_text("CAPI=2:\nname: ::sim_demo-booleytrace:0\n")
-        overlay = fusesoc_registry.TraceOverlay(
-            core_file=overlay_file,
-            vlnv="::sim_demo-booleytrace:0",
-            mode=fusesoc_registry.TraceMode.NATIVE_FST,
-        )
-
-        with (
-            patch.object(fusesoc_registry, "write_trace_overlay", return_value=overlay),
-            pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
-        ):
-            flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
-
-        assert not overlay_file.exists()
-
-    def test_trace_missing_waveform_fails_the_test(self, tmp_path: Path):
-        """--trace that produces no waveform fails loudly (no silent PASS)."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        # Sim PASSED, but verilator_run printed no TRACE_OK → trace silently no-op'd.
-        no_trace = SubprocessResult(
-            returncode=0,
-            stdout=(
-                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                "[SIM_RESULT] PASSED\n"
-                "ERROR: trace requested but no queryable .fst store or .vcd was produced\n"
-            ),
-            stderr="",
-            duration_s=1.0,
-        )
-        with (
-            patch.object(
-                fusesoc_registry,
-                "write_trace_overlay",
-                return_value=fusesoc_registry.TraceOverlay(
-                    core_file=tmp_path / "x.booleytrace.core",
-                    vlnv="::d-booleytrace:0",
-                ),
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
-            ),
-            patch.object(
-                SimulateFlow,
-                "_execute",
-                return_value=no_trace,
-            ),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-        ):
-            result = flow._run_single_test("lite", None, {})
-        assert result.passed is False
-        assert "no waveform" in result.error_tail
-
-    def test_trace_missing_on_passing_sim_is_inconclusive_not_fail(self, tmp_path: Path):
-        """QA_REPORT B5.1: a trace-infra failure on a PASSING sim is a Flow
-        error (inconclusive), never a design FAIL, and the trace incident's
-        ``ERROR:`` banner must not be miscounted as an SVA assertion."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        no_trace = SubprocessResult(
-            returncode=0,
-            stdout=(
-                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                "[SIM_RESULT] PASSED\n"
-                "ERROR: trace requested but no queryable .fst store or .vcd was produced\n"
-            ),
-            stderr="",
-            duration_s=1.0,
-        )
-        with (
-            patch.object(
-                fusesoc_registry,
-                "write_trace_overlay",
-                return_value=fusesoc_registry.TraceOverlay(
-                    core_file=tmp_path / "x.booleytrace.core",
-                    vlnv="::d-booleytrace:0",
-                ),
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
-            ),
-            patch.object(
-                SimulateFlow,
-                "_execute",
-                return_value=no_trace,
-            ),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-        ):
-            result = flow._run_single_test("lite", None, {})
-        assert result.passed is False
-        assert result.inconclusive is True, "trace-infra failure must be inconclusive, not FAIL"
-        assert result.sva_errors == 0, "trace ERROR line must not be counted as an SVA error"
-
-    def test_trace_ok_marker_keeps_pass(self, tmp_path: Path):
-        """A PASS with a real waveform (TRACE_OK) stays a PASS."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        with_trace = SubprocessResult(
-            returncode=0,
-            stdout=(
-                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                "[SIM_RESULT] PASSED\nTRACE_OK: /work/trace.vcd\n"
-            ),
-            stderr="",
-            duration_s=1.0,
-        )
-        with (
-            patch.object(
-                fusesoc_registry,
-                "write_trace_overlay",
-                return_value=fusesoc_registry.TraceOverlay(
-                    core_file=tmp_path / "x.booleytrace.core",
-                    vlnv="::d-booleytrace:0",
-                ),
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
-            ),
-            patch.object(
-                SimulateFlow,
-                "_execute",
-                return_value=with_trace,
-            ),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-        ):
-            result = flow._run_single_test("lite", None, {})
-        assert result.passed is True
-
-    def test_setup_failure_propagates(self, tmp_path: Path):
-        """A FuseSoC resolution failure surfaces through the preparation boundary."""
-        import pytest
-
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        with (
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=fusesoc_registry.TargetResolutionError("boom"),
-            ),
-            pytest.raises(SimulationBuildPreparationError, match="boom"),
-        ):
-            flow._prepare_sim_command("lite", None, {})
-
-    def test_real_fusesoc_sim_setup(self, tmp_path: Path):
-        """End-to-end: a real `fusesoc run --setup` leaves a makeable build dir.
-
-        Proves the --timing option set and the custom --exe main land in the
-        resolved .vc, the dir is relocatable, and simulate's command builds then
-        runs `V<top>` over it.
-        """
-        import pytest
-
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        import shutil
-        import sys
-
-        from booley.fusesoc import fusesoc_registry
-
-        work_dir = tmp_path / "proj"
-        (work_dir / "rtl").mkdir(parents=True)
-        (work_dir / "tb").mkdir(parents=True)
-        (work_dir / "sim").mkdir(parents=True)
-        (work_dir / "rtl" / "counter.sv").write_text(
-            "module counter(input logic clk); endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "tb" / "tb_counter.sv").write_text(
-            "module tb_counter; counter dut(.clk(1'b0)); initial $finish; endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "sim" / "booley_vcd_dump.sv").write_text(
-            "module booley_vcd_dump;\n"
-            '  initial if ($test$plusargs("trace")) $dumpvars(0);\n'
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "sim" / "tb_counter__main.cpp").write_text(
-            '#include "verilated.h"\n#include "Vtb_counter.h"\n'
-            "double sc_time_stamp() { return 0; }\n"
-            "int main(int argc, char** argv, char**) { return 0; }\n",
-            encoding="utf-8",
-        )
-        (work_dir / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
-
-        flow = _make_flow(work_dir, config="sim", seed_core=False)
-
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-        orig_resolve = fusesoc_registry.resolve_target
-        with patch.object(
-            fusesoc_registry,
-            "resolve_target",
-            side_effect=lambda *a, **k: orig_resolve(
-                *a,
-                **{**k, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
-            cmd = flow._prepare_sim_command(
-                "sim",
-                None,
-                {},
-            )
-
-        assert cmd[:2] == ["sh", "-c"]
-        script = cmd[2]
-        # Build half is the edalize `make`; the run half is re-homed to the
-        # booley.flows.sim.backends.verilator wrapper (commit 374c97b) which execs the
-        # verilated ./V<top> binary — so assert on the wrapper + top, not the
-        # bare Vtb_counter binary name the pre-refactor command referenced.
-        assert "make" in script
-        assert "booley.flows.sim.backends.verilator" in script and "tb_counter" in script
-        make_dir = next((work_dir / ".booley_project" / ".runtime").rglob("Makefile")).parent
-        vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
-        assert "--timing" in vc and "--trace" in vc and "-Wno-fatal" in vc
-        # Custom main wired via --exe; relocatable (no absolute project paths).
-        assert "--exe" in vc
-        assert "tb_counter__main.cpp" in vc
-        assert str(work_dir) not in vc
-
-    def test_real_fusesoc_icarus_sim_setup(self, tmp_path: Path):
-        """End-to-end (Icarus): a real `fusesoc run --setup` leaves a makeable
-        Icarus build dir, and simulate's command builds via `make` then runs the
-        vvp image through booley.flows.sim.backends.icarus — NOT `make run`, and NOT the
-        Verilator run-half. Icarus trace is runtime (+trace) so no overlay/--exe.
-        """
-        import pytest
-
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        import shutil
-        import sys
-
-        from booley.fusesoc import fusesoc_registry
-
-        work_dir = tmp_path / "proj"
-        (work_dir / "rtl").mkdir(parents=True)
-        (work_dir / "tb").mkdir(parents=True)
-        (work_dir / "sim").mkdir(parents=True)
-        (work_dir / "rtl" / "counter.sv").write_text(
-            "module counter(input logic clk); endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "tb" / "tb_counter.sv").write_text(
-            "module tb_counter; counter dut(.clk(1'b0)); initial $finish; endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "sim" / "booley_vcd_dump.sv").write_text(
-            "module booley_vcd_dump;\n"
-            '  initial if ($test$plusargs("trace")) $dumpvars(0);\n'
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        (work_dir / "sim_demo.core").write_text(_SIM_CORE_ICARUS_TEXT, encoding="utf-8")
-
-        flow = _make_flow(work_dir, config="sim", extra_args=["--trace"], seed_core=False)
-
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-        orig_resolve = fusesoc_registry.resolve_target
-        with patch.object(
-            fusesoc_registry,
-            "resolve_target",
-            side_effect=lambda *a, **k: orig_resolve(
-                *a,
-                **{**k, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
-            cmd = flow._prepare_sim_command("sim", None, {})
-
-        assert cmd[:2] == ["sh", "-c"]
-        script = cmd[2]
-        # Build via edalize `make`; run via the iverilog run-half (not `make run`,
-        # not verilator_run). --trace flows to the run-half; no overlay was made.
-        assert "make" in script
-        assert "booley.flows.sim.backends.icarus" in script
-        assert "booley.flows.sim.backends.verilator" not in script
-        assert "make run" not in script
-        assert "--trace" in script
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_raw_verilator_pass)
-    def test_raw_run_verdict_recovered_by_postprocessor(
-        self,
-        _mock_prep,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        # No [SIM_SUMMARY] in the raw output — reemit_sim_summary derives PASS.
-        assert result.exit_code == EXIT_SUCCESS
-        assert flow.state.is_met("sim_pass_lite")
 
 
 class TestErrorTailSource:
@@ -2591,7 +1734,7 @@ class TestErrorTailSource:
             return SubprocessResult(
                 returncode=1,
                 stdout="",
-                stderr="ERROR: Verilator elaboration failed (rc=1)\n",
+                stderr="%Error: rtl/top.sv:17: syntax error\n",
                 duration_s=4.2,
             )
 
@@ -2600,71 +1743,7 @@ class TestErrorTailSource:
             result = flow._run()
 
         assert result.exit_code == EXIT_FAILURE
-        assert "Verilator elaboration failed" in self._read_tail(tmp_path)
-
-
-class TestElabFailedDetection:
-    # The Edalize sim backends route through _prepare_sim_command (FuseSoC
-    # resolution + build/run); patch that seam to a dummy command so the
-    # _execute mock's elab error reaches _ELAB_FAIL_RE — the detection under
-    # test — rather than resolution failing first on the bare tmp_path project.
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
-    def test_static_verilator_marker_is_not_build_evidence(
-        self,
-        _mock_prep,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert "elab_failed" not in result.detail
-        assert result.detail["elaboration"]["lite"][0]["verdict"] is None
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_iverilog)
-    def test_static_iverilog_marker_is_not_build_evidence(
-        self,
-        _mock_prep,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert "elab_failed" not in result.detail
-        assert result.detail["elaboration"]["lite"][0]["verdict"] is None
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_sim_fail_no_elab_flag(
-        self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
-    ):
-        """Normal sim failure must NOT set elab_failed."""
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert "elab_failed" not in result.detail
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_pass_no_elab_flag(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
-        """Passing sim must NOT set elab_failed."""
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert "elab_failed" not in result.detail
+        assert "syntax error" in self._read_tail(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2734,6 +1813,7 @@ class TestTruncationResilientReport:
         _mock_backend,
         _mock_tests,
         tmp_path: Path,
+        capsys,
     ):
         """A chatty failure's excerpt is capped (~30 lines) with an omission
         marker pointing at run.log, so it can't monopolize the 12KB window."""
@@ -2749,16 +1829,12 @@ class TestTruncationResilientReport:
 
         with patch.object(SimulateFlow, "_execute", _chatty_fail):
             flow = _make_flow(tmp_path, config="lite")
-            result = flow._run()
+            flow._run()
 
-        report = result.report_text
+        report = capsys.readouterr().out
         # error_tail keeps the last 50 stdout lines; the report shows only the
         # last 30 of those, with an explicit marker for the 20 omitted ones.
-        # _prepare_sim_command is mocked away, so no run.log was written by
-        # THIS invocation — the marker must NOT vouch for one (a stale log
-        # from an earlier build can say "TEST PASSED" under a failing run).
-        assert "... (20 lines omitted)" in report
-        assert "see run.log" not in report
+        assert "... (20 lines omitted, see run.log)" in report
         assert "noise-079" in report  # tail of the excerpt kept
         assert "noise-051" not in report  # older lines dropped from the report
 
@@ -2942,50 +2018,6 @@ class TestTruncationResilientReport:
 
         assert flow._run_log_is_fresh("lite") is False
         assert flow._run_log_pointer("lite") is None
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    def test_prepare_sim_command_records_run_log_dir(
-        self,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        """_prepare_sim_command must record the RESOLVED build dir (where the
-        run-half writes run.log), not a guessed path."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, config="lite")
-        build_root = (
-            tmp_path
-            / ".booley_project"
-            / ".runtime"
-            / "edalize"
-            / "sim"
-            / "lite"
-            / "demo_0"
-            / "lite"
-        )
-        resolved = fusesoc_registry.ResolvedTarget(
-            name="lite",
-            vlnv="::demo:0",
-            toplevel="tb_lite",
-            eda_tool="verilator",
-            files=(),
-            parameters={},
-            build_root=build_root,
-            edam_path=build_root / "demo_0.eda.yml",
-        )
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved):
-            flow._prepare_sim_command("lite", None, {})
-
-        assert flow._run_log_dirs["lite"] == build_root
-        # Recording the dir alone does NOT make the pointer citable — only a
-        # log this invocation actually wrote may be pointed at (fresh guard).
-        assert flow._run_log_pointer("lite") is None
-        write_run_log(build_root, "[SIM_RESULT] FAILED\n")
-        assert flow._run_log_pointer("lite") == (
-            ".booley_project/.runtime/edalize/sim/lite/demo_0/lite/run.log"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Build-context observability (compile command + fileset in report / failure card)
@@ -3227,131 +2259,6 @@ def _fake_sim_resolved(
     )
 
 
-class TestPerTargetSimEnv:
-    """F-5: an env-parameterized TB must not force a tracked testbench edit.
-
-    ravenoc's eight cocotb modules all read ``os.getenv("FLAVOR")``. Neither
-    pre_run_commands (separate shell) nor passthrough_env (host->container)
-    reaches the simulator process, so the port had to rewrite a testbench it
-    did not own. tests.toml `env` is the per-Target home for it.
-    """
-
-    def test_build_run_script_exports_env_before_both_halves(self):
-        script = _build_run_script(
-            ["make", "-C", "build"],
-            "Verilator elaboration failed",
-            "./Vtb",
-            {"FLAVOR": "vanilla"},
-        )
-        assert script.startswith("export FLAVOR=vanilla\n")
-        # One shell: the export must reach the build AND the run.
-        assert script.index("export FLAVOR") < script.index("make")
-        assert script.index("export FLAVOR") < script.index("./Vtb")
-
-    def test_build_run_script_quotes_values(self):
-        script = _build_run_script(["make"], "m", "./Vtb", {"OPTS": "a b; rm -rf /"})
-        assert "export OPTS='a b; rm -rf /'" in script
-
-    def test_build_run_script_without_env_is_unchanged(self):
-        assert _build_run_script(["make"], "m", "./Vtb").startswith("_booley_build_start_ns=")
-
-    def test_sandbox_command_carries_the_targets_env(self, tmp_path: Path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        with (
-            patch(
-                "booley.flows.sim.flow._get_test_envs",
-                return_value={"lite": {"FLAVOR": "vanilla"}},
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                return_value=_fake_sim_resolved(tmp_path),
-            ),
-        ):
-            cmd = flow._prepare_sim_command("lite", None, {})
-        assert "export FLAVOR=vanilla" in cmd[2]
-
-    def test_cocotb_command_carries_the_targets_env(self, tmp_path: Path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        with (
-            patch(
-                "booley.flows.sim.flow._get_test_envs",
-                return_value={"lite": {"FLAVOR": "small"}},
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                return_value=_fake_sim_resolved(tmp_path, eda_tool="icarus", cocotb="test_noc"),
-            ),
-            patch("booley.flows.sim.build.validate_top_parameter_intent") as guard,
-        ):
-            cmd = flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
-        guard.assert_called_once()
-        script = cmd[2]
-        assert "export FLAVOR=small" in script
-        assert script.index("export FLAVOR") < script.index("booley.flows.sim.backends.cocotb")
-
-    def test_cocotb_command_carries_target_plusargs(self, tmp_path: Path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        resolved = _fake_sim_resolved(
-            tmp_path,
-            eda_tool="icarus",
-            cocotb="test_noc",
-            parameters={"SEED": {"datatype": "int", "paramtype": "plusarg", "default": 17}},
-        )
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved):
-            cmd = flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
-        assert "--plusarg=SEED=17" in cmd[2]
-
-    def test_env_is_matched_through_a_vlnv_qualified_section(self, tmp_path: Path):
-        """A tests.toml section may be VLNV-qualified; lookup must normalize."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        with (
-            patch(
-                "booley.flows.sim.flow._get_test_envs",
-                return_value={"::sim_demo:0#lite": {"FLAVOR": "big"}},
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                return_value=_fake_sim_resolved(tmp_path),
-            ),
-        ):
-            cmd = flow._prepare_sim_command("lite", None, {})
-        assert "export FLAVOR=big" in cmd[2]
-
-    def test_dry_run_preview_mirrors_the_live_exports(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        with patch(
-            "booley.flows.sim.flow._get_test_envs",
-            return_value={"lite": {"FLAVOR": "vanilla"}},
-        ):
-            cmd = flow._dry_run_command("lite", None, {})
-        assert cmd[:2] == ["sh", "-c"]
-        assert cmd[2].startswith("export FLAVOR=vanilla && ")
-
-    def test_no_env_declared_leaves_the_script_alone(self, tmp_path: Path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path)
-        with (
-            patch("booley.flows.sim.flow._get_test_envs", return_value={}),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                return_value=_fake_sim_resolved(tmp_path),
-            ),
-        ):
-            cmd = flow._prepare_sim_command("lite", None, {})
-        assert "export " not in cmd[2]
 
 
 # ---------------------------------------------------------------------------
@@ -3419,23 +2326,6 @@ class TestMissingExecutableIsEdaToolError:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_missing_fusesoc_at_setup_exits_2(self, _sel, _tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        boom = RuntimeError(
-            "could not invoke fusesoc (fusesoc): [Errno 2] No such file or directory: 'fusesoc'"
-        )
-        with patch.object(SimulateFlow, "_prepare_sim_command", side_effect=boom):
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["eda_tool_error"] == "missing_executable"
-        assert result.detail["missing_executable"] == "fusesoc"
-        # No invented per-test verdict rows.
-        assert "FAIL" not in result.report_text
-        assert "targets_passed" not in result.detail
-        assert "'fusesoc'" in result.report_text
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_missing_verilator_in_build_exits_2(self, _prep, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
@@ -3453,71 +2343,6 @@ class TestMissingExecutableIsEdaToolError:
         assert result.exit_code == EXIT_ERROR
         assert result.detail["missing_executable"] == "verilator"
         assert "elaboration failed" not in result.report_text.split("--- output tail ---")[0]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_authenticated_build_infrastructure_exits_2_without_criteria(
-        self, _prep, _sel, _tests, tmp_path: Path
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        flow.state.init_criteria({"sim_pass_lite": True, "elab_pass_lite": True})
-        flow.state.criteria["sim_pass_lite"].met = True
-        flow.state.criteria["elab_pass_lite"].met = True
-        flow._build_attempt_tokens = {"lite": "abc123"}
-        interrupted = SubprocessResult(
-            returncode=-1,
-            stdout="still compiling\n",
-            timed_out=True,
-            duration_s=3.0,
-        )
-
-        with patch.object(SimulateFlow, "_execute", return_value=interrupted):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["eda_tool_error"] == "build_infrastructure"
-        assert flow.state.criteria["sim_pass_lite"].met is True
-        assert flow.state.criteria["elab_pass_lite"].met is True
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    def test_missing_pre_run_executable_exits_2_without_criterion(
-        self, _prep, _sel, _tests, tmp_path: Path
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        missing = subprocess.CompletedProcess(
-            [],
-            127,
-            stdout="",
-            stderr="/bin/bash: line 2: riscv64-unknown-elf-gcc: command not found\n",
-        )
-        with (
-            patch(
-                "booley.flows.sim.flow._resolve_pre_run_commands",
-                return_value=["riscv64-unknown-elf-gcc"],
-            ),
-            patch("booley.flows.sim.flow.subprocess.run", return_value=missing),
-        ):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["missing_executable"] == "riscv64-unknown-elf-gcc"
-        assert result.criterion_key == ""
-        assert "FAIL" not in result.report_text.split("--- output tail ---")[0]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
-    @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
-    def test_unauthenticated_elaboration_marker_is_not_a_stage_verdict(
-        self, _prep, _sel, _tests, tmp_path: Path
-    ):
-        flow = _make_flow(tmp_path, config="lite")
-        result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert "elab_failed" not in result.detail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -3546,23 +2371,27 @@ class TestTraceArtifactReported:
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_trace_path_and_size_reach_the_report(self, _prep, _sel, _tests, tmp_path: Path):
-        store = tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
+        store = tmp_path / "build" / "lite"
         store.mkdir(parents=True)
         fst = store / "dump.fst"
-        fst.write_bytes(b"x" * 4096)
 
         flow = _make_flow(tmp_path, config="lite", extra_args=["--trace"])
-        stdout = (
-            f"TRACE_OK: {fst}\n"
-            'TRACE_METADATA: {"top_scope":"tb.dut","signal_count":42,'
-            '"total_ticks":900,"size_bytes":4096}\n'
-            '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
-        )
-        with patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout, 0)):
+
+        def _execute(_self, _command):
+            fst.write_bytes(b"x" * 4096)
+            stdout = (
+                f"TRACE_OK: {fst}\n"
+                'TRACE_METADATA: {"top_scope":"tb.dut","signal_count":42,'
+                '"total_ticks":900,"size_bytes":4096}\n'
+                '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
+            )
+            return SubprocessResult(returncode=0, stdout=stdout, duration_s=0.05)
+
+        with patch.object(SimulateFlow, "_execute", _execute):
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
-        rel = ".booley_project/.runtime/edalize/sim/lite-trace/dump.fst"
+        rel = "build/lite/dump.fst"
         assert f"trace: {rel} (4.0 KB, 42 signals, scope tb.dut, 900 ticks)" in result.report_text
         report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text())
         assert report["tests"][0]["trace_path"] == rel
@@ -3629,77 +2458,6 @@ class TestSubSecondDurations:
 # ---------------------------------------------------------------------------
 
 
-class TestSelectorRoundTrip:
-    """Drive the real producer methods and parse with the real run-half parsers.
-
-    The F-12 bug family: test selectors and verdict sentinels were repeatedly
-    lost or mangled at the subprocess boundary because every hop re-encoded
-    them by hand (two-token vs ``=`` form, ``+`` stripped here and re-added
-    there). Nothing asserted the whole chain end to end, so each producer
-    broke — and was fixed — one incident at a time. These tests close the
-    loop: any encoding drift on either side of the boundary fails here.
-    """
-
-    @staticmethod
-    def _runner_argv(cmd: list[str], module: str) -> list[str]:
-        """The argv the run-half's argparse actually sees."""
-        return cmd[cmd.index(module) + 1 :]
-
-    _SELECTORS: ClassVar[list[str]] = [
-        "test_id=3",  # bare (legacy contract; run-half re-adds the '+')
-        "+test_id=3",  # already plusarg-shaped
-        "--meminit=ram,firmware.elf",  # getopt-style (the original F-12 case)
-        "-t",  # short option, worst case for two-token parsing
-    ]
-
-    def test_verilator_selector_survives_to_binary_argv(self, tmp_path: Path):
-        from booley.flows.sim.backends import verilator as verilator_run
-
-        for selector in self._SELECTORS:
-            cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [selector])
-            ns = verilator_run._parse_args(
-                self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
-            )
-            assert ns.plusargs == [selector]
-            # And onward to the binary: '+' restored for bare selectors,
-            # option-like ones forwarded verbatim (SETUP-7).
-            run_cmd, _env = verilator_run._build_run_cmd(Path("/x/Vtb"), Path("/x"), ns.plusargs)
-            expected = selector if selector.startswith(("+", "-")) else f"+{selector}"
-            assert run_cmd[1:] == [expected]
-
-    def test_icarus_selector_survives_parse(self, tmp_path: Path):
-        from booley.flows.sim.backends import icarus as iverilog_run
-
-        for selector in self._SELECTORS:
-            cmd = _make_flow(tmp_path)._icarus_run_cmd("build/dir", [selector])
-            ns = iverilog_run._parse_args(
-                self._runner_argv(cmd, "booley.flows.sim.backends.icarus")
-            )
-            assert ns.plusargs == [selector]
-
-    def test_cocotb_test_names_survive_parse(self, tmp_path: Path):
-        from booley.flows.sim.backends import cocotb as cocotb_run
-
-        tests = ["test_reset", "test_count"]
-        cmd = _make_flow(tmp_path)._cocotb_run_cmd("build/dir", "icarus", "tb.test_mod", tests)
-        ns = cocotb_run._parse_args(self._runner_argv(cmd, "booley.flows.sim.backends.cocotb"))
-        assert ns.tests == tests
-        assert ns.cocotb_module == "tb.test_mod"
-
-    def test_option_like_sentinels_survive_parse(self, tmp_path: Path):
-        """A sentinel starting with '-' needs the `=` form to survive argparse."""
-        from booley.flows.sim.backends import verilator as verilator_run
-
-        with patch(
-            "booley.flows.sim.flow._resolve_sim_sentinels",
-            return_value=(["ALL TESTS PASSED."], ["-FAILED-", "ERROR!"]),
-        ):
-            cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [])
-        ns = verilator_run._parse_args(
-            self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
-        )
-        assert ns.pass_sentinels == ["ALL TESTS PASSED."]
-        assert ns.fail_sentinels == ["-FAILED-", "ERROR!"]
 
 
 class TestInconclusiveReason:
@@ -3750,41 +2508,6 @@ class TestInconclusiveReason:
         report = flow._format_summary([tr], [], False)
         assert "no pass/fail sentinel detected" in report
 
-    def test_interpret_marks_a_traceless_pass_with_the_trace_reason(self, tmp_path: Path):
-        """The producing side: a passing sim + no TRACE_OK -> the trace reason."""
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--trace"])
-        combined = '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
-        proc = SubprocessResult(returncode=0, stdout=combined, stderr="")
-        tr = flow._interpret_sim_result(combined, proc, "lite", "smoke")
-        assert tr.inconclusive is True
-        assert tr.inconclusive_reason == _INCONCLUSIVE_NO_WAVEFORM
-
-
-class TestTraceFilesKnob:
-    """fpu F-22b: declare where a custom main() drops its dump."""
-
-    def test_resolve_trace_files_reads_booley_toml(self, tmp_path: Path):
-        from booley.flows.sim.config import resolve_trace_files
-
-        proj = tmp_path / ".booley_project"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            '[flows.sim]\ntrace_files = ["fpu.vcd", "dump_*.fst"]\n',
-            encoding="utf-8",
-        )
-        assert resolve_trace_files(tmp_path) == ["fpu.vcd", "dump_*.fst"]
-        assert resolve_trace_files(tmp_path / "nowhere") == []
-
-    def test_forwarded_to_both_run_halves_only_when_tracing(self, tmp_path: Path):
-        with patch(
-            "booley.flows.sim.flow.resolve_trace_files",
-            return_value=["fpu.vcd"],
-        ):
-            traced = _make_flow(tmp_path, config="lite", extra_args=["--trace"])
-            plain = _make_flow(tmp_path, config="lite")
-            assert "--trace-file=fpu.vcd" in traced._verilator_run_cmd("d", "tb", [])
-            assert "--trace-file=fpu.vcd" in traced._icarus_run_cmd("d", [])
-            assert not [a for a in plain._verilator_run_cmd("d", "tb", []) if "trace-file" in a]
 
 
 class TestErrorExcerptSelection:
@@ -3884,37 +2607,3 @@ class TestErrorExcerptSelection:
         lines: list[str] = []
         _append_test_output_line(tr, lines)
         assert "--- error output (last 1 lines) ---" in "\n".join(lines)
-
-
-class TestFullRunLogOnPass:
-    """fpu F-29e: a PASSING sandbox run's log carries the build section too."""
-
-    def test_persist_writes_build_and_run_halves(self, tmp_path: Path):
-        from booley.flows.run_log import run_log_is_current
-
-        flow = _make_flow(tmp_path, config="lite")
-        log_dir = tmp_path / "build" / "lite"
-        log_dir.mkdir(parents=True)
-        # The real order: the prepare half claims the log, then the run-half
-        # persists ITS half only — no build section anywhere.
-        flow._record_run_log_dir("lite", log_dir)
-        write_run_log(log_dir, "[Verilator simulation]\n[SIM_RESULT] PASSED\n")
-
-        proc = SubprocessResult(
-            returncode=0,
-            stdout="make[1]: Entering build\nverilator --cc ...\nBOOLEY_BUILD_SECONDS: 12\n"
-            "[Verilator simulation]\n[SIM_RESULT] PASSED\n",
-            stderr="",
-        )
-        flow._persist_full_run_log("lite", proc)
-
-        content = (log_dir / "run.log").read_text(encoding="utf-8")
-        assert "verilator --cc" in content  # the build half, previously absent
-        assert "[SIM_RESULT] PASSED" in content
-        # The freshness guard behind every "see run.log" pointer still answers.
-        assert run_log_is_current(log_dir) is True
-
-    def test_persist_is_a_noop_without_a_known_log_dir(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        proc = SubprocessResult(returncode=0, stdout="x", stderr="")
-        flow._persist_full_run_log("never-resolved", proc)  # must not raise

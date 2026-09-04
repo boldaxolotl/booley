@@ -15,6 +15,7 @@ from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.target import TargetHandle
 
 from .contract import PreRunEvidence
+from .failures import find_missing_executable
 
 
 def run_pre_run_commands(
@@ -107,7 +108,13 @@ def _invoke_pre_run(
             str(exc),
         )
     detail = result.stderr.strip() or result.stdout.strip()
-    status = "passed" if result.returncode == 0 else "failed"
+    status = (
+        "passed"
+        if result.returncode == 0
+        else "spawn_error"
+        if find_missing_executable(detail)
+        else "failed"
+    )
     return PreRunEvidence(commands, test_names, status, time.monotonic() - started, detail)
 
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from booley.flows.sim.build import BuildOutcome
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
+PreRunStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
 
 
 class InvalidSimulationRequestError(ValueError):
@@ -63,7 +64,7 @@ class PreRunEvidence:
 
     commands: tuple[str, ...]
     test_names: tuple[str, ...]
-    status: str
+    status: PreRunStatus
     elapsed_s: float
     detail: str = ""
 
@@ -113,6 +114,8 @@ class SimulationTestOutcome:
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
     run_log_path: str = ""
     workload_snapshot: Mapping[str, Any] | None = None
+    phase_timings_s: Mapping[str, float] = field(default_factory=dict)
+    resources: Mapping[str, float | int | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,7 @@ class SimulationTargetOutcome:
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
     diagnostics: tuple[str, ...] = ()
     infrastructure_failure: SimulationInfrastructureFailure | None = None
+    phase_timings_s: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,7 @@ __all__ = [
     "InvalidSimulationRequestError",
     "NamedTests",
     "PreRunEvidence",
+    "PreRunStatus",
     "SimulationArtifactEvidence",
     "SimulationInfrastructureFailure",
     "SimulationOptions",

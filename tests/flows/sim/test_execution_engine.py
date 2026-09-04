@@ -19,6 +19,7 @@ from booley.flows.sim.adapter_transport import (
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import (
     NamedTests,
+    PreRunEvidence,
     SimulationExecution,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -116,7 +117,11 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
             duration_s=0.3,
         )
 
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
+    execution = SimulationExecution(
+        invoke=invoke,
+        options=SimulationOptions(),
+        artifact_root=tmp_path / "reports",
+    )
     with (
         patch(
             "booley.flows.sim.execution.engine.inspect_target",
@@ -136,6 +141,128 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     assert outcome.tests[1].workload_snapshot is not None
     assert outcome.builds[0].passed is True
     assert any(artifact.kind == "run_log" for artifact in outcome.artifacts)
+    assert outcome.tests[0].run_log_path.endswith(
+        "reports/artifacts/sim_sim/tests/reset/run.log"
+    )
+    assert outcome.tests[1].run_log_path.endswith(
+        "reports/artifacts/sim_sim/tests/count/run.log"
+    )
+
+
+def test_timeout_transport_preserves_completed_active_and_not_run_tests(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=True)
+    token = "abc123"
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        identity = AdapterTransportIdentity(
+            "cocotb",
+            token,
+            handle.identity,
+            ("done", "active", "later"),
+            prepared.build_root / f".booley-adapter-{token}.json",
+        )
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                passed=False,
+                inconclusive=True,
+                sva_errors=0,
+                tests=identity.selected_tests,
+                failure_kind="timeout",
+                test_results=(
+                    AdapterTestResult("done", "pass", elapsed_s=0.1),
+                    AdapterTestResult("active", "timeout", detail="timed out while running"),
+                    AdapterTestResult("later", "inconclusive", detail="did not run"),
+                ),
+            ),
+        )
+        return SubprocessResult(
+            returncode=-9,
+            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\n",
+            timed_out=True,
+            duration_s=10.0,
+        )
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.inspect_target",
+            return_value=_inspection(cocotb=True),
+        ),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=token),
+    ):
+        outcome = execution.run(handle, NamedTests(("done", "active", "later")))
+
+    assert [(test.name, test.verdict, test.timed_out) for test in outcome.tests] == [
+        ("done", "pass", False),
+        ("active", "timeout", True),
+        ("later", "inconclusive", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "evidence, expected_verdict, expected_error",
+    [
+        (PreRunEvidence(("slow",), ("smoke",), "timed_out", 1.0, "expired"), "fail", None),
+        (
+            PreRunEvidence(
+                ("missing-tool",),
+                ("smoke",),
+                "spawn_error",
+                0.1,
+                "bash: line 1: missing-tool: command not found",
+            ),
+            "error",
+            "missing-tool",
+        ),
+    ],
+)
+def test_pre_run_stage_preserves_elaboration_and_infrastructure_classes(
+    tmp_path: Path,
+    evidence: PreRunEvidence,
+    expected_verdict: str,
+    expected_error: str | None,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.inspect_target",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
+        patch.object(execution, "_run_pre_run", return_value=evidence),
+    ):
+        outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.verdict == expected_verdict
+    if expected_error is None:
+        assert outcome.tests[0].verdict == "elab_error"
+        assert outcome.tests[0].timed_out is False
+    else:
+        assert outcome.infrastructure_failure is not None
+        assert outcome.infrastructure_failure.missing_executable == expected_error
+
+
+def test_unexpected_execution_defect_propagates(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    execution._run_group = MagicMock(side_effect=RuntimeError("programmer defect"))
+
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.inspect_target",
+            return_value=_inspection(cocotb=False),
+        ),
+        pytest.raises(RuntimeError, match="programmer defect"),
+    ):
+        execution.run(handle, NamedTests(("smoke",)))
 
 
 @pytest.mark.parametrize("cocotb, expected", [(False, [("a",), ("b",)]), (True, [("a", "b")])])
@@ -210,7 +337,14 @@ def test_trace_evidence_must_be_fresh_for_this_attempt(
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    trace = tmp_path / "wave.fst"
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        '[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8"
+    )
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    trace = run_cwd / "wave.fst"
     trace.write_bytes(b"old")
     token = "abc123"
 
@@ -254,3 +388,67 @@ def test_trace_evidence_must_be_fresh_for_this_attempt(
     assert outcome.verdict == expected
     traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
     assert bool(traces) is fresh
+
+
+@pytest.mark.parametrize(
+    "trace_config, relative_path, expected",
+    [
+        ("", "undeclared/wave.fst", "inconclusive"),
+        ('trace_files = ["../declared/*.fst"]\n', "declared/wave.fst", "pass"),
+    ],
+)
+def test_trace_authority_is_limited_to_runtime_roots_and_declared_globs(
+    tmp_path: Path,
+    trace_config: str,
+    relative_path: str,
+    expected: str,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        f'[flows.sim]\nrun_cwd = "run"\n{trace_config}', encoding="utf-8"
+    )
+    (tmp_path / "run").mkdir()
+    trace = tmp_path / relative_path
+    trace.parent.mkdir()
+    token = "abc123"
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        trace.write_bytes(b"fresh waveform")
+        identity = AdapterTransportIdentity(
+            "icarus",
+            token,
+            handle.identity,
+            ("smoke",),
+            prepared.build_root / f".booley-adapter-{token}.json",
+        )
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                True,
+                False,
+                0,
+                identity.selected_tests,
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\nTRACE_OK: {trace}\n",
+        )
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.inspect_target",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=token),
+    ):
+        outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.verdict == expected

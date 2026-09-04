@@ -74,6 +74,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
+    TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
     find_import_failure,
@@ -149,6 +150,7 @@ def _publish_adapter_result(
     inconclusive = any(test.verdict == "inconclusive" for test in test_results) or (
         not passed and (results is None or results.state != STATE_OK)
     )
+    timed_out = any(test.verdict == "timeout" for test in test_results)
     normalized_passed = (
         passed
         and sva_errors == 0
@@ -162,7 +164,8 @@ def _publish_adapter_result(
             inconclusive=inconclusive,
             sva_errors=sva_errors,
             tests=tuple(names),
-            failure_kind=failure_kind or ("inconclusive" if inconclusive else ""),
+            failure_kind=failure_kind
+            or ("timeout" if timed_out else "inconclusive" if inconclusive else ""),
             detail=detail,
             test_results=test_results,
             diagnostics=(
@@ -187,7 +190,12 @@ def _adapter_test_results(
     verdicts = reconcile(list(names), results)
     elapsed = {test.name: test.elapsed_s for test in results.tests}
     return tuple(
-        AdapterTestResult(name, verdict, elapsed.get(name, 0.0), detail)
+        AdapterTestResult(
+            name,
+            "timeout" if detail == TIMEOUT_ACTIVE_DETAIL else verdict,
+            elapsed.get(name, 0.0),
+            detail,
+        )
         for name, verdict, detail in verdicts
     )
 

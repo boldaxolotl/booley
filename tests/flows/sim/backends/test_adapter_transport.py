@@ -15,7 +15,11 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
     write_adapter_result,
 )
-from booley.flows.sim.backends import icarus, verilator
+from booley.flows.sim.backends import cocotb, icarus, verilator
+from booley.flows.sim.backends.cocotb_results import (
+    format_results_line,
+    recover_timeout_progress,
+)
 
 
 def _identity(tmp_path) -> AdapterTransportIdentity:
@@ -146,3 +150,31 @@ def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) ->
     assert result.passed is False
     assert result.inconclusive is True
     assert result.failure_kind == "artifact"
+
+
+def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:
+    identity = replace(
+        _identity(tmp_path),
+        adapter="cocotb",
+        selected_tests=("done", "active", "later"),
+    )
+    progress = """\
+0.00ns INFO cocotb.regression running done (1/3)
+1.00ns INFO cocotb.regression done passed
+1.00ns INFO cocotb.regression running active (2/3)
+"""
+    recovered = recover_timeout_progress(progress, list(identity.selected_tests))
+
+    cocotb._publish_adapter_result(
+        identity,
+        f"{progress}\n{format_results_line(recovered)}\n",
+        False,
+    )
+
+    result = read_adapter_result(identity)
+    assert result.failure_kind == "timeout"
+    assert [(item.name, item.verdict) for item in result.test_results] == [
+        ("done", "pass"),
+        ("active", "timeout"),
+        ("later", "inconclusive"),
+    ]

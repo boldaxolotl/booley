@@ -8,18 +8,15 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import re
 import shlex
-import shutil
-import subprocess
 import time
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -27,22 +24,17 @@ from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import (
     load_test_configuration_field,
     lookup_target_section,
-    render_test_selector,
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
-from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
+from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-from booley.flows.sim.runner import (
-    resolve_sim_sentinels as _resolve_sim_sentinels,
-)
-from booley.flows.sim.trace_recipe import TraceMode
-from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
-from booley.runtime.platform_paths import bash_bin, posix_relpath
+from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
 from booley.targets.target import (
@@ -67,10 +59,7 @@ from ..flow_config import (
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
-from . import edam as sim_edam
-from .adapter_contract import PreparedSimulationWork
 from .adapter_transport import (
-    AdapterResult,
     AdapterTransportIdentity,
 )
 from .build import (
@@ -90,8 +79,8 @@ from .execution import (
     SimulationOptions,
     SimulationTargetOutcome,
 )
-from .execution.composition import prepare_adapter_invocation
-from .execution.engine import AdapterEvidenceError, read_completed_adapter_result
+from .execution.artifacts import artifact_path_component as _artifact_path_component
+from .execution.failures import find_missing_executable
 from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
@@ -103,21 +92,6 @@ logger = logging.getLogger(__name__)
 
 # Default literal prefix for cycle count extraction from sim output.
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
-# Emitted by the build+run shell between the make half and the run half (see
-# _prepare_sim_command): the millisecond wall time the Edalize build took.
-# Lets the per-test report say how much of the first test's
-# elapsed time was really the model (re)build, not the simulation.
-_BUILD_MILLISECONDS_RE = re.compile(r"^BOOLEY_BUILD_MILLISECONDS: (\d+)$", re.MULTILINE)
-_BUILD_SECONDS_RE = re.compile(r"^BOOLEY_BUILD_SECONDS: (\d+)$", re.MULTILINE)
-_RUN_STAGE_RE = re.compile(
-    r"^BOOLEY_RUN_STAGE token=[0-9a-f]+ rc=-?\d+ duration_ms=(\d+)$",
-    re.MULTILINE,
-)
-_SIM_CPU_RE = re.compile(
-    r"^BOOLEY_SIM_CPU_SECONDS: user=(\d+(?:\.\d+)?) system=(\d+(?:\.\d+)?)$",
-    re.MULTILINE,
-)
-
 # Patterns that indicate elaboration/compilation failure (before sim ran).
 # The `ERROR: <eda_tool> …` markers are Booley-echoed on build breakage (sandbox
 # script).
@@ -133,37 +107,6 @@ _ELAB_FAIL_RE = re.compile(
 # BOOLEY_STAGE marker precedent), so _interpret_sim_result attributes the
 # failure to the pre-run step instead of blaming the sim/build.
 _PRERUN_FAIL_RE = re.compile(r"\[BOOLEY_PRERUN_FAIL rc=(-?\d+)\]")
-
-# "the binary isn't there" as every layer below simulate spells it (F-32). A
-# missing EDA tool is an *infrastructure* fault: no simulator ran, so there is
-# no verdict about the design — grading it as a failed test (or, worse, as
-# "Verilator elaboration failed", which names the wrong stage) sends a triage
-# agent hunting an RTL bug that does not exist.
-_MISSING_EXE_PATTERNS = (
-    # dash/sh: "/bin/sh: 1: verilator: not found"; bash: "…: command not found"
-    re.compile(
-        r"^(?:[\w./-]*(?:sh|bash|dash))(?::\s*(?:line\s+)?\d+)?:\s*"
-        r"(?P<name>[\w.+-]+):"
-        r"\s*(?:command\s+)?not found",
-        re.MULTILINE,
-    ),
-    # GNU make: "make: verilator: No such file or directory" / "Command not found"
-    re.compile(
-        r"^make(?:\[\d+\])?:\s*(?P<name>[\w.+-]+):\s*"
-        r"(?:command not found|no such file or directory)",
-        re.MULTILINE | re.IGNORECASE,
-    ),
-    # Bare shell echo with no leading interpreter name.
-    re.compile(r"^(?P<name>[\w.+-]+):\s*command not found", re.MULTILINE),
-    # fusesoc_registry's spawn guard: "could not invoke fusesoc (fusesoc): …"
-    re.compile(r"could not invoke\s+(?P<name>[\w.+-]+)\b"),
-    # A raw Python spawn failure carried in an exception string. The name is
-    # deliberately narrow — no separators, no dots — so an ordinary missing
-    # *file* ("No such file or directory: '/work/foo.core'") is not misread as
-    # a missing eda_tool; that one is a plain setup failure with its own message.
-    re.compile(r"No such file or directory:\s*'(?P<name>[\w+-]+)'"),
-)
-
 
 class MissingExecutableError(RuntimeError):
     """A required EDA binary is absent — a Flow error, never a test failure.
@@ -186,15 +129,6 @@ class SimulationBuildInfrastructureError(RuntimeError):
         super().__init__(outcome.reason)
         self.target = target
         self.outcome = outcome
-
-
-def find_missing_executable(text: str) -> str | None:
-    """The name of an absent executable reported in *text*, else ``None``."""
-    for pattern in _MISSING_EXE_PATTERNS:
-        m = pattern.search(text)
-        if m:
-            return Path(m.group("name")).name
-    return None
 
 
 def _raise_if_missing_executable(text: str) -> None:
@@ -260,13 +194,6 @@ _TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE
 # 12KB-budget default; the effective cap scales with a raised
 # BOOLEY_MCP_MAX_STDOUT_BYTES (see output_budget.scaled).
 _MAX_EXCERPT_LINES = 30
-
-# A directly embedded test name must be one bounded path component. Names
-# outside this intentionally conservative portable set are represented by a
-# collision-resistant digest; the leading ``~`` keeps the encoded namespace
-# disjoint from every directly embedded name.
-_SAFE_ARTIFACT_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-
 
 @dataclass
 class TestResult:
@@ -409,14 +336,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _artifact_path_component(value: str) -> str:
-    """Return one traversal-safe, bounded component representing *value*."""
-    if _SAFE_ARTIFACT_COMPONENT_RE.fullmatch(value):
-        return value
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    return f"~sha256-{digest}"
-
-
 @dataclass(frozen=True)
 class CycleObservation:
     """Typed result of parsing Cycle Count records for one named test."""
@@ -493,97 +412,6 @@ def parse_cycles(
     if observation.status == "observed" or (allow_legacy and observation.status == "legacy"):
         return observation.value
     return None
-
-
-def parse_build_seconds(output: str) -> float:
-    """Extract build wall time, preferring milliseconds over the legacy marker.
-
-    0.0 when the marker is absent — configuration-only dry runs never emit it,
-    and old build wrappers did not emit it when the build failed.
-    """
-    milliseconds = _BUILD_MILLISECONDS_RE.search(output)
-    if milliseconds:
-        return int(milliseconds.group(1)) / 1000
-    seconds = _BUILD_SECONDS_RE.search(output)
-    return float(seconds.group(1)) if seconds else 0.0
-
-
-def parse_run_seconds(output: str) -> float | None:
-    """Extract the wrapper's high-resolution run-half duration, when present."""
-    matches = _RUN_STAGE_RE.findall(output)
-    return int(matches[-1]) / 1000 if matches else None
-
-
-def parse_sim_cpu_seconds(output: str) -> tuple[float, float] | None:
-    """Extract simulator-child user and system CPU seconds, when supported."""
-    matches = _SIM_CPU_RE.findall(output)
-    if not matches:
-        return None
-    user_s, system_s = matches[-1]
-    return float(user_s), float(system_s)
-
-
-def _attach_process_telemetry(
-    test: TestResult,
-    output: str,
-    proc: SubprocessResult,
-    build_outcome: BuildOutcome | None,
-    *,
-    setup_s: float,
-    pre_run_s: float,
-    result_processing_s: float,
-) -> None:
-    """Attach normalized phase and resource evidence for one build/run process."""
-    build_s = parse_build_seconds(output)
-    run_s = parse_run_seconds(output)
-    if run_s is None:
-        run_s = (
-            max(0.0, proc.duration_s - build_s) if build_outcome and build_outcome.passed else 0.0
-        )
-    test.phase_timings_s = {
-        "setup": round(setup_s, 3),
-        "pre_run": round(pre_run_s, 3),
-        "build": round(build_s, 3),
-        "run": round(run_s, 3),
-        "result_processing": round(result_processing_s, 3),
-    }
-    resources: dict[str, float | int | None] = {
-        "command_peak_rss_mb": proc.peak_rss_mb,
-        "command_oom_kill_delta": proc.oom_kill_delta,
-    }
-    cpu = parse_sim_cpu_seconds(output)
-    if cpu is not None:
-        resources["simulation_user_cpu_s"] = round(cpu[0], 6)
-        resources["simulation_system_cpu_s"] = round(cpu[1], 6)
-    test.resources = resources
-
-
-def _target_phase_timings(tests: list[TestResult], elapsed_s: float) -> dict[str, float]:
-    """Aggregate per-test phases and expose otherwise-unattributed target overhead."""
-    phases: dict[str, float] = {}
-    for test in tests:
-        for name, duration in test.phase_timings_s.items():
-            phases[name] = phases.get(name, 0.0) + duration
-    measured = sum(phases.values())
-    phases["unattributed"] = max(0.0, elapsed_s - measured)
-    phases["execution_total"] = elapsed_s
-    return {name: round(duration, 3) for name, duration in phases.items()}
-
-
-def _attach_pre_run_failure_telemetry(
-    test: TestResult,
-    *,
-    setup_s: float,
-    pre_run_s: float,
-) -> None:
-    """Record phases when Pre-Run Commands prevent build and simulation."""
-    test.phase_timings_s = {
-        "setup": round(setup_s, 3),
-        "pre_run": round(pre_run_s, 3),
-        "build": 0.0,
-        "run": 0.0,
-        "result_processing": 0.0,
-    }
 
 
 def _build_run_script(
@@ -1423,33 +1251,11 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             timeout_s += _TRACE_CLEANUP_MARGIN_S
         return timeout_s
 
-    def _eda_tool_for_target(self, target: str) -> str:
-        """The run-half EDA family (``verilator``/``icarus``) for a Target.
-
-        ADR 0022 decision 8: read the EDA tool from the Target's declared
-        ``flow_options.tool`` — cheaply, straight from the ``.core`` YAML via
-        ``fusesoc_registry.target_eda_tools`` (no ``fusesoc run`` needed), so it is
-        available *before* ``_prepare_sim_command`` resolves. Unmigrated
-        (legacy ``configs.toml``) projects declare no Target EDA tool → default
-        Verilator.
-        """
-        try:
-            eda_tool = self._target_handle(target).eda_tool
-        except Exception:  # noqa: BLE001 — best-effort Target-EDA-tool read; degrades to default (Verilator)
-            eda_tool = None
-        normalized = sim_edam.normalize_eda_tool(eda_tool)
-        if normalized not in {"verilator", "icarus"}:
-            raise ValueError(
-                f"simulator {normalized!r} is not supported by the public simulate Flow; "
-                "select a Verilator or Icarus Target"
-            )
-        return normalized
-
     def _cocotb_module_for_target(self, target: str) -> str | None:
         """The Target's declared ``cocotb_module``, from a cheap ``.core`` read.
 
-        ADR 0034 decision 2, mirroring :meth:`_eda_tool_for_target`: cocotb-ness
-        is detected from the Target's flow options, never marked in tests.toml.
+        ADR 0034 decision 2: cocotb-ness is detected from the Target's flow
+        options, never marked in tests.toml.
         This cheap read backs validation, dry-run previews and the batch-vs-loop
         dispatch *before* resolution; the run itself re-reads the *resolved*
         flow options (``ResolvedTarget.cocotb_module``) as the authority
@@ -1485,1167 +1291,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """
         return dict(lookup_target_section(_get_test_envs(self.args.work_dir), target) or {})
 
-    def _sim_plusargs(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-        parameters: Mapping[str, Any] | None = None,
-    ) -> list[str]:
-        """Run-time plusargs from resolved Target parameters and test selection.
-
-        FuseSoC/Edalize carries typed ``paramtype: plusarg`` values in the
-        resolved EDAM but Booley runs the compiled simulator directly, bypassing
-        Edalize's run phase.  Re-render every plusarg that has a resolved
-        ``default`` so that Target assignments such as ``BAUD=115200`` reach
-        the binary.  Booleans follow Edalize's command-line representation
-        (``1``/``0``).
-
-        Resolves the test name to its index in the Target's declared test list,
-        then renders the Target's tests.toml ``select`` plusarg template
-        (decision 16) via :func:`project_config.render_test_selector` — e.g.
-        ``"+test_id=3"`` (the default template) or a project's own
-        ``"+test={name}"``.  Because simulate runs the verilated/iverilog binary
-        directly (the run half it keeps from 0019), the rendered plusarg is
-        consumed by the binary's own ``$value$plusargs`` runtime on both
-        backends, so it needs no ``fusesoc run`` parameter declaration.  A test
-        name not present in the list (raw passthrough) yields no selector — the
-        binary runs its default test.  The wall-clock budget is enforced by
-        ``_execute``'s timeout, so no ``+timeout`` plusarg is added.
-
-        The run-cmd builders re-add the leading ``+`` they prefix to every
-        plusarg, so a rendered ``+`` selector is returned with that ``+``
-        stripped. A ``-``/``--`` selector (a getopt argument, SETUP-7) has no
-        ``+`` to strip and is returned verbatim; those same builders now pass a
-        ``-``-prefixed token through unchanged to the binary's ``main``.
-        """
-        plusargs = self._target_parameter_plusargs(parameters or {})
-        if test_name is None:
-            return plusargs
-        tests = lookup_target_section(test_names_map, target) or []
-        if test_name in tests:
-            selector = render_test_selector(
-                target,
-                tests.index(test_name),
-                test_name,
-                work_dir=self.args.work_dir,
-            )
-            selector = selector.removeprefix("+")
-            selector_key = self._plusarg_key(selector)
-            if selector_key is not None:
-                plusargs = [pa for pa in plusargs if self._plusarg_key(pa) != selector_key]
-            plusargs.append(selector)
-        return plusargs
-
-    @staticmethod
-    def _plusarg_key(token: str) -> str | None:
-        """Return a ``+NAME=value`` token's name; getopt-style tokens have none."""
-        stripped = token.removeprefix("+")
-        if stripped.startswith("-"):
-            return None
-        return stripped.partition("=")[0] or None
-
-    @staticmethod
-    def _target_parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:
-        """Render resolved EDAM ``plusarg`` parameters for a direct sim run."""
-        rendered: list[str] = []
-        for raw_name, raw_spec in parameters.items():
-            if not isinstance(raw_spec, Mapping):
-                continue
-            if raw_spec.get("paramtype") != "plusarg" or "default" not in raw_spec:
-                continue
-            name = str(raw_name)
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name):
-                raise ValueError(f"invalid resolved plusarg parameter name: {name!r}")
-            value = raw_spec["default"]
-            if isinstance(value, bool):
-                value_text = "1" if value else "0"
-            else:
-                value_text = str(value)
-            if "\x00" in value_text:
-                raise ValueError(f"resolved plusarg parameter {name!r} contains a NUL byte")
-            rendered.append(f"{name}={value_text}")
-        return rendered
-
-    def _run_test_names(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> list[str]:
-        """The test names this run carries (``BOOLEY_TEST_NAMES``, ADR 0039).
-
-        A single-test run carries exactly that test; a run-everything call
-        (``test_name is None``) carries the Target's declared list — empty when
-        the Target declares none (the TB then runs its default test).
-        """
-        if test_name is not None:
-            return [test_name]
-        return list(lookup_target_section(test_names_map, target) or [])
-
-    def _pre_run_env(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-        build_root: Path | None,
-    ) -> dict[str, str]:
-        """The ``BOOLEY_*`` env contract for Pre-Run Commands (ADR 0039).
-
-        Exports the run's identity and the authoritative directories so a
-        pre-run command stages artifacts without guessing the sim's cwd (the
-        fragility that once pushed biRISC-V to an adapter):
-
-          * ``BOOLEY_TARGET`` — the Target being run.
-          * ``BOOLEY_TEST_NAME`` — only when the run is a single test.
-          * ``BOOLEY_TEST_NAMES`` — always; the run's list, space-joined.
-          * ``BOOLEY_RUN_CWD`` — the directory the sim run executes in: the
-            ``run_cwd`` knob resolved against the project root, or the project
-            root itself when the knob is unset.
-          * ``BOOLEY_BUILD_ROOT`` — the resolved Edalize build tree.
-          * ``BOOLEY_PROJECT_ROOT`` / ``BOOLEY_PROJECT_DIR``,
-            ``BOOLEY_SIM_EDA_TOOL`` — the explicit EDA-selection variable
-            (harness.setup.workspace), kept identical here.
-        """
-        work_dir = Path(self.args.work_dir)
-        run_cwd = resolve_run_cwd(self.args.work_dir)
-        run_dir = work_dir / run_cwd
-        env = {
-            "BOOLEY_TARGET": target,
-            "BOOLEY_TEST_NAMES": " ".join(self._run_test_names(target, test_name, test_names_map)),
-            "BOOLEY_PROJECT_ROOT": str(work_dir),
-            "BOOLEY_RUN_CWD": str(run_dir),
-        }
-        if test_name is not None:
-            env["BOOLEY_TEST_NAME"] = test_name
-        if build_root is not None:
-            env["BOOLEY_BUILD_ROOT"] = str(build_root)
-        eda_tool = self._eda_tool_for(target) or self._eda_tool_for_target(target)
-        if eda_tool:
-            env["BOOLEY_SIM_EDA_TOOL"] = eda_tool
-        try:
-            from booley.runtime.project_dir import resolve_project_dir
-
-            env["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(work_dir))
-        except (FileNotFoundError, ImportError):
-            pass  # a project dir is not a precondition for pre-run commands
-        return env
-
-    def _record_pre_run(self, name: str, commands: list[str]) -> dict:
-        """Open a Pre-Run Commands execution record; returns the open record.
-
-        F-27: nothing in the console, run.log or artifacts said the hook had
-        fired, so a hook quietly doing the wrong thing was undiagnosable. The
-        record is closed by :meth:`_close_pre_run_record` and flushed into the
-        report by the per-Target loop.
-        """
-        record = {"name": name, "commands": list(commands), "status": "started"}
-        self._pre_run_records: list[dict] = getattr(self, "_pre_run_records", [])
-        self._pre_run_records.append(record)
-        return record
-
-    def _close_pre_run_record(self, record: dict, status: str, elapsed_s: float) -> None:
-        """Stamp a Pre-Run Commands record with its outcome and duration."""
-        record["status"] = status
-        record["elapsed_s"] = elapsed_s
-
-    def _drain_pre_run_lines(self) -> list[str]:
-        """Report lines for Pre-Run Commands fired since the last drain."""
-        records = getattr(self, "_pre_run_records", [])
-        lines = [
-            f"  pre_run_commands ({len(r['commands'])} line(s)) for {r['name']}: "
-            f"{r['status']} in {r.get('elapsed_s', 0.0):.1f}s"
-            for r in records
-        ]
-        records.clear()
-        return lines
-
-    def _run_pre_run_commands_local(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> TestResult | None:
-        """Run ``pre_run_commands`` as an in-sandbox subprocess; None on success.
-
-        The sandbox-path half of Pre-Run Commands (ADR 0039): fires after the
-        prepare half resolved the Target (so ``BOOLEY_BUILD_ROOT`` is known)
-        and before the build+run subprocess — per test on the HDL loop, once
-        per batch on the cocotb path. A nonzero exit (or timeout — the
-        commands share the run's wall-clock budget) is isolated into a failed
-        ``TestResult`` with an attributed tail, mirroring the setup-failure
-        short-circuit: the per-test loop continues, and it is never an EDA tool
-        crash (exit 2).
-        """
-        commands = _resolve_pre_run_commands(self.args.work_dir)
-        if not commands:
-            return None
-        name = test_name or target
-        build_root = getattr(self, "_run_log_dirs", {}).get(target)
-        env = os.environ.copy()
-        # The Target's simulator environment is visible here too (F-5): on the
-        # BOOLEY_* is applied after the simulator environment and always wins.
-        env.update(self._target_sim_env(target))
-        env.update(self._pre_run_env(target, test_name, test_names_map, build_root))
-        script = "\n".join(["set -e", *commands])
-        logger.info("  pre-run commands (%d line(s)) for %s", len(commands), name)
-        start = time.monotonic()
-        # F-27: a hook that fires silently is undiagnosable when it does the
-        # wrong thing — the fpu port could only prove pre_run_commands ran at
-        # all by breaking one and reading the failure. Record every firing.
-        record = self._record_pre_run(name, commands)
-        try:
-            proc = subprocess.run(
-                [bash_bin(), "-c", script],
-                cwd=self.args.work_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=self._get_timeout(),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            self._close_pre_run_record(record, "TIMED OUT", time.monotonic() - start)
-            return TestResult(
-                name=name,
-                passed=False,
-                elapsed_s=time.monotonic() - start,
-                error_tail=(
-                    f"pre-run commands failed (timeout after {self._get_timeout()}s): "
-                    "[flows.sim].pre_run_commands share the per-test run budget "
-                    "(timeout_ms / --timeout)"
-                ),
-                timed_out=True,
-                elab_failed=True,
-            )
-        except OSError as exc:
-            self._close_pre_run_record(record, "SPAWN ERROR", time.monotonic() - start)
-            return TestResult(
-                name=name,
-                passed=False,
-                elapsed_s=time.monotonic() - start,
-                error_tail=f"pre-run commands failed (spawn error): {exc}",
-                elab_failed=True,
-            )
-        self._close_pre_run_record(record, f"rc={proc.returncode}", time.monotonic() - start)
-        if proc.returncode != 0:
-            # The failure signal usually lives on stderr; fall back to stdout
-            # (e.g. a make that logs its error there).
-            tail_src = proc.stderr.strip() or proc.stdout.strip()
-            # An unavailable hook executable is infrastructure failure: no HDL
-            # build or simulation ran, so it must use the same typed exit-2
-            # path as an unavailable simulator and leave Criteria untouched.
-            _raise_if_missing_executable(tail_src)
-            tail = "\n".join(tail_src.splitlines()[-10:])
-            return TestResult(
-                name=name,
-                passed=False,
-                elapsed_s=time.monotonic() - start,
-                error_tail=f"pre-run commands failed (rc={proc.returncode}): {tail}",
-                elab_failed=True,
-            )
-        if proc.stdout.strip():
-            logger.debug("pre-run stdout: %s", proc.stdout.strip()[:500])
-        return None
-
-    def _pre_run_preview_lines(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-        build_root: Path | None,
-    ) -> list[str]:
-        """Dry-run preview of Pre-Run Commands: env exports + the raw lines.
-
-        Dry-run must mirror the real invocation (openc910 SETUP lesson): the
-        preview surfaces the resolved commands in their real position (after
-        env setup, before build+run) plus the ``BOOLEY_*`` exports the live
-        paths deliver via subprocess env / makefile-embedded exports. Empty
-        when the knob is unset.
-        """
-        commands = _resolve_pre_run_commands(self.args.work_dir)
-        if not commands:
-            return []
-        env = self._pre_run_env(target, test_name, test_names_map, build_root)
-        exports = [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
-        return [*exports, *commands]
-
-    def _reset_trace_build_root(self, build_root: Path) -> None:
-        """Start each traced Target from current sources and empty artifacts.
-
-        FuseSoC ``run --setup`` may reuse the staged ``src/`` beneath an
-        existing build root.  A trace overlay keeps a stable VLNV between
-        invocations, so that reuse can run an old verilated model and then
-        publish its waveform as the current run.  Remove the trace variant
-        once per Target per Flow invocation; later selected tests reuse the
-        freshly resolved model rather than paying for another cold build.
-        """
-        if not self.args.trace:
-            return
-        prepared = getattr(self, "_reset_trace_build_roots", None)
-        if prepared is None:
-            prepared = self._reset_trace_build_roots = set()
-        key = build_root.resolve()
-        if key in prepared:
-            return
-        try:
-            shutil.rmtree(build_root)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise RuntimeError(
-                f"could not invalidate stale trace build root {build_root}: {exc}"
-            ) from exc
-        prepared.add(key)
-
-    def _build_variant(self) -> str:
-        """Return the isolated build variant required by this invocation."""
-        variants = ["trace"] if self.args.trace else []
-        if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
-            variants.append("doctor-selftest-bad")
-        return "-".join(variants)
-
-    def _resolve_sim_target(
-        self,
-        target: str,
-        *,
-        cocotb: bool = False,
-    ) -> tuple[fusesoc_registry.ResolvedTarget, TraceMode]:
-        """Resolve one base or traced Target and clean its transient overlay."""
-        build_root = edam_layer.work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant=self._build_variant(),
-        )
-        self._reset_trace_build_root(build_root)
-        overlay = (
-            fusesoc_registry.write_trace_overlay(target, project_root=self.args.work_dir)
-            if self.args.trace
-            else None
-        )
-        trace_mode = overlay.mode if overlay is not None else TraceMode.VCD_FIFO
-        try:
-            if cocotb:
-                fusesoc_registry.validate_cocotb_trace_mode(target, trace_mode)
-            prepared = prepare_simulation_build(
-                self._target_handle(target),
-                variant=self._build_variant(),
-                resolution_vlnv=overlay.vlnv if overlay is not None else None,
-                environment=self._target_sim_env(target),
-            )
-            resolved = prepared.resolved
-            self._prepared_builds[target] = prepared
-            self._remember_resolved_target(target, resolved)
-            return resolved, trace_mode
-        finally:
-            if overlay is not None:
-                overlay.cleanup()
-
-    def _native_run_line(
-        self,
-        resolved: fusesoc_registry.ResolvedTarget,
-        rel: str,
-        plusargs: list[str],
-        trace_mode: TraceMode,
-        transport: AdapterTransportIdentity | None = None,
-    ) -> tuple[str, str]:
-        """Return the compile-failure marker and EDA-specific run command."""
-        if sim_edam.normalize_eda_tool(resolved.eda_tool) == "icarus":
-            return "iverilog compilation failed", shlex.join(
-                self._icarus_run_cmd(rel, plusargs, transport=transport)
-            )
-        command = self._verilator_run_cmd(
-            rel,
-            resolved.toplevel,
-            plusargs,
-            trace_mode=trace_mode,
-            transport=transport,
-        )
-        return "Verilator elaboration failed", shlex.join(command)
-
-    def _prepare_sim_command(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> list[str]:
-        """Resolve one native-HDL Target and compose its build-and-run command."""
-        resolved, trace_mode = self._resolve_sim_target(target)
-        self._record_run_log_dir(target, resolved.build_root)
-        self._record_eda_tool(target, resolved.eda_tool)
-        prepared = self._prepared_builds[target]
-        rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        build_cmd = list(prepared.make_argv)
-        plusargs = self._sim_plusargs(
-            target,
-            test_name,
-            test_names_map,
-            resolved.parameters,
-        )
-        attempt_token = new_attempt_token()
-        adapter = sim_edam.normalize_eda_tool(resolved.eda_tool)
-        selected = tuple(self._run_test_names(target, test_name, test_names_map))
-        adapter_result_path = Path(resolved.build_root) / "adapter-result.json"
-        adapter_result_path.unlink(missing_ok=True)
-        transport = AdapterTransportIdentity(
-            adapter=adapter,
-            attempt_token=attempt_token,
-            target_identity=self._target_handle(target).identity,
-            selected_tests=selected,
-            result_path=adapter_result_path,
-        )
-        self._adapter_attempts[target] = transport
-        marker, run_line = self._native_run_line(
-            resolved,
-            rel,
-            plusargs,
-            trace_mode,
-            transport,
-        )
-        self._record_build_attempt_token(target, attempt_token)
-        script = _build_run_script(
-            build_cmd,
-            marker,
-            run_line,
-            self._target_sim_env(target),
-            attempt_token=attempt_token,
-        )
-        return ["sh", "-c", script]
-
-    def _rundir_budget_args(self) -> list[str]:
-        """``--max-rundir-bytes`` flag from booley.toml (empty when disabled).
-
-        Forwarded to both built-in run-halves so the per-run disk guard
-        (SETUP-25) applies to the supervised subprocess. A budget of 0 disables
-        the guard, so the flag is omitted rather than passing an explicit
-        off-switch.
-        """
-        budget = _resolve_max_rundir_bytes(self.args.work_dir)
-        return ["--max-rundir-bytes", str(budget)] if budget > 0 else []
-
-    def _sentinel_args(self) -> list[str]:
-        """``--pass-sentinel`` / ``--fail-sentinel`` flags from booley.toml.
-
-        Forwarded to both built-in run-halves so the configured verdict wording
-        drives the run-half's parse.
-        The ``=`` form, like every selector-ish flag (F-12): a project's
-        sentinel can plausibly start with ``-``, and the two-token form makes
-        argparse read such a value as a new runner option. Also keeps the
-        encoding identical to mutation_tester's forwarding of the same flags.
-        """
-        passes, fails = _resolve_sim_sentinels(self.args.work_dir)
-        args = [f"--pass-sentinel={s}" for s in passes]
-        args += [f"--fail-sentinel={s}" for s in fails]
-        return args
-
-    def _trace_args(self) -> list[str]:
-        """``--trace-arg`` flags from booley.toml, forwarded when tracing.
-
-        Omitted entirely when the project declares none, so the run-half keeps
-        its built-in convention rather than receiving an explicit empty list.
-        """
-        if not self.args.trace:
-            return []
-        # The ``=`` form is required: a project's trace argument is usually
-        # itself option-like (``--trace={file}``), and passing it as the next
-        # argv item makes argparse read it as a new runner option (F-12).
-        args = [f"--trace-arg={a}" for a in resolve_trace_args(self.args.work_dir)]
-        # F-22: where the TB's own main() drops its dump, so the checker stops
-        # false-reporting "no waveform produced" on a run that produced one.
-        args += [f"--trace-file={f}" for f in resolve_trace_files(self.args.work_dir)]
-        return args
-
-    def _verilator_run_cmd(
-        self,
-        rel: str,
-        toplevel: str,
-        plusargs: list[str],
-        *,
-        trace_mode: TraceMode = TraceMode.VCD_FIFO,
-        transport: AdapterTransportIdentity | None = None,
-    ) -> list[str]:
-        """Build the ``booley.flows.sim.backends.verilator`` invocation for one sim run.
-
-        Paths are relative to the project root (the shipped shell's cwd);
-        verilator_run resolves the binary to an absolute path before it changes
-        cwd to ``--run-cwd``, so a TB that opens vectors/firmware relative to cwd
-        still finds them. ``--timeout`` is the binary run budget in seconds (the
-        eda_tool ``timeout`` is in ms and bounds the whole make+run via ``_execute``).
-        """
-        passes, fails = _resolve_sim_sentinels(self.args.work_dir)
-        trace_args = resolve_trace_args(self.args.work_dir) if self.args.trace else []
-        trace_files = resolve_trace_files(self.args.work_dir) if self.args.trace else []
-        return prepare_adapter_invocation(
-            PreparedSimulationWork(
-                adapter="verilator",
-                build_dir=rel,
-                run_cwd=self._simulation_run_cwd(rel),
-                timeout_s=max(1, self._effective_timeout_ms() // 1000),
-                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
-                plusargs=tuple(plusargs),
-                trace=self.args.trace,
-                trace_mode=trace_mode.value,
-                trace_args=tuple(trace_args),
-                trace_files=tuple(trace_files),
-                pass_sentinels=tuple(passes),
-                fail_sentinels=tuple(fails),
-                top=toplevel,
-                tests=transport.selected_tests if transport else (),
-                adapter_result_path=str(transport.result_path) if transport else "",
-                attempt_token=transport.attempt_token if transport else "",
-                target_identity=transport.target_identity if transport else "",
-            )
-        )
-
-    def _icarus_run_cmd(
-        self,
-        rel: str,
-        plusargs: list[str],
-        *,
-        transport: AdapterTransportIdentity | None = None,
-    ) -> list[str]:
-        """Build the ``booley.flows.sim.backends.icarus`` invocation for one sim run.
-
-        The Icarus mirror of :meth:`_verilator_run_cmd`. ``--build-dir`` is the
-        edalize build dir relative to the project root (the generated shell's
-        cwd); iverilog_run resolves it to absolute before changing cwd. The vvp
-        image is discovered inside it, so no ``--top`` is needed. ``--trace`` enables the runtime +trace →
-        $dumpvars → VCD→bwave lifecycle (the run-half adds the +trace plusarg
-        itself). ``--timeout`` is the run budget in seconds (the EDA tool ``timeout``
-        is in ms and bounds the whole make+run via ``_execute``).
-        """
-        passes, fails = _resolve_sim_sentinels(self.args.work_dir)
-        trace_args = resolve_trace_args(self.args.work_dir) if self.args.trace else []
-        trace_files = resolve_trace_files(self.args.work_dir) if self.args.trace else []
-        return prepare_adapter_invocation(
-            PreparedSimulationWork(
-                adapter="icarus",
-                build_dir=rel,
-                run_cwd=self._simulation_run_cwd(rel),
-                timeout_s=max(1, self._effective_timeout_ms() // 1000),
-                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
-                plusargs=tuple(plusargs),
-                trace=self.args.trace,
-                trace_args=tuple(trace_args),
-                trace_files=tuple(trace_files),
-                pass_sentinels=tuple(passes),
-                fail_sentinels=tuple(fails),
-                tests=transport.selected_tests if transport else (),
-                adapter_result_path=str(transport.result_path) if transport else "",
-                attempt_token=transport.attempt_token if transport else "",
-                target_identity=transport.target_identity if transport else "",
-            )
-        )
-
-    def _cocotb_run_cmd(
-        self,
-        rel: str,
-        eda_tool: str,
-        module: str,
-        tests: list[str],
-        plusargs: list[str] | None = None,
-        *,
-        trace_scope: str = "",
-        transport: AdapterTransportIdentity | None = None,
-    ) -> list[str]:
-        """Build one batched Cocotb run-half invocation (ADR 0034)."""
-        return prepare_adapter_invocation(
-            PreparedSimulationWork(
-                adapter="cocotb",
-                build_dir=rel,
-                run_cwd=self._simulation_run_cwd(rel),
-                timeout_s=max(1, self._effective_timeout_ms() // 1000),
-                eda_tool=eda_tool,
-                max_rundir_bytes=_resolve_max_rundir_bytes(self.args.work_dir),
-                plusargs=tuple(plusargs or ()),
-                trace=self.args.trace,
-                trace_scope=trace_scope,
-                cocotb_module=module,
-                tests=tuple(tests),
-                result_verbosity=self.args.result_verbosity,
-                sim_time_grace_s=_resolve_sim_time_grace_s(self.args.work_dir),
-                adapter_result_path=str(transport.result_path) if transport else "",
-                attempt_token=transport.attempt_token if transport else "",
-                target_identity=transport.target_identity if transport else "",
-            )
-        )
-
-    def _simulation_run_cwd(self, build_dir: str) -> str:
-        """Resolve the real or Doctor-isolated simulation runtime directory."""
-        if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
-            return (Path(build_dir) / selftest_overlay.BAD_RUN_CWD_DIR).as_posix()
-        return resolve_run_cwd(self.args.work_dir)
-
-    @staticmethod
-    def _cocotb_target_details(
-        target: str,
-        resolved: fusesoc_registry.ResolvedTarget,
-    ) -> tuple[str, str]:
-        """Return the validated Cocotb module and supported EDA-tool family."""
-        module = resolved.cocotb_module
-        if not module:
-            raise ValueError(
-                f"Target {target!r} was detected as a Cocotb Target from its "
-                ".core, but the resolved flow options carry no cocotb_module — "
-                "re-check the Target's flow_options."
-            )
-        eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
-        if eda_tool not in ("icarus", "verilator"):
-            raise ValueError(
-                f"cocotb Targets run through the icarus/verilator run-halves "
-                f"only in v1: Target {target!r} resolves to {eda_tool}. Use an "
-                "icarus or verilator Cocotb Target."
-            )
-        return module, eda_tool
-
-    def _prepare_cocotb_sim_command(
-        self,
-        target: str,
-        tests: list[str],
-    ) -> list[str]:
-        """Resolve one Cocotb Target and compose its batched build-and-run command."""
-        resolved, _trace_mode = self._resolve_sim_target(target, cocotb=True)
-        self._record_run_log_dir(target, resolved.build_root)
-        self._record_eda_tool(target, resolved.eda_tool)
-        prepared = self._prepared_builds[target]
-        module, eda_tool = self._cocotb_target_details(target, resolved)
-        rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        build_cmd = list(prepared.make_argv)
-        marker = (
-            "iverilog compilation failed"
-            if eda_tool == "icarus"
-            else "Verilator elaboration failed"
-        )
-        plusargs = self._target_parameter_plusargs(resolved.parameters)
-        attempt_token = new_attempt_token()
-        adapter_result_path = Path(resolved.build_root) / "adapter-result.json"
-        adapter_result_path.unlink(missing_ok=True)
-        transport = AdapterTransportIdentity(
-            adapter="cocotb",
-            attempt_token=attempt_token,
-            target_identity=self._target_handle(target).identity,
-            selected_tests=tuple(tests),
-            result_path=adapter_result_path,
-        )
-        self._adapter_attempts[target] = transport
-        run_line = shlex.join(
-            self._cocotb_run_cmd(
-                rel,
-                eda_tool,
-                module,
-                tests,
-                plusargs,
-                trace_scope=resolved.toplevel,
-                transport=transport,
-            )
-        )
-        self._record_build_attempt_token(target, attempt_token)
-        script = _build_run_script(
-            build_cmd,
-            marker,
-            run_line,
-            self._target_sim_env(target),
-            attempt_token=attempt_token,
-        )
-        return ["sh", "-c", script]
-
-    def _record_build_attempt_token(self, target: str, token: str) -> None:
-        """Remember the authenticated build record expected from one execution."""
-        self._build_attempt_tokens[target] = token
-
-    def _build_outcome(self, target: str, proc: SubprocessResult) -> BuildOutcome:
-        """Parse the current Target's authenticated terminal build record."""
-        token = self._build_attempt_tokens.pop(target, None)
-        if token is None:
-            return BuildOutcome(
-                ran=False,
-                verdict=None,
-                failure_kind=None,
-                reason="no authenticated build attempt was recorded",
-            )
-        return classify_build_outcome(proc, token)
-
-    def _adapter_result(
-        self,
-        target: str,
-        proc: SubprocessResult,
-        build_outcome: BuildOutcome,
-    ) -> AdapterResult | None:
-        """Decode one authenticated terminal result using phase precedence.
-
-        Unit tests that inject a synthetic ``SubprocessResult`` have no real
-        dispatch timestamp and retain their compatibility marker fixtures. A
-        real, normally completed adapter must publish its authenticated result.
-        Build rejection and wrapper timeout precede a missing terminal child
-        result because the adapter may never have reached publication.
-        """
-        identity = self._adapter_attempts.pop(target, None)
-        if identity is None:
-            return None
-        if build_outcome.design_failed:
-            return None
-        try:
-            return read_completed_adapter_result(identity, proc, build_outcome)
-        except AdapterEvidenceError as exc:
-            raise SimulationBuildInfrastructureError(
-                target,
-                setup_failure_outcome(str(exc)),
-            ) from exc
-
-    @staticmethod
-    def _require_build_verdict(target: str, outcome: BuildOutcome | None) -> None:
-        """Raise when an authenticated build established no design verdict."""
-        if outcome is None or outcome.failure_kind != "infrastructure":
-            return
-        _raise_if_missing_executable(outcome.output)
-        raise SimulationBuildInfrastructureError(target, outcome)
-
-    def _dry_run_command(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> list[str]:
-        """Build a side-effect-free ``--dry-run`` preview for one (config, test).
-
-        Unlike :meth:`_prepare_sim_command` (which runs ``fusesoc run --setup``
-        to build), dry-run **does not resolve**: it shows the ``fusesoc run
-        --setup`` command resolution *would* execute (via
-        :func:`fusesoc_registry.setup_command`, a cheap ``.core`` YAML read), the
-        deterministic ``make`` build, and the run-half invocation. The toplevel
-        is read from ``configs.toml`` (``resolved=None`` skips the live resolve);
-        an unauthored Target yields a clean ``ERROR`` entry rather than failing
-        the whole dry-run (the old path raised in ``resolve_target``).
-        """
-        # Preview the invocation's distinct build root, but never write the
-        # trace overlay .core (dry-run stays side-effect-free); the previewed
-        # setup command still names the base VLNV.
-        variant = self._build_variant()
-        build_root = edam_layer.work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant=variant,
-        )
-        try:
-            handle = self._target_handle(target)
-            setup_cmd = fusesoc_registry.setup_command(
-                handle.selector,
-                project_root=handle.project_root,
-                build_root=build_root,
-                vlnv=handle.vlnv,
-            )
-        except fusesoc_registry.TargetResolutionError as exc:
-            return [f"ERROR: sim dry-run: {exc}"]
-        rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
-        toplevel = tb_top_for_target(target, self.args.work_dir, resolved=None)
-        plusargs = self._sim_plusargs(target, test_name, test_names_map)
-        eda_tool = self._eda_tool_for_target(target)
-        if eda_tool == "icarus":
-            run_line = shlex.join(
-                sim_edam.sim_run_command(
-                    work_root=build_root,
-                    work_dir=Path(self.args.work_dir),
-                    toplevel=toplevel,
-                    eda_tool="icarus",
-                    plusargs=plusargs,
-                )
-            )
-        else:
-            run_line = shlex.join(self._verilator_run_cmd(rel, toplevel, plusargs))
-        # Dry-run parity (ADR 0039): surface Pre-Run Commands in their real
-        # position — after resolution/setup, before build+run.
-        pre_lines = self._pre_run_preview_lines(
-            target,
-            test_name,
-            test_names_map,
-            build_root,
-        )
-        script = " && ".join(
-            [
-                *self._sim_env_preview_lines(target),
-                shlex.join(setup_cmd),
-                *pre_lines,
-                shlex.join(edam_layer.make_command(rel)),
-                run_line,
-            ]
-        )
-        return ["sh", "-c", script]
-
     def _sim_env_preview_lines(self, target: str) -> list[str]:
-        """Dry-run preview of the tests.toml ``env`` exports (F-5).
-
-        Dry-run must mirror the real invocation (openc910 SETUP lesson): the
-        live script exports these ahead of build+run, so the preview shows the
-        same lines in the same position. Empty when the Target declares none.
-        """
+        """Shell export lines for the Target's configured simulator environment."""
         return [
             f"export {name}={shlex.quote(value)}"
             for name, value in self._target_sim_env(target).items()
         ]
 
-    def _dry_run_cocotb_command(self, target: str, tests: list[str]) -> list[str]:
-        """The side-effect-free ``--dry-run`` preview for a Cocotb Target (B4).
-
-        One command per Target — batching means there is no per-test command to
-        expand. Shows the ``fusesoc run --setup`` resolution, the ``make``
-        build, and the batched :mod:`booley.flows.sim.backends.cocotb` invocation carrying
-        the selected ``--test`` set. The cocotb env (``COCOTB_TEST_FILTER``,
-        ``cocotb-config``-derived paths) is computed by the run-half in-sandbox
-        at run time, so the preview shows the exact process that will run
-        without eliding secrets it cannot know yet.
-        """
-        variant = self._build_variant()
-        build_root = edam_layer.work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant=variant,
-        )
-        try:
-            handle = self._target_handle(target)
-            setup_cmd = fusesoc_registry.setup_command(
-                handle.selector,
-                project_root=handle.project_root,
-                build_root=build_root,
-                vlnv=handle.vlnv,
-            )
-        except fusesoc_registry.TargetResolutionError as exc:
-            return [f"ERROR: sim dry-run: {exc}"]
-        rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
-        eda_tool = self._eda_tool_for_target(target)
-        module = self._cocotb_module_for_target(target) or ""
-        trace_scope = tb_top_for_target(target, self.args.work_dir, resolved=None)
-        run_line = shlex.join(
-            self._cocotb_run_cmd(
-                rel,
-                eda_tool,
-                module,
-                tests,
-                trace_scope=trace_scope,
-            )
-        )
-        # Dry-run parity (ADR 0039): the batch's Pre-Run Commands fire once,
-        # between resolution/setup and the build+run — mirrored here.
-        pre_lines = self._pre_run_preview_lines(
-            target,
-            tests[0] if len(tests) == 1 else None,
-            {target: tests},
-            build_root,
-        )
-        script = " && ".join(
-            [
-                *self._sim_env_preview_lines(target),
-                shlex.join(setup_cmd),
-                *pre_lines,
-                shlex.join(edam_layer.make_command(rel)),
-                run_line,
-            ]
-        )
-        return ["sh", "-c", script]
-
-    def _prepare_single_test_command(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> tuple[list[str] | None, TestResult | None, float]:
-        """Prepare one native test command and capture setup failure timing."""
-        setup_started = time.monotonic()
-        try:
-            self._eda_tool_for_target(target)
-            cmd = self._prepare_sim_command(target, test_name, test_names_map)
-        except MissingExecutableError:
-            raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except (
-            SimulationBuildPreparationError,
-            fusesoc_registry.FuseSocError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ) as exc:
-            logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
-            _raise_if_missing_executable(str(exc))
-            failure = TestResult(
-                name=test_name or target,
-                passed=False,
-                error_tail=f"sim setup failed: {exc}",
-                elab_failed=True,
-                phase_timings_s={"setup": round(time.monotonic() - setup_started, 3)},
-            )
-            return None, failure, time.monotonic() - setup_started
-        return cmd, None, time.monotonic() - setup_started
-
-    def _timed_pre_run(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]],
-    ) -> tuple[TestResult | None, float]:
-        """Run Pre-Run Commands and return their result with wall time."""
-        pre_run_started = time.monotonic()
-        failure = self._run_pre_run_commands_local(target, test_name, test_names_map)
-        return failure, time.monotonic() - pre_run_started
-
-    def _execute_single_test(
-        self,
-        target: str,
-        test_name: str | None,
-        cmd: list[str],
-        *,
-        setup_s: float,
-        pre_run_s: float,
-    ) -> TestResult:
-        """Execute and interpret one prepared native simulator command."""
-        proc = self._execute(cmd)
-        processing_started = time.monotonic()
-        build_outcome = self._build_outcome(target, proc)
-        # The raw ./V<top> run emits no [SIM_SUMMARY]; the thin post-processor
-        # re-derives it so the shared interpretation below is unchanged.
-        combined = sim_edam.reemit_sim_summary(
-            proc.stdout + "\n" + proc.stderr,
-            proc.returncode,
-        )
-        self._persist_full_run_log(target, proc)
-        test_run_log = self._persist_test_run_log(target, test_name or target, proc)
-        self._require_build_verdict(target, build_outcome)
-        self._adapter_result(target, proc, build_outcome)
-
-        result = self._interpret_sim_result(
-            combined,
-            proc,
-            target,
-            test_name,
-            build_outcome,
-        )
-        result.run_log_path = test_run_log or ""
-        _attach_process_telemetry(
-            result,
-            combined,
-            proc,
-            build_outcome,
-            setup_s=setup_s,
-            pre_run_s=pre_run_s,
-            result_processing_s=time.monotonic() - processing_started,
-        )
-        return result
-
-    def _run_single_test(
-        self,
-        target: str,
-        test_name: str | None,
-        test_names_map: dict[str, list[str]] | None = None,
-    ) -> TestResult:
-        """Execute a single native-simulator test and return its result."""
-        logger.info("  %s ...", test_name or "(all)")
-        names = test_names_map or {}
-        cmd, setup_failure, setup_s = self._prepare_single_test_command(
-            target,
-            test_name,
-            names,
-        )
-        if setup_failure is not None:
-            return setup_failure
-        assert cmd is not None
-        prerun_failure, pre_run_s = self._timed_pre_run(target, test_name, names)
-        if prerun_failure is not None:
-            _attach_pre_run_failure_telemetry(
-                prerun_failure,
-                setup_s=setup_s,
-                pre_run_s=pre_run_s,
-            )
-            return prerun_failure
-        return self._execute_single_test(
-            target,
-            test_name,
-            cmd,
-            setup_s=setup_s,
-            pre_run_s=pre_run_s,
-        )
-
-    def _persist_full_run_log(self, target: str, proc: Any) -> None:
-        """Overwrite *target*'s ``run.log`` with the WHOLE subprocess output.
-
-        The run-halves write run.log from inside the Session Runtime and can
-        only see their own half, so a passing run's log started at the simulator
-        banner — the edalize make/compile section was visible on failure only,
-        and only because the error tail carried it (fpu F-29e). Persist the
-        complete build-and-run text as the uniform contract.
-
-        Runs after the run-half's own write, whose ``begin_run_log`` header
-        :func:`write_run_log` carries over — so the freshness guard behind every
-        "see run.log" pointer keeps answering. Best-effort: a log we cannot
-        write must never fail an otherwise-finished sim.
-        """
-        log_dir = getattr(self, "_run_log_dirs", {}).get(target)
-        if log_dir is None:
-            return
-        try:
-            write_run_log(log_dir, proc.stdout + ("\n" + proc.stderr if proc.stderr else ""))
-        except OSError:
-            logger.debug("failed to persist the full sim run.log in %s", log_dir, exc_info=True)
-
-    def _persist_test_run_log(self, target: str, test_name: str, proc: Any) -> str | None:
-        """Atomically archive one test's unabridged output and return its pointer.
-
-        The copy lands before control returns to the Target loop, so a later
-        test may replace the live Target-level ``run.log`` without changing
-        this test's evidence. Unsafe or oversized external test names are never
-        interpolated into a path directly.
-        """
-        report_dir = self.args.report_dir
-        output = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
-        if report_dir is None or not output:
-            return None
-        target_component = _artifact_path_component(f"sim_{target}")
-        test_component = _artifact_path_component(test_name)
-        artifact_dir = report_dir / "artifacts" / target_component / "tests" / test_component
-        try:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            path = write_run_log(artifact_dir, output, max_bytes=None)
-        except OSError:
-            logger.debug(
-                "failed to preserve the per-test sim run.log for %s/%s",
-                target,
-                test_name,
-                exc_info=True,
-            )
-            return None
-        return artifacts.relative(path, self.args.work_dir)
-
-    def _interpret_sim_result(
-        self,
-        combined: str,
-        proc: Any,
-        target: str,
-        test_name: str | None,
-        build_outcome: BuildOutcome | None = None,
-    ) -> TestResult:
-        """Interpret a finished sim run's output into a TestResult.
-
-        Shared by every builtin path that produces a ``combined`` stdout/stderr
-        blob and a completed subprocess ``proc``. This keeps the pass/fail,
-        tail-selection and diagnostic logic in one place.
-        """
-        elab_failed = (
-            build_outcome.design_failed
-            if build_outcome is not None
-            else bool(_ELAB_FAIL_RE.search(combined))
-        )
-        passed, inconclusive = _determine_pass_fail(combined, proc)
-        # The only cause _determine_pass_fail knows: nothing in the output said
-        # pass or fail. A different cause below overwrites this.
-        reason = _INCONCLUSIVE_NO_SENTINEL if inconclusive else ""
-        # Pre-Run Commands failure (boundary path): the wrapper makefile's
-        # [BOOLEY_PRERUN_FAIL rc=N] marker attributes the failure to
-        # [flows.sim].pre_run_commands — the sim never ran, so this is
-        # the elab_failed-style short-circuit, never an inconclusive verdict.
-        prerun_failed = bool(_PRERUN_FAIL_RE.search(combined))
-        if prerun_failed:
-            passed, inconclusive, elab_failed = False, False, True
-        # --trace must produce a waveform: the run-half (or the boundary
-        # postprocess) prints TRACE_OK only when a queryable .fst/.vcd actually
-        # landed. Its absence on a --trace run means the trace silently no-op'd
-        # (the footgun the overlay slice closes).
-        trace_missing = self.args.trace and "TRACE_OK:" not in combined
-        if trace_missing:
-            # A missing waveform is a FLOW-infrastructure failure, NOT a design
-            # defect (QA_REPORT B5.1). When the simulation itself passed — the
-            # DUT printed its pass sentinel and every subprocess exited 0 —
-            # laundering the trace failure into a hard FAIL sends the
-            # developer hunting a nonexistent RTL bug. Report it as
-            # inconclusive ("could not verify"), never a design FAIL. If the sim
-            # already failed on its own merits, keep that real verdict.
-            if passed:
-                passed, inconclusive = False, True
-                reason = _INCONCLUSIVE_NO_WAVEFORM
-            else:
-                passed = False
-        error_tail = self._build_error_tail(
-            combined,
-            proc,
-            target,
-            passed,
-            elab_failed,
-            trace_missing,
-        )
-        trace_path, trace_bytes = (
-            _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
-        )
-        trace_top_scope, trace_signal_count, trace_total_ticks = (
-            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
-        )
-
-        cycle_observation = parse_cycle_observation(
-            combined,
-            test_name or target,
-            _resolve_cycle_sentinels(self.args.work_dir),
-        )
-        return TestResult(
-            name=test_name or target,
-            passed=passed,
-            elapsed_s=proc.duration_s,
-            build_s=parse_build_seconds(combined),
-            cycles=cycle_observation.value,
-            cycle_status=cycle_observation.status,
-            sva_errors=parse_sva_errors(combined),
-            error_tail=error_tail,
-            timed_out=proc.timed_out,
-            inconclusive=inconclusive,
-            inconclusive_reason=reason,
-            elab_failed=elab_failed,
-            trace_path=trace_path,
-            trace_bytes=trace_bytes,
-            trace_top_scope=trace_top_scope,
-            trace_signal_count=trace_signal_count,
-            trace_total_ticks=trace_total_ticks,
-            build_outcome=build_outcome,
-        )
-
-    def _build_error_tail(
-        self,
-        combined: str,
-        proc: Any,
-        target: str,
-        passed: bool,
-        elab_failed: bool,
-        trace_missing: bool,
-    ) -> str:
-        """Assemble the failure excerpt (tail + timeout/trace/diag banners)."""
-        error_tail = ""
-        if not passed:
-            # The excerpt should surface the DUT's own output (test summary,
-            # FAILED/mismatch lines) — all emitted on stdout. The first test of
-            # a run triggers a (re)build whose hundreds of Verilator lint
-            # warnings land on stderr; appended after stdout they dominate the
-            # combined tail and hide the real signal. So when the sim actually
-            # ran, take the tail from stdout. Fall back to the combined tail for
-            # elaboration failures, whose diagnostics live on stderr and which
-            # never produced any sim stdout.
-            tail_src = proc.stdout if (not elab_failed and proc.stdout.strip()) else combined
-            error_tail = "\n".join(select_error_lines(tail_src, _ERROR_TAIL_LINES))
-        prerun = _PRERUN_FAIL_RE.search(combined)
-        if prerun:
-            # Attribute the failure to the pre-run step (ADR 0039): without
-            # this banner the tail reads like a build/sim breakage and sends
-            # the developer hunting a nonexistent RTL bug.
-            prerun_msg = (
-                f"pre-run commands failed (rc={prerun.group(1)}): "
-                "[flows.sim].pre_run_commands — the sim never ran"
-            )
-            error_tail = f"{prerun_msg}\n{error_tail}".rstrip()
-        if proc.timed_out:
-            timeout_msg = f"TIMEOUT: simulation exceeded {self._effective_timeout_ms()} ms"
-            error_tail = f"{timeout_msg}\n{error_tail}".rstrip()
-        if trace_missing:
-            trace_msg = (
-                "ERROR: --trace requested but no waveform was produced "
-                "(no queryable .fst/.vcd from the trace overlay build)."
-            )
-            error_tail = f"{trace_msg}\n{error_tail}".rstrip()
-
-        return error_tail
 
     def _validate_interactive_args(
         self,
@@ -3461,35 +2113,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return selected
         return select_target(root, target, for_flow="sim")
 
-    def _stamp_target_identity(self, result: TargetResult) -> TargetResult:
-        """Attach the durable identity corresponding to a result's selector."""
-        result.target_identity = self._target_handle(result.target).identity
-        return result
-
-    def _native_target_result(
-        self,
-        target: str,
-        tb_top: str,
-        elapsed_s: float,
-        tests: list[TestResult],
-    ) -> TargetResult:
-        """Build the stamped result for one native-simulator Target."""
-        inconclusive = any(test.inconclusive for test in tests)
-        rounded_elapsed = round(elapsed_s, 3)
-        return self._stamp_target_identity(
-            TargetResult(
-                target=target,
-                tb_top=tb_top,
-                eda_tool=self._eda_tool_for(target),
-                passed=all(test.passed for test in tests) and not inconclusive,
-                elapsed_s=rounded_elapsed,
-                tests=tests,
-                inconclusive=inconclusive,
-                elab_failed=any(test.elab_failed for test in tests),
-                phase_timings_s=_target_phase_timings(tests, rounded_elapsed),
-            )
-        )
-
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
         if resolved is None:
             return inspect_target(
@@ -3692,10 +2315,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             self._target_eda_tools: dict[str, str] = {}
         self._target_eda_tools[target] = eda_tool or ""
 
-    def _eda_tool_for(self, target: str) -> str:
-        """The raw resolved EDA tool for *target*; "" before/without resolve."""
-        return getattr(self, "_target_eda_tools", {}).get(target, "")
-
     def _run_log_pointer(self, target: str) -> str | None:
         """Project-relative ``run.log`` path for *target*, or None if unknown.
 
@@ -3813,12 +2432,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _compile_command_str(self, target: str) -> str | None:
         """The composed setup+build+run command line for *target*, or None.
 
-        The same ``sh -c`` script :meth:`_dry_run_command` (or the cocotb
-        variant) previews — reused so the report shows exactly what a
-        ``--dry-run`` would print, without a second composition path. Cached
-        per target (the .core YAML reads behind it are cheap but not free);
-        best-effort: any failure — including the clean ``ERROR:`` entry an
-        unauthored Target yields — returns None and the caller omits the key.
+        Uses the production execution preview so reports and ``--dry-run``
+        cannot diverge. Optional report metadata remains best-effort.
         """
         cache: dict[str, str | None] = getattr(self, "_compile_command_cache", {})
         if not hasattr(self, "_compile_command_cache"):
@@ -3830,15 +2445,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             test_names_map = getattr(self, "_test_names_map", None) or _get_test_names(
                 self.args.work_dir
             )
-            if self.is_cocotb_target(target):
-                tests = self._resolve_tests_to_run(target, test_names_map)
-                selected = [t for t in tests if t is not None]
-                cmd = self._dry_run_cocotb_command(target, selected)
-            else:
-                cmd = self._dry_run_command(target, None, test_names_map)
-            if cmd[:2] == ["sh", "-c"]:
-                command = cmd[2]
-        except Exception:
+            tests = self._resolve_tests_to_run(target, test_names_map)
+            preview = self._simulation_execution().preview(
+                self._target_handle(target), self._execution_selection(tests)
+            )
+            scripts = [item[2] for item in preview.commands if item[:2] == ("sh", "-c")]
+            command = "\n".join(scripts) or None
+        except Exception:  # noqa: BLE001 — optional report metadata is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3862,7 +2475,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 — optional report metadata is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3910,438 +2523,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         print(report_text)
         return report_text
 
-    def _prepare_cocotb_command(
-        self,
-        target: str,
-        selected: list[str],
-    ) -> tuple[list[str] | None, TestResult | None, float]:
-        """Prepare one cocotb batch command and capture setup failure timing."""
-        started = time.monotonic()
-        try:
-            command = self._prepare_cocotb_sim_command(target, selected)
-        except MissingExecutableError:
-            raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except (
-            SimulationBuildPreparationError,
-            fusesoc_registry.FuseSocError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ) as exc:
-            logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
-            _raise_if_missing_executable(str(exc))
-            failure = TestResult(
-                name=selected[0] if len(selected) == 1 else target,
-                passed=False,
-                error_tail=f"sim setup failed: {exc}",
-                elab_failed=True,
-                phase_timings_s={"setup": round(time.monotonic() - started, 3)},
-            )
-            return None, failure, time.monotonic() - started
-        return command, None, time.monotonic() - started
-
-    def _failed_cocotb_target(
-        self,
-        target: str,
-        tb_top: str,
-        failure: TestResult,
-        output_lines: list[str],
-        target_start: float,
-    ) -> TargetResult:
-        """Build the common target result for a pre-execution cocotb failure."""
-        _append_test_output_line(failure, output_lines)
-        elapsed_s = round(time.monotonic() - target_start, 3)
-        return TargetResult(
-            target=target,
-            tb_top=tb_top,
-            eda_tool=self._eda_tool_for(target),
-            passed=False,
-            elapsed_s=elapsed_s,
-            tests=[failure],
-            elab_failed=True,
-            phase_timings_s=_target_phase_timings([failure], elapsed_s),
-        )
-
-    def _execute_cocotb_batch(
-        self,
-        target: str,
-        selected: list[str],
-        output_lines: list[str],
-        command: list[str],
-        *,
-        setup_s: float,
-        pre_run_s: float,
-    ) -> tuple[list[TestResult], bool, str]:
-        """Execute and interpret one prepared cocotb batch."""
-        proc = self._execute(command)
-        processing_started = time.monotonic()
-        build_outcome = self._build_outcome(target, proc)
-        combined = proc.stdout + "\n" + proc.stderr
-        self._persist_full_run_log(target, proc)  # F-29e, as on the HDL loop
-        self._require_build_verdict(target, build_outcome)
-        self._adapter_result(target, proc, build_outcome)
-        tests, trace_inconclusive = self._interpret_cocotb_result(
-            combined,
-            proc,
-            target,
-            selected,
-            output_lines,
-            build_outcome,
-        )
-        if tests:
-            _attach_process_telemetry(
-                tests[0],
-                combined,
-                proc,
-                build_outcome,
-                setup_s=setup_s,
-                pre_run_s=pre_run_s,
-                result_processing_s=time.monotonic() - processing_started,
-            )
-        _append_batch_output_lines(tests, output_lines, self._run_log_is_fresh(target))
-        return tests, trace_inconclusive, combined
-
-    def _completed_cocotb_target(
-        self,
-        target: str,
-        tb_top: str,
-        tests: list[TestResult],
-        trace_inconclusive: bool,
-        combined: str,
-        output_lines: list[str],
-        elapsed_s: float,
-    ) -> TargetResult:
-        """Aggregate one completed cocotb batch into its target result."""
-        any_inconclusive = any(test.inconclusive for test in tests) or trace_inconclusive
-        any_elab_failed = any(test.elab_failed for test in tests)
-        sva_total = sum(test.sva_errors for test in tests)
-        try:
-            summary = parse_summary_line(combined)
-        except ValueError:
-            summary = None
-        summary_passed = summary["passed"] if summary is not None else True
-        passed = (
-            all(test.passed for test in tests)
-            and not any_inconclusive
-            and sva_total == 0
-            and summary_passed
-        )
-        if len(tests) > 1:
-            passed_count = sum(1 for test in tests if test.passed)
-            output_lines.append(f"  --- {passed_count}/{len(tests)} passed ---")
-        rounded_elapsed = round(elapsed_s, 3)
-        return TargetResult(
-            target=target,
-            tb_top=tb_top,
-            eda_tool=self._eda_tool_for(target),
-            passed=passed,
-            elapsed_s=rounded_elapsed,
-            tests=tests,
-            inconclusive=any_inconclusive,
-            elab_failed=any_elab_failed,
-            phase_timings_s=_target_phase_timings(tests, rounded_elapsed),
-        )
-
-    def _selected_cocotb_tests(
-        self,
-        target: str,
-        test_names_map: dict[str, list[str]],
-        output_lines: list[str],
-    ) -> list[str]:
-        """Resolve a cocotb batch and report tests excluded by policy."""
-        selected = [
-            test for test in self._resolve_tests_to_run(target, test_names_map) if test is not None
-        ]
-        skipped = self._skipped_tests(target, test_names_map)
-        if skipped:
-            output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-        return selected
-
-    def _run_target_cocotb(
-        self,
-        target: str,
-        tb_top: str,
-        test_names_map: dict[str, list[str]],
-        output_lines: list[str],
-    ) -> TargetResult:
-        """Run one build-and-simulation process for a cocotb target."""
-        target_start = time.monotonic()
-        output_lines.append(f"[sim] {target} (session-runtime, cocotb)")
-        selected = self._selected_cocotb_tests(target, test_names_map, output_lines)
-        command, setup_failure, setup_s = self._prepare_cocotb_command(target, selected)
-        if setup_failure is not None:
-            return self._failed_cocotb_target(
-                target, tb_top, setup_failure, output_lines, target_start
-            )
-        assert command is not None
-        prerun_failure, pre_run_s = self._timed_pre_run(
-            target,
-            selected[0] if len(selected) == 1 else None,
-            {target: selected},
-        )
-        output_lines.extend(self._drain_pre_run_lines())  # F-27
-        if prerun_failure is not None:
-            _attach_pre_run_failure_telemetry(
-                prerun_failure,
-                setup_s=setup_s,
-                pre_run_s=pre_run_s,
-            )
-            return self._failed_cocotb_target(
-                target, tb_top, prerun_failure, output_lines, target_start
-            )
-        tests, trace_inconclusive, combined = self._execute_cocotb_batch(
-            target,
-            selected,
-            output_lines,
-            command,
-            setup_s=setup_s,
-            pre_run_s=pre_run_s,
-        )
-        return self._completed_cocotb_target(
-            target=target,
-            tb_top=tb_top,
-            tests=tests,
-            trace_inconclusive=trace_inconclusive,
-            combined=combined,
-            output_lines=output_lines,
-            elapsed_s=time.monotonic() - target_start,
-        )
-
-    def _interpret_cocotb_result(  # noqa: PLR0915 — one typed verdict fan-out pipeline
-        self,
-        combined: str,
-        proc: Any,
-        target: str,
-        selected: list[str],
-        output_lines: list[str],
-        build_outcome: BuildOutcome | None = None,
-    ) -> tuple[list[TestResult], bool]:
-        """Fan a batched cocotb run's output into per-test TestResults (C2/C3).
-
-        Verdicts come from the run-half's ``[COCOTB_RESULTS]`` line (the parsed
-        ``results.xml``), reconciled against the selected set: an absent name is
-        inconclusive with the actionable no-matching-``@cocotb.test`` message
-        (decision 7); unexpected extra XML entries are logged, never
-        verdict-bearing. Sentinel scanning is bypassed — a missing results line
-        (the run died before post-processing) is inconclusive, never a pass.
-        ``count_sva_errors`` still runs over the raw output ($fatal/$error in
-        the RTL under a cocotb TB); the batch SVA count rides the first test
-        entry so the target-level summary sums correctly.
-
-        Returns ``(test_results, trace_inconclusive)`` — the latter mirrors
-        :meth:`_interpret_sim_result`'s missing-waveform handling: a --trace
-        run that produced no ``TRACE_OK`` is a Flow-infrastructure failure reported as
-        inconclusive, never a design FAIL.
-        """
-        from booley.flows.sim.backends import cocotb_results as cocotb_results_mod
-
-        elab_failed = (
-            build_outcome.design_failed
-            if build_outcome is not None
-            else bool(_ELAB_FAIL_RE.search(combined))
-        )
-        # SVA count comes from the run-half's [SIM_SUMMARY] (computed over the
-        # RUN output only) — never recounted over `combined` here, which also
-        # carries the BUILD half: iverilog's "System task ($error) cannot be
-        # synthesized" warnings echo the DUT's own $error/$fatal source text
-        # and would miscount as DUT assertions (e2e G8 regression).
-        try:
-            summary = parse_summary_line(combined)
-        except ValueError:
-            summary = None
-        sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-        timed_out = proc.timed_out or "cocotb simulation timed out (" in combined
-        results = cocotb_results_mod.parse_results_line(combined)
-
-        names = _cocotb_verdict_names(selected, results, target)
-        if timed_out and results is not None:
-            results = cocotb_results_mod.recover_timeout_progress(combined, names, results)
-
-        if results is None and elab_failed:
-            return [
-                self._cocotb_build_failure(
-                    combined,
-                    proc,
-                    target,
-                    names,
-                    sva_errors,
-                    timed_out,
-                    output_lines,
-                    build_outcome,
-                )
-            ], False
-
-        if results is None:
-            detail = (
-                "run ended before cocotb results were parsed — no "
-                "[COCOTB_RESULTS] line in the sim output"
-            )
-            verdicts = [(n, cocotb_results_mod.VERDICT_INCONCLUSIVE, detail) for n in names]
-            elapsed_by_name: dict[str, float] = {}
-            extras: list[str] = []
-        else:
-            verdicts = cocotb_results_mod.reconcile(names, results)
-            elapsed_by_name = {t.name: t.elapsed_s for t in results.tests}
-            extras = cocotb_results_mod.extra_tests(names, results)
-        if extras:
-            output_lines.append(
-                "  (note: results.xml reports extra non-selected test(s): "
-                f"{', '.join(extras)} — logged, not verdict-bearing)"
-            )
-
-        tail = self._cocotb_error_tail(combined, proc, elab_failed, timed_out)
-        # One batch, one waveform (F-35): like build_s and the SVA count, it
-        # rides the first entry rather than repeating N times.
-        trace_path, trace_bytes = (
-            _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
-        )
-        trace_top_scope, trace_signal_count, trace_total_ticks = (
-            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
-        )
-        cycle_sentinels = _resolve_cycle_sentinels(self.args.work_dir)
-        test_results: list[TestResult] = []
-        for i, (name, verdict, detail) in enumerate(verdicts):
-            passed = verdict == cocotb_results_mod.VERDICT_PASS
-            not_run = detail == cocotb_results_mod.TIMEOUT_NOT_RUN_DETAIL
-            test_timed_out = timed_out and detail == cocotb_results_mod.TIMEOUT_ACTIVE_DETAIL
-            inconclusive = (
-                verdict == cocotb_results_mod.VERDICT_INCONCLUSIVE
-                and (not timed_out or not_run)
-                and not elab_failed
-            )
-            error_tail = ""
-            if not passed:
-                error_tail = detail
-                # The shared batch tail (timeout banner, elab diagnostics, raw
-                # output) rides the first non-passing entry only, so one noisy
-                # failure doesn't repeat per test.
-                if tail and not any(not t.passed and t.error_tail for t in test_results):
-                    error_tail = f"{detail}\n{tail}".strip()
-            cycle_observation = parse_cycle_observation(combined, name, cycle_sentinels)
-            cycle_value = (
-                cycle_observation.value
-                if cycle_observation.status == "observed"
-                or (cycle_observation.status == "legacy" and len(verdicts) == 1)
-                else None
-            )
-            test_results.append(
-                TestResult(
-                    name=name,
-                    passed=passed,
-                    elapsed_s=elapsed_by_name.get(name, 0.0),
-                    # Like the SVA count: the batch has exactly one build, so
-                    # its wall time rides the first entry only.
-                    build_s=parse_build_seconds(combined) if i == 0 else 0.0,
-                    cycles=cycle_value,
-                    cycle_status=cycle_observation.status,
-                    sva_errors=sva_errors if i == 0 else 0,
-                    error_tail=error_tail,
-                    timed_out=test_timed_out,
-                    inconclusive=inconclusive,
-                    inconclusive_reason=_INCONCLUSIVE_NO_SENTINEL if inconclusive else "",
-                    elab_failed=elab_failed,
-                    trace_path=trace_path if i == 0 else "",
-                    trace_bytes=trace_bytes if i == 0 else 0,
-                    trace_top_scope=trace_top_scope if i == 0 else "",
-                    trace_signal_count=trace_signal_count if i == 0 else 0,
-                    trace_total_ticks=trace_total_ticks if i == 0 else 0,
-                    build_outcome=build_outcome if i == 0 else None,
-                )
-            )
-
-        return test_results, self._cocotb_trace_missing(
-            combined,
-            test_results,
-            sva_errors,
-            output_lines,
-        )
-
-    def _cocotb_trace_missing(
-        self,
-        combined: str,
-        test_results: list[TestResult],
-        sva_errors: int,
-        output_lines: list[str],
-    ) -> bool:
-        """True when a ``--trace`` batch produced no waveform (Flow-infrastructure fail).
-
-        Mirrors :meth:`_interpret_sim_result`'s handling: a missing waveform on
-        an otherwise-clean run is reported as inconclusive, never as a design
-        FAIL. A batch that already failed on its merits keeps that verdict.
-        """
-        if not self.args.trace or "TRACE_OK:" in combined:
-            return False
-        if not (all(t.passed for t in test_results) and sva_errors == 0):
-            return False
-        output_lines.append(
-            "  ERROR: --trace requested but no waveform was produced "
-            "(no queryable .fst/.vcd from the trace overlay build)."
-        )
-        # Record WHY on the batch (F-22): the tests all passed, so the RESULT
-        # line must not claim a missing sentinel.
-        if test_results:
-            test_results[0].inconclusive_reason = _INCONCLUSIVE_NO_WAVEFORM
-        return True
-
-    def _cocotb_build_failure(
-        self,
-        combined: str,
-        proc: Any,
-        target: str,
-        names: list[str],
-        sva_errors: int,
-        timed_out: bool,
-        output_lines: list[str],
-        build_outcome: BuildOutcome | None = None,
-    ) -> TestResult:
-        """The single result entry for a cocotb run whose BUILD half broke.
-
-        No simulator ever started, so not one of the selected tests ran. Fanning
-        the compile error out into N per-test "FAIL 0.0s" rows invents verdicts
-        for tests that were never executed and buries the one thing that matters
-        — the compile error — in the first row's tail (taxi: 14 phantom FAILs
-        from one unparseable SV interface port). Collapse to a single build
-        entry instead, mirroring the setup-failure shape in
-        :meth:`_run_target_cocotb`, and name the tests that never ran rather
-        than grading them.
-
-        ADR 0034 decision 6 is preserved either way: no results.xml, no pass.
-        """
-        output_lines.append(
-            f"  build failed — {len(names)} selected test(s) never ran: {', '.join(names)}"
-        )
-        tail = self._cocotb_error_tail(combined, proc, True, timed_out)
-        return TestResult(
-            name=target,
-            passed=False,
-            elapsed_s=0.0,
-            cycles=None,
-            sva_errors=sva_errors,
-            error_tail=(
-                "cocotb build failed — the design did not compile, so the "
-                f"{len(names)} selected test(s) never ran\n{tail}"
-            ).strip(),
-            timed_out=timed_out,
-            inconclusive=False,
-            elab_failed=True,
-            build_outcome=build_outcome,
-        )
-
-    def _cocotb_error_tail(
-        self,
-        combined: str,
-        proc: Any,
-        elab_failed: bool,
-        timed_out: bool,
-    ) -> str:
-        """The shared batch failure excerpt for a cocotb run (one per batch)."""
-        tail_src = proc.stdout if (not elab_failed and proc.stdout.strip()) else combined
-        tail = "\n".join(tail_src.strip().splitlines()[-30:])
-        if timed_out:
-            tail = (
-                f"TIMEOUT: simulation exceeded {self._effective_timeout_ms()} ms\n{tail}"
-            ).rstrip()
-        return tail
 
     def _run_resolved_target(
         self,
@@ -4376,13 +2557,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         selection = self._execution_selection(tests_to_run)
         execution = self._simulation_execution()
         outcome = execution.run(self._target_handle(target), selection)
-        legacy = isinstance(outcome, TargetResult)
-        result = outcome if legacy else self._project_execution_outcome(outcome)
+        result = self._project_execution_outcome(outcome)
         output_lines.append(f"[sim] {target} (session-runtime)")
         output_lines.extend(result.diagnostics)
-        output_lines.extend(
-            self._drain_pre_run_lines() if legacy else self._pre_run_output_lines(outcome)
-        )
+        output_lines.extend(self._pre_run_output_lines(outcome))
         for test in result.tests:
             _append_test_output_line(test, output_lines, self._run_log_is_fresh(target))
         if len(result.tests) > 1:
@@ -4397,6 +2575,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cast(SimulationExecution, override)
         return SimulationExecution(
             invoke=self._execute_boundary,
+            artifact_root=self.args.report_dir,
             options=SimulationOptions(
                 trace=self.args.trace,
                 timeout_ms=int(self.args.timeout) if self.args.timeout is not None else None,
@@ -4416,10 +2595,15 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             detail = (
                 outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
             )
-            missing = find_missing_executable(detail)
+            missing = (
+                outcome.infrastructure_failure.missing_executable
+                or find_missing_executable(detail)
+            )
             if missing:
                 raise MissingExecutableError(missing, detail)
             build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
+            if not build.reason:
+                build = replace(build, reason=detail, output=detail)
             raise SimulationBuildInfrastructureError(outcome.target, build)
         tests = [self._project_execution_test(test) for test in outcome.tests]
         self._record_execution_artifacts(outcome)
@@ -4434,6 +2618,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             elab_failed=any(test.elab_failed for test in tests),
             target_identity=outcome.target_identity,
             diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
+            phase_timings_s=dict(outcome.phase_timings_s),
         )
 
     def _project_execution_test(self, outcome: Any) -> TestResult:
@@ -4469,6 +2654,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             ),
             workload_snapshot=dict(outcome.workload_snapshot or {}),
             build_outcome=outcome.build,
+            phase_timings_s=dict(outcome.phase_timings_s),
+            resources=dict(outcome.resources),
         )
 
     def _record_execution_artifacts(self, outcome: SimulationTargetOutcome) -> None:
@@ -4514,8 +2701,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
         A target that declares a test list (tests.toml ``tests``) but whose list
         has no substring match for ``--test`` is a typo, not a selector: running
-        it would emit no selection plusarg (``_sim_plusargs`` returns ``[]``) and
-        silently execute the testbench's default test — reporting a false PASS.
+        it would emit no selection plusarg and silently execute the testbench's
+        default test — reporting a false PASS.
         Mirrors the ``UnknownTargetError`` contract ``--target`` already gets.
 
         Skipped for a target with no declared test list: there the ``--test``

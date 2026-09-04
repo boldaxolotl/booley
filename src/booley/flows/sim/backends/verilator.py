@@ -715,6 +715,39 @@ def _finalize_verilated_run(
     return output
 
 
+def _missing_binary_result(
+    paths: _RunPaths,
+    top_module: str,
+    transport: AdapterTransportIdentity | None,
+) -> str:
+    output = _report_missing_binary(paths.bin_dir, top_module, paths.work_dir)
+    _publish_adapter_result(
+        transport,
+        output,
+        1,
+        failure_kind="infrastructure",
+        detail=output.strip(),
+    )
+    return output
+
+
+def _timeout_transport_result(
+    exc: subprocess.TimeoutExpired,
+    timeout: int,
+    work_dir: Path,
+    transport: AdapterTransportIdentity | None,
+) -> str:
+    output = _timeout_result(exc, timeout, work_dir)
+    _publish_adapter_result(
+        transport,
+        output,
+        1,
+        failure_kind="timeout",
+        detail=f"Verilator simulation timed out after {timeout}s",
+    )
+    return output
+
+
 def run_verilated_binary(
     *,
     top_module: str,
@@ -738,15 +771,7 @@ def run_verilated_binary(
     paths.work_dir.mkdir(parents=True, exist_ok=True)
     exe = _find_binary(paths.bin_dir, top_module)
     if exe is None:
-        output = _report_missing_binary(paths.bin_dir, top_module, paths.work_dir)
-        _publish_adapter_result(
-            transport,
-            output,
-            1,
-            failure_kind="infrastructure",
-            detail=output.strip(),
-        )
-        return output
+        return _missing_binary_result(paths, top_module, transport)
     scope = _resolve_single_scope(trace_scope)
     cmd, env = _build_run_cmd(exe, paths.bin_dir, plusargs)
     trace = _prepare_trace_runtime(paths, vcd, scope, trace_files, cmd, trace_args, trace_mode)
@@ -758,15 +783,7 @@ def run_verilated_binary(
     try:
         lines, proc = _execute_with_heartbeat(cmd, paths, env, timeout, trace, max_rundir_bytes)
     except subprocess.TimeoutExpired as exc:
-        output = _timeout_result(exc, timeout, paths.work_dir)
-        _publish_adapter_result(
-            transport,
-            output,
-            1,
-            failure_kind="timeout",
-            detail=f"Verilator simulation timed out after {timeout}s",
-        )
-        return output
+        return _timeout_transport_result(exc, timeout, paths.work_dir, transport)
     output = _finalize_verilated_run(
         lines, proc, paths, trace, trace_files, pass_sentinels, fail_sentinels
     )
