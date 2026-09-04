@@ -1895,7 +1895,9 @@ def _print_demo_advisory() -> None:
     """Send the preconfigured demo straight to its documented runtime steps."""
     info("This is the preconfigured PicoRV32 demo — the booley-setup skill does not apply.")
     print()
-    info('  * Open the PicoRV32 folder in VS Code and choose "Reopen in Container"')
+    info("  * Open the PicoRV32 folder in VS Code")
+    info('  * In the popup notification, choose "Reopen in Container"')
+    info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
     info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
     info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
 
@@ -2034,7 +2036,11 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("Booley base setup complete."))
     elif advisory.detail == "demo":
         print(green("Booley demo setup complete."))
-        print(green('Next: open the PicoRV32 folder in VS Code and choose "Reopen in Container".'))
+        print(green("Next: open the PicoRV32 folder in VS Code and use its popup notification"))
+        print(
+            green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
+        )
+        print(green('"Dev Containers: Reopen in Container".'))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
