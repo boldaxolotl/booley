@@ -499,16 +499,22 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
 
     contract_check = "      - name: Verify exact reviewed demo contract\n"
     initialize = "      - name: Initialize demo cleanly as documented\n"
+    staged_ownership = "      - name: Prepare staged demo ownership\n"
+    host_doctor = "      - name: Run host Doctor issued-image probe\n"
     surface_smoke = "      - name: Run demo Doctor and ticket-authoring surface smoke\n"
     assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
     assert contract_check in workflow
     assert workflow.index(contract_check) < workflow.index(initialize)
+    assert workflow.index(initialize) < workflow.index(staged_ownership)
+    assert workflow.index(staged_ownership) < workflow.index(host_doctor)
     assert workflow.index(initialize) < workflow.index(surface_smoke)
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
     assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
     assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
     assert "set -o pipefail" in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
+    assert 'sudo chown -R 1000:"$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    assert 'sudo chmod -R u+rwX,g+rwX,o-rwx "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
     assert workflow.count('booley doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
     assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
