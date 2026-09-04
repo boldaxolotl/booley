@@ -885,7 +885,7 @@ def _assert_attempt_config_freezing(
     assert first_snapshot["controls"]["cycle_sentinels"] == ["[OLD]"]
     assert second_snapshot["controls"]["cycle_sentinels"] == ["[NEW]"]
     assert first_snapshot["inputs"][0]["present"] is True
-    assert first_snapshot["inputs"][0]["bytes"] == len("generated\n")
+    assert first_snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert first.tests[0].cycles == 17
     assert second.tests[0].cycles == 23
 
