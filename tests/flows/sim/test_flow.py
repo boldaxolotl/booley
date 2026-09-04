@@ -3084,9 +3084,7 @@ class TestPerTargetSimEnv:
         assert "export OPTS='a b; rm -rf /'" in script
 
     def test_build_run_script_without_env_is_unchanged(self):
-        assert _build_run_script(["make"], "m", "./Vtb").startswith(
-            "_booley_build_start_ns="
-        )
+        assert _build_run_script(["make"], "m", "./Vtb").startswith("_booley_build_start_ns=")
 
     def test_sandbox_command_carries_the_targets_env(self, tmp_path: Path):
         from booley.fusesoc import fusesoc_registry

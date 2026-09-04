@@ -157,9 +157,7 @@ def test_classifier_accepts_one_matching_success_record() -> None:
 def test_classifier_uses_authenticated_build_duration() -> None:
     outcome = classify_build_outcome(
         _result(
-            "compiler output\n"
-            "BOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=17\n"
-            "runtime output",
+            "compiler output\nBOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=17\nruntime output",
             rc=0,
             duration_s=4.0,
         ),

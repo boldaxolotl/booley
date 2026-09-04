@@ -253,9 +253,7 @@ def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome
     build_rc = int(record["rc"])
     duration_ms = record["duration_ms"]
     build_result = (
-        replace(result, duration_s=int(duration_ms) / 1000)
-        if duration_ms is not None
-        else result
+        replace(result, duration_s=int(duration_ms) / 1000) if duration_ms is not None else result
     )
     build_output = result.stdout[: record.start()]
     if result.stderr:

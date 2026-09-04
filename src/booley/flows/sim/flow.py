@@ -519,9 +519,7 @@ def _attach_process_telemetry(
     run_s = parse_run_seconds(output)
     if run_s is None:
         run_s = (
-            max(0.0, proc.duration_s - build_s)
-            if build_outcome and build_outcome.passed
-            else 0.0
+            max(0.0, proc.duration_s - build_s) if build_outcome and build_outcome.passed else 0.0
         )
     test.phase_timings_s = {
         "setup": round(setup_s, 3),
