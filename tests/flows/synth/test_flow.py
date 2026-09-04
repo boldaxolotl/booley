@@ -1798,9 +1798,7 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 12345\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 12345\n", encoding="utf-8")
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -1831,9 +1829,7 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
             (build_dir / "check_dut.txt").write_text(
                 "Warning: found logic loop in module dut:\n    wire \\feedback\n"
                 "Warning: multiple conflicting drivers for dut.sig:\n"
@@ -1859,9 +1855,7 @@ class TestFileBasedInterpretation:
         assert target["multi_driven"] == 1
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
         assert report["total_warnings"] == 2
-        assert report["implementation"]["conditions"]["warning_summary"][
-            "total_warnings"
-        ] == 2
+        assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
         criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
         assert criterion.met is False
         assert criterion.detail["total_warnings"] == 2
@@ -1880,9 +1874,7 @@ class TestFileBasedInterpretation:
                 "ABC: Warning: The network has multiple outputs.\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -1915,9 +1907,7 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
             fresh = time.time() + 1
             for artifact in build_dir.iterdir():
                 os.utime(artifact, (fresh, fresh))
@@ -2013,9 +2003,7 @@ class TestFileBasedInterpretation:
                 "Design area 7000 u^2 50% utilization.\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\n", encoding="utf-8"
-            )
+            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -3875,9 +3863,7 @@ class TestAggregateDetailIsSelfContained:
         assert result.detail["targets"] == ["asic_a"]
         assert result.detail["asic_a"]["area_um2"] == 500.0
 
-    def test_benign_eda_warning_remains_visible_without_downgrading_pass(
-        self, flow_and_state
-    ):
+    def test_benign_eda_warning_remains_visible_without_downgrading_pass(self, flow_and_state):
         flow, _ = flow_and_state
         summary = parse_synth_diagnostics(
             {
@@ -3897,9 +3883,7 @@ class TestAggregateDetailIsSelfContained:
         assert "NOTE -- 1 EDA warning" in result.report_text
         implementation = result.detail["implementation"]["results"]["lite"]
         assert implementation["status"]["grade"] == "pass"
-        assert implementation["conditions"]["warning_summary"]["by_disposition"] == {
-            "benign": 1
-        }
+        assert implementation["conditions"]["warning_summary"]["by_disposition"] == {"benign": 1}
 
     def test_baseline_warning_summary_is_preserved(self, flow_and_state):
         flow, _ = flow_and_state
@@ -3918,9 +3902,7 @@ class TestAggregateDetailIsSelfContained:
 
         assert result.detail["lite"]["baseline_metrics"]["total_warnings"] == 1
         comparison = result.detail["implementation"]["results"]["lite"]["comparison"]
-        assert comparison["baseline"]["conditions"]["warning_summary"][
-            "total_warnings"
-        ] == 1
+        assert comparison["baseline"]["conditions"]["warning_summary"]["total_warnings"] == 1
 
 
 class TestIncompleteResourceResults:

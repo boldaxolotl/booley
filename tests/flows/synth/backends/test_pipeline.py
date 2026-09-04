@@ -284,9 +284,7 @@ def _fresh(_path: Path) -> bool:
 
 
 class TestBoundaryOutput:
-    def test_collects_warning_summary_and_final_structural_evidence(
-        self, tmp_path: Path
-    ):
+    def test_collects_warning_summary_and_final_structural_evidence(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         (plan.build_dir / "yosys.log").write_text(
             "Warning: found logic loop in module dut:\n    wire \\feedback\n",

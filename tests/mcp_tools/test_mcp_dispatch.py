@@ -339,8 +339,7 @@ def _oversized_warning_summary(total_warnings: int = 40) -> dict[str, object]:
         "by_category": {"combinational_loop": 16, "multi_driver": 24},
         "by_disposition": {"structural": total_warnings},
         "representatives": [
-            {"tool": "yosys", "message": "x" * 4_000, "count": 1}
-            for _ in range(30)
+            {"tool": "yosys", "message": "x" * 4_000, "count": 1} for _ in range(30)
         ],
     }
 

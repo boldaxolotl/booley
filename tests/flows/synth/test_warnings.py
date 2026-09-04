@@ -15,17 +15,21 @@ def test_real_yosys_v068_structural_warnings_are_counted() -> None:
         "    wire \\feedback\n"
     ) * 16
     final_check = (
-        "Warning: multiple conflicting drivers for top.sig[0]:\n"
-        "    port Q[0] of cell $procdff$1 ($dff)\n"
-    ) * 24 + (
-        "Warning: found logic loop in module top:\n"
-        "    cell $logic_and$1 ($and)\n"
-        "    wire \\feedback\n"
-    ) * 16 + "Found and reported 40 problems.\n"
-
-    diagnostics = parse_synth_diagnostics(
-        {"yosys": yosys, "final_check": final_check}
+        (
+            "Warning: multiple conflicting drivers for top.sig[0]:\n"
+            "    port Q[0] of cell $procdff$1 ($dff)\n"
+        )
+        * 24
+        + (
+            "Warning: found logic loop in module top:\n"
+            "    cell $logic_and$1 ($and)\n"
+            "    wire \\feedback\n"
+        )
+        * 16
+        + "Found and reported 40 problems.\n"
     )
+
+    diagnostics = parse_synth_diagnostics({"yosys": yosys, "final_check": final_check})
 
     assert diagnostics.structural.complete is True
     assert diagnostics.structural.comb_loops == 16
@@ -85,12 +89,7 @@ def test_missing_final_check_is_incomplete_not_clean() -> None:
 
 def test_final_check_without_completion_marker_is_incomplete() -> None:
     diagnostics = parse_synth_diagnostics(
-        {
-            "final_check": (
-                "Warning: found logic loop in module top:\n"
-                "    wire \\feedback\n"
-            )
-        }
+        {"final_check": ("Warning: found logic loop in module top:\n    wire \\feedback\n")}
     )
 
     assert diagnostics.structural.complete is False

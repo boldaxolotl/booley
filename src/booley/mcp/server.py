@@ -1583,7 +1583,10 @@ def _drop_warning_representatives(value: dict[str, Any]) -> None:
         if isinstance(baseline_conditions, dict)
         else None
     )
-    if isinstance(baseline_summary, dict) and baseline_summary.pop("representatives", None) is not None:
+    if (
+        isinstance(baseline_summary, dict)
+        and baseline_summary.pop("representatives", None) is not None
+    ):
         _record_omitted_field(
             value, "comparison.baseline.conditions.warning_summary.representatives"
         )
