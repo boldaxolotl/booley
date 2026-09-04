@@ -238,7 +238,7 @@ The disposable checkout set materialized from a Ticket's sealed repository refs 
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
-The recoverable record of a Ticket's prepared, finalized, and published repository candidates, bound creation-time Target removals, and exact Ticket-ref cleanup progress. It lets acceptance roll forward after partial multi-repository publication, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose identity-checked cleanup is still pending.
+The active deep module and recoverable record for accepting a sealed Ticket. It owns source preservation, candidate preparation and finalization, multi-repository publication, post-approval destination verification, and identity-checked cleanup, while the Ticket Board owns approval policy and the review-to-done transition. Its journal lets acceptance roll forward after interruption, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose recovery or cleanup is still pending.
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:
