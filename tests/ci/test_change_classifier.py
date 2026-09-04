@@ -15,6 +15,15 @@ _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
 
 
+def _git_identity_env() -> dict[str, str]:
+    return os.environ | {
+        "GIT_AUTHOR_NAME": "CI Test",
+        "GIT_AUTHOR_EMAIL": "ci@example.invalid",
+        "GIT_COMMITTER_NAME": "CI Test",
+        "GIT_COMMITTER_EMAIL": "ci@example.invalid",
+    }
+
+
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -26,18 +35,23 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _commit(repo: Path, message: str) -> str:
-    env = os.environ | {
-        "GIT_AUTHOR_NAME": "CI Test",
-        "GIT_AUTHOR_EMAIL": "ci@example.invalid",
-        "GIT_COMMITTER_NAME": "CI Test",
-        "GIT_COMMITTER_EMAIL": "ci@example.invalid",
-    }
+    env = _git_identity_env()
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", message],
         check=True,
         capture_output=True,
         env=env,
+    )
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _merge(repo: Path, branch: str) -> str:
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--no-ff", "-m", "merge", branch],
+        check=True,
+        capture_output=True,
+        env=_git_identity_env(),
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -50,7 +64,14 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
     return repo, _commit(repo, "initial")
 
 
-def _classify(repo: Path, base: str, head: str, *, force_all: bool = False) -> dict[str, str]:
+def _run_classifier(
+    repo: Path,
+    base: str,
+    head: str,
+    *,
+    force_all: bool = False,
+    event_name: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
         sys.executable,
@@ -66,7 +87,27 @@ def _classify(repo: Path, base: str, head: str, *, force_all: bool = False) -> d
         "--force-all",
         str(force_all).lower(),
     ]
+    if event_name is not None:
+        command.extend(("--event-name", event_name))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
+    return result, output
+
+
+def _classify(
+    repo: Path,
+    base: str,
+    head: str,
+    *,
+    force_all: bool = False,
+    event_name: str | None = None,
+) -> dict[str, str]:
+    result, output = _run_classifier(
+        repo,
+        base,
+        head,
+        force_all=force_all,
+        event_name=event_name,
+    )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
 
@@ -83,6 +124,82 @@ def _required(outputs: dict[str, str]) -> set[str]:
 
 def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
     return json.loads(outputs["jobs"])
+
+
+def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
+    tmp_path: Path,
+) -> None:
+    repo, stale_base = _repository(tmp_path)
+    _git(repo, "switch", "-c", "feature")
+    _write(repo, "src/booley/example.py")
+    _write(repo, "tests/unit/test_example.py")
+    _commit(repo, "feature changes")
+
+    _git(repo, "switch", "main")
+    _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
+    _write(repo, ".github/workflows/upstream.yml")
+    current_base = _commit(repo, "upstream image changes")
+    merge_head = _merge(repo, "feature")
+
+    outputs = _classify(
+        repo,
+        stale_base,
+        merge_head,
+        event_name="pull_request",
+    )
+
+    assert outputs["diff_base"] == current_base
+    assert outputs["python_source"] == "true"
+    assert outputs["python_tests"] == "true"
+    assert outputs["stable_base"] == "false"
+    assert outputs["docker_toolchain"] == "false"
+    assert outputs["workflow"] == "false"
+    assert outputs["riscv_image"] == "false"
+    assert outputs["build_stable_base"] == "false"
+
+
+def test_pull_request_rejects_a_non_merge_head(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "feature change")
+
+    result, _output = _run_classifier(repo, base, head, event_name="pull_request")
+
+    assert result.returncode == 2
+    assert "pull_request head must be a two-parent merge commit" in result.stderr
+
+
+def test_rejects_an_unknown_event_name(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+
+    result, _output = _run_classifier(repo, base, base, event_name="pull_requset")
+
+    assert result.returncode == 2
+    assert "invalid choice: 'pull_requset'" in result.stderr
+
+
+def test_push_ending_in_merge_still_uses_event_base(tmp_path: Path) -> None:
+    repo, before = _repository(tmp_path)
+    _git(repo, "switch", "-c", "side-branch")
+    _write(repo, "docs/side-branch.md")
+    _commit(repo, "side branch")
+
+    _git(repo, "switch", "main")
+    _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
+    _commit(repo, "stable base change")
+    merge_head = _merge(repo, "side-branch")
+
+    outputs = _classify(
+        repo,
+        before,
+        merge_head,
+        force_all=True,
+        event_name="push",
+    )
+
+    assert outputs["diff_base"] == before
+    assert outputs["stable_base"] == "true"
+    assert outputs["build_stable_base"] == "true"
 
 
 def test_mixed_docker_and_docs_changes_require_image_path(tmp_path: Path) -> None:
@@ -106,7 +223,12 @@ def test_pure_docker_change_requires_only_image_build_path(tmp_path: Path) -> No
     outputs = _classify(repo, base, head)
 
     assert outputs["docker_toolchain"] == "true"
-    assert _required(outputs) == {"changes", "package-artifacts", "bwave-smoke"}
+    assert _required(outputs) == {
+        "changes",
+        "release-semantic",
+        "package-artifacts",
+        "bwave-smoke",
+    }
 
 
 def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) -> None:
@@ -120,6 +242,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     assert outputs["build_stable_base"] == "true"
     assert _required(outputs) == {
         "changes",
+        "release-semantic",
         "lint",
         "test",
         "package-artifacts",
@@ -135,7 +258,7 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
     outputs = _classify(repo, base, head)
 
     assert outputs["docs"] == "true"
-    assert _required(outputs) == {"changes", "docs-check"}
+    assert _required(outputs) == {"changes", "release-semantic", "docs-check"}
     assert _jobs(outputs)["docs-check"] is True
     assert _jobs(outputs)["test"] is False
 
@@ -170,7 +293,8 @@ def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
 
     assert outputs["docs"] == "true"
     assert outputs["python_source"] == "true"
-    assert {"test", "package-artifacts", "bwave-smoke"} <= _required(outputs)
+    assert {"test", "package-artifacts"} <= _required(outputs)
+    assert "bwave-smoke" not in _required(outputs)
     assert base != head
 
 
@@ -226,7 +350,53 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
     assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
 
 
-def test_ordinary_python_source_does_not_request_riscv_image(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("path", "riscv"),
+    [
+        # PR #298: image-contract code accepted an invalid runtime user.
+        (".github/scripts/image_size_report.py", True),
+        # PR #308: Simulation runtime overlays leaked into the issued image.
+        ("src/booley/flows/sim/flow.py", False),
+        # PR #315: host Doctor and Session Runtime identity diverged.
+        ("src/booley/harness/doctor.py", False),
+        ("src/booley/harness/session_runtime.py", False),
+        ("src/booley/mcp/server.py", False),
+        ("tests/fixtures/cocotb_counter/README.md", False),
+        # PR #350: shared size/resource contracts own both image variants.
+        (".github/contracts/image-size-limits.toml", True),
+        (".github/scripts/image_runtime_resources.py", True),
+        # PR #351: synthesis changes must exercise the OpenROAD promotion probe.
+        ("src/booley/flows/synth/flow.py", False),
+    ],
+)
+def test_release_regression_paths_request_focused_image_smoke(
+    tmp_path: Path, path: str, riscv: bool
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "release-sensitive regression path")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["release_sensitive"] == "true"
+    assert outputs["standard_image"] == "true"
+    assert outputs["riscv_image"] == str(riscv).lower()
+    assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
+
+
+def test_openroad_probe_is_standard_image_only(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, ".github/scripts/verify_openroad_runtime.sh")
+    head = _commit(repo, "OpenROAD release probe")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["release_sensitive"] == "true"
+    assert outputs["standard_image"] == "true"
+    assert outputs["riscv_image"] == "false"
+
+
+def test_ordinary_python_source_skips_release_image_smoke(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "ordinary Python source")
@@ -234,8 +404,10 @@ def test_ordinary_python_source_does_not_request_riscv_image(tmp_path: Path) -> 
     outputs = _classify(repo, base, head)
 
     assert outputs["python_source"] == "true"
+    assert outputs["release_sensitive"] == "false"
+    assert outputs["standard_image"] == "false"
     assert outputs["riscv_image"] == "false"
-    assert "bwave-smoke" in _required(outputs)
+    assert "bwave-smoke" not in _required(outputs)
 
 
 @pytest.mark.parametrize(
@@ -309,7 +481,7 @@ def test_both_changelog_paths_are_release_inputs(tmp_path: Path) -> None:
     outputs = _classify(repo, base, head)
 
     assert outputs["release"] == "true"
-    assert _required(outputs) == set(_jobs(outputs)) | {"changes"}
+    assert _required(outputs) == set(_jobs(outputs)) | {"changes", "release-semantic"}
 
 
 def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None:
@@ -322,6 +494,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
 
     expected = {
         "changes",
+        "release-semantic",
         "docs-check",
         "lint",
         "test",

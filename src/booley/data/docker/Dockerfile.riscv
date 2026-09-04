@@ -58,6 +58,29 @@ RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multil
     && echo "${XPACK_GCC_SHA256}  /tmp/riscv-toolchain.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/riscv-toolchain.tar.gz -C /opt/riscv --strip-components=1 \
     && rm -f /tmp/riscv-toolchain.tar.gz \
+    && set -- $(find /opt/riscv/riscv-none-elf/lib -type f -name libg.a) \
+    && test "$#" -eq 32 \
+    && for duplicate do \
+           original="${duplicate%/libg.a}/libc.a"; \
+           cmp -s "$original" "$duplicate"; \
+           rm -f "$duplicate"; \
+           ln "$original" "$duplicate"; \
+       done \
+    && for names in 'c++ g++' 'gcc gcc-15.2.0' 'ld ld.bfd'; do \
+           set -- $names; \
+           original="/opt/riscv/bin/riscv-none-elf-$1"; \
+           duplicate="/opt/riscv/bin/riscv-none-elf-$2"; \
+           cmp -s "$original" "$duplicate"; \
+           rm -f "$duplicate"; \
+           ln "$original" "$duplicate"; \
+       done \
+    && for helper in ar as ld ld.bfd nm objcopy objdump ranlib readelf strip; do \
+           original="/opt/riscv/bin/riscv-none-elf-${helper}"; \
+           duplicate="/opt/riscv/riscv-none-elf/bin/${helper}"; \
+           cmp -s "$original" "$duplicate"; \
+           rm -f "$duplicate"; \
+           ln "$original" "$duplicate"; \
+       done \
     && for f in /opt/riscv/bin/riscv-none-elf-*; do \
            helper_executable="$(basename "$f" | sed 's/^riscv-none-elf-//')"; \
            ln -sf "$f" "/opt/riscv/bin/riscv32-unknown-elf-${helper_executable}"; \
@@ -117,6 +140,14 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && make check \
     && make install \
     && test -x /opt/riscv/bin/spike \
+    && strip --strip-all \
+        /opt/riscv/bin/spike \
+        /opt/riscv/bin/spike-log-parser \
+        /opt/riscv/bin/termios-xspike \
+        /opt/riscv/bin/xspike \
+        /opt/riscv/lib/libcustomext.so \
+        /opt/riscv/lib/libriscv.so \
+    && spike --help >/dev/null \
     && rm -rf /tmp/spike
 
 # ---------------------------------------------------------------------------

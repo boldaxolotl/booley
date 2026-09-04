@@ -61,12 +61,10 @@ host resources while preserving caches and user-owned files.
 Skipping the explicit command is supported: ordinary `booley init` performs
 the same reconciliation before it changes a Project.
 
-The compressed registry transfer and the resulting Docker storage are different
-budgets. The standard sandbox is about 15 GB after extraction; the RISC-V demo
-image is about 20 GB, and the full demo stack needs at least 21 GB of free Docker
-storage. Its download is roughly 6 GB because registry layers are compressed.
-Allow additional room for Docker metadata, build cache, containers, and Project
-artifacts. Multiple tags that resolve to the same image ID share their layers.
+Reserve about 4 GB of Docker storage for the standard sandbox or 6 GB for the
+complete RISC-V demo stack, plus Project artifacts and temporary upgrade/build
+data. On the measured containerd store, the current Linux/AMD64 images occupy
+1.58/2.02 GB and expose 2.82/4.48 GB filesystems; shared layers are not additive.
 
 ## Initialize the Project · host
 
