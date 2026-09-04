@@ -50,8 +50,9 @@ Run this once after installation and again after Booley upgrades:
 booley bootstrap
 ```
 
-It validates Git, Docker, and VS Code; deploys packaged skills; verifies the
-shared Nangate45 cache; reconciles the base Session Image; and converges the
+It validates Git, Docker, and VS Code; installs or verifies VS Code's Dev
+Containers extension; deploys packaged skills; verifies the shared Nangate45
+cache; reconciles the base Session Image; and converges the
 single global egress network, proxy, and reaper. It neither discovers a Project
 nor selects an agent provider. `booley bootstrap --check-only` performs no
 writes and returns 1 when work is pending; `--force` refreshes Booley-managed

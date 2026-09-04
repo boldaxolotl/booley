@@ -48,6 +48,43 @@ class TestVSCodeEditor:
         executable.touch()
         assert editor_config.resolve_editor_install() == application
 
+    def test_management_resolver_prefers_a_path_command(self):
+        assert (
+            editor_config.resolve_editor_management_command(lambda name: f"/opt/bin/{name}")
+            == "/opt/bin/code"
+        )
+
+    def test_management_resolver_uses_a_native_windows_application(self, tmp_path, monkeypatch):
+        application = tmp_path / "Code.exe"
+        application.touch()
+        monkeypatch.setattr(editor_config.sys, "platform", "win32")
+        monkeypatch.setattr(
+            editor_config,
+            "_editor_install_candidates",
+            lambda: ((application, application),),
+        )
+
+        assert editor_config.resolve_editor_management_command(lambda _name: None) == str(
+            application
+        )
+
+    def test_management_resolver_uses_the_bundled_macos_cli(self, tmp_path, monkeypatch):
+        application = tmp_path / "Visual Studio Code.app"
+        executable = application / "Contents" / "MacOS" / "Electron"
+        cli = application / "Contents" / "Resources" / "app" / "bin" / "code"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        cli.parent.mkdir(parents=True)
+        cli.touch()
+        monkeypatch.setattr(editor_config.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            editor_config,
+            "_editor_install_candidates",
+            lambda: ((application, executable),),
+        )
+
+        assert editor_config.resolve_editor_management_command(lambda _name: None) == str(cli)
+
     def test_macos_candidates_cover_system_and_user_applications(self, monkeypatch):
         monkeypatch.setattr(editor_config.sys, "platform", "darwin")
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/Users/test")))

@@ -28,6 +28,7 @@ from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
 
 MIN_GIT_VERSION = (2, 37, 2)
+DEV_CONTAINERS_EXTENSION_ID = "ms-vscode-remote.remote-containers"
 _GIT_VERSION_LINE = re.compile(
     r"^git version (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
     r"(?P<suffix>[^\s]*)(?:\s.*)?$"
@@ -97,12 +98,14 @@ def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapRe
     if any(finding.state is BootstrapState.ERROR for finding in prerequisites):
         return BootstrapResult(intent, tuple(findings), policy)
 
-    findings.append(_reconcile_skills(intent))
-    if findings[-1].state is BootstrapState.ERROR:
-        return BootstrapResult(intent, tuple(findings), policy)
-    findings.append(_reconcile_nangate(intent))
-    if findings[-1].state is BootstrapState.ERROR:
-        return BootstrapResult(intent, tuple(findings), policy)
+    for reconcile in (
+        _reconcile_vscode_dev_containers,
+        _reconcile_skills,
+        _reconcile_nangate,
+    ):
+        findings.append(reconcile(intent))
+        if findings[-1].state is BootstrapState.ERROR:
+            return BootstrapResult(intent, tuple(findings), policy)
 
     base_result, base_finding = _reconcile_base_image(intent, verbose=verbose)
     findings.append(base_finding)
@@ -225,6 +228,99 @@ def _vscode_finding() -> BootstrapFinding:
         BootstrapState.ERROR,
         "VS Code or a supported compatible editor is required for Interactive Mode",
     )
+
+
+def _vscode_extension_ids(command: str) -> tuple[frozenset[str] | None, str | None]:
+    """List local editor extensions, returning a user-facing failure when unavailable."""
+    try:
+        result = subprocess.run(
+            [command, "--list-extensions"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "VS Code did not list extensions within 30 seconds"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"cannot inspect VS Code extensions: {exc}"
+    if result.returncode:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        detail = f": {lines[0][:200]}" if lines else ""
+        return None, f"VS Code extension probe failed{detail}"
+    return frozenset(line.strip().lower() for line in result.stdout.splitlines()), None
+
+
+def _install_vscode_dev_containers(command: str) -> str | None:
+    """Install the desktop Dev Containers extension and return an error, if any."""
+    try:
+        result = subprocess.run(
+            [command, "--install-extension", DEV_CONTAINERS_EXTENSION_ID, "--force"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "Dev Containers extension installation did not finish within 120 seconds"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"cannot install the Dev Containers extension: {exc}"
+    if result.returncode == 0:
+        return None
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    detail = f": {lines[0][:200]}" if lines else ""
+    return f"Dev Containers extension installation failed{detail}"
+
+
+def _vscode_dev_containers_finding(command: str) -> BootstrapFinding:
+    """Inspect the Dev Containers extension in one resolved desktop editor."""
+    installed, error = _vscode_extension_ids(command)
+    if error:
+        return BootstrapFinding("vscode-dev-containers", BootstrapState.ERROR, error)
+    assert installed is not None
+    if DEV_CONTAINERS_EXTENSION_ID in installed:
+        return BootstrapFinding(
+            "vscode-dev-containers",
+            BootstrapState.CURRENT,
+            f"{DEV_CONTAINERS_EXTENSION_ID} installed",
+        )
+    return BootstrapFinding(
+        "vscode-dev-containers",
+        BootstrapState.PENDING,
+        f"{DEV_CONTAINERS_EXTENSION_ID} is not installed",
+    )
+
+
+def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding:
+    """Ensure the desktop editor can open Booley's Session Runtime."""
+    from booley.config.editor import resolve_editor_management_command
+
+    command = resolve_editor_management_command()
+    if command is None:
+        return BootstrapFinding(
+            "vscode-dev-containers",
+            BootstrapState.ERROR,
+            "cannot find the installed editor's extension-management command",
+        )
+    finding = _vscode_dev_containers_finding(command)
+    if finding.state is not BootstrapState.PENDING or intent is Intent.CHECK:
+        return finding
+    if error := _install_vscode_dev_containers(command):
+        return BootstrapFinding("vscode-dev-containers", BootstrapState.ERROR, error)
+    verified = _vscode_dev_containers_finding(command)
+    if verified.state is BootstrapState.CURRENT:
+        return BootstrapFinding(
+            "vscode-dev-containers",
+            BootstrapState.CHANGED,
+            f"installed {DEV_CONTAINERS_EXTENSION_ID}",
+        )
+    if verified.state is BootstrapState.PENDING:
+        return BootstrapFinding(
+            "vscode-dev-containers",
+            BootstrapState.ERROR,
+            "VS Code did not report the extension after installation",
+        )
+    return verified
 
 
 def _reconcile_skills(intent: Intent) -> BootstrapFinding:

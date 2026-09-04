@@ -29,6 +29,13 @@ class ResolvedEditor:
 
 
 EDITOR_COMMANDS = ("code", "code-insiders", "codium", "cursor", "windsurf")
+_MACOS_CLI_NAMES = {
+    "Visual Studio Code.app": "code",
+    "Visual Studio Code - Insiders.app": "code-insiders",
+    "VSCodium.app": "codium",
+    "Cursor.app": "cursor",
+    "Windsurf.app": "windsurf",
+}
 
 
 def _editor_install_candidates() -> tuple[tuple[Path, Path], ...]:
@@ -91,6 +98,24 @@ def resolve_editor_command(
     for command in EDITOR_COMMANDS:
         if found := resolver(command):
             return found
+    return None
+
+
+def resolve_editor_management_command(
+    which: Callable[[str], str | None] | None = None,
+) -> str | None:
+    """Return an editor CLI capable of managing desktop extensions."""
+    if command := resolve_editor_command(which):
+        return command
+    for application, executable in _editor_install_candidates():
+        if not executable.is_file():
+            continue
+        if sys.platform == "win32":
+            return str(executable)
+        if sys.platform == "darwin" and (name := _MACOS_CLI_NAMES.get(application.name)):
+            command = application / "Contents" / "Resources" / "app" / "bin" / name
+            if command.is_file():
+                return str(command)
     return None
 
 

@@ -26,6 +26,11 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     )
     monkeypatch.setattr(
         bootstrap,
+        "_reconcile_vscode_dev_containers",
+        lambda _intent: calls.append("vscode-dev-containers") or _current("vscode-dev-containers"),
+    )
+    monkeypatch.setattr(
+        bootstrap,
         "_reconcile_skills",
         lambda _intent: calls.append("skills") or _current("skills"),
     )
@@ -64,12 +69,19 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _wire_current(monkeypatch)
     result = bootstrap.reconcile_bootstrap(Intent.CHECK)
-    assert calls == ["skills", "nangate45", "base-image", "sidecars"]
+    assert calls == [
+        "vscode-dev-containers",
+        "skills",
+        "nangate45",
+        "base-image",
+        "sidecars",
+    ]
     assert [finding.resource for finding in result.findings] == [
         "host-config",
         "git",
         "docker",
         "vscode",
+        "vscode-dev-containers",
         "skills",
         "nangate45",
         "base-image",
@@ -154,7 +166,10 @@ def test_vscode_accepts_a_proven_gui_application(
     assert application.name in finding.detail
 
 
-@pytest.mark.parametrize("failed_resource", ["git", "skills", "nangate45", "base-image"])
+@pytest.mark.parametrize(
+    "failed_resource",
+    ["git", "vscode-dev-containers", "skills", "nangate45", "base-image"],
+)
 def test_bootstrap_stops_after_each_failed_dependency(
     monkeypatch: pytest.MonkeyPatch,
     failed_resource: str,
@@ -172,27 +187,39 @@ def test_bootstrap_stops_after_each_failed_dependency(
             lambda: (error, _current("docker"), _current("vscode")),
         )
         expected_calls: list[str] = []
+    elif failed_resource == "vscode-dev-containers":
+        monkeypatch.setattr(
+            bootstrap,
+            "_reconcile_vscode_dev_containers",
+            lambda _intent: calls.append("vscode-dev-containers") or error,
+        )
+        expected_calls = ["vscode-dev-containers"]
     elif failed_resource == "skills":
         monkeypatch.setattr(
             bootstrap,
             "_reconcile_skills",
             lambda _intent: calls.append("skills") or error,
         )
-        expected_calls = ["skills"]
+        expected_calls = ["vscode-dev-containers", "skills"]
     elif failed_resource == "nangate45":
         monkeypatch.setattr(
             bootstrap,
             "_reconcile_nangate",
             lambda _intent: calls.append("nangate45") or error,
         )
-        expected_calls = ["skills", "nangate45"]
+        expected_calls = ["vscode-dev-containers", "skills", "nangate45"]
     else:
         monkeypatch.setattr(
             bootstrap,
             "_reconcile_base_image",
             lambda _intent, **_kwargs: (calls.append("base-image") or None, error),
         )
-        expected_calls = ["skills", "nangate45", "base-image"]
+        expected_calls = [
+            "vscode-dev-containers",
+            "skills",
+            "nangate45",
+            "base-image",
+        ]
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
@@ -394,6 +421,114 @@ def test_vscode_accepts_a_path_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert finding.state is bootstrap.BootstrapState.CURRENT
     assert finding.detail == "codium available"
+
+
+def test_vscode_dev_containers_accepts_an_existing_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, "MS-VSCODE-REMOTE.REMOTE-CONTAINERS\n", ""
+        ),
+    )
+
+    finding = bootstrap._reconcile_vscode_dev_containers(Intent.CHECK)
+
+    assert finding.state is bootstrap.BootstrapState.CURRENT
+    assert bootstrap.DEV_CONTAINERS_EXTENSION_ID in finding.detail
+
+
+def test_vscode_dev_containers_check_reports_pending_without_installing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "ms-python.python\n", "")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    finding = bootstrap._reconcile_vscode_dev_containers(Intent.CHECK)
+
+    assert finding.state is bootstrap.BootstrapState.PENDING
+    assert calls == [["/usr/bin/code", "--list-extensions"]]
+
+
+def test_vscode_dev_containers_is_installed_and_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    calls: list[list[str]] = []
+    outputs = iter(("ms-python.python\n", "", f"{bootstrap.DEV_CONTAINERS_EXTENSION_ID}\n"))
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, next(outputs), "")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.CHANGED
+    assert calls == [
+        ["/usr/bin/code", "--list-extensions"],
+        [
+            "/usr/bin/code",
+            "--install-extension",
+            bootstrap.DEV_CONTAINERS_EXTENSION_ID,
+            "--force",
+        ],
+        ["/usr/bin/code", "--list-extensions"],
+    ]
+
+
+def test_vscode_dev_containers_reports_cli_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "marketplace offline\n"),
+    )
+
+    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert "marketplace offline" in finding.detail
+
+
+def test_vscode_dev_containers_reports_install_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.config import editor
+
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, "ms-python.python\n", ""),
+            subprocess.CompletedProcess([], 1, "", "marketplace offline\n"),
+        )
+    )
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/usr/bin/code")
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    finding = bootstrap._reconcile_vscode_dev_containers(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert finding.detail == "Dev Containers extension installation failed: marketplace offline"
 
 
 def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
