@@ -118,7 +118,9 @@ def test_stable_base_keeps_verilator_compiler_launcher_available() -> None:
     ]
 
     assert "ccache" in runtime_install
+    assert "zlib1g-dev" in runtime_install
     assert '"ccache"' in contract
+    assert '"/usr/include/zlib.h"' in contract
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
