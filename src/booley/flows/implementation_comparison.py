@@ -11,11 +11,8 @@ from booley.core.boundary import as_dict, as_str
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target import TargetHandle, select_target
-from booley.ticket_board.target_contract import (
-    SCHEMA_VERSION,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.ticket_board.acceptance_basis import AcceptanceBasis
+from booley.ticket_board.target_contract import ContractTargetBinding
 
 
 class ImplementationComparisonError(ValueError):
@@ -163,7 +160,7 @@ def _select_execution_ref(
 
 
 def _binding_for_candidate(
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     flow: str,
     criterion: str,
     candidate: TargetExecutionRef,
@@ -177,14 +174,14 @@ def _binding_for_candidate(
     )
     if len(matches) != 1:
         raise ImplementationComparisonError(
-            f"sealed contract has no unique {flow}/{criterion} binding for "
+            f"Acceptance Basis has no unique {flow}/{criterion} binding for "
             f"candidate Target {candidate.selector!r}"
         )
     return matches[0]
 
 
 def _sealed_plan(
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     project_root: Path | str,
     flow: str,
     criterion: str,
@@ -196,10 +193,8 @@ def _sealed_plan(
     if state_baseline.identity != binding.baseline:
         raise ImplementationComparisonError(
             f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
-            "match the sealed contract"
+            "match the Acceptance Basis"
         )
-    if contract.schema < SCHEMA_VERSION:
-        return _make_plan(flow, state_baseline, candidate, binding)
     if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
         raise ImplementationComparisonError(
             f"sealed {flow}/{criterion} binding for {candidate.identity!r} "
@@ -230,7 +225,7 @@ def target_pair_plans_for_handles(
     candidates: Sequence[TargetHandle],
     *,
     flow: str,
-    contract: TargetContract | None = None,
+    contract: AcceptanceBasis | None = None,
 ) -> tuple[TargetPairPlan, ...]:
     """Build plans from already-normalized public Flow candidates."""
     plans: list[TargetPairPlan] = []
@@ -281,7 +276,7 @@ def target_pair_plans_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    contract: TargetContract | None = None,
+    contract: AcceptanceBasis | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:
@@ -326,7 +321,7 @@ def target_pairs_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    contract: TargetContract | None = None,
+    contract: AcceptanceBasis | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:

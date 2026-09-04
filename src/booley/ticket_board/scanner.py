@@ -179,6 +179,7 @@ def _build_ticket_entry(md_file, d, dir_status, fields, rt):
         "criteria",
         "spec",
         "base_sha",
+        "acceptance_basis",
         "target_contract",
         "target_contract_history",
     ):

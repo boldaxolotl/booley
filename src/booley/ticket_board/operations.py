@@ -480,7 +480,7 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
             log_dir,
             DevelopmentState.load(state_path),
             execution_id=execution_id,
-            target_contract=(entry or {}).get("target_contract"),
+            acceptance_basis=(entry or {}).get("acceptance_basis"),
         )
         bind_review_package(log_dir, snapshot)
     except AcceptanceLedgerError as exc:
@@ -824,11 +824,11 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     if not _completion_acceptance_valid(tio, slug):
         return False
 
-    from .target_contract import TargetContract, TargetContractError
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 
     try:
-        TargetContract.from_mapping(entry.get("target_contract"))
-    except TargetContractError as exc:
+        AcceptanceBasis.from_mapping(entry.get("acceptance_basis"))
+    except AcceptanceBasisError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return False
 
@@ -1181,24 +1181,24 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
 
 
 def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any]) -> bool:
-    """Restore a sealed contract or remove legacy ticket branches."""
-    raw_contract = entry.get("target_contract")
+    """Restore an Acceptance Basis generation or remove draft branches."""
+    raw_contract = entry.get("acceptance_basis")
     if raw_contract is None:
         return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
-    from .contract_ops import ContractOperationError, reset_contract_worktrees
-    from .target_contract import TargetContract, TargetContractError
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+    from .contract_ops import ContractOperationError, reset_basis_worktrees
 
     try:
-        contract = TargetContract.from_mapping(raw_contract)
-        reset_contract_worktrees(
+        contract = AcceptanceBasis.from_mapping(raw_contract)
+        reset_basis_worktrees(
             project_root,
             slug,
             contract,
             str(entry.get("branch", "")),
         )
-    except (ContractOperationError, TargetContractError, OSError) as exc:
+    except (ContractOperationError, AcceptanceBasisError, OSError) as exc:
         print(
-            f"Error: reset could not restore sealed contract for '{slug}': {exc}",
+            f"Error: reset could not restore the Acceptance Basis for '{slug}': {exc}",
             file=sys.stderr,
         )
         return False
@@ -1223,12 +1223,12 @@ def op_reset(
     project_root = Path(getattr(tio, "_project_root", ""))
     if (
         entry.get("status") == "blocked"
-        and entry.get("target_contract") is None
+        and entry.get("acceptance_basis") is None
         and (project_root / ".git").exists()
     ):
         print(
-            f"Error: legacy blocked ticket '{slug}' must be sealed with a Target "
-            "contract before it can restart; run contract-open and contract-seal first.",
+            f"Error: blocked ticket '{slug}' has no Acceptance Basis; return it to draft "
+            "and enqueue a new generation.",
             file=sys.stderr,
         )
         return False

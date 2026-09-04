@@ -34,7 +34,7 @@ Common controls:
 - `--report-dir <path>` persists the invocation report and Flow-specific reports
   under that directory.
 - `--diagnostic` runs without satisfying Ticket Criteria. A strict Ticket
-  requires it when the Flow/Target pair is outside the sealed contract.
+  requires it when the Flow/Target pair is outside the Acceptance Basis.
 - `--dry-run` validates inputs and previews commands or resolved build inputs,
   depending on the Flow, without running the EDA tool.
 - `--timeout <milliseconds>` bounds execution when the Flow exposes a timeout.

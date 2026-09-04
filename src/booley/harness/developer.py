@@ -308,7 +308,7 @@ def _resumed_contract_failure(ctx: TicketContext) -> str | None:
     if ctx.target_contract is None:
         return None
     if ctx.worktree_path is None:
-        return "target-contract-change-required: Ticket worktree is unavailable"
+        return "acceptance-input-change-required: Ticket worktree is unavailable"
     from .setup.workspace import _validate_materialized_target_contract
 
     result = _validate_materialized_target_contract(ctx, ctx.worktree_path)
@@ -1477,16 +1477,16 @@ def _block_changed_target_contract(ctx: TicketContext, run_index: int) -> bool:
     if contract is None:
         logger.warning("Legacy ticket %s reaches handoff without a Target contract", ctx.slug)
         return False
-    from booley.ticket_board.target_contract import (
-        CONTRACT_BLOCK_REASON,
-        TargetContractError,
-        verify_surface,
+    from booley.ticket_board.acceptance_basis import (
+        BLOCK_REASON,
+        AcceptanceBasisError,
+        assert_inputs_unchanged,
     )
 
     try:
-        verify_surface(contract, ctx.work_dir)
-    except (OSError, TargetContractError) as exc:
-        reason = f"{CONTRACT_BLOCK_REASON}: {exc}"
+        assert_inputs_unchanged(contract, ctx.work_dir)
+    except (OSError, AcceptanceBasisError) as exc:
+        reason = f"{BLOCK_REASON}: {exc}"
         block_ticket(ctx, reason, "developer", run_index=run_index)
         return True
     return False

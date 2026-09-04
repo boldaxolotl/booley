@@ -11,15 +11,14 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
+from .acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    assert_inputs_unchanged,
+)
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
-from .target_contract import (
-    TargetContract,
-    TargetContractError,
-    resolve_commit,
-    validate_targets_for_seal,
-    verify_surface,
-)
+from .target_contract import resolve_commit, validate_targets_for_seal
 from .validation import validate_ticket_fields
 
 
@@ -69,21 +68,46 @@ def _validate_checkout_contract(root: Path, fields: dict[str, object]) -> list[s
     """Validate a seal from a clean checkout without authoring worktrees."""
     if not (root / ".git").exists():
         return []
-    raw = fields.get("target_contract")
+    if fields.get("target_contract") is not None:
+        return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
+    raw = fields.get("acceptance_basis")
     if raw is None:
-        return ["target_contract.schema: 1 is required for readiness"]
+        return []
     try:
-        contract = TargetContract.from_mapping(raw)
+        contract = AcceptanceBasis.from_mapping(raw)
         resolve_commit(root, contract.outer_sha)
         if contract.project_sha:
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
-                return ["target_contract.project_sha is set but project repository is missing"]
+                return ["Acceptance Basis project participant repository is missing"]
             resolve_commit(project_repository, contract.project_sha)
-        verify_surface(contract, root)
-    except (TargetContractError, OSError, ValueError) as exc:
+        inspection_root = _worktree_for_ref(root, contract.participant("outer").ticket_ref)
+        assert_inputs_unchanged(contract, inspection_root or root)
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
     return []
+
+
+def _worktree_for_ref(repository: Path, ref: str) -> Path | None:
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    worktree: Path | None = None
+    for line in [*result.stdout.splitlines(), ""]:
+        if line.startswith("worktree "):
+            worktree = Path(line.removeprefix("worktree "))
+        elif line == f"branch {ref}":
+            return worktree
+        elif not line:
+            worktree = None
+    return None
 
 
 def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:

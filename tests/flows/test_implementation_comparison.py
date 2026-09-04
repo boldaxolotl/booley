@@ -48,7 +48,7 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _sealed_project(tmp_path: Path, *, schema: int = 3) -> TargetContract:
+def _sealed_project(tmp_path: Path, *, schema: int = 4) -> TargetContract:
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
 name: acme:lib:toy:1.0
@@ -93,7 +93,7 @@ targets:
     )
 
 
-def test_schema_three_executes_selector_verified_against_sealed_pair(tmp_path: Path) -> None:
+def test_basis_executes_selector_verified_against_recorded_pair(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
@@ -400,14 +400,14 @@ def test_pair_lookup_has_no_equal_target_fallback(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("baseline", [None, "synth_other"])
-def test_schema_three_rejects_resumed_state_that_disagrees_with_contract(
+def test_basis_rejects_resumed_state_that_disagrees_with_record(
     tmp_path: Path, baseline: str | None
 ) -> None:
     contract = _sealed_project(tmp_path)
     params = {} if baseline is None else {BASELINE_TARGET_PARAM: baseline}
     criteria = {"synthesis_ok_synth_after": SimpleNamespace(params=params)}
 
-    with pytest.raises(ImplementationComparisonError, match="does not match the sealed"):
+    with pytest.raises(ImplementationComparisonError, match="does not match the Acceptance Basis"):
         target_pairs_for_candidates(
             criteria,
             "synthesis_ok_",
@@ -464,7 +464,7 @@ def test_baseline_checkout_missing_target_is_rejected(tmp_path: Path) -> None:
 
 
 def test_baseline_checkout_identity_change_is_rejected(tmp_path: Path) -> None:
-    contract = _sealed_project(tmp_path, schema=3)
+    contract = _sealed_project(tmp_path, schema=4)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }

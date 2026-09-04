@@ -136,7 +136,7 @@ def _matches_scope(filepath: str, scope: list[str]) -> bool:
 def _reject_forbidden(forbidden: list[str]) -> int:
     """Print the hard-block diagnostic for harness-owned paths."""
     print(
-        "ERROR: Commit blocked — these files belong to the harness or sealed Target contract.",
+        "ERROR: Commit blocked — these files belong to the harness or Acceptance Basis.",
         file=sys.stderr,
     )
     for f in forbidden:

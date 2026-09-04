@@ -21,7 +21,7 @@ from booley.core.models import (  # noqa: F401
     AgentResult,
     OnSuccess,
 )
-from booley.ticket_board.target_contract import TargetContract
+from booley.ticket_board.acceptance_basis import AcceptanceBasis
 
 
 @dataclass
@@ -52,14 +52,13 @@ class TicketContext:
     project_root: Path = field(default_factory=Path.cwd)
     # Transcript logging (--no-transcripts to disable)
     save_transcripts: bool = True
-    # Immutable outer-repository baseline stamped into ticket frontmatter.
-    # Appended for positional compatibility with existing context constructors.
+    # Runtime projection of the outer participant's authoring commit.
     base_sha: str = ""
     # Generation stamped atomically when this harness execution activates the ticket.
     execution_id: str = ""
-    # Sealed Target/control-plane identity; appended for positional compatibility.
-    target_contract: TargetContract | None = None
-    # Intake defers sealed criteria state until the contract checkout is ready.
+    # Published acceptance identity; kept under the internal compatibility name.
+    target_contract: AcceptanceBasis | None = None
+    # Intake defers recorded criteria state until the authoring checkout is ready.
     criteria_state_needs_init: bool = False
 
     @property
@@ -71,10 +70,9 @@ class TicketContext:
         """Return the complete Ticket projection used for contract validation."""
         contract = self.target_contract
         if contract is None:
-            raise ValueError("Ticket has no sealed Target contract")
+            raise ValueError("Ticket has no Acceptance Basis")
         return {
-            "base_sha": self.base_sha,
-            "target_contract": contract.as_dict(),
+            "acceptance_basis": contract.as_dict(),
             "criteria": self.criteria,
             "scope": self.scope_raw,
             "on_success": {

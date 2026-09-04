@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from booley.harness._ticket_ops import DirectTicketOps
+from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
@@ -16,7 +17,6 @@ from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatte
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.target_contract import ContractParticipant, build_contract
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -185,22 +185,27 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     assert not any("Dirty working tree" in error for error in errors)
 
 
-def test_integrated_contract_seals_tests_toml_update(tmp_path: Path, monkeypatch) -> None:
+def test_enqueue_records_tests_toml_update_in_acceptance_basis(
+    tmp_path: Path, monkeypatch
+) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio)
-    opened = tio.contract_open("change-target")
-    outer = Path(opened["outer_worktree"])
+    outer = root / ".booley_project" / "worktrees" / "change-target"
     tests_toml = outer / ".booley_project" / "tests.toml"
     tests_toml.write_text("[lint_toy]\ntests = ['smoke']\n", encoding="utf-8")
 
-    sealed = tio.contract_seal("change-target")
+    assert tio.enqueue_ticket("change-target") is True
+    queue = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    fields, _body = parse_frontmatter(queue.read_text(encoding="utf-8"))
+    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    outer_participant = basis.participant("outer")
 
-    assert sealed["outer_sha"] == _git(outer, "rev-parse", "HEAD")
+    assert outer_participant.authoring_sha == _git(outer, "rev-parse", "HEAD")
     assert (
         _git(outer, "show", "HEAD:.booley_project/tests.toml")
         == tests_toml.read_text(encoding="utf-8").strip()
     )
-    assert _git(root, "rev-parse", "change-target") == sealed["outer_sha"]
+    assert _git(root, "rev-parse", outer_participant.ticket_ref) == outer_participant.authoring_sha
 
 
 def test_mutation_campaign_dictionary_round_trips_through_markdown() -> None:
@@ -224,9 +229,11 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     draft = _ticket(tio, merge=True)
+    worktree = root / ".booley_project" / "worktrees" / "change-target"
+    core = worktree / "toy.core"
+    core.write_text(core.read_text(encoding="utf-8").replace(":1.0", ":2.0"), encoding="utf-8")
+    assert tio.enqueue_ticket("change-target") is True
     queue = draft.parent.parent / "queue" / draft.name
-    queue.parent.mkdir(parents=True, exist_ok=True)
-    draft.rename(queue)
     unrelated_ticket = queue.parent / "unrelated-ticket.md"
     unrelated_ticket.write_text(queue.read_text(encoding="utf-8"), encoding="utf-8")
     _git(
@@ -238,33 +245,9 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     )
     _commit_all(root, "queue ticket")
 
-    worktree = root / ".booley_project" / "worktrees" / "change-target"
-    _git(root, "worktree", "add", "-b", "change-target", str(worktree), "main")
-    core = worktree / "toy.core"
-    core.write_text(core.read_text(encoding="utf-8").replace(":1.0", ":2.0"), encoding="utf-8")
-    _commit_all(worktree, "implement Target change")
-
     review = queue.parent.parent / "review" / queue.name
     review.parent.mkdir(parents=True, exist_ok=True)
     queue.rename(review)
-    sealed = _git(root, "rev-parse", "change-target")
-    destination = _git(root, "merge-base", "main", "change-target")
-    participant = ContractParticipant(
-        "outer",
-        sealed,
-        "refs/heads/change-target",
-        "refs/heads/main",
-        destination,
-    )
-    contract = build_contract(
-        worktree,
-        outer_sha=sealed,
-        participants=[participant],
-    )
-    update_frontmatter(
-        review,
-        {"base_sha": sealed, "target_contract": contract.as_dict()},
-    )
     monkeypatch.chdir(root)
 
     source = root / "rtl" / "toy.sv"

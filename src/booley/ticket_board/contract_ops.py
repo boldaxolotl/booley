@@ -1,9 +1,11 @@
-"""Authoring worktrees and publish-last sealing for Target contracts."""
+"""Private authoring worktrees and Acceptance Basis publication helpers."""
 
 from __future__ import annotations
 
-import hashlib
+import json
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -12,36 +14,43 @@ from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
+from booley.runtime.project_dir import (
+    checkout_project_dir_relative_to,
+    resolve_project_dir,
+    runtime_dir,
+)
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import (
-    ProjectRepositoryStatusError,
     TicketRepository,
-    blocking_project_repository_changes,
     paired_project_repository,
-    project_ticket_branch,
     resolve_inner_project_repo,
     ticket_project_worktree,
 )
 from booley.ticket_board.contract_path_policy import is_static_contract_path
 
+from .acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    BasisParticipant,
+    authored_ticket_record,
+    canonical_json,
+    record_relative_path,
+)
 from .frontmatter import parse_frontmatter, update_frontmatter
 from .git_status import parse_porcelain_v1_z
 from .target_contract import (
-    ContractParticipant,
     TargetContract,
-    build_contract,
+    canonical_contract_bindings,
     contract_control_paths,
     criterion_targets,
     resolve_commit,
     validate_criterion_targets,
     validate_targets_for_seal,
-    verify_surface,
 )
 from .validation import validate_ticket_fields
 
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
-_LEGACY_ARCHIVE_PREFIX = "booley-legacy-archive"
+_GENERATION_PREFIX = "booley-generation"
 
 
 class ContractOperationError(RuntimeError):
@@ -56,6 +65,7 @@ class ContractWorktrees:
     project: Path | None
     outer_base_sha: str
     project_base_sha: str
+    generation: str = ""
 
     def as_dict(self) -> dict[str, str]:
         """Return a JSON-ready command result."""
@@ -64,6 +74,7 @@ class ContractWorktrees:
             "project_worktree": str(self.project) if self.project is not None else "",
             "outer_base_sha": self.outer_base_sha,
             "project_base_sha": self.project_base_sha,
+            "generation": self.generation,
         }
 
 
@@ -171,41 +182,28 @@ def _current_branch(repository: Path) -> str:
 
 
 def _project_base_branch(repository: Path, requested: str) -> str:
-    return (
-        requested
-        if _strict_branch_sha(repository, requested) is not None
-        else _current_branch(repository)
-    )
+    if requested.startswith("refs/heads/"):
+        requested = requested.removeprefix("refs/heads/")
+    if _strict_branch_sha(repository, requested) is None:
+        raise ContractOperationError(
+            f"paired project destination refs/heads/{requested} does not exist; "
+            "set project_destination_ref explicitly"
+        )
+    return requested
 
 
-def _preflight_project_repository(root: Path, requested_branch: str) -> _ProjectOpenPlan | None:
-    """Refuse live paired-project state that cannot be reproduced from Git."""
+def _preflight_project_repository(
+    root: Path, requested_branch: str, project_destination_ref: object
+) -> _ProjectOpenPlan | None:
+    """Resolve a paired destination without consulting its live checkout."""
     source = resolve_inner_project_repo(root)
     if source is None:
         return None
-    try:
-        changes = blocking_project_repository_changes(source)
-    except ProjectRepositoryStatusError as exc:
-        raise ContractOperationError(
-            f"could not inspect paired project repository: {exc}"
-        ) from exc
-    if changes:
-        paths = ", ".join(f"{change.status} {change.path}" for change in changes[:10])
-        raise ContractOperationError(
-            "paired project repository has uncommitted changes; commit or restore them "
-            f"before opening a contract: {paths}"
-        )
-    live_sha = _full_commit(source, "HEAD")
-    base_branch = _project_base_branch(source, requested_branch)
+    requested = project_destination_ref or f"refs/heads/{requested_branch}"
+    if not isinstance(requested, str) or not requested.startswith("refs/heads/"):
+        raise ContractOperationError("project_destination_ref must be a full refs/heads/... name")
+    base_branch = _project_base_branch(source, requested)
     base_sha = _full_commit(source, base_branch)
-    if live_sha != base_sha:
-        live_branch = _require_git(source, "branch", "--show-current") or "detached HEAD"
-        raise ContractOperationError(
-            "paired project live checkout and contract destination differ: "
-            f"{live_branch} at {live_sha[:12]}, {base_branch} at {base_sha[:12]}; "
-            "check out and validate the destination configuration, or reconcile the "
-            "branches, before opening a contract"
-        )
     return _ProjectOpenPlan(source, base_branch, base_sha)
 
 
@@ -434,20 +432,50 @@ def _validate_open_bases(
         raise ContractOperationError(f"destination branch {outer_branch!r} moved during preflight")
     if project is None:
         return
-    if _full_commit(project.source, "HEAD") != project.base_sha:
-        raise ContractOperationError("paired project live checkout moved during preflight")
     if _full_commit(project.source, project.base_branch) != project.base_sha:
         raise ContractOperationError(
             f"paired project destination {project.base_branch!r} moved during preflight"
         )
 
 
+def _generation_file(root: Path, slug: str) -> Path:
+    directory = runtime_dir(root) / "acceptance" / "drafts"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{slug}.json"
+
+
+def _draft_generation(root: Path, slug: str) -> str:
+    """Return the private generation token allocated for a draft."""
+    path = _generation_file(root, slug)
+    if path.exists():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))["generation"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ContractOperationError(f"invalid draft generation descriptor: {path}") from exc
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value):
+            return value
+        raise ContractOperationError(f"invalid draft generation descriptor: {path}")
+    value = secrets.token_hex(8)
+    payload = json.dumps({"generation": value}, sort_keys=True) + "\n"
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return _draft_generation(root, slug)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return value
+
+
+def _generation_branch(generation: str, slug: str) -> str:
+    return f"{_GENERATION_PREFIX}/{generation}/{slug}"
+
+
 def open_contract(
     project_root: Path | str,
     ticket_path: Path | str,
     slug: str,
-    *,
-    recover_legacy: bool = False,
 ) -> ContractWorktrees:
     """Create the outer and optional project-data authoring worktrees."""
     if not _SAFE_SLUG_RE.fullmatch(slug):
@@ -458,17 +486,28 @@ def open_contract(
     if not isinstance(branch, str) or not branch:
         raise ContractOperationError("ticket has no destination branch")
     outer = resolve_project_dir(root) / "worktrees" / slug
-    project_plan = _preflight_project_repository(root, branch)
+    generation = _draft_generation(root, slug)
+    ticket_branch = _generation_branch(generation, slug)
+    project_plan = _preflight_project_repository(
+        root, branch, fields.get("project_destination_ref")
+    )
     outer_base = _full_commit(root, branch)
-    if recover_legacy:
-        _archive_legacy_worktrees(root, outer, slug)
-    outer_attachment = _plan_open_attachment(root, outer, slug, outer_base)
+    if outer.is_dir() and _worktree_owns_branch(root, outer, ticket_branch):
+        paired = paired_project_repository(outer)
+        return ContractWorktrees(
+            outer,
+            paired.worktree if paired is not None else None,
+            outer_base,
+            project_plan.base_sha if project_plan is not None else "",
+            generation,
+        )
+    outer_attachment = _plan_open_attachment(root, outer, ticket_branch, outer_base)
     project_attachment = None
     if project_plan is not None:
         project_attachment = _plan_open_attachment(
             project_plan.source,
             ticket_project_worktree(outer),
-            project_ticket_branch(slug),
+            ticket_branch,
             project_plan.base_sha,
         )
     _validate_open_bases(root, branch, outer_base, project_plan)
@@ -488,7 +527,7 @@ def open_contract(
         raise
     project = project_attachment.worktree if project_attachment is not None else None
     project_base = project_plan.base_sha if project_plan is not None else ""
-    return ContractWorktrees(outer, project, outer_base, project_base)
+    return ContractWorktrees(outer, project, outer_base, project_base, generation)
 
 
 def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
@@ -504,39 +543,6 @@ def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) 
     )
     if not result.ok:
         raise ContractOperationError(result.error)
-
-
-def _archive_legacy_worktrees(root: Path, outer: Path, slug: str) -> None:
-    """Preserve blocked legacy branches, then clear their execution worktrees."""
-    source = resolve_inner_project_repo(root)
-    outer_sha = _branch_sha(root, slug)
-    project_branch = project_ticket_branch(slug)
-    project_sha = _branch_sha(source, project_branch) if source is not None else ""
-    paired = paired_project_repository(outer) if outer.is_dir() else None
-
-    # A matching name alone is not evidence that Booley owns a branch. Only
-    # recover branches still attached at the conventional legacy paths; the
-    # normal attachment planner will preserve or reject every ambiguous ref.
-    if not outer_sha or not _worktree_owns_branch(root, outer, slug):
-        return
-    if paired is not None and (
-        source is None or not _worktree_owns_branch(source, paired.worktree, project_branch)
-    ):
-        return
-    if project_sha and paired is None:
-        return
-
-    _archive_ref(root, _legacy_archive(slug, outer_sha), outer_sha)
-    if source is not None and project_sha:
-        _archive_ref(source, _legacy_archive(slug, project_sha), project_sha)
-    _remove_contract_worktrees(root, outer, paired, source)
-    _delete_branch(root, slug)
-    if source is not None and project_sha:
-        _delete_branch(source, project_branch)
-
-
-def _legacy_archive(slug: str, sha: str) -> str:
-    return f"{_LEGACY_ARCHIVE_PREFIX}/{slug}/{sha[:12]}"
 
 
 def _status_paths(repository: Path) -> list[str]:
@@ -695,16 +701,16 @@ def _sealed_participants(
     outer_sha: str,
     project: Path | None,
     project_sha: str,
-) -> tuple[ContractParticipant, ...]:
+) -> tuple[BasisParticipant, ...]:
     """Freeze repository routing while every authoring checkout is available."""
     destination = fields.get("branch")
     if not isinstance(destination, str) or not destination:
         raise ContractOperationError("ticket has no destination branch")
     participants = [
-        ContractParticipant(
+        BasisParticipant(
             role="outer",
-            sealed_sha=outer_sha,
-            ticket_ref=f"refs/heads/{slug}",
+            authoring_sha=outer_sha,
+            ticket_ref=f"refs/heads/{_current_branch(outer)}",
             destination_ref=f"refs/heads/{destination}",
             destination_sha=_full_commit(outer, destination),
         )
@@ -712,10 +718,10 @@ def _sealed_participants(
     if project is not None:
         upstream = _require_git(project, "rev-parse", "--abbrev-ref", "@{upstream}")
         participants.append(
-            ContractParticipant(
+            BasisParticipant(
                 role="project",
-                sealed_sha=project_sha,
-                ticket_ref=f"refs/heads/{project_ticket_branch(slug)}",
+                authoring_sha=project_sha,
+                ticket_ref=f"refs/heads/{_current_branch(project)}",
                 destination_ref=f"refs/heads/{upstream}",
                 destination_sha=_full_commit(project, upstream),
             )
@@ -723,75 +729,129 @@ def _sealed_participants(
     return tuple(participants)
 
 
-def _build_sealed_contract(
-    prepared: _SealInputs, slug: str, outer_sha: str, project_sha: str
-) -> TargetContract:
+def _record_path(prepared: _SealInputs, slug: str) -> tuple[Path, bool]:
+    project_owner = prepared.project is not None
+    owner = prepared.project if project_owner else prepared.outer
+    if owner is None:
+        raise ContractOperationError("Acceptance Basis record has no repository owner")
+    relative_dir = record_relative_path(prepared.outer, project_participant=project_owner)
+    return owner / relative_dir / f"{slug}.json", project_owner
+
+
+def _write_authored_record(
+    prepared: _SealInputs,
+    slug: str,
+    fields: dict[str, object],
+    body: str,
+) -> tuple:
+    binding_specs = criterion_targets(fields.get("criteria"))
+    bindings = canonical_contract_bindings(prepared.outer, binding_specs)
+    try:
+        payload = canonical_json(authored_ticket_record(fields, body, bindings))
+    except AcceptanceBasisError as exc:
+        raise ContractOperationError(str(exc)) from exc
+    path, project_owner = _record_path(prepared, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise ContractOperationError(f"Acceptance Basis record already exists: {path}")
+    else:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    repository = prepared.project if project_owner else prepared.outer
+    changes = prepared.project_changes if project_owner else prepared.outer_changes
+    if repository is None:
+        raise ContractOperationError("Acceptance Basis record owner disappeared")
+    relative = path.relative_to(repository).as_posix()
+    if relative not in changes:
+        changes.append(relative)
+    return bindings
+
+
+def prepare_acceptance_basis(
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    *,
+    effective_fields: dict[str, object] | None = None,
+) -> AcceptanceBasis:
+    """Validate and commit authoring state without publishing the Board transition."""
+    prepared = _prepare_seal(project_root, ticket_path, slug)
+    fields, body = parse_frontmatter(prepared.ticket.read_text(encoding="utf-8"))
+    if effective_fields is not None:
+        fields = effective_fields
     from .target_finalization import canonical_remove_targets
 
-    bindings = criterion_targets(prepared.fields.get("criteria"))
-    return build_contract(
-        prepared.outer,
-        outer_sha=outer_sha,
-        project_sha=project_sha,
-        targets=(target for row in bindings for target in (row.target, row.baseline)),
-        removal_targets=canonical_remove_targets(prepared.fields, prepared.outer),
-        bindings=bindings,
-        participants=_sealed_participants(
-            slug,
-            prepared.fields,
-            prepared.outer,
-            outer_sha,
-            prepared.project,
-            project_sha,
-        ),
-    )
-
-
-def _seal_frontmatter_updates(
-    fields: dict[str, object], contract: TargetContract
-) -> dict[str, object]:
-    updates: dict[str, object] = {
-        "base_sha": contract.outer_sha,
-        "target_contract": contract.as_dict(),
-    }
-    on_success = fields.get("on_success")
-    if isinstance(on_success, dict) and "remove_targets" in on_success:
-        normalized_on_success = dict(on_success)
-        normalized_on_success["remove_targets"] = list(contract.removal_targets)
-        updates["on_success"] = normalized_on_success
-    return updates
-
-
-def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
-    """Validate, commit all repositories, then atomically publish ticket metadata."""
-    prepared = _prepare_seal(project_root, ticket_path, slug)
+    removals = canonical_remove_targets(fields, prepared.outer)
+    bindings = _write_authored_record(prepared, slug, fields, body)
     outer_start = _full_commit(prepared.outer, "HEAD")
     project_start = _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
     outer_sha = outer_start
     project_sha = project_start
+    created_keepalives: list[tuple[Path, str, str]] = []
     try:
         if prepared.project is not None:
             project_sha = _commit_changes(
                 prepared.project,
                 prepared.project_changes,
-                f"chore({slug}): seal project Target contract",
+                f"chore({slug}): publish project Acceptance Basis",
             )
         outer_sha = _commit_changes(
             prepared.outer,
             prepared.outer_changes,
-            f"chore({slug}): seal Target contract",
+            f"chore({slug}): publish Acceptance Basis",
         )
-        contract = _build_sealed_contract(prepared, slug, outer_sha, project_sha)
-        update_frontmatter(
-            prepared.ticket,
-            _seal_frontmatter_updates(prepared.fields, contract),
+        basis = AcceptanceBasis(
+            _sealed_participants(
+                slug,
+                fields,
+                prepared.outer,
+                outer_sha,
+                prepared.project,
+                project_sha,
+            ),
+            tuple(bindings),
+            tuple(removals),
+        )
+        created_keepalives = _publish_basis_keepalives(
+            basis,
+            prepared.outer,
+            prepared.project,
         )
     except Exception:
+        for repository, ref, sha in reversed(created_keepalives):
+            _git(repository, "update-ref", "-d", ref, sha)
         _restore_unpublished_commit(prepared.outer, outer_start, outer_sha)
         if prepared.project is not None:
             _restore_unpublished_commit(prepared.project, project_start, project_sha)
         raise
-    return contract
+    return basis
+
+
+def _publish_basis_keepalives(
+    basis: AcceptanceBasis,
+    outer: Path,
+    project: Path | None,
+) -> list[tuple[Path, str, str]]:
+    created: list[tuple[Path, str, str]] = []
+    for participant in basis.participants:
+        repository = outer if participant.role == "outer" else project
+        if repository is None:
+            raise ContractOperationError(
+                f"Acceptance Basis {participant.role} repository disappeared"
+            )
+        ref = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
+        current = _git(repository, "rev-parse", "--verify", "--quiet", ref)
+        if current.returncode == 0:
+            if current.stdout.strip() != participant.authoring_sha:
+                raise ContractOperationError(f"keepalive ref {ref} names another commit")
+            continue
+        _require_git(repository, "update-ref", ref, participant.authoring_sha, "")
+        created.append((repository, ref, participant.authoring_sha))
+    return created
 
 
 def _restore_unpublished_commit(repository: Path, start_sha: str, current_sha: str) -> None:
@@ -812,42 +872,9 @@ def _require_ancestor(repository: Path, ancestor: str, descendant: str, message:
     )
 
 
-def _project_destination_ref(repository: Path, slug: str) -> str:
-    branch = project_ticket_branch(slug)
-    upstream = _require_git(
-        repository,
-        "rev-parse",
-        "--abbrev-ref",
-        f"{branch}@{{upstream}}",
-    )
-    if upstream.startswith("refs/heads/"):
-        return upstream
-    if upstream.startswith("remotes/") or "/" in upstream:
-        raise ContractOperationError(
-            f"project Ticket branch {branch!r} must track a local destination branch"
-        )
-    return f"refs/heads/{upstream}"
-
-
-def _expected_participant_refs(
-    source: Path | None,
-    slug: str,
-    destination_branch: str,
-) -> dict[str, tuple[str, str]]:
-    expected = {
-        "outer": (f"refs/heads/{slug}", f"refs/heads/{destination_branch}"),
-    }
-    if source is not None:
-        expected["project"] = (
-            f"refs/heads/{project_ticket_branch(slug)}",
-            _project_destination_ref(source, slug),
-        )
-    return expected
-
-
-def pin_sealed_refs(
+def pin_basis_refs(
     project_root: Path | str,
-    contract: TargetContract,
+    contract: TargetContract | AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
@@ -855,20 +882,17 @@ def pin_sealed_refs(
     """Validate canonical routing and resolve mutable Ticket refs once."""
     root = Path(project_root).resolve()
     source = resolve_inner_project_repo(root)
-    expected = _expected_participant_refs(source, slug, destination_branch)
     participants = {participant.role: participant for participant in contract.participants}
-    if set(participants) != set(expected):
-        raise ContractOperationError("sealed repository participants do not match this project")
+    expected_roles = {"outer", "project"} if source is not None else {"outer"}
+    if set(participants) != expected_roles:
+        raise ContractOperationError("Acceptance Basis participants do not match this project")
     sources: dict[str, str] = {}
-    for role, (ticket_ref, destination_ref) in expected.items():
-        participant = participants[role]
-        if (participant.ticket_ref, participant.destination_ref) != (
-            ticket_ref,
-            destination_ref,
-        ):
+    for role, participant in participants.items():
+        ticket_ref = participant.ticket_ref
+        destination_ref = participant.destination_ref
+        if role == "outer" and destination_ref != f"refs/heads/{destination_branch}":
             raise ContractOperationError(
-                f"sealed {role} routing does not match Ticket {slug!r} and "
-                f"destination {destination_branch!r}"
+                f"Acceptance Basis outer destination does not match Ticket {slug!r}"
             )
         repository = root if role == "outer" else source
         if repository is None:
@@ -899,16 +923,16 @@ def pin_sealed_refs(
     return sources
 
 
-def validate_sealed_refs(
+def validate_basis_refs(
     project_root: Path | str,
-    contract: TargetContract,
+    contract: TargetContract | AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
 ) -> list[str]:
     """Verify canonical sealed refs without requiring materialized worktrees."""
     try:
-        pin_sealed_refs(
+        pin_basis_refs(
             project_root,
             contract,
             slug=slug,
@@ -919,51 +943,13 @@ def validate_sealed_refs(
     return []
 
 
-def validate_open_seal(
+def reset_basis_worktrees(
     project_root: Path | str,
     slug: str,
-    contract: TargetContract,
-    destination_branch: str,
-) -> list[str]:
-    """Verify sealed refs and the still-open authoring checkout before enqueue."""
-    root = Path(project_root).resolve()
-    errors = validate_sealed_refs(
-        root,
-        contract,
-        slug=slug,
-        destination_branch=destination_branch,
-    )
-    try:
-        resolve_commit(root, contract.outer_sha)
-    except ValueError as exc:
-        errors.append(f"target_contract.outer_sha: {exc}")
-    branch_sha = _branch_sha(root, slug)
-    if branch_sha != contract.outer_sha:
-        errors.append(
-            f"ticket branch {slug!r} points at {branch_sha or 'nothing'}, "
-            f"expected target_contract.outer_sha {contract.outer_sha}"
-        )
-    outer = resolve_project_dir(root) / "worktrees" / slug
-    if not outer.is_dir():
-        errors.append(f"sealed contract worktree is missing: {outer}")
-        return errors
-    if _full_commit(outer, "HEAD") != contract.outer_sha:
-        errors.append("sealed contract worktree HEAD does not match target_contract.outer_sha")
-    errors.extend(_validate_project_seal(root, slug, outer, contract))
-    try:
-        verify_surface(contract, outer)
-    except ValueError as exc:
-        errors.append(str(exc))
-    return errors
-
-
-def reset_contract_worktrees(
-    project_root: Path | str,
-    slug: str,
-    contract: TargetContract,
+    contract: TargetContract | AcceptanceBasis,
     requested_branch: str,
 ) -> None:
-    """Discard implementation state and restore the sealed authoring checkouts."""
+    """Discard implementation state and restore the recorded authoring checkouts."""
     root = Path(project_root).resolve()
     _full_commit(root, contract.outer_sha)
     source = resolve_inner_project_repo(root)
@@ -971,21 +957,25 @@ def reset_contract_worktrees(
     outer = resolve_project_dir(root) / "worktrees" / slug
     paired = paired_project_repository(outer) if outer.is_dir() else None
     _remove_contract_worktrees(root, outer, paired, source)
-    _delete_branch(root, slug)
-    if source is not None:
-        _delete_branch(source, project_ticket_branch(slug))
-    _attach_worktree(root, outer, slug, contract.outer_sha)
+    outer_participant = next(row for row in contract.participants if row.role == "outer")
+    outer_branch = outer_participant.ticket_ref.removeprefix("refs/heads/")
+    _require_git(root, "update-ref", outer_participant.ticket_ref, contract.outer_sha)
+    _attach_worktree(root, outer, outer_branch, contract.outer_sha)
     _restore_project_contract(source, outer, slug, requested_branch, contract)
-    errors = validate_open_seal(root, slug, contract, requested_branch)
+    errors = validate_basis_refs(root, contract, slug=slug, destination_branch=requested_branch)
     if errors:
-        raise ContractOperationError("could not restore sealed contract: " + "; ".join(errors))
+        raise ContractOperationError(
+            "could not restore the Acceptance Basis: " + "; ".join(errors)
+        )
 
 
-def _validate_reset_project_source(source: Path | None, contract: TargetContract) -> None:
+def _validate_reset_project_source(
+    source: Path | None, contract: TargetContract | AcceptanceBasis
+) -> None:
     if contract.project_sha and source is None:
-        raise ContractOperationError("sealed project repository is unavailable")
+        raise ContractOperationError("Acceptance Basis project repository is unavailable")
     if source is not None and not contract.project_sha:
-        raise ContractOperationError("sealed contract has no project repository commit")
+        raise ContractOperationError("Acceptance Basis has no project repository commit")
     if source is not None:
         _full_commit(source, contract.project_sha)
 
@@ -995,42 +985,20 @@ def _restore_project_contract(
     outer: Path,
     slug: str,
     requested_branch: str,
-    contract: TargetContract,
+    contract: TargetContract | AcceptanceBasis,
 ) -> None:
     if source is None:
         return
-    branch = project_ticket_branch(slug)
+    participant = next(row for row in contract.participants if row.role == "project")
+    branch = participant.ticket_ref.removeprefix("refs/heads/")
     destination = ticket_project_worktree(outer)
+    _require_git(source, "update-ref", participant.ticket_ref, contract.project_sha)
     _attach_worktree(source, destination, branch, contract.project_sha)
-    base_branch = _project_base_branch(source, requested_branch)
+    base_branch = participant.destination_ref.removeprefix("refs/heads/")
     _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
 
 
-def _validate_project_seal(
-    root: Path, slug: str, outer: Path, contract: TargetContract
-) -> list[str]:
-    source = resolve_inner_project_repo(root)
-    paired = paired_project_repository(outer)
-    if not contract.project_sha:
-        return (
-            [] if source is None and paired is None else ["target_contract.project_sha is missing"]
-        )
-    if source is None or paired is None:
-        return ["target_contract.project_sha is set but the paired project repository is missing"]
-    try:
-        resolve_commit(source, contract.project_sha)
-    except ValueError as exc:
-        return [f"target_contract.project_sha: {exc}"]
-    branch = project_ticket_branch(slug)
-    errors = []
-    if _branch_sha(source, branch) != contract.project_sha:
-        errors.append(f"project contract branch {branch!r} does not match project_sha")
-    if _full_commit(paired.worktree, "HEAD") != contract.project_sha:
-        errors.append("paired project worktree HEAD does not match target_contract.project_sha")
-    return errors
-
-
-def revise_contract(
+def return_to_draft(
     project_root: Path | str,
     ticket_path: Path | str,
     slug: str,
@@ -1038,51 +1006,52 @@ def revise_contract(
     status: str,
     logs_dir: Path | str,
 ) -> ContractWorktrees:
-    """Archive a seal, discard execution state, and reopen from destination baselines."""
-    if status not in {"draft", "blocked"}:
-        raise ContractOperationError(
-            f"contract revision requires a draft or blocked ticket, got {status!r}"
-        )
+    """Preserve an old basis and create a fresh authoring generation."""
+    if status != "blocked":
+        raise ContractOperationError(f"return-to-draft requires a blocked ticket, got {status!r}")
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    raw = fields.get("target_contract")
+    raw = fields.get("acceptance_basis")
     if raw is None:
-        raise ContractOperationError("ticket has no sealed Target contract to revise")
-    contract = TargetContract.from_mapping(raw)
-    archive = _contract_archive_ref(slug, contract)
+        raise ContractOperationError("ticket has no Acceptance Basis")
+    try:
+        basis = AcceptanceBasis.from_mapping(raw)
+    except AcceptanceBasisError as exc:
+        raise ContractOperationError(str(exc)) from exc
     outer = resolve_project_dir(root) / "worktrees" / slug
     paired = paired_project_repository(outer) if outer.is_dir() else None
-    _archive_ref(root, archive, contract.outer_sha)
     source = resolve_inner_project_repo(root)
-    if source is not None and contract.project_sha:
-        _archive_ref(source, archive, contract.project_sha)
+    evidence = Path(logs_dir) / slug
+    archive = Path(logs_dir) / "runs" / slug / basis.basis_id
+    if evidence.exists() and archive.exists():
+        raise ContractOperationError(f"evidence archive already exists: {archive}")
+    for participant in basis.participants:
+        repository = root if participant.role == "outer" else source
+        if repository is None:
+            raise ContractOperationError(f"Acceptance Basis {participant.role} repository missing")
+        keepalive = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
+        current = _git(repository, "rev-parse", "--verify", "--quiet", keepalive)
+        if current.returncode == 0 and current.stdout.strip() != participant.authoring_sha:
+            raise ContractOperationError(f"keepalive ref {keepalive} names another commit")
+        if current.returncode != 0:
+            _require_git(repository, "update-ref", keepalive, participant.authoring_sha)
     _remove_contract_worktrees(root, outer, paired, source)
-    _delete_branch(root, slug)
-    if source is not None and contract.project_sha:
-        _delete_branch(source, project_ticket_branch(slug))
-    ticket = _reset_contract_ticket(ticket, fields, contract, status)
-    safe_rmtree(Path(logs_dir) / slug)
-    return open_contract(root, ticket, slug)
-
-
-def _contract_archive_ref(slug: str, contract: TargetContract) -> str:
-    """Hash the complete sealed identity into a portable archive ref component."""
-    identities = [contract.surface_digest, contract.outer_sha]
-    if contract.project_sha:
-        identities.append(contract.project_sha)
-    payload = "\0".join(("booley-contract-archive-v1", *identities))
-    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
-    return f"booley-contract-archive/{slug}/{digest}"
-
-
-def _archive_ref(repository: Path, archive: str, source: str) -> None:
-    source_sha = _full_commit(repository, source)
-    archived_sha = _branch_sha(repository, archive)
-    if archived_sha and archived_sha != source_sha:
-        raise ContractOperationError(f"archive ref {archive!r} already names another commit")
-    if not archived_sha:
-        _require_git(repository, "branch", archive, source_sha)
+    _generation_file(root, slug).unlink(missing_ok=True)
+    replacement = open_contract(root, ticket, slug)
+    update_frontmatter(
+        ticket,
+        {},
+        remove_keys=["acceptance_basis", "created", "feature_branch"],
+    )
+    drafts = ticket.parent.parent / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    destination = drafts / ticket.name
+    shutil.move(str(ticket), str(destination))
+    if evidence.exists():
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(evidence), str(archive))
+    return replacement
 
 
 def _remove_contract_worktrees(
@@ -1095,34 +1064,3 @@ def _remove_contract_worktrees(
         _require_git(project_source, "worktree", "remove", "--force", str(paired.worktree))
     if outer.exists():
         _require_git(root, "worktree", "remove", "--force", str(outer))
-
-
-def _delete_branch(repository: Path, branch: str) -> None:
-    if _branch_sha(repository, branch):
-        _require_git(repository, "branch", "-D", branch)
-
-
-def _reset_contract_ticket(
-    ticket: Path,
-    fields: dict[str, object],
-    contract: TargetContract,
-    status: str,
-) -> Path:
-    history = fields.get("target_contract_history")
-    entries = list(history) if isinstance(history, list) else []
-    entries.append(
-        f"schema={contract.schema};outer={contract.outer_sha};project={contract.project_sha};"
-        f"digest={contract.surface_digest}"
-    )
-    update_frontmatter(
-        ticket,
-        {"target_contract_history": entries},
-        remove_keys=["target_contract", "base_sha", "created", "feature_branch"],
-    )
-    if status == "blocked":
-        drafts = ticket.parent.parent / "drafts"
-        drafts.mkdir(parents=True, exist_ok=True)
-        destination = drafts / ticket.name
-        shutil.move(str(ticket), str(destination))
-        return destination
-    return ticket

@@ -24,6 +24,7 @@ class TicketFileSpec:
     summary: str
     ticket_type: str
     branch: str
+    project_destination_ref: str = ""
     scope: list[str] | None = None
     spec: str = ""
     dependencies: list[str] | None = None
@@ -488,8 +489,8 @@ class TicketIO:
         contract_errors = self._validate_enqueue_contract(slug, fields)
         if contract_errors:
             print(
-                "Error: target-contract-change-required: ticket must be sealed "
-                "before fresh execution:",
+                "Error: acceptance-input-change-required: ticket must have a published "
+                "Acceptance Basis before fresh execution:",
                 file=sys.stderr,
             )
             for error in contract_errors:
@@ -547,6 +548,8 @@ class TicketIO:
             "on_success": on_success,
             "priority": spec.priority,
         }
+        if spec.project_destination_ref:
+            fields["project_destination_ref"] = spec.project_destination_ref
         if spec.spec:
             fields["spec"] = spec.spec
         # Legacy escape hatch for pre-authored plans. Normal tickets should let
@@ -589,7 +592,22 @@ class TicketIO:
         drafts_dir.mkdir(parents=True, exist_ok=True)
         file_path = drafts_dir / f"{slug}.md"
 
-        return self._atomic_write_ticket(file_path, fields, body)
+        created = self._atomic_write_ticket(file_path, fields, body)
+        if created is not None and (self._project_root / ".git").exists():
+            try:
+                from .contract_ops import open_contract
+
+                worktrees = open_contract(self._project_root, created, slug)
+                print(f"Ticket workspace: {worktrees.outer}")
+                if worktrees.project is not None:
+                    print(f"Project workspace: {worktrees.project}")
+            except (RuntimeError, ValueError, OSError) as exc:
+                print(
+                    f"Warning: ticket draft was created but its workspace could not be "
+                    f"materialized: {exc}",
+                    file=sys.stderr,
+                )
+        return created
 
     @staticmethod
     def _atomic_write_ticket(file_path: Path, fields: dict[str, Any], body: str) -> Path | None:
@@ -652,7 +670,7 @@ class TicketIO:
         done_slugs = compute_done_slugs(all_tickets)
         return not all(d in done_slugs for d in deps), False
 
-    def _enqueue_locked(self, slug, ticket_path, on_success, has_unmet):
+    def _enqueue_locked(self, slug, ticket_path, on_success, has_unmet, acceptance_basis=None):
         """Perform locked enqueue mutations: stamp, progress, move, transition."""
         recheck_path, _ = find_ticket_file(self.tickets_dir, slug)
         if recheck_path is not None:
@@ -662,6 +680,8 @@ class TicketIO:
                 return False
 
         fm_updates = {"created": now_iso()}
+        if acceptance_basis is not None:
+            fm_updates["acceptance_basis"] = acceptance_basis
         if on_success:
             from booley.core.models import OnSuccess
 
@@ -714,22 +734,23 @@ class TicketIO:
         ticket_path, skip = self._resolve_enqueue_path(slug)
         if skip:
             return False
-        fields = self._validated_enqueue_fields(slug, ticket_path, on_success)
-        if fields is None:
-            return False
-        has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
-        if dep_error:
-            return False
         with self._ticket_lock(slug):
-            return self._enqueue_locked(slug, ticket_path, on_success, has_unmet)
+            fields = self._validated_enqueue_fields(slug, ticket_path, on_success)
+            if fields is None:
+                return False
+            has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
+            if dep_error:
+                return False
+            basis = fields.get("acceptance_basis")
+            return self._enqueue_locked(slug, ticket_path, on_success, has_unmet, basis)
 
     @staticmethod
     def _retired_enqueue_argument(integration_base: str) -> bool:
         if not integration_base:
             return False
         print(
-            "Error: --integration-base is retired; schema-3 Tickets publish "
-            "their sealed Ticket refs directly to destination refs",
+            "Error: --integration-base is retired; Acceptance Basis Tickets publish "
+            "their recorded refs directly to destination refs",
             file=sys.stderr,
         )
         return True
@@ -742,9 +763,37 @@ class TicketIO:
         effective_fields = dict(fields)
         if on_success:
             effective_fields["on_success"] = on_success
+        if effective_fields.get("target_contract") is not None:
+            self._print_enqueue_errors(
+                "unsupported Ticket format",
+                [
+                    "legacy Target Contract tickets are unsupported after the hard cutoff; "
+                    "recreate the Ticket"
+                ],
+            )
+            return None
+        if (self._project_root / ".git").exists() and effective_fields.get(
+            "acceptance_basis"
+        ) is None:
+            try:
+                from .acceptance_basis import write_basis_receipt
+                from .contract_ops import open_contract, prepare_acceptance_basis
+
+                open_contract(self._project_root, ticket_path, slug)
+                basis = prepare_acceptance_basis(
+                    self._project_root,
+                    ticket_path,
+                    slug,
+                    effective_fields=effective_fields,
+                )
+                write_basis_receipt(self._project_root, slug, basis)
+                effective_fields["acceptance_basis"] = basis.as_dict()
+            except (RuntimeError, ValueError, OSError) as exc:
+                self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
+                return None
         contract_errors = self._validate_enqueue_contract(slug, effective_fields)
         if contract_errors:
-            self._print_enqueue_errors("ticket Target contract is not sealed", contract_errors)
+            self._print_enqueue_errors("ticket Acceptance Basis is invalid", contract_errors)
             return None
         validation_root = self._enqueue_validation_root(slug, effective_fields)
         results = validate_ticket_fields(
@@ -771,7 +820,7 @@ class TicketIO:
 
     def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
         """Validate sealed tickets against their immutable authoring checkout."""
-        if not (self._project_root / ".git").exists() or fields.get("target_contract") is None:
+        if not (self._project_root / ".git").exists() or fields.get("acceptance_basis") is None:
             return self._project_root
         from booley.runtime.project_dir import resolve_project_dir
 
@@ -781,18 +830,20 @@ class TicketIO:
         """Require durable sealed refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities
-        from .contract_ops import validate_sealed_refs
-        from .target_contract import TargetContract, TargetContractError
+        from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+        from .contract_ops import validate_basis_refs
 
-        raw = fields.get("target_contract")
+        if fields.get("target_contract") is not None:
+            return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
+        raw = fields.get("acceptance_basis")
         if raw is None:
-            return ["target_contract seal is required; run contract-open/contract-seal"]
+            return ["acceptance_basis is required for executable Tickets"]
         try:
-            contract = TargetContract.from_mapping(raw)
-        except TargetContractError as exc:
+            contract = AcceptanceBasis.from_mapping(raw)
+        except AcceptanceBasisError as exc:
             return [str(exc)]
         try:
-            return validate_sealed_refs(
+            return validate_basis_refs(
                 self._project_root,
                 contract,
                 slug=slug,
@@ -801,53 +852,29 @@ class TicketIO:
         except (RuntimeError, ValueError, OSError) as exc:
             return [str(exc)]
 
-    def contract_open(self, slug: str) -> dict[str, str]:
-        """Open isolated contract-authoring worktrees for one draft ticket."""
-        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
-        if ticket_path is None:
-            raise FileNotFoundError(f"ticket {slug!r} does not exist")
-        if status not in {"draft", "blocked"}:
-            raise RuntimeError(
-                f"contract authoring requires a draft or blocked ticket, got {status!r}"
-            )
-        from .contract_ops import open_contract
-
-        fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
-        recover_legacy = status == "blocked" and fields.get("target_contract") is None
-        return open_contract(
-            self._project_root,
-            ticket_path,
-            slug,
-            recover_legacy=recover_legacy,
-        ).as_dict()
-
-    def contract_seal(self, slug: str) -> dict[str, Any]:
-        """Seal contract commits and publish their identity into the ticket."""
-        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
-        if ticket_path is None:
-            raise FileNotFoundError(f"ticket {slug!r} does not exist")
-        if status not in {"draft", "blocked"}:
-            raise RuntimeError(
-                f"contract sealing requires a draft or blocked ticket, got {status!r}"
-            )
-        from .contract_ops import seal_contract
-
-        return seal_contract(self._project_root, ticket_path, slug).as_dict()
-
-    def contract_revise(self, slug: str) -> dict[str, str]:
-        """Archive a draft/blocked seal, reset evidence, and reopen authoring."""
+    def return_to_draft(self, slug: str) -> dict[str, str]:
+        """Preserve a blocked generation and reopen a new draft workspace."""
         ticket_path, status = find_ticket_file(self.tickets_dir, slug)
         if ticket_path is None or status is None:
             raise FileNotFoundError(f"ticket {slug!r} does not exist")
-        from .contract_ops import revise_contract
+        from .contract_ops import return_to_draft
 
-        return revise_contract(
-            self._project_root,
-            ticket_path,
-            slug,
-            status=status,
-            logs_dir=self.logs_dir,
-        ).as_dict()
+        with self._ticket_lock(slug):
+            result = return_to_draft(
+                self._project_root,
+                ticket_path,
+                slug,
+                status=status,
+                logs_dir=self.logs_dir,
+            )
+            self._append_transition_unlocked(
+                slug,
+                "blocked",
+                "draft",
+                "return-to-draft",
+                f"new authoring generation {result.generation}",
+            )
+        return result.as_dict()
 
     def _detect_dep_cycle(self, slug, deps, all_tickets=None):
         """Check for circular dependencies. Returns cycle path list or None.

@@ -36,7 +36,7 @@ class AcceptanceSnapshot:
     ticket_type: str
     execution_id: str
     accepted_at: str
-    target_contract: dict[str, Any]
+    acceptance_basis: dict[str, Any]
     criteria: dict[str, dict[str, Any]]
     evidence: tuple[dict[str, Any], ...]
 
@@ -91,7 +91,7 @@ def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> Acceptanc
             ticket_type=str(payload["ticket_type"]),
             execution_id=str(payload["execution_id"]),
             accepted_at=str(payload["accepted_at"]),
-            target_contract=dict(payload.get("target_contract") or {}),
+            acceptance_basis=dict(payload.get("acceptance_basis") or {}),
             criteria={key: dict(value) for key, value in dict(payload["criteria"]).items()},
             evidence=tuple(dict(value) for value in payload.get("evidence", [])),
         )
@@ -168,7 +168,7 @@ def record_changes(
     invocation_id: str,
     producer: str,
     execution_id: str,
-    target_contract: Mapping[str, Any] | None = None,
+    acceptance_basis: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
 ) -> tuple[EvidenceRef, ...]:
     """Persist normalized effective Criterion changes in completion order."""
@@ -197,7 +197,7 @@ def record_changes(
             "mandatory": change.mandatory,
             "params": change.params,
             "detail": change.detail,
-            "target_contract": dict(target_contract or {}),
+            "acceptance_basis": dict(acceptance_basis or {}),
             "recorded_at": timestamp,
         }
         encoded = _canonical(payload)
@@ -212,7 +212,7 @@ def freeze_acceptance(
     state: DevelopmentState,
     *,
     execution_id: str,
-    target_contract: Mapping[str, Any] | None,
+    acceptance_basis: Mapping[str, Any] | None,
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
     """Freeze and select one accepted snapshot for the current Ticket epoch."""
@@ -223,7 +223,7 @@ def freeze_acceptance(
         "ticket_type": state.ticket_type,
         "execution_id": execution_id,
         "accepted_at": accepted_at or utc_now_rfc3339(),
-        "target_contract": dict(target_contract or {}),
+        "acceptance_basis": dict(acceptance_basis or {}),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
         "evidence": _read_evidence_refs(log_dir),
     }

@@ -53,7 +53,7 @@ async def test_invalid_resumed_contract_prepares_blocked_triage(
     monkeypatch.setattr(
         developer,
         "_resumed_contract_failure",
-        lambda _ctx: "target-contract-change-required: contract changed",
+        lambda _ctx: "acceptance-input-change-required: basis changed",
     )
     block = MagicMock()
     monkeypatch.setattr(developer, "block_ticket", block)
@@ -64,7 +64,7 @@ async def test_invalid_resumed_contract_prepares_blocked_triage(
 
     block.assert_called_once_with(
         ctx,
-        "target-contract-change-required: contract changed",
+        "acceptance-input-change-required: basis changed",
         "setup",
     )
     prepare.assert_awaited_once_with(ctx, tmp_path)
@@ -141,7 +141,7 @@ def test_sealed_resume_without_worktree_reports_contract_failure(tmp_path: Path)
     ctx = _context(tmp_path, target_contract=MagicMock())
 
     assert developer._resumed_contract_failure(ctx) == (
-        "target-contract-change-required: Ticket worktree is unavailable"
+        "acceptance-input-change-required: Ticket worktree is unavailable"
     )
 
 

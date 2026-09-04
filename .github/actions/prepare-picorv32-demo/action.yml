@@ -68,6 +68,10 @@ runs:
         TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
         TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
       run: >-
+        git -C demo config user.name booley-ci &&
+        git -C demo config user.email booley-ci@users.noreply.github.com &&
+        git -C demo/.booley_project config user.name booley-ci &&
+        git -C demo/.booley_project config user.email booley-ci@users.noreply.github.com &&
         python "${GITHUB_WORKSPACE}/.github/scripts/install_demo_ticket.py"
         --project-dir demo/.booley_project
         --fixture "${TICKET_FIXTURE}"

@@ -23,8 +23,8 @@ from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board.contract_ops import open_contract, seal_contract
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.io import TicketIO
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_TICKET_MODE_SMOKE") != "1",
@@ -137,11 +137,12 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
         "priority": "high",
     }
     content = format_frontmatter(fields, "## Description\nExercise real Ticket Mode boundaries.\n")
-    queue = project / ".booley_project" / "tickets" / "board" / "queue"
-    ticket = queue / f"{slug}.md"
+    tickets = project / ".booley_project" / "tickets"
+    draft = tickets / "board" / "drafts"
+    draft.mkdir(exist_ok=True)
+    ticket = draft / f"{slug}.md"
     ticket.write_text(content, encoding="utf-8")
-    open_contract(project, ticket, slug)
-    seal_contract(project, ticket, slug)
+    assert TicketIO(tickets, project_root=project).enqueue_ticket(slug)
 
 
 def _success_criteria() -> dict[str, Any]:

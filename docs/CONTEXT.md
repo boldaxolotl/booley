@@ -206,7 +206,7 @@ A named boolean condition that must be satisfied for ticket completion, bound to
 _Avoid_: check, gate, acceptance test
 
 **Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Target Contract data as provenance; mutable runtime state is only a projection of these observations.
+An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
@@ -229,12 +229,16 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
-**Target Contract**:
-The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, and canonical creation-time Target-removal disposition to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
-_Avoid_: target snapshot, config patch, mutable recipe
+**Acceptance Basis**:
+The immutable authored Ticket inputs and repository identities for one executable Ticket generation, published automatically when that Ticket is enqueued. It is the authority for execution, baseline comparison, protected acceptance controls, and completion.
+_Avoid_: Target Contract, target snapshot, config patch, mutable recipe
+
+**Authoring Generation**:
+One draft period that ends when enqueue publishes an Acceptance Basis. Retry preserves the generation; returning a blocked Ticket to draft starts a new generation while retaining the old basis and evidence.
+_Avoid_: seal generation, execution attempt, retry
 
 **Ticket Workspace**:
-The disposable checkout set materialized from a Ticket's sealed repository refs for Target Contract authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
+The disposable checkout set materialized from a Ticket generation's repository refs for authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
@@ -322,7 +326,7 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Target Contract data as provenance; mutable runtime state is only a projection of these observations.
+An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:

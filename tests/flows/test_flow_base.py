@@ -151,67 +151,60 @@ class TestBooleyFlowExecution:
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
-    def test_target_contract_is_checked_before_flow_entry(
+    def test_acceptance_basis_is_checked_before_flow_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
+        from booley.ticket_board.acceptance_basis import (
+            AcceptanceBasis,
+            AcceptanceBasisError,
+            BasisParticipant,
+        )
         from booley.ticket_board.frontmatter import format_frontmatter
-        from booley.ticket_board.target_contract import ContractParticipant, build_contract
 
-        participant = ContractParticipant(
-            "outer",
-            "a" * 40,
-            "refs/heads/ticket",
-            "refs/heads/main",
-            "b" * 40,
-        )
-        core = tmp_path / "changed.core"
-        core.write_text(
-            "CAPI=2:\n"
-            "name: ::changed:0\n"
-            "filesets:\n"
-            "  rtl:\n"
-            "    files: [rtl.v]\n"
-            "    file_type: verilogSource\n"
-            "targets:\n"
-            "  test:\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: top\n",
-            encoding="utf-8",
-        )
-        contract = build_contract(
-            tmp_path,
-            outer_sha="a" * 40,
-            targets=["test"],
-            participants=[participant],
+        basis = AcceptanceBasis(
+            participants=(
+                BasisParticipant(
+                    "outer",
+                    "a" * 40,
+                    "refs/heads/booley-generation/1234567890abcdef/ticket",
+                    "refs/heads/main",
+                    "b" * 40,
+                ),
+            )
         )
         ticket = tmp_path / "ticket.md"
         ticket.write_text(
-            format_frontmatter(
-                {
-                    "base_sha": contract.outer_sha,
-                    "target_contract": contract.as_dict(),
-                },
-                "ticket",
-            ),
+            format_frontmatter({"acceptance_basis": basis.as_dict()}, "ticket"),
             encoding="utf-8",
         )
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            "booley.ticket_board.acceptance_basis.load_acceptance_basis",
+            lambda *_args, **_kwargs: basis,
+        )
+        monkeypatch.setattr(
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            lambda *_args, **_kwargs: None,
+        )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
         flow = EchoFlow()
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         assert flow._pre_state_gate() is None
-        assert flow._target_contract == contract
+        assert flow._target_contract == basis
 
-        core.write_text(
-            core.read_text(encoding="utf-8").replace("toplevel: top", "toplevel: changed"),
-            encoding="utf-8",
+        def reject_change(*_args, **_kwargs):
+            raise AcceptanceBasisError("protected path changed")
+
+        monkeypatch.setattr(
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged", reject_change
         )
         rejected = flow._pre_state_gate()
 
         assert rejected is not None
         assert rejected.exit_code == EXIT_ERROR
-        assert "target-contract-change-required" in rejected.report_text
+        assert "acceptance-input-change-required" in rejected.report_text
 
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

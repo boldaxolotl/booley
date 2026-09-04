@@ -113,41 +113,40 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
-### Ticket Target contracts
+### Ticket Acceptance Bases
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
-work. Ticket creation opens a Ticket Workspace before enqueue, so new or changed
+work. `create-file` opens a Ticket Workspace before enqueue, so new or changed
 Targets are authored on Ticket-owned branches without changing the Project's
-destination branches or making Doctor observe a half-configured Target. Schema
-4 records the exact outer and optional project-data participants, their durable
-Ticket and destination refs, the criterion Targets, a normalized surface
-control manifest, and a semantic SHA-256 digest; compatibility `base_sha`
-equals the outer sealed commit. It also seals each Criterion's directed Target Pair using
-canonical Target identities and exact callable selectors. Schema 3 remains
-readable with its historical binding and digest codec; recreate older Tickets
-before enqueueing them.
+destination branches or making Doctor observe a half-configured Target. Enqueue
+publishes schema 1 with the exact outer and optional project-data participants and
+their generation-qualified Ticket and destination refs. A canonical committed record
+pins the authored Ticket and each Criterion's directed Target Pair using canonical
+Target identities and exact callable selectors. Tickets from before Acceptance Basis
+publication are beyond the hard cutoff and must be recreated.
 
-The schema 4 digest covers FuseSoC-selected Target declarations, the test
-registry, Target-selecting Flow configuration, selected SDC/XDC, and referenced
-hooks. Equivalent CAPI2 spellings therefore produce the same digest. Paths are
-part of the identity; RTL and testbench existence and contents remain editable.
+The protected-path policy covers FuseSoC-selected Target declarations, the test
+registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
+discovery sentinels, Project routing, and the committed input record. Exact Git
+comparisons intentionally block formatting-only control changes. RTL and testbench
+contents remain editable when Scope permits them.
 
-Contract metadata is published only after every repository validates and
-commits. Worktrees can then be discarded and reconstructed from the sealed
+Basis metadata is published only after every repository validates and
+commits. Worktrees can then be discarded and reconstructed from the recorded
 refs. Execution starts from those commits, and intake, each Flow, the commit
 guard, review handoff, and final acceptance reject drift as
-`target-contract-change-required`.
+`acceptance-input-change-required`.
 For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
 both revisions. An explicit `{baseline, candidate}` Target Pair runs the
-baseline Target at `base_sha` and the candidate Target at the ticket head. The
-baseline must fully resolve at sealing; a distinct candidate may defer only
+baseline Target at the outer participant's authoring commit and the candidate Target at the ticket head. The
+baseline must fully resolve at enqueue; a distinct candidate may defer only
 missing RTL/TB sources declared Scope `[new]`. Both Targets remain immutable,
 and their measurement basis (technology/part, Flow methodology, top, and
 constraints) must match. A future non-relative Target may likewise omit only
 sources declared Scope `[new]`.
 
-Revision archives the old identity, clears execution evidence, and restarts
-from the destination baseline without transplanting implementation commits.
+`return-to-draft` preserves the old identity and evidence, then starts a new
+Authoring Generation from committed destination refs.
 Legacy running/review tickets may finish, but a new or reset execution requires
 a valid seal.
 
@@ -279,7 +278,7 @@ Count Criterion even when another test in the same batch fails. With no
 
 Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
 and `_cycles` delta thresholds automatically run the same Target/test at the
-Ticket's immutable `base_sha` in an ephemeral worktree. A zero baseline cannot
+Ticket's immutable Acceptance Basis in an ephemeral worktree. A zero baseline cannot
 define a percentage and fails that check closed. Review reports call the result
 an **observed Cycle Count change** and disclose changes to known declared RTL,
 testbench, firmware, vectors, constraints, and other workload inputs. Such input
@@ -593,7 +592,7 @@ of a bare "no metrics".
 #### Ticket baselines and sealed recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Target contracts](#ticket-target-contracts).
+[Ticket Acceptance Bases](#ticket-acceptance-bases).
 
 ### Reports and Criteria detail
 
@@ -815,7 +814,7 @@ violations, and critical design conditions are design failures.
 #### Ticket baselines and sealed recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Target contracts](#ticket-target-contracts).
+[Ticket Acceptance Bases](#ticket-acceptance-bases).
 
 ### Reports and Criteria detail
 

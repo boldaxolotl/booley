@@ -68,7 +68,7 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 # ===========================================================================
 
 
-class TestMaterializedTargetContract:
+class TestMaterializedAcceptanceBasis:
     def _context(self, tmp_path: Path) -> MagicMock:
         contract = MagicMock()
         contract.as_dict.return_value = {"schema": 3}
@@ -97,41 +97,28 @@ class TestMaterializedTargetContract:
 
         ctx = self._context(tmp_path)
         with patch(
-            "booley.ticket_board.target_contract.validate_materialized_contract",
-            return_value=[],
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            return_value=None,
         ) as validate:
             result = _validate_materialized_target_contract(ctx, tmp_path)
 
         assert result is None
-        validate.assert_called_once_with(
-            {
-                "base_sha": "a" * 40,
-                "target_contract": {"schema": 3},
-                "criteria": {"mandatory": {}},
-                "scope": [],
-                "on_success": {
-                    "destination": "review",
-                    "merge": True,
-                    "cleanup": True,
-                    "triage_report": True,
-                    "remove_targets": [],
-                },
-            },
-            tmp_path,
-        )
+        validate.assert_called_once_with(ctx.target_contract, tmp_path)
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_target_contract
 
         ctx = self._context(tmp_path)
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
         with patch(
-            "booley.ticket_board.target_contract.validate_materialized_contract",
-            return_value=["target-contract-change-required: surface changed"],
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            side_effect=AcceptanceBasisError("protected input changed"),
         ):
             result = _validate_materialized_target_contract(ctx, tmp_path)
 
         assert result is not None
-        assert result.block_reason == "target-contract-change-required: surface changed"
+        assert result.block_reason == ("acceptance-input-change-required: protected input changed")
 
 
 class TestBranchCreation:

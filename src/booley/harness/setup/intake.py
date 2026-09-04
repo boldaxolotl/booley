@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +21,11 @@ from booley.criteria.templates import (
     find_retired_criteria,
 )
 from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasisError,
+    load_acceptance_basis,
+)
+from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import (
     existing_runtime_file,
@@ -27,11 +33,7 @@ from booley.ticket_board.paths import (
     ticket_log_dir,
     ticket_runtime_dir,
 )
-from booley.ticket_board.target_contract import (
-    ContractTargetBinding,
-    TargetContract,
-    TargetContractError,
-)
+from booley.ticket_board.target_contract import ContractTargetBinding
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -111,13 +113,26 @@ def _build_context(
             slug=slug,
         )
 
-    raw_contract = fields.get("target_contract")
+    if fields.get("target_contract") is not None:
+        raise FatalError(
+            "Legacy Target Contract tickets are unsupported after the hard cutoff; "
+            "recreate the Ticket.",
+            slug=slug,
+        )
+    raw_contract = fields.get("acceptance_basis")
     try:
         target_contract = (
-            TargetContract.from_mapping(raw_contract) if raw_contract is not None else None
+            load_acceptance_basis(
+                project_root,
+                slug,
+                fields,
+                parse_frontmatter(ticket_path.read_text(encoding="utf-8"))[1],
+            )
+            if raw_contract is not None
+            else None
         )
-    except TargetContractError as exc:
-        raise FatalError(f"Invalid Target contract: {exc}", slug=slug) from exc
+    except AcceptanceBasisError as exc:
+        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
 
     return TicketContext(
         slug=slug,
@@ -130,7 +145,7 @@ def _build_context(
         on_success=OnSuccess.from_dict(fields.get("on_success")),
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
-        base_sha=fields.get("base_sha", ""),
+        base_sha=target_contract.outer_sha if target_contract is not None else "",
         target_contract=target_contract,
         feature_branch=fields.get("feature_branch", ""),
         completed_steps=fields.get("steps_completed", []),
@@ -364,13 +379,14 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
     del action
     contract = ctx.target_contract
     if contract is None:
-        logger.warning("Legacy ticket %s has no immutable Target contract", ctx.slug)
+        if _is_git_checkout(ctx.project_root):
+            raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
+        logger.warning("Filesystem-only Ticket %s has no Acceptance Basis", ctx.slug)
         return
-    from booley.ticket_board.contract_ops import validate_sealed_refs
-    from booley.ticket_board.target_contract import validate_contract_fields
+    from booley.ticket_board.contract_ops import validate_basis_refs
 
     try:
-        errors = validate_sealed_refs(
+        errors = validate_basis_refs(
             ctx.project_root,
             contract,
             slug=ctx.slug,
@@ -378,9 +394,20 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
         )
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
-    errors.extend(validate_contract_fields(_contract_fields(ctx)))
     if errors:
-        raise FatalError(f"target-contract-change-required: {'; '.join(errors)}", slug=ctx.slug)
+        raise FatalError(f"acceptance-input-change-required: {'; '.join(errors)}", slug=ctx.slug)
+
+
+def _is_git_checkout(path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
@@ -502,7 +529,7 @@ def _apply_contract_selectors(
 ) -> None:
     """Seed sealed identities and callable selectors into runtime criteria."""
     contract = ctx.target_contract
-    if contract is None or contract.schema < 4:
+    if contract is None:
         return
     for key in expanded:
         unique = _matching_contract_bindings(
@@ -663,7 +690,7 @@ def _freeze_recipe_family(
     flow_label: str,
     snapshot_builder: Callable[[Any, str], dict[str, Any]],
 ) -> None:
-    """Freeze one implementation criterion family's sealed contract recipes."""
+    """Freeze one implementation criterion family's recorded Target recipes."""
     from booley.flows.recipe_evidence import (
         RECIPE_FINGERPRINT_PARAM,
         RECIPE_SNAPSHOT_PARAM,

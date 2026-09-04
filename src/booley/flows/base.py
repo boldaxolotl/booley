@@ -162,31 +162,26 @@ class BooleyFlow(McpTool):
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
-        from booley.ticket_board.frontmatter import parse_frontmatter
-        from booley.ticket_board.target_contract import (
-            CONTRACT_BLOCK_REASON,
-            TargetContractError,
-            load_ticket_contract,
-            validate_contract_fields,
-            verify_surface,
+        from booley.ticket_board.acceptance_basis import (
+            BLOCK_REASON,
+            AcceptanceBasisError,
+            assert_inputs_unchanged,
+            load_acceptance_basis,
         )
+        from booley.ticket_board.frontmatter import parse_frontmatter
+        from booley.ticket_board.helpers import detect_project_root
 
         try:
-            contract = load_ticket_contract(ticket_file)
-            if contract is None:
-                logger.warning("Legacy ticket Flow run has no immutable Target contract")
-                return None
+            ticket_path = Path(ticket_file)
+            fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+            contract = load_acceptance_basis(detect_project_root(), ticket_path.stem, fields, body)
             self._target_contract = contract
             work_dir = Path(self.args.work_dir)
-            verify_surface(contract, work_dir)
-            fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-            errors = validate_contract_fields(fields, work_dir)
-            if errors:
-                raise TargetContractError("; ".join(errors))
-        except (OSError, TargetContractError) as exc:
+            assert_inputs_unchanged(contract, work_dir)
+        except (OSError, AcceptanceBasisError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"BLOCKED: {CONTRACT_BLOCK_REASON}: {exc}",
+                report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
             )
         return None
 

@@ -556,7 +556,7 @@ def _validate_criteria(
     # setup materializes their contract checkout; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
-    if project_root and fields.get("target_contract") is None:
+    if project_root and fields.get("acceptance_basis") is None:
         errors.extend(_validate_sim_targets(criteria, fields, body, project_root))
 
     # Type-specific criteria rules (warnings only, no structural errors)
@@ -1206,12 +1206,14 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
-    from .target_contract import validate_contract_fields
+    raw_basis = fields.get("acceptance_basis")
+    if raw_basis is not None:
+        from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 
-    # Generic Ticket Board validation may run from the destination branch,
-    # while the sealed Targets exist only in the ticket's contract worktree.
-    # Direction is resolved there by intake and every Flow gate.
-    errors.extend(validate_contract_fields(fields))
+        try:
+            AcceptanceBasis.from_mapping(raw_basis)
+        except AcceptanceBasisError as exc:
+            errors.append(str(exc))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

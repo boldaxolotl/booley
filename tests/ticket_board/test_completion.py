@@ -12,7 +12,9 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.completion import complete_review_ticket
+from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.target_contract import (
     SCHEMA_VERSION,
     ContractParticipant,
@@ -25,6 +27,13 @@ from booley.ticket_board.target_contract import (
 
 @pytest.fixture(autouse=True)
 def _reset_project_cache(monkeypatch: pytest.MonkeyPatch):
+    contracts: dict[Path, AcceptanceBasis] = {}
+
+    def load_test_basis(project_root, _slug, _fields, _body):
+        return contracts[Path(project_root).resolve()]
+
+    monkeypatch.setattr(completion, "load_acceptance_basis", load_test_basis)
+    monkeypatch.setattr(_TicketIO, "_contracts", contracts, raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     reset_cache()
     yield
@@ -69,6 +78,8 @@ class _Policy:
 
 
 class _TicketIO:
+    _contracts: dict[Path, AcceptanceBasis]
+
     def __init__(self, root: Path, contract: TargetContract) -> None:
         self._project_root = root
         self.tickets_dir = root / ".booley_project" / "tickets"
@@ -77,8 +88,34 @@ class _TicketIO:
             "file": "board/review/change-target.md",
             "status": "review",
             "branch": "main",
-            "target_contract": contract.as_dict(),
+            "acceptance_basis": {"schema": 1, "participants": []},
         }
+        self._contracts[root.resolve()] = AcceptanceBasis(
+            participants=tuple(
+                BasisParticipant(
+                    role=item.role,
+                    authoring_sha=item.sealed_sha,
+                    ticket_ref=item.ticket_ref,
+                    destination_ref=item.destination_ref,
+                    destination_sha=item.destination_sha,
+                )
+                for item in contract.participants
+            ),
+            bindings=contract.bindings,
+            removal_targets=contract.removal_targets,
+        )
+        ticket = self.tickets_dir / str(self.entry["file"])
+        ticket.parent.mkdir(parents=True, exist_ok=True)
+        ticket.write_text(
+            format_frontmatter(
+                {
+                    "branch": "main",
+                    "acceptance_basis": self.entry["acceptance_basis"],
+                },
+                "## Description\n\nTest completion.\n",
+            ),
+            encoding="utf-8",
+        )
         self.transitions: list[tuple[str, str, str, str]] = []
 
     def find_ticket(self, _slug: str) -> dict[str, Any]:
@@ -302,95 +339,16 @@ def test_acceptance_journal_validates_every_recovery_field(
         completion._load_journal(journal, "change-target", contract)
 
 
-def test_schema_one_done_journal_resumes_cleanup_as_accepted(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema", [1, 2, 3, 4])
+def test_pre_basis_journal_schemas_are_rejected(tmp_path: Path, schema: int) -> None:
     contract = _boundary_contract()
     data = completion._initial_journal("change-target", contract)
-    transaction = data["transaction"]
-    data.update(
-        {
-            "schema": 1,
-            "state": "done",
-            "sources": {"outer": "a" * 40},
-            "candidates": {
-                "outer": {
-                    "sha": "d" * 40,
-                    "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-                    "expected_destination_sha": "e" * 40,
-                }
-            },
-            "published": ["outer"],
-        }
-    )
-    data.pop("policy")
-    data.pop("cleaned")
-    data.pop("removal_targets")
-    data.pop("removal_digest")
+    data["schema"] = schema
     journal = tmp_path / "acceptance.json"
     journal.write_text(json.dumps(data), encoding="utf-8")
 
-    loaded = completion._load_journal(journal, "change-target", contract, cleanup=True)
-
-    assert loaded["schema"] == 4
-    assert loaded["state"] == "accepted"
-    assert loaded["policy"] == {"merge": True, "cleanup": True}
-    assert loaded["cleaned"] == []
-
-
-def test_finalization_schema_two_journal_upgrades_to_combined_schema(tmp_path: Path) -> None:
-    contract = _boundary_contract()
-    data = completion._initial_journal("change-target", contract)
-    data["schema"] = 2
-    data.pop("policy")
-    data.pop("cleaned")
-    data["finalized"] = True
-    journal = tmp_path / "acceptance.json"
-    journal.write_text(json.dumps(data), encoding="utf-8")
-
-    loaded = completion._load_journal(journal, "change-target", contract)
-
-    assert loaded["schema"] == 4
-    assert loaded["policy"] == {"merge": True, "cleanup": False}
-    assert loaded["cleaned"] == []
-
-
-def test_schema_three_finalized_removal_does_not_invent_prepared_identity(
-    tmp_path: Path,
-) -> None:
-    contract = _boundary_contract()
-    removal = "acme:lib:toy:1.0#baseline"
-    data = completion._initial_journal("change-target", contract, removal_targets=(removal,))
-    transaction = data["transaction"]
-    finalized = "d" * 40
-    data.update(
-        schema=3,
-        state="prepared",
-        sources={"outer": "a" * 40},
-        candidates={
-            "outer": {
-                "sha": finalized,
-                "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-                "expected_destination_sha": "e" * 40,
-            }
-        },
-        finalized=True,
-    )
-    journal = tmp_path / "acceptance.json"
-    journal.write_text(json.dumps(data), encoding="utf-8")
-
-    loaded = completion._load_journal(
-        journal,
-        "change-target",
-        contract,
-        removal_targets=(removal,),
-    )
-
-    assert loaded["schema"] == 4
-    assert loaded["candidates"]["outer"] == {
-        "prepared_sha": None,
-        "finalized_sha": finalized,
-        "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-        "expected_destination_sha": "e" * 40,
-    }
+    with pytest.raises(completion.CompletionError, match="schema must be 5"):
+        completion._load_journal(journal, "change-target", contract)
 
 
 def test_complete_requires_merge_policy() -> None:
@@ -417,24 +375,33 @@ def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str])
     assert "cannot complete 'bad-contract'" in capsys.readouterr().err
 
 
-def test_complete_rejects_removal_policy_changed_after_sealing(
+def test_complete_rejects_removal_policy_changed_after_basis_publication(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    contract = _boundary_contract()
-    tio = _BoundaryTicketIO(
-        {
-            "file": "board/review/change-target.md",
-            "status": "review",
-            "branch": "main",
-            "target_contract": contract.as_dict(),
-        }
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    contract = _contract(
+        root,
+        (
+            ContractParticipant(
+                "outer",
+                ticket_sha,
+                "refs/heads/change-target",
+                "refs/heads/main",
+                base,
+            ),
+        ),
     )
+    tio = _TicketIO(root, contract)
 
     assert (
         complete_review_ticket(tio, "change-target", _Policy(remove_targets=("baseline",)))
         is False
     )
-    assert "changed after Target Contract sealing" in capsys.readouterr().err
+    assert "changed after Acceptance Basis publication" in capsys.readouterr().err
 
 
 def test_complete_rejects_legacy_contract_schema(
@@ -455,7 +422,7 @@ def test_complete_rejects_legacy_contract_schema(
     )
 
     assert complete_review_ticket(tio, "legacy", _Policy()) is False
-    assert "target_contract.schema must be one of [3, 4]" in capsys.readouterr().err
+    assert "legacy Target Contract tickets are unsupported" in capsys.readouterr().err
 
 
 def test_complete_rejects_retired_integration_metadata(
@@ -474,39 +441,34 @@ def test_complete_rejects_retired_integration_metadata(
     assert complete_review_ticket(tio, "ambiguous", _Policy()) is False
     error = capsys.readouterr().err
     assert "integration_base" in error
-    assert "schema-3 Tickets" in error
+    assert "Acceptance Basis Tickets" in error
 
 
 def test_complete_rejects_destination_ref_as_cleanup_target(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    contract = _boundary_contract()
-    participant = contract.participants[0]
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    (root / ".booley_project").mkdir()
     unsafe = TargetContract(
-        outer_sha=contract.outer_sha,
+        outer_sha=base,
         project_sha="",
-        surface_digest=contract.surface_digest,
+        surface_digest="c" * 64,
         targets=(),
         participants=(
             ContractParticipant(
                 role="outer",
-                sealed_sha=participant.sealed_sha,
-                ticket_ref=participant.destination_ref,
-                destination_ref=participant.destination_ref,
-                destination_sha=participant.destination_sha,
+                sealed_sha=base,
+                ticket_ref="refs/heads/main",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
             ),
         ),
     )
-    tio = _BoundaryTicketIO(
-        {
-            "file": "board/review/unsafe.md",
-            "status": "review",
-            "branch": "main",
-            "target_contract": unsafe.as_dict(),
-        }
-    )
+    tio = _TicketIO(root, unsafe)
 
-    assert complete_review_ticket(tio, "unsafe", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
     assert "Ticket ref is also the destination ref" in capsys.readouterr().err
 
 
@@ -761,7 +723,8 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
         base,
     )
     contract = _contract(root, (participant,))
-    data = completion._initial_journal("earlier", contract)
+    tio = _TicketIO(root, contract)
+    data = completion._initial_journal("earlier", tio._contracts[root.resolve()])
     data["sources"] = {"outer": ticket_sha}
     data["candidates"] = {
         "outer": {
@@ -775,8 +738,6 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     acceptance = root / ".booley_project" / ".runtime" / "acceptance"
     acceptance.mkdir(parents=True)
     (acceptance / "earlier.json").write_text(json.dumps(data), encoding="utf-8")
-    tio = _TicketIO(root, contract)
-
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert "resume it first" in capsys.readouterr().err
     assert _git(root, "show", "main:design.txt") == "base"
@@ -1125,11 +1086,12 @@ def _interrupt_finalized_ref_updates(monkeypatch: pytest.MonkeyPatch, message: s
     return update_finalized_refs
 
 
-def test_schema_two_retry_recovers_exact_prepared_staging_identity(
+def test_schema_two_retry_is_rejected_after_hard_cutoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, _project, tio, _participants, canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
@@ -1138,22 +1100,11 @@ def test_schema_two_retry_recovers_exact_prepared_staging_identity(
     policy = _Policy(remove_targets=(canonical,))
     assert complete_review_ticket(tio, "change-target", policy) is False
     journal = _acceptance_journal(root)
-    prepared = {
-        role: candidate["prepared_sha"] for role, candidate in journal["candidates"].items()
-    }
     _downgrade_to_finalization_schema_two(root, journal)
     monkeypatch.setattr(completion, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", policy) is True
-
-    recovered = _acceptance_journal(root)
-    repositories = {"outer": root, "project": project}
-    for role, candidate in recovered["candidates"].items():
-        assert candidate["prepared_sha"] == prepared[role]
-        assert (
-            completion._ref_commit(repositories[role], candidate["staging_ref"])
-            == candidate["finalized_sha"]
-        )
+    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert "acceptance journal has invalid fields" in capsys.readouterr().err
 
 
 def test_schema_two_retry_rejects_unrelated_staging_identity(

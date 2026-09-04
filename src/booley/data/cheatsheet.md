@@ -188,7 +188,7 @@ variants, and the first public test that killed each detected mutant.
 **Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the ticket's `base_sha` baseline:
+Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Acceptance Basis:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -203,7 +203,7 @@ Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 5
 
 For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
 
-In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at `base_sha` and its candidate Target at the ticket head. Both Targets and their directed binding are sealed. Developer execution cannot change contract controls; a missing or incorrect Target blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -238,7 +238,7 @@ In Ticket Mode, ticket creation seals an immutable Target contract before enqueu
 
 **Per-test `cycle_count`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the ticket's pinned `base_sha`.
+Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Acceptance Basis.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|

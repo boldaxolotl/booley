@@ -13,8 +13,6 @@ from .cli_handlers import (
     _cmd_classify,
     _cmd_collect_evidence,
     _cmd_complete,
-    _cmd_contract_open,
-    _cmd_contract_seal,
     _cmd_create_file,
     _cmd_detect_orphans,
     _cmd_enqueue,
@@ -33,7 +31,7 @@ from .cli_handlers import (
     _cmd_reset,
     _cmd_reset_to_deprecated,
     _cmd_resume,
-    _cmd_revise_contract,
+    _cmd_return_to_draft,
     _cmd_show,
     _cmd_slug,
     _cmd_steps,
@@ -213,6 +211,11 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--branch", required=True, help="Base branch")
     p.add_argument(
+        "--project-destination-ref",
+        default="",
+        help="Paired repository destination as a full refs/heads/... name",
+    )
+    p.add_argument(
         "--scope",
         nargs="*",
         default=[],
@@ -251,14 +254,8 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("create-file", help="Create a new ticket .md file in drafts/")
     _add_create_file_args(p)
 
-    p = sub.add_parser("contract-open", help="Open isolated Target-contract worktrees")
-    p.add_argument("slug", help="Draft ticket slug")
-
-    p = sub.add_parser("contract-seal", help="Validate and seal a Target contract")
-    p.add_argument("slug", help="Draft ticket slug")
-
-    p = sub.add_parser("revise-contract", help="Archive and reopen a Target contract")
-    p.add_argument("slug", help="Draft or blocked ticket slug")
+    p = sub.add_parser("return-to-draft", help="Start a new authoring generation")
+    p.add_argument("slug", help="Blocked ticket slug")
 
     # enqueue
     p = sub.add_parser("enqueue", help="Enqueue a ticket (stamp frontmatter + log)")
@@ -504,9 +501,7 @@ HANDLERS = {
     "promote-waiting": _cmd_promote_waiting,
     "init": _cmd_init,
     "create-file": _cmd_create_file,
-    "contract-open": _cmd_contract_open,
-    "contract-seal": _cmd_contract_seal,
-    "revise-contract": _cmd_revise_contract,
+    "return-to-draft": _cmd_return_to_draft,
     "enqueue": _cmd_enqueue,
     "archive": _cmd_archive,
     "log-incident": _cmd_log_incident,

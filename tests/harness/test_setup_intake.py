@@ -10,13 +10,14 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.target_contract import (
     ContractParticipant,
     ContractTargetBinding,
@@ -192,11 +193,20 @@ def _write_progress(project_root: Path, slug: str, data: dict):
     (logs_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
+def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
     from booley.harness.setup.intake import _verify_target_contract
 
-    contract = MagicMock()
-    contract.as_dict.return_value = {"schema": 3}
+    contract = AcceptanceBasis(
+        participants=(
+            BasisParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/booley-generation/1234567890abcdef/sealed-ticket",
+                "refs/heads/main",
+                "c" * 40,
+            ),
+        )
+    )
     ctx = TicketContext(
         slug="sealed-ticket",
         ticket_path=tmp_path / "ticket.md",
@@ -211,13 +221,9 @@ def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
 
     with (
         patch(
-            "booley.ticket_board.contract_ops.validate_sealed_refs",
+            "booley.ticket_board.contract_ops.validate_basis_refs",
             return_value=[],
         ) as validate_refs,
-        patch(
-            "booley.ticket_board.target_contract.validate_contract_fields",
-            return_value=[],
-        ) as validate_fields,
     ):
         _verify_target_contract(ctx, "fresh")
 
@@ -226,21 +232,6 @@ def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
         contract,
         slug="sealed-ticket",
         destination_branch="main",
-    )
-    validate_fields.assert_called_once_with(
-        {
-            "base_sha": "a" * 40,
-            "target_contract": {"schema": 3},
-            "criteria": {"mandatory": {}},
-            "scope": [],
-            "on_success": {
-                "destination": "review",
-                "merge": True,
-                "cleanup": True,
-                "triage_report": True,
-                "remove_targets": [],
-            },
-        }
     )
 
 
@@ -266,21 +257,17 @@ class TestReturnValue:
 
 @pytest.mark.asyncio
 @patch("booley.harness.setup.intake.ticket_cli")
-async def test_sealed_intake_defers_criteria_until_workspace_materialization(
+async def test_basis_intake_defers_criteria_until_workspace_materialization(
     mock_cli,
     project_root: Path,
     sample_ticket: Path,
 ) -> None:
-    contract = TargetContract(
-        outer_sha="a" * 40,
-        project_sha="",
-        surface_digest="b" * 64,
-        targets=(),
+    contract = AcceptanceBasis(
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
-                ticket_ref=f"refs/heads/{sample_ticket.stem}",
+                authoring_sha="a" * 40,
+                ticket_ref=(f"refs/heads/booley-generation/1234567890abcdef/{sample_ticket.stem}"),
                 destination_ref="refs/heads/master",
                 destination_sha="c" * 40,
             ),
@@ -288,13 +275,16 @@ async def test_sealed_intake_defers_criteria_until_workspace_materialization(
     )
     fields = {
         **_MINIMAL_FIELDS,
-        "base_sha": contract.outer_sha,
-        "target_contract": contract.as_dict(),
+        "acceptance_basis": contract.as_dict(),
     }
     _mock_cli_defaults(mock_cli, fields=fields)
     from booley.harness.setup.intake import run
 
     with (
+        patch(
+            "booley.harness.setup.intake.load_acceptance_basis",
+            return_value=contract,
+        ),
         patch("booley.harness.setup.intake._verify_target_contract"),
         patch("booley.harness.setup.intake._init_criteria_state") as init_state,
     ):

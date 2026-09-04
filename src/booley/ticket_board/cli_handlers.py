@@ -125,7 +125,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("target_contract") is not None
+        if entry.get("acceptance_basis") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -591,6 +591,7 @@ def _cmd_create_file(tio, args):
             summary=args.summary,
             ticket_type=args.ticket_type,
             branch=args.branch,
+            project_destination_ref=args.project_destination_ref,
             scope=args.scope,
             spec=args.spec,
             dependencies=args.dependencies,
@@ -603,31 +604,9 @@ def _cmd_create_file(tio, args):
     return 0 if result else 2
 
 
-def _cmd_contract_open(tio, args):
+def _cmd_return_to_draft(tio, args):
     try:
-        result = tio.contract_open(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_contract_seal(tio, args):
-    try:
-        result = tio.contract_seal(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_revise_contract(tio, args):
-    try:
-        result = tio.contract_revise(args.slug)
+        result = tio.return_to_draft(args.slug)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

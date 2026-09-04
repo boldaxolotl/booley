@@ -1,4 +1,4 @@
-"""Recoverable acceptance of sealed multi-repository Tickets.
+"""Recoverable acceptance of recorded multi-repository Tickets.
 
 Acceptance is deliberately expressed as one transaction-like operation.  Git
 cannot atomically update refs in two repositories, so every merge candidate is
@@ -22,6 +22,13 @@ from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
+from .acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    BasisParticipant,
+    assert_inputs_unchanged,
+    load_acceptance_basis,
+)
 from .acceptance_journal import (
     AcceptanceJournal,
     AcceptanceJournalError,
@@ -31,14 +38,10 @@ from .acceptance_journal import (
     load_journal,
     load_persisted_journal,
 )
-from .contract_ops import ContractOperationError, pin_sealed_refs
+from .contract_ops import ContractOperationError, pin_basis_refs
+from .contract_path_policy import is_static_contract_path
+from .frontmatter import parse_frontmatter
 from .git_ops import worktree_is_clean
-from .target_contract import (
-    ContractParticipant,
-    TargetContract,
-    TargetContractError,
-    verify_surface,
-)
 from .target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
@@ -48,7 +51,7 @@ from .validation import retired_ticket_field_errors
 
 
 class CompletionError(RuntimeError):
-    """A sealed Ticket could not be prepared or published safely."""
+    """A recorded Ticket could not be prepared or published safely."""
 
 
 def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -88,13 +91,13 @@ def _is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
 
 
 def _repository_for(
-    root: Path, project_repository: Path | None, participant: ContractParticipant
+    root: Path, project_repository: Path | None, participant: BasisParticipant
 ) -> Path:
     if participant.role == "outer":
         return root
     if participant.role == "project" and project_repository is not None:
         return project_repository
-    raise CompletionError(f"sealed {participant.role} repository is unavailable")
+    raise CompletionError(f"recorded {participant.role} repository is unavailable")
 
 
 def _journal_path(root: Path, slug: str) -> Path:
@@ -128,7 +131,7 @@ def _write_journal(path: Path, journal: AcceptanceJournal) -> None:
 
 def _initial_journal(
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
@@ -144,7 +147,7 @@ def _initial_journal(
 def _load_journal(
     path: Path,
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
@@ -171,26 +174,29 @@ def _changed_paths(repository: Path, before: str, after: str) -> set[str]:
 
 def _validate_participant(
     repository: Path,
-    participant: ContractParticipant,
+    participant: BasisParticipant,
     source: str,
     protected_paths: set[str],
 ) -> str:
     destination = _commit(repository, participant.destination_ref)
-    if not _is_ancestor(repository, participant.sealed_sha, source):
+    if not _is_ancestor(repository, participant.authoring_sha, source):
         raise CompletionError(
-            f"{participant.ticket_ref} no longer descends from sealed "
-            f"{participant.role} commit {participant.sealed_sha}"
+            f"{participant.ticket_ref} no longer descends from recorded "
+            f"{participant.role} commit {participant.authoring_sha}"
         )
     if not _is_ancestor(repository, participant.destination_sha, destination):
         raise CompletionError(
-            f"{participant.destination_ref} rewrote the sealed destination history"
+            f"{participant.destination_ref} rewrote the recorded destination history"
         )
-    ticket_changes = _changed_paths(repository, participant.destination_sha, source)
     destination_changes = _changed_paths(repository, participant.destination_sha, destination)
-    collisions = sorted(ticket_changes & destination_changes & protected_paths)
+    collisions = sorted(
+        path
+        for path in destination_changes
+        if path in protected_paths or is_static_contract_path(path)
+    )
     if collisions:
         raise CompletionError(
-            f"{participant.destination_ref} changed sealed control path(s) also changed "
+            f"{participant.destination_ref} changed recorded control path(s) also changed "
             f"by this Ticket: {', '.join(collisions)}"
         )
     return destination
@@ -236,7 +242,7 @@ def _copy_commit_identity(repository: Path, destination: Path) -> None:
 
 def _plan_candidate(
     repository: Path,
-    participant: ContractParticipant,
+    participant: BasisParticipant,
     source: str,
     transaction: str,
     slug: str,
@@ -257,7 +263,7 @@ def _plan_candidate(
             "--no-ff",
             source,
             "-m",
-            f"merge({slug}): sealed Ticket completed",
+            f"merge({slug}): recorded Ticket completed",
         )
         candidate = _commit(candidate_repository, "HEAD")
     return _CandidatePlan(candidate, staging_ref, destination, candidate_repository)
@@ -266,10 +272,10 @@ def _plan_candidate(
 def _validate_source_surface(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     sources: Mapping[str, str],
 ) -> None:
-    """Rebuild the sealed composite checkout and reject contract-control drift."""
+    """Rebuild the recorded composite checkout and reject contract-control drift."""
     participants = {item.role: item for item in contract.participants}
     with tempfile.TemporaryDirectory(prefix="booley-accept-surface-") as directory:
         temporary = Path(directory) / "outer"
@@ -277,7 +283,7 @@ def _validate_source_surface(
         project = participants.get("project")
         if project is not None:
             if project_repository is None:
-                raise CompletionError("sealed project repository is unavailable")
+                raise CompletionError("recorded project repository is unavailable")
             try:
                 project_relative = checkout_project_dir_relative_to(root)
             except (FileNotFoundError, ValueError) as exc:
@@ -285,8 +291,8 @@ def _validate_source_surface(
             project_checkout = temporary / project_relative
             _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
-            verify_surface(contract, temporary)
-        except TargetContractError as exc:
+            assert_inputs_unchanged(contract, temporary)
+        except AcceptanceBasisError as exc:
             raise CompletionError(str(exc)) from exc
 
 
@@ -352,7 +358,7 @@ def _validate_ref_at(repository: Path, ref: str, expected: str) -> None:
 
 
 def _validate_ticket_worktree(
-    repository: Path, participant: ContractParticipant, source: str
+    repository: Path, participant: BasisParticipant, source: str
 ) -> None:
     checkout = _checked_out_at(repository, participant.ticket_ref)
     if checkout is None:
@@ -368,7 +374,7 @@ def _validate_ticket_worktree(
 
 def _validate_cleanup_participant(
     repository: Path,
-    participant: ContractParticipant,
+    participant: BasisParticipant,
     source: str,
     candidate: Candidate,
 ) -> None:
@@ -382,9 +388,7 @@ def _validate_cleanup_participant(
     _validate_ref_at(repository, candidate["staging_ref"], finalized)
 
 
-def _remove_ticket_worktree(
-    repository: Path, participant: ContractParticipant, source: str
-) -> None:
+def _remove_ticket_worktree(repository: Path, participant: BasisParticipant, source: str) -> None:
     _validate_ticket_worktree(repository, participant, source)
     checkout = _checked_out_at(repository, participant.ticket_ref)
     if checkout is None:
@@ -397,7 +401,7 @@ def _remove_ticket_worktree(
 
 def _cleanup_participant(
     repository: Path,
-    participant: ContractParticipant,
+    participant: BasisParticipant,
     source: str,
     candidate: Candidate,
 ) -> None:
@@ -413,7 +417,7 @@ def _cleanup_participant(
 
 def _publish_candidate(
     repository: Path,
-    participant: ContractParticipant,
+    participant: BasisParticipant,
     candidate: Candidate,
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
@@ -453,7 +457,7 @@ def _publish_candidate(
 
 
 def _protected_paths(
-    contract: TargetContract, participant: ContractParticipant, project_prefix: str
+    contract: AcceptanceBasis, participant: BasisParticipant, project_prefix: str
 ) -> set[str]:
     has_project = any(item.role == "project" for item in contract.participants)
     if participant.role == "project":
@@ -475,7 +479,7 @@ def _plan_missing_candidates(
     root: Path,
     project_repository: Path | None,
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     plan_directory: Path,
     project_prefix: str,
@@ -573,7 +577,7 @@ def _reconcile_refs(plans: list[_RefReconciliation]) -> None:
 def _protect_finalized_candidates(
     root: Path,
     project_repository: Path | None,
-    participants: Mapping[str, ContractParticipant],
+    participants: Mapping[str, BasisParticipant],
     journal: AcceptanceJournal,
 ) -> None:
     plans: list[_RefReconciliation] = []
@@ -596,7 +600,7 @@ def _protect_finalized_candidates(
 def _reject_unjournaled_keepalives(
     root: Path,
     project_repository: Path | None,
-    participants: Mapping[str, ContractParticipant],
+    participants: Mapping[str, BasisParticipant],
     journal: AcceptanceJournal,
 ) -> None:
     for role, participant in participants.items():
@@ -612,7 +616,7 @@ def _reject_unjournaled_keepalives(
 def _reconcile_prepared_refs(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
     by_role = {item.role: item for item in contract.participants}
@@ -658,7 +662,7 @@ def _legacy_prepared_identity(
 def _reconcile_finalized_refs(
     root: Path,
     project_repository: Path | None,
-    participants: Mapping[str, ContractParticipant],
+    participants: Mapping[str, BasisParticipant],
     journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
@@ -696,7 +700,7 @@ def _reconcile_finalized_refs(
 def _validate_ticket_refs(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
     for participant in contract.participants:
@@ -714,7 +718,7 @@ def _validate_ticket_refs(
 def _persist_candidate_plans(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     path: Path,
     plans: dict[str, _CandidatePlan],
@@ -737,7 +741,7 @@ def _prepare_all(
     root: Path,
     project_repository: Path | None,
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
@@ -797,7 +801,7 @@ def _add_finalization_worktrees(
     if not has_project:
         return None
     if project_repository is None:
-        raise CompletionError("sealed project repository is unavailable")
+        raise CompletionError("recorded project repository is unavailable")
     try:
         project_relative = checkout_project_dir_relative_to(root)
     except (FileNotFoundError, ValueError) as exc:
@@ -815,7 +819,7 @@ def _add_finalization_worktrees(
 
 
 def _planned_finalization_paths(
-    temporary: Path, contract: TargetContract, journal: AcceptanceJournal
+    temporary: Path, contract: AcceptanceBasis, journal: AcceptanceJournal
 ) -> list[Path]:
     try:
         plan = plan_target_removals(
@@ -862,7 +866,7 @@ def _commit_finalized_candidates(
 def _update_finalized_refs(
     root: Path,
     project_repository: Path | None,
-    participants: Mapping[str, ContractParticipant],
+    participants: Mapping[str, BasisParticipant],
     journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
@@ -899,7 +903,7 @@ def _finalize_all(
     root: Path,
     project_repository: Path | None,
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     journal_path: Path,
 ) -> None:
@@ -939,7 +943,7 @@ def _finalize_all(
 def _publish_all(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     journal_path: Path,
     allowed_board_rename: tuple[Path, Path],
@@ -985,12 +989,12 @@ def _ensure_sources(
     project_repository: Path | None,
     slug: str,
     destination_branch: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     path: Path,
 ) -> None:
     try:
-        current = pin_sealed_refs(
+        current = pin_basis_refs(
             root,
             contract,
             slug=slug,
@@ -1007,16 +1011,16 @@ def _ensure_sources(
         participant = participants[role]
         repository = _repository_for(root, project_repository, participant)
         _commit(repository, source)
-        if not _is_ancestor(repository, participant.sealed_sha, source):
+        if not _is_ancestor(repository, participant.authoring_sha, source):
             raise CompletionError(
-                f"pinned {role} source no longer descends from its sealed commit"
+                f"pinned {role} source no longer descends from its recorded commit"
             )
 
 
 def _finish_approval(
     tio: Any,
     slug: str,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     path: Path,
 ) -> None:
@@ -1040,7 +1044,7 @@ def _finish_approval(
 def _retire_finalized_keepalives(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
     by_role = {item.role: item for item in contract.participants}
@@ -1069,7 +1073,7 @@ def _retire_finalized_keepalives(
 def _cleanup_all(
     root: Path,
     project_repository: Path | None,
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     journal: AcceptanceJournal,
     path: Path,
 ) -> None:
@@ -1121,12 +1125,12 @@ class _AcceptanceTransaction:
     root: Path
     project_repository: Path | None
     slug: str
-    contract: TargetContract
+    contract: AcceptanceBasis
     journal: AcceptanceJournal
     path: Path
 
     @property
-    def participants(self) -> dict[str, ContractParticipant]:
+    def participants(self) -> dict[str, BasisParticipant]:
         return {item.role: item for item in self.contract.participants}
 
 
@@ -1220,7 +1224,7 @@ def _execute_completion(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     path: Path,
     allowed_board_rename: tuple[Path, Path],
     cleanup: bool,
@@ -1304,7 +1308,7 @@ def _cleanup_pending(path: Path) -> bool:
     return journal.get("policy") == {"merge": True, "cleanup": True} and state.cleanup_pending
 
 
-def _validate_completion_plan(contract: TargetContract, *, cleanup: bool) -> None:
+def _validate_completion_plan(contract: AcceptanceBasis, *, cleanup: bool) -> None:
     if not cleanup:
         return
     for participant in contract.participants:
@@ -1317,7 +1321,7 @@ def _validate_completion_plan(contract: TargetContract, *, cleanup: bool) -> Non
 
 def _completion_inputs(
     tio: Any, slug: str, effective_policy: Any
-) -> tuple[Mapping[str, Any], TargetContract] | None:
+) -> tuple[Mapping[str, Any], AcceptanceBasis] | None:
     if getattr(effective_policy, "merge", None) is not True:
         raise CompletionError("journaled completion requires merge policy to be true")
     if not isinstance(getattr(effective_policy, "cleanup", None), bool):
@@ -1339,12 +1343,14 @@ def _completion_inputs(
         print(f"Error: cannot complete '{slug}': {retired_errors[0]}", file=sys.stderr)
         return None
     try:
-        contract = TargetContract.from_mapping(entry.get("target_contract"))
+        ticket_path = Path(tio.tickets_dir) / str(entry["file"])
+        fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+        contract = load_acceptance_basis(tio._project_root, slug, fields, body)
         if removal_targets != contract.removal_targets:
-            raise TargetContractError(
-                "on_success.remove_targets changed after Target Contract sealing"
+            raise AcceptanceBasisError(
+                "on_success.remove_targets changed after Acceptance Basis publication"
             )
-    except TargetContractError as exc:
+    except AcceptanceBasisError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
     try:
@@ -1359,7 +1365,7 @@ def _run_locked_completion(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    contract: TargetContract,
+    contract: AcceptanceBasis,
     effective_policy: Any,
     path: Path,
 ) -> None:
@@ -1394,7 +1400,7 @@ def _report_completion_failure(tio: Any, slug: str, path: Path, exc: Exception) 
 
 
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
-    """Prepare, publish, and approve one sealed review Ticket.
+    """Prepare, publish, and approve one recorded review Ticket.
 
     The journal makes calls idempotent after an interruption. A retry reuses
     pinned candidates and continues toward the review-to-done transition.

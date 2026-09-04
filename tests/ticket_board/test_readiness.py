@@ -9,9 +9,8 @@ import pytest
 
 from booley.fusesoc import fusesoc_registry
 from booley.ticket_board import readiness as readiness_module
-from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
-from booley.ticket_board.target_contract import ContractParticipant, build_contract
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -66,38 +65,24 @@ targets:
     )
     (project / "tickets" / "board" / "queue").mkdir(parents=True)
     _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project/booley.toml", ".booley_project/hooks")
     _git(root, "commit", "-m", "demo")
-    head = _git(root, "rev-parse", "HEAD")
-    participant = ContractParticipant(
-        "outer",
-        head,
-        "refs/heads/main",
-        "refs/heads/main",
-        head,
-    )
-    contract = build_contract(
-        root,
-        outer_sha=head,
-        targets=["sim_toy"],
-        participants=[participant],
-    )
     criteria = {"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_toy @ smoke @ pass -> pass"]}}
-    ticket = project / "tickets" / "board" / "queue" / "demo.md"
-    ticket.write_text(
-        format_frontmatter(
-            {
-                "summary": "Demo",
-                "type": "verification",
-                "branch": "main",
-                "scope": ["rtl/toy.sv"],
-                "base_sha": head,
-                "target_contract": contract.as_dict(),
-                "criteria": criteria,
-            },
-            "## Description\n\nVerify the demo.\n",
+    tio = TicketIO(project / "tickets", project_root=root)
+    draft = tio.create_ticket_file(
+        "demo",
+        TicketFileSpec(
+            summary="Demo",
+            ticket_type="verification",
+            branch="main",
+            scope=["rtl/toy.sv"],
+            criteria=criteria,
+            body="## Description\n\nVerify the demo.\n",
         ),
-        encoding="utf-8",
     )
+    assert draft is not None
+    assert tio.enqueue_ticket("demo") is True
+    ticket = project / "tickets" / "board" / "queue" / "demo.md"
     ticket_before = ticket.read_bytes()
     resolved_roots: list[Path] = []
 

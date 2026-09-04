@@ -25,7 +25,6 @@ from booley.dev_support.demo_contract import (
     load_contract,
 )
 from booley.ticket_board.frontmatter import parse_frontmatter
-from booley.ticket_board.target_contract import TargetContract
 
 CONTRACT = Path(".github/contracts/picorv32-demo.toml")
 PREPARE_ACTION = Path(".github/actions/prepare-picorv32-demo/action.yml")
@@ -98,17 +97,10 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     fixture = Path(contract.ticket_fixture)
     fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
-    sealed = TargetContract.from_mapping(fields["target_contract"])
-    assert sealed.schema == 4
-    assert sealed.project_sha == contract.project_ref
-    assert sealed.outer_sha == contract.upstream_ref
-    assert len(sealed.participants) == 2
-    assert sealed.surface_entries
-    assert sealed.targets == ("lint_core", "sim_core", "sim_wb", "synth_core")
-    project = next(item for item in sealed.participants if item.role == "project")
-    assert project.ticket_ref == "refs/heads/main"
-    assert project.destination_ref == "refs/heads/main"
-    assert project.destination_sha == contract.project_ref
+    assert "acceptance_basis" not in fields
+    assert "target_contract" not in fields
+    assert "base_sha" not in fields
+    assert "created" not in fields
 
     serialized = fixture.read_text(encoding="utf-8")
     assert "ci/agent-ticket-contract" not in serialized
@@ -205,6 +197,33 @@ def _demo_project(tmp_path: Path) -> Path:
     return project
 
 
+def _git(repository: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repository, check=True, capture_output=True, text=True)
+
+
+def _demo_git_project(tmp_path: Path) -> Path:
+    outer = tmp_path / "outer"
+    project = outer / ".booley_project"
+    project.mkdir(parents=True)
+    _git(project, "init", "-b", "main")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    (project / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "initial project")
+
+    _git(outer, "init", "-b", "main")
+    _git(outer, "config", "user.name", "Test")
+    _git(outer, "config", "user.email", "test@example.invalid")
+    (outer / "README.md").write_text("demo\n", encoding="utf-8")
+    (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
+    _git(outer, "add", "README.md")
+    _git(outer, "commit", "-m", "initial outer")
+    return project
+
+
 def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -241,19 +260,36 @@ def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
 
 
 def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -> None:
-    project = _demo_project(tmp_path)
+    project = _demo_git_project(tmp_path)
     fixture = tmp_path / "fixture.md"
-    fixture.write_text("fixture\n", encoding="utf-8")
+    fixture.write_text(
+        "---\n"
+        "summary: Demo\n"
+        "type: feature\n"
+        "branch: main\n"
+        "scope: [README.md]\n"
+        "criteria: {mandatory: {review_rtl_bugs: true}}\n"
+        "---\n\n"
+        "## Description\n\nDo the work.\n",
+        encoding="utf-8",
+    )
 
     result = _run_installer(project, fixture, "demo")
 
     destination = project / "tickets" / "board" / "queue" / "demo.md"
     assert result.returncode == 0
-    assert destination.read_bytes() == fixture.read_bytes()
+    fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
+    assert fields["summary"] == "Demo"
+    assert fields["acceptance_basis"]["schema"] == 1
+    assert "target_contract" not in fields
+    assert "- **review_rtl_bugs**" in body
+    assert body.endswith("## Description\n\nDo the work.")
     if os.name == "posix":
         assert destination.stat().st_mode & 0o777 == 0o644
     exclude = project / ".git" / "info" / "exclude"
-    assert exclude.read_text(encoding="utf-8") == "/tickets/board/queue/demo.md\n"
+    assert exclude.read_text(encoding="utf-8") == (
+        "/tickets/board/drafts/demo.md\n/tickets/board/queue/demo.md\n"
+    )
 
 
 def test_contract_exporter_emits_all_workflow_fields() -> None:

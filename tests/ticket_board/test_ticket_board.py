@@ -256,32 +256,27 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
 
 class TestAcceptanceProgress:
     def test_find_and_scan_expose_validated_journal_state(self, tmp_path):
+        from booley.ticket_board.acceptance_journal import initial_journal
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "partial")
         acceptance = tmp_path / ".runtime" / "acceptance"
         acceptance.mkdir(parents=True)
         (acceptance / "partial.json").write_text(
             json.dumps(
-                {
-                    "schema": 2,
-                    "transaction": "a" * 32,
-                    "ticket": "partial",
-                    "state": "initializing",
-                    "policy": {"merge": True, "cleanup": True},
-                    "participants": [
+                initial_journal(
+                    "partial",
+                    [
                         {
                             "role": "outer",
-                            "sealed_sha": "b" * 40,
-                            "ticket_ref": "refs/heads/partial",
+                            "authoring_sha": "b" * 40,
+                            "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/partial",
                             "destination_ref": "refs/heads/main",
                             "destination_sha": "c" * 40,
                         }
                     ],
-                    "sources": {},
-                    "candidates": {},
-                    "published": [],
-                    "cleaned": [],
-                }
+                    cleanup=True,
+                )
             ),
             encoding="utf-8",
         )
@@ -554,8 +549,8 @@ class TestValidateTicketFields:
         errors = validate_ticket_fields(fields, "## Description\nSome text")
 
         assert errors == [
-            "Deprecated field 'integration_base': schema-3 Tickets publish their "
-            "sealed Ticket refs directly to destination refs"
+            "Deprecated field 'integration_base': Acceptance Basis Tickets publish their "
+            "recorded refs directly to destination refs"
         ]
 
     def test_missing_fields(self):
@@ -1248,7 +1243,7 @@ class TestScanAllTickets:
             tio.logs_dir / "t1",
             state,
             execution_id="generation-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
         state_path.unlink()
 
@@ -4136,7 +4131,7 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
         snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
         snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
@@ -4162,7 +4157,7 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
         prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
         prep_dir.mkdir(parents=True)
@@ -5454,19 +5449,15 @@ class TestOpBoardMove:
             "my-ticket",
             extra_fields={
                 "on_success": {"destination": "review", "merge": False, "cleanup": False},
-                "target_contract": {
-                    "schema": 3,
-                    "outer_sha": "a" * 40,
-                    "project_sha": "",
-                    "surface_digest": "b" * 64,
-                    "targets": [],
-                    "bindings": [],
-                    "surface_entries": [],
+                "acceptance_basis": {
+                    "schema": 1,
                     "participants": [
                         {
                             "role": "outer",
-                            "sealed_sha": "a" * 40,
-                            "ticket_ref": "refs/heads/my-ticket",
+                            "authoring_sha": "a" * 40,
+                            "ticket_ref": (
+                                "refs/heads/booley-generation/0123456789abcdef/my-ticket"
+                            ),
                             "destination_ref": "refs/heads/main",
                             "destination_sha": "c" * 40,
                         }
@@ -5516,20 +5507,14 @@ class TestBoardMoveTerminalActionOverrides:
     itself; the cleanup step branches on the merge decision)."""
 
     @staticmethod
-    def _target_contract():
+    def _acceptance_basis():
         return {
-            "schema": 3,
-            "outer_sha": "a" * 40,
-            "project_sha": "",
-            "surface_digest": "b" * 64,
-            "targets": [],
-            "bindings": [],
-            "surface_entries": [],
+            "schema": 1,
             "participants": [
                 {
                     "role": "outer",
-                    "sealed_sha": "a" * 40,
-                    "ticket_ref": "refs/heads/my-ticket",
+                    "authoring_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/my-ticket",
                     "destination_ref": "refs/heads/main",
                     "destination_sha": "c" * 40,
                 }
@@ -5546,7 +5531,7 @@ class TestBoardMoveTerminalActionOverrides:
             extra_fields={
                 "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
                 "feature_branch": "feat/my-ticket",
-                "target_contract": TestBoardMoveTerminalActionOverrides._target_contract(),
+                "acceptance_basis": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})

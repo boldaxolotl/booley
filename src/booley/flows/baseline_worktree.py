@@ -220,9 +220,14 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
     """Resolve the immutable fork point of a paired ticket project branch."""
     ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
     if ticket_file:
-        from booley.ticket_board.target_contract import load_ticket_contract, resolve_commit
+        from booley.ticket_board.acceptance_basis import load_acceptance_basis
+        from booley.ticket_board.frontmatter import parse_frontmatter
+        from booley.ticket_board.helpers import detect_project_root
+        from booley.ticket_board.target_contract import resolve_commit
 
-        contract = load_ticket_contract(ticket_file)
+        ticket_path = Path(ticket_file)
+        fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+        contract = load_acceptance_basis(detect_project_root(), ticket_path.stem, fields, body)
         if contract is not None and contract.project_sha:
             try:
                 return resolve_commit(project_worktree, contract.project_sha)

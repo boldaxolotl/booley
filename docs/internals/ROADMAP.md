@@ -97,7 +97,7 @@ and candidate synthesis breakdowns. It may find the evidence insufficient. Its
 advice cannot change the verdict, edit code, or push changes.
 
 Ticket Mode and CI call the same Criterion evaluator but keep separate
-orchestration. Ticket Mode passes a sealed Ticket and owns its lifecycle. CI
+orchestration. Ticket Mode passes a recorded Acceptance Basis and owns its lifecycle. CI
 passes Criteria, reports the verdict, and may start the investigator without
 depending on the Ticket Board or Harness lifecycle.
 

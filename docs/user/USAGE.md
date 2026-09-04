@@ -587,7 +587,7 @@ input behavior established by [#131](https://github.com/boldaxolotl/booley/issue
 #### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the ticket's `base_sha` baseline:
+Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Acceptance Basis:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -602,7 +602,7 @@ Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 5
 
 For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
 
-In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at `base_sha` and its candidate Target at the ticket head. Both Targets and their directed binding are sealed. Developer execution cannot change contract controls; a missing or incorrect Target blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -637,7 +637,7 @@ In Ticket Mode, ticket creation seals an immutable Target contract before enqueu
 
 **Per-test `cycle_count`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the ticket's pinned `base_sha`.
+Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Acceptance Basis.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -659,11 +659,12 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
-Ticket creation first opens an isolated Ticket Workspace. This is where the
-ticket-creation agent adds any Target the Ticket will require; the Project's
+`create-file` materializes an isolated Ticket Workspace. This is where the
+Ticket-creation agent adds any Target the Ticket will require; the Project's
 destination branch stays fully functional and Doctor-clean until acceptance.
-The Target Contract seals every participating repository ref, and final
-acceptance rechecks that composite control surface before publishing it.
+`enqueue` validates and commits that authoring state, writes a minimal Acceptance Basis,
+and moves the Ticket to queue or waiting. Final acceptance rechecks the protected input
+paths against that basis before publishing the result.
 
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
 metrics (`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) accept
@@ -697,7 +698,7 @@ on_success:
 
 `remove_targets` handles Targets that must exist while the Ticket runs—for example, a
 frozen comparison baseline—but must not remain in the accepted Project. It is fixed and
-bound into the Target Contract during sealing, requires `merge: true`, and may name only
+bound into the Acceptance Basis during enqueue, requires `merge: true`, and may name only
 uniquely resolved Targets bound by that Ticket's Criteria. The Targets remain available
 throughout development and review.
 Acceptance prepares the normal merge candidate first, then removes only the declared

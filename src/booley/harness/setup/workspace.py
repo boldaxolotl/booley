@@ -677,17 +677,16 @@ def _validate_materialized_target_contract(
     """Validate the sealed surface after disposable checkouts are materialized."""
     if ctx.target_contract is None:
         return None
-    from booley.ticket_board.target_contract import (
-        CONTRACT_BLOCK_REASON,
-        validate_materialized_contract,
+    from booley.ticket_board.acceptance_basis import (
+        BLOCK_REASON,
+        AcceptanceBasisError,
+        assert_inputs_unchanged,
     )
 
-    errors = validate_materialized_contract(ctx.sealed_contract_fields(), worktree_path)
-    if errors:
-        detail = "; ".join(errors)
-        prefix = f"{CONTRACT_BLOCK_REASON}:"
-        reason = detail if detail.startswith(prefix) else f"{prefix} {detail}"
-        return StepResult(block_reason=reason)
+    try:
+        assert_inputs_unchanged(ctx.target_contract, worktree_path)
+    except (OSError, AcceptanceBasisError) as exc:
+        return StepResult(block_reason=f"{BLOCK_REASON}: {exc}")
     return None
 
 

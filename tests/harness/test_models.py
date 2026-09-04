@@ -58,7 +58,7 @@ class TestTicketContext:
             project_root=tmp_path,
         )
 
-        with pytest.raises(ValueError, match="no sealed Target contract"):
+        with pytest.raises(ValueError, match="no Acceptance Basis"):
             ctx.sealed_contract_fields()
 
 

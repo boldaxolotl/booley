@@ -239,7 +239,7 @@ class TestCmdShow:
             tio.logs_dir / "completed",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
         state_path.unlink()
 

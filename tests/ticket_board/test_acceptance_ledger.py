@@ -44,7 +44,7 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
         log_dir,
         state,
         execution_id="resume-generation",
-        target_contract={"schema": 2, "surface_digest": "a" * 64},
+        acceptance_basis={"schema": 1, "participants": []},
         accepted_at="2026-08-28T12:00:00Z",
     )
     state_path.unlink()
@@ -102,7 +102,7 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
         log_dir,
         state,
         execution_id="generation-2",
-        target_contract=None,
+        acceptance_basis=None,
     )
 
     assert [reference["sequence"] for reference in frozen.evidence] == [1, 2]
@@ -133,7 +133,7 @@ def test_freeze_rejects_mutable_state_that_disagrees_with_latest_evidence(tmp_pa
             log_dir,
             state,
             execution_id="generation-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
 
 
@@ -167,7 +167,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
         log_dir,
         state,
         execution_id="generation-1",
-        target_contract=None,
+        acceptance_basis=None,
         accepted_at="2026-08-28T12:00:00Z",
     )
     snapshot_path = log_dir / "acceptance" / "snapshots" / f"{frozen.digest}.json"
@@ -178,7 +178,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
             log_dir,
             state,
             execution_id="generation-1",
-            target_contract=None,
+            acceptance_basis=None,
             accepted_at="2026-08-28T12:00:00Z",
         )
 
@@ -197,7 +197,7 @@ def test_freeze_rejects_evidence_whose_sequence_disagrees_with_its_directory(tmp
             log_dir,
             _accepted_state(),
             execution_id="generation-1",
-            target_contract=None,
+            acceptance_basis=None,
         )
 
 
@@ -233,7 +233,7 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
         log_dir,
         _accepted_state(),
         execution_id="generation-1",
-        target_contract=None,
+        acceptance_basis=None,
     )
 
     assert bind_review_package(log_dir, snapshot) is False

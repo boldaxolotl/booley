@@ -34,7 +34,7 @@ class OnSuccess:
     merge: whether to merge the feature branch into the base branch.
     cleanup: whether to delete the worktree and (if not merged) force-delete the branch.
     triage_report: whether to prepare the rich HTML explanation before handoff.
-    remove_targets: sealed Targets to delete from the accepted merge candidate.
+        remove_targets: recorded Targets to delete from the accepted merge candidate.
     """
 
     destination: str = "review"  # "review" | "done"
