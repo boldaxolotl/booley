@@ -194,9 +194,8 @@ class SimulationExecution:
                 else _pre_run_failure
             )
             return failure(handle, attempt, pre_run, started)
-        trace_policy = _trace_artifact_policy(handle, attempt)
+        trace_policy = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
         adapter_before = _adapter_result_stamps(attempt)
-        dispatched_ns = time.time_ns()
         process = self._invoke(list(attempt.command), timeout=attempt.wrapper_timeout_s)
         processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
@@ -215,7 +214,6 @@ class SimulationExecution:
                 adapter,
                 pre_run,
                 trace_policy,
-                dispatched_ns,
                 processing_started,
                 started,
             )
@@ -383,14 +381,13 @@ class SimulationExecution:
         build: BuildOutcome,
         adapter: AdapterResult | None,
         pre_run: PreRunEvidence | None,
-        trace_policy: TraceArtifactPolicy,
-        dispatched_ns: int,
+        trace_policy: TraceArtifactPolicy | None,
         processing_started: float,
         started: float,
     ) -> SimulationTargetOutcome:
         output = process.stdout + ("\n" + process.stderr if process.stderr else "")
         logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
-        trace = _trace_artifact(attempt, adapter, trace_policy, dispatched_ns)
+        trace = _trace_artifact(attempt, adapter, trace_policy)
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
         tests = _test_outcomes(
@@ -1034,14 +1031,13 @@ def _archive_run_logs(
 def _trace_artifact(
     attempt: _Attempt,
     adapter: AdapterResult | None,
-    trace_policy: TraceArtifactPolicy,
-    dispatched_ns: int,
+    trace_policy: TraceArtifactPolicy | None,
 ) -> SimulationArtifactEvidence | None:
     trace = adapter.trace if adapter is not None else None
-    if trace is None or trace.status != "ok":
+    if trace_policy is None or trace is None or trace.status != "ok":
         return None
     try:
-        evidence = trace_policy.validate_reported(trace.path, dispatched_ns=dispatched_ns)
+        evidence = trace_policy.validate_reported(trace.path)
     except ArtifactValidationError:
         return None
     return SimulationArtifactEvidence(

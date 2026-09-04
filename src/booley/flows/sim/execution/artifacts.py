@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,13 @@ from pathlib import Path
 from .freshness import ArtifactEvidence, ArtifactStamp, snapshot_artifact, validate_fresh_artifact
 
 _SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_TRACE_FILE_PATTERNS = ("**/*.fst", "**/*.vcd")
+
+
+def _without_symlink_escape(path: Path) -> Path | None:
+    lexical = Path(os.path.normpath(path.absolute()))
+    resolved = path.resolve()
+    return resolved if resolved == lexical else None
 
 
 def artifact_path_component(value: str) -> str:
@@ -27,17 +35,23 @@ def _configured_trace_paths(
 ) -> tuple[Path, ...]:
     matches: list[Path] = []
     for pattern in patterns:
-        bases = (Path("/"),) if Path(pattern).is_absolute() else search_roots
+        pattern_path = Path(pattern)
+        bases = (None,) if pattern_path.is_absolute() else search_roots
         for base in bases:
-            rendered = Path(pattern) if Path(pattern).is_absolute() else base / pattern
+            rendered = pattern_path if base is None else base / pattern
             if glob.has_magic(str(rendered)):
-                anchor = Path("/") if rendered.is_absolute() else Path()
-                pattern_from_anchor = str(rendered).removeprefix("/")
-                candidates = anchor.glob(pattern_from_anchor)
+                anchor = Path(rendered.anchor)
+                relative_pattern = str(rendered)[len(rendered.anchor) :].lstrip("/\\")
+                candidates = anchor.glob(relative_pattern)
             else:
                 candidates = (rendered,)
             for match in candidates:
-                if match.is_file() and (resolved_match := match.resolve()) not in matches:
+                resolved_match = _without_symlink_escape(match)
+                if (
+                    resolved_match is not None
+                    and match.is_file()
+                    and resolved_match not in matches
+                ):
                     matches.append(resolved_match)
     return tuple(matches)
 
@@ -62,8 +76,17 @@ class TraceArtifactPolicy:
         """Capture configured trace identities immediately before dispatch."""
         resolved_run_cwd = run_cwd.resolve()
         roots = (resolved_run_cwd, build_root.resolve())
+        known_paths = set(_configured_trace_paths(patterns, roots))
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for pattern in _TRACE_FILE_PATTERNS:
+                for path in root.glob(pattern):
+                    resolved = _without_symlink_escape(path)
+                    if resolved is not None and path.is_file():
+                        known_paths.add(resolved)
         stamps: list[tuple[Path, ArtifactStamp]] = []
-        for path in _configured_trace_paths(patterns, roots):
+        for path in known_paths:
             stamp = snapshot_artifact(path)
             if stamp is not None:
                 stamps.append((path, stamp))
@@ -72,8 +95,6 @@ class TraceArtifactPolicy:
     def validate_reported(
         self,
         reported: str,
-        *,
-        dispatched_ns: int,
     ) -> ArtifactEvidence:
         """Resolve and validate a trace path reported by the completed adapter."""
         path = Path(reported)
@@ -84,9 +105,8 @@ class TraceArtifactPolicy:
         return validate_fresh_artifact(
             path,
             roots=self.roots,
-            before=dict(self.before).get(resolved) if configured else None,
+            before=dict(self.before).get(resolved),
             explicitly_allowed=(path,) if configured else (),
-            not_before_ns=None if configured else dispatched_ns,
         )
 
 

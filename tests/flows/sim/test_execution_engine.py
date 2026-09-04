@@ -285,7 +285,7 @@ def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> No
     assert outcome.builds[0].passed is True
     assert sum(a.kind == "live_run_log" for a in outcome.artifacts) == 1
     assert outcome.tests[0].run_log_path == outcome.tests[1].run_log_path
-    assert outcome.tests[0].run_log_path.endswith("build/sim/run.log")
+    assert Path(outcome.tests[0].run_log_path).parts[-3:] == ("build", "sim", "run.log")
 
 
 def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -> None:
@@ -358,8 +358,12 @@ def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path
             stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
         )
 
-    outcome = _run_execution(handle, prepared, invoke, None, cocotb=True)
+    with patch(
+        "booley.flows.sim.execution.engine.TraceArtifactPolicy.capture"
+    ) as capture_trace_policy:
+        outcome = _run_execution(handle, prepared, invoke, None, cocotb=True)
 
+    capture_trace_policy.assert_not_called()
     assert [test.name for test in outcome.tests] == ["discovered"]
     snapshot = outcome.tests[0].workload_snapshot
     assert snapshot is not None and snapshot["test"] == "discovered"
@@ -723,6 +727,29 @@ def test_declared_trace_freshness_uses_pre_dispatch_identity(tmp_path: Path) -> 
 
     assert outcome.verdict == "pass"
     assert any(artifact.kind == "trace" for artifact in outcome.artifacts)
+
+
+def test_new_runtime_trace_accepts_filesystem_clock_skew(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    trace = run_cwd / "wave.fst"
+
+    outcome = _run_execution(
+        handle,
+        prepared,
+        _passing_trace_invoker(handle, prepared, trace, fresh=True, modified_ns=1),
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+    assert outcome.verdict == "pass"
 
 
 def test_unchanged_declared_trace_is_stale(tmp_path: Path) -> None:
