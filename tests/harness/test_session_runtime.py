@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -1057,6 +1059,142 @@ def _refresh_state(
         "State": {"Running": running},
         "NetworkSettings": {"Networks": networks or {}},
     }
+
+
+class TestInitReconciliation:
+    def test_removes_only_a_stopped_owned_runtime_from_an_old_issuance(
+        self, workspace: Path
+    ) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert changed
+        remove.assert_called_once_with(sr.session_container_name(workspace))
+
+    @pytest.mark.parametrize("running", [True, False])
+    def test_preserves_current_runtime(self, workspace: Path, running: bool) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(running=running)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        assert not changed
+        remove.assert_not_called()
+
+    def test_stale_running_runtime_requires_shutdown(self, workspace: Path) -> None:
+        state = _refresh_state(running=True)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            pytest.raises(sr.SessionError, match=r"running.*older host issuance"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        remove.assert_not_called()
+
+    def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
+        state = _refresh_state(running=False)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("vscode-session", "state")],
+            ),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            patch.object(sr, "_remove_license_relay") as remove_relay,
+            pytest.raises(sr.SessionError, match="other Project Sessions"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        remove.assert_not_called()
+        remove_relay.assert_not_called()
+
+    def test_retry_finishes_stale_relay_cleanup_after_container_is_gone(
+        self, workspace: Path
+    ) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=None),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_resources", return_value=relay),
+            patch.object(sr, "_relay_objects_exist", return_value=True),
+            patch.object(sr, "_relay_matches_issuance", return_value=False),
+            patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+            patch.object(sr, "_remove_license_relay") as remove_relay,
+        ):
+            changed = sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        assert changed
+        remove_relay.assert_called_once_with(relay)
+
+    def test_missing_relay_container_is_not_current(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        with patch.object(sr, "_strict_refresh_container", return_value=None):
+            assert not sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_foreign_relay_container_is_preserved(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.session-id": relay.session_id,
+                }
+            }
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match="not owned by this Project"),
+        ):
+            sr._relay_matches_issuance(relay, _test_issuance(workspace))
+
+    def test_relay_issuance_labels_determine_currency(self, workspace: Path) -> None:
+        relay = SimpleNamespace(relay_container="relay", session_id="project-relay")
+        issuance = _test_issuance(workspace)
+        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+        labels.update(
+            {
+                "booley.role": "license-relay",
+                "booley.session-id": relay.session_id,
+            }
+        )
+        state = {"Config": {"Labels": labels}}
+        with patch.object(sr, "_strict_refresh_container", return_value=state):
+            assert sr._relay_matches_issuance(relay, issuance)
+            labels["booley.spec-digest"] = "older-spec"
+            assert not sr._relay_matches_issuance(relay, issuance)
+
+    def test_preserves_foreign_container(self, workspace: Path) -> None:
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        state = _refresh_state(labels={"booley.role": "interactive"})
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_remove_stopped_session_container") as remove,
+            pytest.raises(sr.SessionError, match="was not modified"),
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, issuance)
+
+        remove.assert_not_called()
 
 
 def _recorded_parked(**overrides) -> sr.ParkedSession:
@@ -2769,14 +2907,33 @@ class TestMangledArgWarning:
         # The warning is advisory: we must not rewrite the user's argv (only the
         # caller knows which arguments are paths). Exec gets exactly what it got.
         cmd = ["python3", "-c", "print(1)", "--out", "C:/Temp/x"]
-        with (
-            patch.object(sr, "up", return_value="booley-session-x"),
-            patch("booley.harness.runtime_attachment.run_command") as run,
-        ):
-            run.return_value = SimpleNamespace(exit_code=0)
-            sr.enter(workspace, cmd, tty=False)
-        assert run.call_args.args[2] == cmd
-        assert run.call_args.kwargs == {"tty": False}
+        with patch.object(sr, "run_project_command", return_value=0) as run:
+            assert sr.enter(workspace, cmd, tty=False) == 0
+        run.assert_called_once_with(workspace, cmd, tty=False)
+
+
+class _ParallelEnterProbe:
+    def __init__(self, command_env: dict[str, str]) -> None:
+        self.command_env = command_env
+        self.first_selecting = threading.Event()
+        self.release_first = threading.Event()
+        self.second_waiting = threading.Event()
+        self.execution_barrier = threading.Barrier(2)
+        self.select_guard = threading.Lock()
+        self.select_calls = 0
+
+    def select_runtime(self, _workspace: Path) -> tuple[str, dict[str, str]]:
+        with self.select_guard:
+            self.select_calls += 1
+            call = self.select_calls
+        if call == 1:
+            self.first_selecting.set()
+            assert self.release_first.wait(timeout=2)
+        return "runtime", self.command_env
+
+    def run_command(self, *_args, **_kwargs) -> SimpleNamespace:
+        self.execution_barrier.wait(timeout=2)
+        return SimpleNamespace(exit_code=0)
 
 
 class TestRunProjectCommand:
@@ -2904,8 +3061,44 @@ class TestRunProjectCommand:
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
 
-        recover.assert_called_once_with(workspace, "booley auth")
+        recover.assert_called_once_with(workspace, None)
         select.assert_not_called()
+
+    def test_parallel_enters_wait_then_execute_concurrently(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness import lifecycle_lock
+
+        probe = _ParallelEnterProbe(self.COMMAND_ENV)
+
+        real_wait = lifecycle_lock.wait_for_file_lock
+
+        def observed_wait(handle, *, timeout_s, on_wait=None) -> None:
+            if probe.first_selecting.is_set():
+                probe.second_waiting.set()
+            real_wait(handle, timeout_s=timeout_s, on_wait=on_wait)
+
+        monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", observed_wait)
+        monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
+        monkeypatch.setattr(sr, "_select_or_start_project_runtime", probe.select_runtime)
+        monkeypatch.setattr(
+            "booley.harness.runtime_attachment.run_command",
+            probe.run_command,
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(sr.enter, workspace, ["bwave", "first"], tty=False)
+            assert probe.first_selecting.wait(timeout=2)
+            second = executor.submit(sr.enter, workspace, ["bwave", "second"], tty=False)
+            assert probe.second_waiting.wait(timeout=2)
+            assert not second.done()
+            probe.release_first.set()
+            assert first.result(timeout=5) == 0
+            assert second.result(timeout=5) == 0
+
+        assert probe.select_calls == 2
 
     def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
         request = self._request(workspace)
@@ -2978,7 +3171,13 @@ class TestEnterAlwaysSetsTERM:
     def _argv(self, workspace: Path, *, tty: bool, term_env: str | None) -> list[str]:
         env = {} if term_env is None else {"TERM": term_env}
         with (
-            patch.object(sr, "up", return_value="booley-session-x"),
+            patch.object(
+                sr,
+                "_select_or_start_project_runtime",
+                return_value=("booley-session-x", {}),
+            ),
+            patch.object(sr, "_recover_before_lifecycle"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch("booley.harness.runtime_attachment.run_command") as run,
             patch.dict(sr.os.environ, env, clear=(term_env is None)),
         ):

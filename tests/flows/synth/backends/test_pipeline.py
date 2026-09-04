@@ -118,6 +118,16 @@ class TestConfigureSynthesis:
         assert "synth -top dut -noabc -flatten" in script
         assert script.count("abc -liberty") == 1
 
+    def test_final_mapped_netlist_gets_a_dedicated_structural_check(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
+
+        check = "tee -q -o ./check_dut.txt check"
+        assert check in script
+        assert script.index("abc -liberty") < script.index(check)
+        assert script.index("opt\n") < script.index(check)
+        assert script.index(check) < script.index("write_verilog")
+
     def test_enabled_define_guard_precedes_mapping(self, tmp_path: Path):
         spec = dataclasses.replace(_spec(tmp_path), defines=("ENABLE_ZBB=1", "TRACE=0"))
         plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
@@ -274,6 +284,41 @@ def _fresh(_path: Path) -> bool:
 
 
 class TestBoundaryOutput:
+    def test_collects_warning_summary_and_final_structural_evidence(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        (plan.build_dir / "yosys.log").write_text(
+            "Warning: found logic loop in module dut:\n    wire \\feedback\n",
+            encoding="utf-8",
+        )
+        (plan.build_dir / "check_dut.txt").write_text(
+            "Warning: multiple conflicting drivers for dut.sig:\n"
+            "    port Q[0] of cell $procdff$1 ($dff)\n"
+            "Found and reported 1 problem.\n",
+            encoding="utf-8",
+        )
+        (plan.build_dir / "openroad.log").write_text(
+            "[WARNING STA-0441] set_input_delay relative to a clock defined "
+            "on the same port/pin not allowed.\n",
+            encoding="utf-8",
+        )
+
+        outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
+
+        assert outcome.diagnostics.warnings.total_warnings == 3
+        assert outcome.diagnostics.structural.complete is True
+        assert outcome.diagnostics.structural.comb_loops == 0
+        assert outcome.diagnostics.structural.multi_driven == 1
+        assert "--- check_dut.txt ---" in outcome.text
+
+    def test_stale_final_check_is_not_complete(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        check = plan.build_dir / "check_dut.txt"
+        check.write_text("Found and reported 0 problems.\n", encoding="utf-8")
+
+        outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: path == check)
+
+        assert outcome.diagnostics.structural.complete is False
+
     def test_emits_delay_marker_from_final_liberty_mapped_abc_log(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
         (plan.build_dir / "log_abc_dut.txt").write_text(

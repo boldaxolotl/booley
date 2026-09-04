@@ -1520,6 +1520,27 @@ def _cleanup_unlicensed_relay(project_root: Path) -> bool:
 _NANGATE_PDK_NOT_REQUESTED = object()
 
 
+def _reconcile_issued_headless_runtime(
+    ctx: InitContext,
+    issuance: object,
+) -> bool:
+    """Reconcile prior stopped runtime state and translate errors into init results."""
+    from booley.harness import session_runtime
+
+    try:
+        reconciled = session_runtime.reconcile_stopped_headless_runtime(
+            ctx.project_root,
+            issuance,
+        )
+    except session_runtime.SessionError as exc:
+        err(f"could not reconcile stopped Session Runtime: {exc}")
+        ctx.record("interactive", "err", str(exc))
+        return False
+    if reconciled:
+        ok("reconciled stopped Session Runtime resources from their prior issuance")
+    return True
+
+
 def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ctx: InitContext,
     *,
@@ -1679,11 +1700,13 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     # Write the untracked spec and hide it (+ .booley_project, .claude) from git history.
     path = dc.write_devcontainer(ctx.project_root, spec)
     try:
-        eda_runtime_spec.issue(ctx.project_root, spec, path)
+        issuance = eda_runtime_spec.issue(ctx.project_root, spec, path)
     except eda_runtime_spec.RuntimeSpecError as exc:
         path.unlink(missing_ok=True)
         err(f"could not issue Session Runtime specification: {exc}")
         ctx.record("interactive", "err", str(exc))
+        return
+    if not _reconcile_issued_headless_runtime(ctx, issuance):
         return
     ok(f"wrote {path.relative_to(ctx.project_root)} (app={app})")
     _report_seeded_mounts(app, bool(auth_source), bool(config_seed), host_skills, mask_paths)
@@ -1872,7 +1895,9 @@ def _print_demo_advisory() -> None:
     """Send the preconfigured demo straight to its documented runtime steps."""
     info("This is the preconfigured PicoRV32 demo — the booley-setup skill does not apply.")
     print()
-    info('  * Open the PicoRV32 folder in VS Code and choose "Reopen in Container"')
+    info("  * Open the PicoRV32 folder in VS Code")
+    info('  * In the popup notification, choose "Reopen in Container"')
+    info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
     info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
     info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
 
@@ -2011,7 +2036,11 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("Booley base setup complete."))
     elif advisory.detail == "demo":
         print(green("Booley demo setup complete."))
-        print(green('Next: open the PicoRV32 folder in VS Code and choose "Reopen in Container".'))
+        print(green("Next: open the PicoRV32 folder in VS Code and use its popup notification"))
+        print(
+            green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
+        )
+        print(green('"Dev Containers: Reopen in Container".'))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))

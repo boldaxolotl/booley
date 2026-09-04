@@ -28,37 +28,70 @@ class ResolvedEditor:
     diff: tuple[str, ...] | None
 
 
-EDITOR_COMMANDS = ("code", "code-insiders", "codium", "cursor", "windsurf")
+@dataclass(frozen=True, slots=True)
+class _EditorSpec:
+    command: str
+    macos_application: str
+    macos_executable: str
+    windows_executable: Path
 
 
-def _editor_install_candidates() -> tuple[tuple[Path, Path], ...]:
-    """Return platform-native applications paired with their launch executables."""
+@dataclass(frozen=True, slots=True)
+class _EditorInstallCandidate:
+    command: str
+    application: Path
+    executable: Path
+    management_command: Path | None
+
+
+_EDITOR_SPECS = (
+    _EditorSpec(
+        "code",
+        "Visual Studio Code.app",
+        "Electron",
+        Path("Programs/Microsoft VS Code/Code.exe"),
+    ),
+    _EditorSpec(
+        "code-insiders",
+        "Visual Studio Code - Insiders.app",
+        "Electron",
+        Path("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"),
+    ),
+    _EditorSpec("codium", "VSCodium.app", "Electron", Path("Programs/VSCodium/VSCodium.exe")),
+    _EditorSpec("cursor", "Cursor.app", "Cursor", Path("Programs/cursor/Cursor.exe")),
+    _EditorSpec("windsurf", "Windsurf.app", "Windsurf", Path("Programs/Windsurf/Windsurf.exe")),
+)
+EDITOR_COMMANDS = tuple(spec.command for spec in _EDITOR_SPECS)
+
+
+def _editor_install_candidates() -> tuple[_EditorInstallCandidate, ...]:
+    """Return platform-native editor installations in selection order."""
     home = Path.home()
     if sys.platform == "darwin":
-        applications = (
-            ("Visual Studio Code.app", "Electron"),
-            ("Visual Studio Code - Insiders.app", "Electron"),
-            ("VSCodium.app", "Electron"),
-            ("Cursor.app", "Cursor"),
-            ("Windsurf.app", "Windsurf"),
-        )
         roots = (Path("/Applications"), home / "Applications")
         return tuple(
-            (application, application / "Contents" / "MacOS" / executable)
+            _EditorInstallCandidate(
+                spec.command,
+                application,
+                application / "Contents" / "MacOS" / spec.macos_executable,
+                None,
+            )
             for root in roots
-            for name, executable in applications
-            for application in (root / name,)
+            for spec in _EDITOR_SPECS
+            for application in (root / spec.macos_application,)
         )
     if sys.platform == "win32":
         local = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
-        relative = (
-            Path("Programs/Microsoft VS Code/Code.exe"),
-            Path("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"),
-            Path("Programs/VSCodium/VSCodium.exe"),
-            Path("Programs/cursor/Cursor.exe"),
-            Path("Programs/Windsurf/Windsurf.exe"),
+        return tuple(
+            _EditorInstallCandidate(
+                spec.command,
+                application,
+                application,
+                application.parent / "bin" / f"{spec.command}.cmd",
+            )
+            for spec in _EDITOR_SPECS
+            for application in (local / spec.windows_executable,)
         )
-        return tuple((local / path, local / path) for path in relative)
     return ()
 
 
@@ -66,9 +99,9 @@ def resolve_editor_install() -> Path | None:
     """Return an installed GUI application when it can be proven on disk."""
     return next(
         (
-            application
-            for application, executable in _editor_install_candidates()
-            if executable.is_file()
+            candidate.application
+            for candidate in _editor_install_candidates()
+            if candidate.executable.is_file()
         ),
         None,
     )
@@ -91,6 +124,31 @@ def resolve_editor_command(
     for command in EDITOR_COMMANDS:
         if found := resolver(command):
             return found
+    return None
+
+
+def resolve_editor_management_command(
+    which: Callable[[str], str | None] | None = None,
+) -> str | None:
+    """Return the management CLI for the highest-priority installed editor."""
+    resolver = which or shutil.which
+    native = _editor_install_candidates()
+    for spec in _EDITOR_SPECS:
+        if command := resolver(spec.command):
+            return command
+        candidate = next(
+            (
+                item
+                for item in native
+                if item.command == spec.command and item.executable.is_file()
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        if candidate.management_command and candidate.management_command.is_file():
+            return str(candidate.management_command)
+        return None
     return None
 
 

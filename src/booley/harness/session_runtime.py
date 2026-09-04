@@ -53,6 +53,8 @@ _HOOK_SHELL = ("bash", "-lc")
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
+_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS = 120.0
+
 
 class SessionError(RuntimeError):
     """A precondition for running the Session Runtime is missing."""
@@ -998,21 +1000,20 @@ def _up_unlocked(
         expected_payload_fingerprint=expected_payload_fingerprint,
     )
     for name in stale_vscode:
-        _remove_stopped_vscode_container(name)
+        _remove_stopped_session_container(name)
     # Last, so it judges the container that actually ended up running (a
     # just-created one trivially matches its image and stays silent).
     _warn_on_stale_session_containers(request.spec, workspace)
     return request.name
 
 
-def _recover_before_lifecycle(workspace: Path, retry_command: str) -> None:
+def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
     from booley.harness.session_refresh import RecoveryOutcome, recover_project_locked
 
     recovered = recover_project_locked(workspace)
     if recovered.outcome is not RecoveryOutcome.NONE:
-        raise SessionError(
-            f"recovered an interrupted Session refresh; run `{retry_command}` again"
-        )
+        retry = f"run `{retry_command}` again" if retry_command else "retry the command"
+        raise SessionError(f"recovered an interrupted Session refresh; {retry}")
 
 
 def up(
@@ -1392,7 +1393,7 @@ def _reconcile_stopped_vscode_containers(
         issuance,
         remove_unavailable_current=remove_unavailable_current,
     ):
-        _remove_stopped_vscode_container(name)
+        _remove_stopped_session_container(name)
 
 
 def _stopped_vscode_reconcile_candidates(
@@ -1434,7 +1435,7 @@ def _stopped_vscode_reconcile_candidates(
     return candidates
 
 
-def _remove_stopped_vscode_container(name: str) -> None:
+def _remove_stopped_session_container(name: str) -> None:
     """Remove one inspected-stopped container without crossing a start race."""
     result = _run(["docker", "rm", name])
     if result.returncode != 0:
@@ -1445,6 +1446,90 @@ def _remove_stopped_vscode_container(name: str) -> None:
             "container and retry"
         )
     logger.info("removed stopped stale Session Runtime %r", name)
+
+
+def reconcile_stopped_headless_runtime(
+    workspace: Path,
+    issuance: Issuance,
+) -> bool:
+    """Remove a stopped headless Runtime that predates *issuance*.
+
+    ``booley init`` regenerates and reissues the Session Runtime spec. A stopped
+    canonical container cannot adopt that new issuance, so preserving it would
+    make the next ``session up`` fail. Active containers are left alone, and the
+    canonical name is never modified until its Project ownership is proven.
+    """
+    name = session_container_name(workspace)
+    project_id = _refresh_project_id(issuance)
+    state = _strict_refresh_container(name)
+    if state is None:
+        return _reconcile_stale_orphan_relay(workspace, issuance, project_id)
+    _assert_refresh_container_owned(name, state, project_id)
+    current = _refresh_candidate_matches(state, issuance)
+    if state["State"]["Running"]:
+        if not current:
+            raise SessionError(
+                f"running Session Runtime {name!r} uses an older host issuance; "
+                "stop it and retry `booley init`"
+            )
+        return False
+    if current:
+        return False
+    _assert_no_other_project_sessions(project_id, excluding=name)
+    _remove_stopped_session_container(name)
+    _reconcile_stale_orphan_relay(workspace, issuance, project_id)
+    logger.info("reconciled stopped headless Session Runtime %r", name)
+    return True
+
+
+def _reconcile_stale_orphan_relay(
+    workspace: Path,
+    issuance: Issuance,
+    project_id: str,
+) -> bool:
+    """Finish removal of relay resources left by an older issuance."""
+    relay = _relay_resources(workspace)
+    if not _relay_objects_exist(relay) or _relay_matches_issuance(relay, issuance):
+        return False
+    _assert_no_other_project_sessions(project_id)
+    _remove_license_relay(relay)
+    return True
+
+
+def _relay_matches_issuance(
+    relay,
+    issuance: Issuance,
+) -> bool:
+    """Whether an existing relay is positively owned by and current for issuance."""
+    state = _strict_refresh_container(relay.relay_container)
+    if state is None:
+        return False
+    labels = _refresh_container_labels(state)
+    if (
+        labels.get("booley.role") != "license-relay"
+        or labels.get("booley.session-id") != relay.session_id
+    ):
+        raise SessionError(
+            f"license relay {relay.relay_container!r} is not owned by this Project; "
+            "it was not modified"
+        )
+    from booley.eda.provisioning import runtime_spec
+
+    expected = set(runtime_spec.labels(issuance))
+    actual = {f"{key}={value}" for key, value in labels.items()}
+    return expected.issubset(actual)
+
+
+def _assert_no_other_project_sessions(project_id: str, *, excluding: str = "") -> None:
+    names = tuple(
+        name for name, _raw in _strict_all_interactive_states(project_id) if name != excluding
+    )
+    if names:
+        joined = ", ".join(repr(name) for name in names)
+        raise SessionError(
+            f"cannot reconcile stale Session Runtime resources while other Project "
+            f"Sessions exist: {joined}; stop them and retry `booley init`"
+        )
 
 
 def _container_has_unavailable_bind(name: str, state: dict) -> bool:
@@ -2000,8 +2085,11 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
     """Run one command in this Project's validated Session Runtime."""
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
-    with host_lifecycle_lock("session command"):
-        _recover_before_lifecycle(workspace, "booley auth")
+    with host_lifecycle_lock(
+        "session command",
+        wait_timeout_s=_SESSION_COMMAND_LOCK_TIMEOUT_SECONDS,
+    ):
+        _recover_before_lifecycle(workspace, None)
         name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
     from booley.harness.runtime_attachment import run_command
@@ -2025,12 +2113,9 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
     first if it exists but is stopped, so this is the one entry point a script
     needs.
     """
-    name = up(workspace)
     if command:
-        _warn_on_mangled_args(command)
-        from booley.harness.runtime_attachment import run_command
-
-        return run_command(workspace, name, list(command), tty=tty).exit_code
+        return run_project_command(workspace, command, tty=tty)
+    name = up(workspace)
     argv = exec_argv(name, ["/bin/bash", "-l"], tty=tty)
     return _run(argv, capture=False).returncode
 
