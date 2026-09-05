@@ -24,6 +24,7 @@ from booley.core.boundary import (
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     resolve_checkout_project_dir,
+    resolve_project_dir,
     runtime_dir,
 )
 from booley.runtime.ticket_repositories import (
@@ -622,8 +623,11 @@ def _worktree_git_command(repository: Path) -> list[str]:
     if recorded.is_dir():
         return ["git"]
     admin_name = recorded.name
-    for parent in (repository, *repository.parents):
-        mounted = parent / ".git" / "worktrees" / admin_name
+    admin_roots = [parent / ".git" for parent in (repository, *repository.parents)]
+    with contextlib.suppress(FileNotFoundError, ValueError):
+        admin_roots.append(resolve_project_dir() / ".git")
+    for admin_root in admin_roots:
+        mounted = admin_root / "worktrees" / admin_name
         if mounted.is_dir():
             return ["git", f"--git-dir={mounted}", f"--work-tree={repository}"]
     return ["git"]
@@ -864,8 +868,14 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
             worktree = None
             branch = None
     match = next((path for path, item_ref in records if item_ref == ref), None)
-    if match is None or match.exists():
+    if match is None:
         return match
+    if match.exists():
+        if _worktree_has_identity(match, ref):
+            return match
+        raise AcceptanceBasisError(
+            f"registered worktree for {ref} at {match} could not prove its Git identity"
+        )
     mounted = _mounted_worktree_path(
         root,
         match,

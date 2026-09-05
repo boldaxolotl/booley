@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -69,12 +70,14 @@ def _stub_worktree_git(
     porcelain: str,
     *,
     ref: str = "refs/heads/demo",
+    top_level: Path | None = None,
 ) -> None:
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[-3:] == ["worktree", "list", "--porcelain"]:
             return subprocess.CompletedProcess(command, 0, porcelain, "")
         if command[-2:] == ["rev-parse", "--show-toplevel"]:
-            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
+            discovered = top_level or kwargs["cwd"]
+            return subprocess.CompletedProcess(command, 0, f"{discovered}\n", "")
         if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
             return subprocess.CompletedProcess(command, 0, f"{ref}\n", "")
         raise AssertionError(command)
@@ -461,6 +464,49 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
         assert_live_inputs_unchanged(basis, root, reference)
 
 
+def test_live_project_worktree_uses_canonical_admin_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "mounted-project-input-drift",
+        TicketFileSpec(
+            summary="Reject mounted project drift",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("mounted-project-input-drift") is True
+    basis = tio.load_basis("mounted-project-input-drift")
+    project_worktree = project_dir / "worktrees/mounted-project-input-drift/.booley_project"
+    mounted = tmp_path / "mounted-project-worktree"
+    shutil.copytree(project_worktree, mounted)
+    dot_git = mounted / ".git"
+    admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    dot_git.write_text(
+        f"gitdir: /host/project/.git/worktrees/{admin_name}\n",
+        encoding="utf-8",
+    )
+    (mounted / "booley.toml").write_text("[flows]\ndrift = true\n", encoding="utf-8")
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    reset_cache()
+    monkeypatch.setattr(
+        acceptance_basis_module,
+        "worktree_for_ref",
+        lambda repository, _ref: (
+            mounted if Path(repository).resolve() == project_dir.resolve() else None
+        ),
+    )
+
+    with pytest.raises(AcceptanceBasisError, match="protected path"):
+        assert_live_inputs_unchanged(basis, root, reference)
+
+
 def test_worktree_discovery_remaps_host_paths_inside_bind_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -496,6 +542,24 @@ def test_worktree_discovery_rejects_ambiguous_bind_mount_paths(
     _stub_worktree_git(monkeypatch, output)
 
     with pytest.raises(AcceptanceBasisError, match="ambiguous"):
+        worktree_for_ref(mounted_root, "refs/heads/demo")
+
+
+def test_worktree_discovery_rejects_existing_path_with_wrong_git_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mounted_root = tmp_path / "work"
+    mounted_ticket = mounted_root / "worktrees/demo"
+    mounted_ticket.mkdir(parents=True)
+    output = (
+        f"worktree {mounted_root}\nHEAD {'a' * 40}\ndetached\n\n"
+        f"worktree {mounted_ticket}\n"
+        f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
+    )
+    _stub_worktree_git(monkeypatch, output, top_level=mounted_root)
+
+    with pytest.raises(AcceptanceBasisError, match="could not prove its Git identity"):
         worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
