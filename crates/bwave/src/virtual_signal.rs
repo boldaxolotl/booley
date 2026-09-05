@@ -936,6 +936,19 @@ pub fn resolve_virtual(
     signal_widths: &[u32],
     prior_virtuals: &[String],
 ) -> Result<ResolvedVirtual, String> {
+    if signal_names.iter().any(|name| name == &def.name) {
+        return Err(format!(
+            "virtual signal name '{}' conflicts with stored signal '{}'",
+            def.name, def.name
+        ));
+    }
+    if prior_virtuals.iter().any(|name| name == &def.name) {
+        return Err(format!(
+            "virtual signal name '{}' is defined more than once",
+            def.name
+        ));
+    }
+
     let resolved = resolve_expr(
         &def.name,
         &def.expr,
@@ -1727,6 +1740,56 @@ mod virtual_tests {
         assert!(res
             .unwrap_err()
             .contains("bit slice not supported on virtual"));
+    }
+
+    #[test]
+    fn test_resolve_rejects_a_stored_signal_name_collision() {
+        let def = parse_virtual_def("tb.rstn = *rstn").unwrap();
+        let names = vec!["tb.rstn".to_string()];
+        let widths = vec![1u32];
+
+        let error = resolve_virtual(&def, &names, &widths, &[]).unwrap_err();
+
+        assert_eq!(
+            error,
+            "virtual signal name 'tb.rstn' conflicts with stored signal 'tb.rstn'"
+        );
+    }
+
+    #[test]
+    fn test_resolve_rejects_a_duplicate_virtual_name() {
+        let def = parse_virtual_def("helper = *rstn").unwrap();
+        let names = vec!["tb.rstn".to_string()];
+        let widths = vec![1u32];
+        let priors = vec!["helper".to_string()];
+
+        let error = resolve_virtual(&def, &names, &widths, &priors).unwrap_err();
+
+        assert_eq!(
+            error,
+            "virtual signal name 'helper' is defined more than once"
+        );
+    }
+
+    #[test]
+    fn test_resolve_allows_a_virtual_name_that_only_suffix_matches_a_stored_signal() {
+        let def = parse_virtual_def("rstn = *rstn").unwrap();
+        let names = vec!["tb.rstn".to_string()];
+        let widths = vec![1u32];
+
+        assert!(resolve_virtual(&def, &names, &widths, &[]).is_ok());
+    }
+
+    #[test]
+    fn test_resolve_reports_a_stored_collision_before_a_duplicate_virtual_name() {
+        let def = parse_virtual_def("tb.rstn = *rstn").unwrap();
+        let names = vec!["tb.rstn".to_string()];
+        let widths = vec![1u32];
+        let priors = vec!["tb.rstn".to_string()];
+
+        let error = resolve_virtual(&def, &names, &widths, &priors).unwrap_err();
+
+        assert!(error.contains("conflicts with stored signal"));
     }
 
     // ---- Evaluation tests ----

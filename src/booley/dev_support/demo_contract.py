@@ -7,18 +7,16 @@ import hashlib
 import subprocess
 import sys
 import tempfile
-import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import (
-    BoundaryError,
-    is_str_list,
-    require_dict,
-    require_int,
-    require_str,
+from booley.dev_support.demo_contract_codec import (
+    DemoContract,
+    DemoContractError,
+    GeneratedInput,
+    RequiredBinding,
+    load_contract,
 )
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.git import scope_matches_file
@@ -27,42 +25,14 @@ from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import find_ticket_file
 from booley.ticket_board.target_contract import criterion_targets
 
-
-class DemoContractError(ValueError):
-    """The demo checkout does not satisfy its CI contract."""
-
-
-@dataclass(frozen=True)
-class RequiredBinding:
-    """One criterion-to-Target binding required by the public demo."""
-
-    criterion: str
-    target: str
-
-
-@dataclass(frozen=True)
-class GeneratedInput:
-    """One ignored artifact prepared for the demo's consuming Targets."""
-
-    path: str
-    producer: str
-    targets: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DemoContract:
-    """Trusted, typed representation of the TOML contract boundary."""
-
-    schema: int
-    upstream_repository: str
-    upstream_ref: str
-    project_repository: str
-    project_ref: str
-    ticket_fixture: str
-    ticket_slug: str
-    required_targets: tuple[str, ...]
-    required_bindings: tuple[RequiredBinding, ...]
-    generated_inputs: tuple[GeneratedInput, ...]
+__all__ = [
+    "DemoContract",
+    "DemoContractError",
+    "GeneratedInput",
+    "RequiredBinding",
+    "load_contract",
+    "validate_demo",
+]
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -73,105 +43,6 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         text=True,
         timeout=60,
         check=check,
-    )
-
-
-def _safe_relative_path(document: Mapping[str, Any], key: str, *, field: str) -> str:
-    value = require_str(document, key)
-    candidate = PurePosixPath(value)
-    if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts:
-        raise BoundaryError(f"{field} must be a safe relative path")
-    return value
-
-
-def _require_trimmed_str(document: Mapping[str, Any], key: str) -> str:
-    """Read a boundary string and reject values containing only whitespace."""
-    value = require_str(document, key).strip()
-    if not value:
-        raise BoundaryError(f"{key} must be a non-empty string")
-    return value
-
-
-def _parse_bindings(document: Mapping[str, Any]) -> tuple[RequiredBinding, ...]:
-    raw_bindings = document.get("required_binding")
-    if not isinstance(raw_bindings, list) or not raw_bindings:
-        raise BoundaryError("required_binding must be a non-empty array of tables")
-    bindings: list[RequiredBinding] = []
-    for index, raw_binding in enumerate(raw_bindings):
-        binding = require_dict(raw_binding, field=f"required_binding[{index}]")
-        try:
-            bindings.append(
-                RequiredBinding(
-                    criterion=require_str(binding, "criterion"),
-                    target=require_str(binding, "target"),
-                )
-            )
-        except BoundaryError as exc:
-            raise BoundaryError(
-                f"required_binding[{index}] must contain criterion and target strings"
-            ) from exc
-    return tuple(bindings)
-
-
-def _parse_generated_inputs(document: Mapping[str, Any]) -> tuple[GeneratedInput, ...]:
-    raw_inputs = document.get("generated_input")
-    if not isinstance(raw_inputs, list) or not raw_inputs:
-        raise BoundaryError("generated_input must be a non-empty array of tables")
-    inputs: list[GeneratedInput] = []
-    for index, raw_input in enumerate(raw_inputs):
-        generated = require_dict(raw_input, field=f"generated_input[{index}]")
-        path_value = _safe_relative_path(generated, "path", field=f"generated_input[{index}].path")
-        producer = _safe_relative_path(
-            generated, "producer", field=f"generated_input[{index}].producer"
-        )
-        consumers = generated.get("targets")
-        if not is_str_list(consumers) or not consumers or not all(consumers):
-            raise BoundaryError(f"generated_input[{index}].targets must be list[str]")
-        inputs.append(GeneratedInput(path_value, producer, tuple(consumers)))
-    return tuple(inputs)
-
-
-def load_contract(path: Path | str) -> DemoContract:
-    """Load and structurally validate a demo contract."""
-    contract_path = Path(path)
-    try:
-        document = tomllib.loads(contract_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise DemoContractError(f"cannot read demo contract: {exc}") from exc
-    try:
-        schema = require_int(document.get("schema"), field="schema")
-        if schema != 1:
-            raise BoundaryError("schema must be 1")
-        upstream_repository = _require_trimmed_str(document, "upstream_repository")
-        upstream_ref = _require_trimmed_str(document, "upstream_ref")
-        project_repository = _require_trimmed_str(document, "project_repository")
-        project_ref = _require_trimmed_str(document, "project_ref")
-        for key, commit in (("upstream_ref", upstream_ref), ("project_ref", project_ref)):
-            if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
-                raise BoundaryError(f"{key} must be a full lowercase Git commit SHA")
-
-        raw_targets = document.get("required_targets")
-        if not is_str_list(raw_targets) or not raw_targets or not all(raw_targets):
-            raise BoundaryError("required_targets must be a non-empty list[str]")
-
-        ticket_fixture = _safe_relative_path(document, "ticket_fixture", field="ticket_fixture")
-        ticket_slug = _require_trimmed_str(document, "ticket_slug")
-        bindings = _parse_bindings(document)
-        generated_inputs = _parse_generated_inputs(document)
-    except BoundaryError as exc:
-        raise DemoContractError(str(exc)) from exc
-
-    return DemoContract(
-        schema=schema,
-        upstream_repository=upstream_repository,
-        upstream_ref=upstream_ref,
-        project_repository=project_repository,
-        project_ref=project_ref,
-        ticket_fixture=ticket_fixture,
-        ticket_slug=ticket_slug,
-        required_targets=tuple(raw_targets),
-        required_bindings=bindings,
-        generated_inputs=generated_inputs,
     )
 
 

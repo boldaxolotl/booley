@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from booley.core.boundary import require_str
+from booley.dev_support.demo_contract_codec import DemoContract, DemoContractError, load_contract
 
 OUTPUT_KEYS = (
     "upstream_repository",
@@ -23,20 +22,30 @@ OUTPUT_KEYS = (
 )
 
 
-def main() -> int:
+def _render_outputs(contract: DemoContract) -> str:
+    lines: list[str] = []
+    for key in OUTPUT_KEYS:
+        value = getattr(contract, key)
+        if not value or "\n" in value or "\r" in value:
+            raise DemoContractError(f"{key} must be a single non-empty output line")
+        lines.append(f"{key}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--contract",
         type=Path,
         default=Path(".github/contracts/picorv32-demo.toml"),
     )
-    args = parser.parse_args()
-    contract = tomllib.loads(args.contract.read_text(encoding="utf-8"))
-    for key in OUTPUT_KEYS:
-        value = require_str(contract, key)
-        if "\n" in value:
-            raise ValueError(f"{key} must be a single non-empty output line")
-        print(f"{key}={value}")
+    args = parser.parse_args(argv)
+    try:
+        output = _render_outputs(load_contract(args.contract))
+    except DemoContractError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    sys.stdout.write(output)
     return 0
 
 

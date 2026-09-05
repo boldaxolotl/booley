@@ -11,6 +11,25 @@ them, but the cost is negligible.
 Defined via `--virtual "name = expr"` on a supported query
 subcommand. Repeatable; definition order controls composition.
 
+## Evaluation and row selection
+
+Every definition is evaluated in declaration order, including
+definitions used only as helpers by later Virtual Signals. On
+the row-producing commands (`wave`, `value`, and `sample`),
+`-s` selects rows from the combined set of stored and Virtual
+Signal names. An unselected helper remains available to later
+definitions without appearing in output.
+
+With no `-s`, the implicit `*` selects every stored and Virtual
+Signal row. Selected stored rows appear in store order, followed
+by selected Virtual Signals in definition order. Overlapping
+patterns do not duplicate rows.
+
+Each Virtual Signal name must be unique and must not exactly
+equal any stored signal's full hierarchical name, including an
+alias. Equality is byte-for-byte and case-sensitive; pattern,
+suffix, and shortened display-name overlap is not a collision.
+
 ## Scope: where `--virtual` works
 
 Accepted on: `wave`, `find`, `sample`, `distance`,
@@ -209,6 +228,11 @@ query results.
 
 Common failure modes:
 
+- **`virtual signal name 'tb.rstn' conflicts with stored
+  signal 'tb.rstn'`**: rename the Virtual Signal; it cannot
+  reuse a stored signal's full name.
+- **`virtual signal name 'helper' is defined more than
+  once`**: give each definition a unique name.
 - **`unknown signal '*foo'`**: typo, or scope mismatch.
   Verify with `bwave list -s "*foo*"`.
 - **`width mismatch: *a is 8 bits, *b is 16 bits`**:
