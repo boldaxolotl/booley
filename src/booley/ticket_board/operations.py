@@ -479,10 +479,6 @@ def _prepare_materialized_basis_view(
     from booley.flows.execution import flow_enabled
     from booley.runtime.project_dir import resolve_checkout_project_dir
     from booley.runtime.project_prepare import prepare_project
-    from booley.runtime.submodule_materialization import (
-        SubmoduleMaterializationError,
-        materialize_ticket_submodules,
-    )
 
     from .acceptance_basis import AcceptanceBasisError, validate_ticket_view
     from .io import find_ticket_file
@@ -491,7 +487,6 @@ def _prepare_materialized_basis_view(
     if ticket is None:
         raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during Basis validation")
     try:
-        materialize_ticket_submodules(tio._project_root, checkout)
         project_dir = resolve_checkout_project_dir(checkout).resolve()
         project_dir.relative_to(checkout.resolve())
         preparation = prepare_project(
@@ -501,7 +496,7 @@ def _prepare_materialized_basis_view(
             ticket_path=ticket,
             sim_flow_enabled=flow_enabled("sim", checkout),
         )
-    except (FileNotFoundError, SubmoduleMaterializationError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         raise AcceptanceBasisError(
             f"cannot prepare materialized Acceptance Basis at {checkout}: {exc}"
         ) from exc

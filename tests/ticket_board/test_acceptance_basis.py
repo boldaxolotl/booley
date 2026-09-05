@@ -369,6 +369,58 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+def test_basis_control_discovery_materializes_historical_submodule_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    _git(dependency, "init", "-b", "main")
+    _git(dependency, "config", "user.name", "Test")
+    _git(dependency, "config", "user.email", "test@example.invalid")
+    (dependency / "old.core").write_text("old\n", encoding="utf-8")
+    _git(dependency, "add", "old.core")
+    _git(dependency, "commit", "-m", "old control")
+    old_dependency = _git(dependency, "rev-parse", "HEAD")
+
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "ip")
+    _git(root / "ip", "checkout", "--detach", old_dependency)
+    _git(root, "add", ".gitmodules", "ip")
+    _git(root, "commit", "-m", "old project control")
+    authoring_sha = _git(root, "rev-parse", "HEAD")
+
+    (dependency / "old.core").unlink()
+    (dependency / "new.core").write_text("new\n", encoding="utf-8")
+    _git(dependency, "add", "-A")
+    _git(dependency, "commit", "-m", "new control")
+    new_dependency = _git(dependency, "rev-parse", "HEAD")
+    _git(
+        root / "ip",
+        "-c",
+        "protocol.file.allow=always",
+        "fetch",
+        str(dependency),
+        new_dependency,
+    )
+    _git(root / "ip", "checkout", "--detach", new_dependency)
+    _git(root, "add", "ip")
+    _git(root, "commit", "-m", "new project control")
+    (root / ".booley_project").mkdir()
+    monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
+    basis = AcceptanceBasis((replace(_participant(), authoring_sha=authoring_sha),))
+
+    def discover(checkout: Path) -> tuple[str, ...]:
+        return tuple(f"ip/{path.name}" for path in sorted((checkout / "ip").glob("*.core")))
+
+    controls = acceptance_basis_module._basis_control_paths(root, basis, discover)
+
+    assert controls == {"ip/new.core", "ip/old.core"}
+
+
 def _enable_isolated_test_core(project_dir: Path) -> None:
     (project_dir / "booley.toml").write_text(
         "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",

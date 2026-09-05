@@ -165,15 +165,9 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
         "booley.runtime.project_prepare.prepare_project",
         lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="prepare failed"),
     )
-    materialized: list[tuple[Path, Path]] = []
-    monkeypatch.setattr(
-        "booley.runtime.submodule_materialization.materialize_ticket_submodules",
-        lambda source, destination: materialized.append((source, destination)),
-    )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
     assert operations.op_handoff(tio, "ticket") is False
     assert "prepare failed" in capsys.readouterr().err
-    assert materialized == [(tio._project_root, tmp_path)]
 
 
 def test_completion_snapshot_rejects_basis_and_selector_drift(
