@@ -58,14 +58,14 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
+def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
     tmp_path: Path,
 ) -> None:
     from booley.criteria.actions import planned_invocation
     from booley.criteria.state import CriterionEntry
-    from booley.harness.setup.intake import _apply_contract_selectors
+    from booley.harness.setup.intake import _apply_basis_selectors
 
-    contract = AcceptanceBasis(
+    basis = AcceptanceBasis(
         bindings=(
             AcceptanceTargetBinding(
                 flow="lint",
@@ -101,7 +101,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         branch="main",
         summary="Qualified target",
         project_root=tmp_path,
-        acceptance_basis=contract,
+        acceptance_basis=basis,
     )
     template = CriteriaTemplate.from_yaml(
         {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
@@ -112,7 +112,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
     }
     criterion_params: dict[str, dict[str, object]] = template.expand_params([])
 
-    _apply_contract_selectors(ctx, template, expanded, criterion_params)
+    _apply_basis_selectors(ctx, template, expanded, criterion_params)
 
     assert criterion_params == {
         "lint_clean_acme:ip:uart:1.0#lint_uart": {
@@ -136,10 +136,10 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
 
 
 def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _apply_contract_selectors
+    from booley.harness.setup.intake import _apply_basis_selectors
 
     identity = "acme:ip:uart:1.0#sim_uart"
-    contract = AcceptanceBasis(
+    basis = AcceptanceBasis(
         bindings=(
             AcceptanceTargetBinding(
                 flow="sim",
@@ -167,7 +167,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
         branch="main",
         summary="Derived review target",
         project_root=tmp_path,
-        acceptance_basis=contract,
+        acceptance_basis=basis,
     )
     template = CriteriaTemplate.from_yaml(
         {
@@ -180,7 +180,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
     expanded = template.expand(["sim_uart"])
     params = template.expand_params(["sim_uart"])
 
-    _apply_contract_selectors(ctx, template, expanded, params)
+    _apply_basis_selectors(ctx, template, expanded, params)
 
     assert params["review_tb_quality_clean"] == {
         "target": identity,
@@ -210,7 +210,7 @@ def _write_progress(project_root: Path, slug: str, data: dict):
 def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
     from booley.harness.setup.intake import _verify_acceptance_basis
 
-    contract = AcceptanceBasis(
+    basis = AcceptanceBasis(
         participants=(
             BasisParticipant(
                 "outer",
@@ -230,7 +230,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
         criteria={"mandatory": {}},
         project_root=tmp_path,
         base_sha="a" * 40,
-        acceptance_basis=contract,
+        acceptance_basis=basis,
     )
 
     with (
@@ -243,7 +243,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
 
     validate_refs.assert_called_once_with(
         tmp_path,
-        contract,
+        basis,
         slug="sealed-ticket",
         destination_branch="main",
     )
@@ -292,7 +292,7 @@ async def test_basis_intake_defers_criteria_until_workspace_materialization(
     project_root: Path,
     sample_ticket: Path,
 ) -> None:
-    contract = AcceptanceBasis(
+    basis = AcceptanceBasis(
         participants=(
             BasisParticipant(
                 role="outer",
@@ -305,13 +305,13 @@ async def test_basis_intake_defers_criteria_until_workspace_materialization(
     )
     fields = {
         **_MINIMAL_FIELDS,
-        "acceptance_basis": contract.as_dict(),
+        "acceptance_basis": basis.as_dict(),
     }
     _mock_cli_defaults(mock_cli, fields=fields)
     from booley.harness.setup.intake import run
 
     with (
-        patch("booley.ticket_board.io.TicketIO.load_basis", return_value=contract),
+        patch("booley.ticket_board.io.TicketIO.load_basis", return_value=basis),
         patch("booley.harness.setup.intake._verify_acceptance_basis"),
         patch("booley.harness.setup.intake._init_criteria_state") as init_state,
     ):

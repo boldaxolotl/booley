@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,9 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.targets.declared_inputs import referenced_program_paths
+from booley.ticket_board import (
+    acceptance_basis as acceptance_basis_module,
+)
 from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
@@ -69,6 +73,12 @@ def test_minimal_basis_round_trips_through_ticket_frontmatter() -> None:
     assert set(fields["acceptance_basis"]) == {"schema", "participants"}
 
 
+@pytest.mark.parametrize("schema", [True, 1.0])
+def test_basis_constructor_rejects_non_integer_schema(schema: object) -> None:
+    with pytest.raises(AcceptanceBasisError, match="schema must be 1"):
+        AcceptanceBasis((_participant(),), schema=schema)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("section", ["mandatory", "optional"])
 def test_canonical_binding_preserves_full_criterion_path(
     tmp_path: Path,
@@ -97,6 +107,7 @@ def test_canonical_binding_preserves_full_criterion_path(
     "mapping, message",
     [
         ({"schema": 2, "participants": []}, "schema must be 1"),
+        ({"schema": True, "participants": []}, "must be an integer"),
         ({"schema": 1, "participants": [], "digest": "x"}, "exactly"),
         (
             {
@@ -171,6 +182,48 @@ def test_authored_record_rejects_malformed_remove_targets() -> None:
             "body",
             (),
         )
+
+
+def test_record_rejects_boolean_schema_and_empty_binding() -> None:
+    record = authored_ticket_record(
+        {"summary": "demo", "type": "feature", "branch": "main"},
+        "body",
+        (),
+    )
+    record["schema"] = True
+    with pytest.raises(AcceptanceBasisError, match="must be an integer"):
+        acceptance_basis_module._validate_record(record)
+
+    record["schema"] = 1
+    record["bindings"] = [
+        {
+            "flow": "",
+            "criterion": "criteria.mandatory.synthesis_ok",
+            "baseline_identity": "acme:lib:toy#synth",
+            "baseline_selector": "synth",
+            "candidate_identity": "acme:lib:toy#synth",
+            "candidate_selector": "synth",
+        }
+    ]
+    with pytest.raises(AcceptanceBasisError, match="flow must be a non-empty string"):
+        acceptance_basis_module._validate_record(record)
+
+
+def test_committed_record_must_match_project_participant_destination() -> None:
+    basis = AcceptanceBasis((_participant("outer"), _participant("project")))
+    record = {
+        "ticket": {
+            "frontmatter": {
+                "branch": "main",
+                "project_destination_ref": "refs/heads/alternate",
+                "on_success": {},
+            }
+        },
+        "bindings": [],
+    }
+
+    with pytest.raises(AcceptanceBasisError, match="project destination disagrees"):
+        basis.with_record(record)
 
 
 def test_no_manual_contract_commands_remain() -> None:
@@ -504,6 +557,136 @@ def test_enqueue_retry_rolls_forward_after_ticket_ref_publication(
     monkeypatch.setattr(basis_publication, "_write", write_journal)
     assert tio.enqueue_ticket("transaction") is True
     assert basis_publication.load_basis_publication(root, "transaction") is None
+
+
+def test_enqueue_retry_tolerates_retired_temporary_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _project_dir, tio = _prepared_ticket(tmp_path)
+    write_receipt = acceptance_basis_module.write_basis_receipt
+    interrupted = False
+
+    def interrupt_receipt(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise OSError("after basis commit publication")
+        return write_receipt(*args, **kwargs)
+
+    monkeypatch.setattr(acceptance_basis_module, "write_basis_receipt", interrupt_receipt)
+    assert tio.enqueue_ticket("transaction") is False
+    assert basis_publication.load_basis_publication(root, "transaction") is not None
+
+    monkeypatch.setattr(acceptance_basis_module, "write_basis_receipt", write_receipt)
+    assert tio.enqueue_ticket("transaction") is True
+    assert basis_publication.load_basis_publication(root, "transaction") is None
+
+
+def test_basis_publication_journal_rejects_boolean_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    monkeypatch.setattr(
+        acceptance_basis_module,
+        "write_basis_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after basis publication")),
+    )
+    assert tio.enqueue_ticket("transaction") is False
+    path = project_dir / ".runtime/acceptance/basis-publication/transaction.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["schema"] = True
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(basis_publication.BasisPublicationError, match="must be an integer"):
+        basis_publication.load_basis_publication(root, "transaction")
+
+
+def test_basis_receipt_rejects_boolean_schema(tmp_path: Path) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
+    assert tio.enqueue_ticket("transaction") is True
+    queued = project_dir / "tickets/board/queue/transaction.md"
+    fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    path = project_dir / f".runtime/acceptance/bases/transaction/{basis.basis_id}.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["schema"] = True
+    path.write_bytes(acceptance_basis_module.canonical_json(value))
+
+    with pytest.raises(AcceptanceBasisError, match="receipt mismatch"):
+        tio.load_basis("transaction")
+
+
+def test_enqueue_retry_rejects_changed_effective_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
+    first_policy = {
+        "destination": "review",
+        "merge": True,
+        "cleanup": True,
+        "triage_report": True,
+        "remove_targets": [],
+    }
+    second_policy = {**first_policy, "cleanup": False}
+
+    monkeypatch.setattr(
+        acceptance_basis_module,
+        "write_basis_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after basis publication")),
+    )
+    assert tio.enqueue_ticket("transaction", on_success=first_policy) is False
+
+    assert tio.enqueue_ticket("transaction", on_success=second_policy) is False
+    assert "effective Ticket fields changed" in capsys.readouterr().err
+    assert (project_dir / "tickets/board/drafts/transaction.md").exists()
+
+
+def test_enqueue_retry_recovers_matching_orphan_record_without_staged_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    publish = basis_publication.publish_basis_commits
+    interrupted = False
+
+    def interrupt_before_journal(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise OSError("before publication journal")
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_ops, "publish_basis_commits", interrupt_before_journal)
+    assert tio.enqueue_ticket("transaction") is False
+    assert basis_publication.load_basis_publication(root, "transaction") is None
+    workspace = project_dir / "worktrees/transaction"
+    assert _git(workspace, "diff", "--cached", "--name-only") == ""
+
+    monkeypatch.setattr(workspace_ops, "publish_basis_commits", publish)
+    assert tio.enqueue_ticket("transaction") is True
+
+
+def test_paired_publication_rejects_changed_workspace_upstream(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, project_dir, tio = _paired_basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "paired-routing",
+        TicketFileSpec(
+            summary="Pin paired routing",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    project_workspace = project_dir / "worktrees/paired-routing/.booley_project"
+    _git(project_dir, "branch", "alternate")
+    branch = _git(project_workspace, "branch", "--show-current")
+    _git(project_workspace, "branch", "--set-upstream-to=alternate", branch)
+
+    assert tio.enqueue_ticket("paired-routing") is False
+    assert "upstream changed after authoring" in capsys.readouterr().err
 
 
 def test_basis_reset_uses_preflighted_expected_head_cas(tmp_path: Path) -> None:

@@ -69,7 +69,7 @@ def _install_scope_hook(
     scope: list[str],
     *,
     project_root: Path | None = None,
-    contract_surface_root: Path | None = None,
+    acceptance_surface_root: Path | None = None,
 ) -> None:
     """Write .scope.json and install the scope pre-commit hook (always) plus the
     stealth commit-msg hook (unless ``[stealth] enabled = false``)."""
@@ -78,7 +78,7 @@ def _install_scope_hook(
 
         require_project_checkout(project_root)
     scope_file = worktree_path / ".scope.json"
-    controls = _hook_acceptance_controls(worktree_path, contract_surface_root)
+    controls = _hook_acceptance_controls(worktree_path, acceptance_surface_root)
     scope_file.write_text(
         json.dumps({"scope": scope, "acceptance_control": controls}, indent=2) + "\n",
         encoding="utf-8",
@@ -121,7 +121,7 @@ def _install_scope_hook(
 
 
 def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
-    """Translate sealed surface paths for the repository receiving the hook."""
+    """Translate basis-bound surface paths for the repository receiving the hook."""
     root = surface_root or worktree_path
     try:
         from booley.ticket_board.acceptance_targets import acceptance_control_paths
@@ -674,7 +674,7 @@ def _current_ticket_path(ctx: TicketContext) -> Path | None:
 def _validate_materialized_acceptance_basis(
     ctx: TicketContext, worktree_path: Path
 ) -> StepResult | None:
-    """Validate the sealed surface after disposable checkouts are materialized."""
+    """Validate the basis-bound surface after disposable checkouts are materialized."""
     if ctx.acceptance_basis is None:
         return None
     from booley.ticket_board.acceptance_basis import (
@@ -720,9 +720,9 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
 
-    contract_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
-    if contract_failure is not None:
-        return contract_failure
+    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
+    if basis_failure is not None:
+        return basis_failure
 
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
     if project_worktree is not None:
@@ -730,7 +730,7 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
             project_worktree,
             project_repository_scope(ctx.scope_raw),
             project_root=project_root,
-            contract_surface_root=worktree_path,
+            acceptance_surface_root=worktree_path,
         )
     return None
 

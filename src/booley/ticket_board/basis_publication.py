@@ -9,17 +9,26 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_list,
+    require_str,
+)
 from booley.runtime.project_dir import runtime_dir
 
-from .acceptance_basis import AcceptanceBasis, BasisParticipant
+from .acceptance_basis import (
+    AcceptanceBasis,
+    BasisParticipant,
+    valid_branch_ref,
+    valid_ticket_ref,
+)
 from .acceptance_targets import AcceptanceTargetBinding
 from .persistence import atomic_replace_bytes
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
 _SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
-_REF_RE = re.compile(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*")
-_TICKET_REF_PREFIX = "refs/heads/booley-generation/"
 
 
 class BasisPublicationError(RuntimeError):
@@ -47,6 +56,7 @@ class BasisPublicationJournal:
     operation_id: str
     slug: str
     source_sha256: str
+    effective_sha256: str
     participants: tuple[ParticipantPreparation, ...]
     bindings: tuple[dict[str, str], ...]
     removal_targets: tuple[str, ...]
@@ -110,62 +120,54 @@ def load_basis_publication(project_root: Path, slug: str) -> BasisPublicationJou
     if not path.exists():
         return None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        mapping = require_dict(value, field="basis publication journal")
-        expected = set(BasisPublicationJournal.__dataclass_fields__)
-        if set(mapping) != expected or mapping.get("schema") != 1:
-            raise BoundaryError("basis publication journal has invalid fields or schema")
-        operation_id = require_str(mapping, "operation_id")
-        if not _OPERATION_RE.fullmatch(operation_id):
-            raise BoundaryError("basis publication operation ID is invalid")
-        source_sha256 = require_str(mapping, "source_sha256")
-        if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
-            raise BoundaryError("basis publication source digest is invalid")
-        participants = tuple(
-            _parse_participant(item, index)
-            for index, item in enumerate(
-                require_list(mapping.get("participants"), field="basis publication participants")
-            )
-        )
-        bindings = tuple(
-            _parse_binding(item, index)
-            for index, item in enumerate(
-                require_list(mapping.get("bindings"), field="basis publication bindings")
-            )
-        )
-        removals = tuple(
-            _string_item(item, f"basis publication removal_targets[{index}]")
-            for index, item in enumerate(
-                require_list(
-                    mapping.get("removal_targets"),
-                    field="basis publication removal_targets",
-                )
-            )
-        )
-        prepared = _sha_map(mapping.get("prepared"), "prepared")
-        published = tuple(
-            _string_item(item, f"basis publication published[{index}]")
-            for index, item in enumerate(
-                require_list(mapping.get("published"), field="basis publication published")
-            )
-        )
-        journal = BasisPublicationJournal(
-            1,
-            operation_id,
-            require_str(mapping, "slug"),
-            source_sha256,
-            participants,
-            bindings,
-            removals,
-            prepared,
-            published,
-        )
+        journal = _parse_journal(json.loads(path.read_text(encoding="utf-8")))
     except (BoundaryError, OSError, json.JSONDecodeError) as exc:
         raise BasisPublicationError(
             f"basis publication journal is unreadable: {path}: {exc}"
         ) from exc
     _validate_journal(journal, slug)
     return journal
+
+
+def _parse_journal(value: Any) -> BasisPublicationJournal:
+    mapping = require_dict(value, field="basis publication journal")
+    if set(mapping) != set(BasisPublicationJournal.__dataclass_fields__):
+        raise BoundaryError("basis publication journal has invalid fields or schema")
+    schema = require_int(mapping.get("schema"), field="basis publication schema")
+    operation_id = require_str(mapping, "operation_id")
+    digests = (
+        require_str(mapping, "source_sha256"),
+        require_str(mapping, "effective_sha256"),
+    )
+    if schema != 1 or not _OPERATION_RE.fullmatch(operation_id):
+        raise BoundaryError("basis publication journal has invalid identity or schema")
+    if not all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in digests):
+        raise BoundaryError("basis publication input digest is invalid")
+    return BasisPublicationJournal(
+        schema=schema,
+        operation_id=operation_id,
+        slug=require_str(mapping, "slug"),
+        source_sha256=digests[0],
+        effective_sha256=digests[1],
+        participants=_parse_items(mapping, "participants", _parse_participant),
+        bindings=_parse_items(mapping, "bindings", _parse_binding),
+        removal_targets=_parse_strings(mapping, "removal_targets"),
+        prepared=_sha_map(mapping.get("prepared"), "prepared"),
+        published=_parse_strings(mapping, "published"),
+    )
+
+
+def _parse_items(mapping: dict, key: str, parser: Any) -> tuple:
+    values = require_list(mapping.get(key), field=f"basis publication {key}")
+    return tuple(parser(item, index) for index, item in enumerate(values))
+
+
+def _parse_strings(mapping: dict, key: str) -> tuple[str, ...]:
+    values = require_list(mapping.get(key), field=f"basis publication {key}")
+    return tuple(
+        _string_item(item, f"basis publication {key}[{index}]")
+        for index, item in enumerate(values)
+    )
 
 
 def _parse_participant(value: Any, index: int) -> ParticipantPreparation:
@@ -185,11 +187,9 @@ def _parse_participant(value: Any, index: int) -> ParticipantPreparation:
     for key in ("destination_sha", "expected_old_sha", "tree_sha"):
         if not _SHA_RE.fullmatch(getattr(participant, key)):
             raise BoundaryError(f"{field}.{key} is invalid")
-    if not participant.ticket_ref.startswith(_TICKET_REF_PREFIX) or not _valid_ref(
-        participant.ticket_ref
-    ):
+    if not valid_ticket_ref(participant.ticket_ref):
         raise BoundaryError(f"{field}.ticket_ref is not a generation-qualified ref")
-    if not _valid_ref(participant.destination_ref):
+    if not valid_branch_ref(participant.destination_ref):
         raise BoundaryError(f"{field}.destination_ref is not a full branch ref")
     return participant
 
@@ -202,18 +202,10 @@ def _parse_binding(value: Any, index: int) -> dict[str, str]:
         raise BoundaryError(f"{field} has invalid fields")
     result = {key: require_str(mapping, key) for key in expected}
     try:
-        _ = AcceptanceTargetBinding(**result).criterion_key
+        _ = AcceptanceTargetBinding(**result).validate_persisted()
     except (TypeError, ValueError) as exc:
         raise BoundaryError(f"{field} is invalid: {exc}") from exc
     return result
-
-
-def _valid_ref(value: str) -> bool:
-    return (
-        bool(_REF_RE.fullmatch(value))
-        and not any(token in value for token in ("..", "//", "@{", "\\"))
-        and not value.endswith(("/", ".", ".lock"))
-    )
 
 
 def _sha_map(value: Any, label: str) -> dict[str, str]:
@@ -250,6 +242,7 @@ def publish_basis_commits(
     project_root: Path,
     slug: str,
     source_sha256: str,
+    effective_sha256: str,
     repositories: dict[str, Path],
     *,
     operation_id: str | None = None,
@@ -260,26 +253,68 @@ def publish_basis_commits(
     """Prepare and CAS-publish participant commits, resuming any prior journal."""
     journal = load_basis_publication(project_root, slug)
     if journal is None:
-        if operation_id is None or not _OPERATION_RE.fullmatch(operation_id):
-            raise BasisPublicationError("basis publication operation ID is invalid")
-        if participants is None or bindings is None or removal_targets is None:
-            raise BasisPublicationError("new basis publication is missing prepared inputs")
-        journal = BasisPublicationJournal(
-            1,
-            operation_id,
+        journal = _new_journal(
             slug,
             source_sha256,
+            effective_sha256,
+            operation_id,
             participants,
-            tuple(binding.as_dict() for binding in bindings),
+            bindings,
             removal_targets,
-            {},
-            (),
         )
-        _validate_journal(journal, slug)
         _write(project_root, journal)
     else:
-        _validate_resume(journal, source_sha256, participants, bindings, removal_targets)
+        _validate_resume(
+            journal,
+            source_sha256,
+            effective_sha256,
+            participants,
+            bindings,
+            removal_targets,
+        )
     _validate_repositories(journal, repositories)
+    journal = _prepare_participant_commits(project_root, repositories, journal)
+    basis = _basis(journal)
+    journal = _publish_participant_commits(project_root, repositories, journal)
+    _publish_basis_keepalives(repositories, basis)
+    _retire_temporary_keepalives(repositories, journal)
+    return basis, journal.operation_id
+
+
+def _new_journal(
+    slug: str,
+    source_sha256: str,
+    effective_sha256: str,
+    operation_id: str | None,
+    participants: tuple[ParticipantPreparation, ...] | None,
+    bindings: tuple[AcceptanceTargetBinding, ...] | None,
+    removal_targets: tuple[str, ...] | None,
+) -> BasisPublicationJournal:
+    if operation_id is None or not _OPERATION_RE.fullmatch(operation_id):
+        raise BasisPublicationError("basis publication operation ID is invalid")
+    if participants is None or bindings is None or removal_targets is None:
+        raise BasisPublicationError("new basis publication is missing prepared inputs")
+    journal = BasisPublicationJournal(
+        schema=1,
+        operation_id=operation_id,
+        slug=slug,
+        source_sha256=source_sha256,
+        effective_sha256=effective_sha256,
+        participants=participants,
+        bindings=tuple(binding.as_dict() for binding in bindings),
+        removal_targets=removal_targets,
+        prepared={},
+        published=(),
+    )
+    _validate_journal(journal, slug)
+    return journal
+
+
+def _prepare_participant_commits(
+    project_root: Path,
+    repositories: dict[str, Path],
+    journal: BasisPublicationJournal,
+) -> BasisPublicationJournal:
     plans = {item.role: item for item in journal.participants}
     for role, sha in journal.prepared.items():
         _validate_prepared_commit(
@@ -289,32 +324,42 @@ def publish_basis_commits(
             sha,
         )
     for plan in journal.participants:
-        if plan.role not in journal.prepared:
-            sha = _recover_or_create_commit(repositories[plan.role], journal.operation_id, plan)
-            journal = journal.with_prepared(plan.role, sha)
-            _write(project_root, journal)
-    basis = _basis(journal)
+        if plan.role in journal.prepared:
+            continue
+        sha = _recover_or_create_commit(repositories[plan.role], journal.operation_id, plan)
+        journal = journal.with_prepared(plan.role, sha)
+        _write(project_root, journal)
+    return journal
+
+
+def _publish_participant_commits(
+    project_root: Path,
+    repositories: dict[str, Path],
+    journal: BasisPublicationJournal,
+) -> BasisPublicationJournal:
+    plans = {item.role: item for item in journal.participants}
     for role in (item for item in ("project", "outer") if item in repositories):
         if role in journal.published:
             continue
-        plan = next(item for item in journal.participants if item.role == role)
-        _publish_ticket_ref(repositories[role], plan, journal.prepared[role])
+        _publish_ticket_ref(repositories[role], plans[role], journal.prepared[role])
+        _require_git(repositories[role], "read-tree", journal.prepared[role])
         journal = journal.with_published(role)
         _write(project_root, journal)
-    _publish_basis_keepalives(repositories, basis)
-    _retire_temporary_keepalives(repositories, journal)
-    return basis, journal.operation_id
+    return journal
 
 
 def _validate_resume(
     journal: BasisPublicationJournal,
     source_sha256: str,
+    effective_sha256: str,
     participants: tuple[ParticipantPreparation, ...] | None,
     bindings: tuple[AcceptanceTargetBinding, ...] | None,
     removal_targets: tuple[str, ...] | None,
 ) -> None:
     if journal.source_sha256 != source_sha256:
         raise BasisPublicationError("Ticket draft changed during basis publication")
+    if journal.effective_sha256 != effective_sha256:
+        raise BasisPublicationError("effective Ticket fields changed during basis publication")
     if participants is not None and participants != journal.participants:
         raise BasisPublicationError("basis publication participant inputs changed")
     if bindings is not None and tuple(item.as_dict() for item in bindings) != journal.bindings:
@@ -437,11 +482,22 @@ def _retire_temporary_keepalives(
     repositories: dict[str, Path], journal: BasisPublicationJournal
 ) -> None:
     for role, sha in journal.prepared.items():
+        ref = _temporary_ref(journal.operation_id, role)
+        existing = _git(
+            repositories[role], "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"
+        )
+        if existing.returncode == 1:
+            continue
+        if existing.returncode != 0:
+            detail = (existing.stderr or existing.stdout).strip() or "no diagnostic"
+            raise BasisPublicationError(f"could not inspect temporary enqueue ref {ref}: {detail}")
+        if existing.stdout.strip() != sha:
+            raise BasisPublicationError(f"temporary enqueue ref {ref} changed")
         _require_git(
             repositories[role],
             "update-ref",
             "-d",
-            _temporary_ref(journal.operation_id, role),
+            ref,
             sha,
         )
 

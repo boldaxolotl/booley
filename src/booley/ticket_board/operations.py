@@ -1352,14 +1352,10 @@ def op_reset(
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
     project_root = Path(getattr(tio, "_project_root", ""))
-    if (
-        entry.get("status") == "blocked"
-        and entry.get("acceptance_basis") is None
-        and (project_root / ".git").exists()
-    ):
+    if entry.get("acceptance_basis") is None and (project_root / ".git").exists():
         print(
-            f"Error: blocked ticket '{slug}' has no Acceptance Basis; return it to draft "
-            "and enqueue a new generation.",
+            f"Error: ticket '{slug}' has no Acceptance Basis; return it to draft and "
+            "enqueue a new generation.",
             file=sys.stderr,
         )
         return False

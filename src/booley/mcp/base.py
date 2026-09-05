@@ -779,7 +779,7 @@ class McpTool(ABC):
         return targets
 
     def _bound_criterion_keys(self, target: str) -> list[str]:
-        """Return sealed criteria this endpoint/Target invocation can update."""
+        """Return basis-bound criteria this endpoint/Target invocation can update."""
         criterion_target = target
         target_identity: str | None = None
         try:

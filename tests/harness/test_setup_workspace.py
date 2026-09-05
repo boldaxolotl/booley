@@ -70,10 +70,10 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 
 class TestMaterializedAcceptanceBasis:
     def _context(self, tmp_path: Path) -> MagicMock:
-        contract = MagicMock()
-        contract.as_dict.return_value = {"schema": 3}
+        basis = MagicMock()
+        basis.as_dict.return_value = {"schema": 3}
         ctx = MagicMock(
-            acceptance_basis=contract,
+            acceptance_basis=basis,
             base_sha="a" * 40,
             criteria={"mandatory": {}},
         )

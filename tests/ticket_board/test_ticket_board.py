@@ -2479,6 +2479,15 @@ class TestOpReset:
         assert progress.get("failed_step") is None
         assert progress["workspace_intent"] == "fresh"
 
+    def test_git_backed_reset_rejects_any_executable_ticket_without_basis(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        (tmp_path / ".git").mkdir()
+        queue = make_ticket_in_dir(tio, "queue", "legacy-queue")
+
+        assert op_reset(tio, "legacy-queue") is False
+        assert queue.exists()
+        assert "has no Acceptance Basis" in capsys.readouterr().err
+
     def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
         from booley.ticket_board import operations as operations_module
         from booley.ticket_board.acceptance_basis import AcceptanceBasisError

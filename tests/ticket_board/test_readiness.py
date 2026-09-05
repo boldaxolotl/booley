@@ -19,6 +19,17 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def _remove_ticket_worktree(root: Path) -> Path:
+    paths = [
+        Path(line.removeprefix("worktree "))
+        for line in _git(root, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    ]
+    [workspace] = [path for path in paths if path.resolve() != root.resolve()]
+    _git(root, "worktree", "remove", "--force", str(workspace))
+    return workspace
+
+
 def test_check_ticket_ready_prepares_generated_target_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -82,6 +93,8 @@ targets:
     )
     assert draft is not None
     assert tio.enqueue_ticket("demo") is True
+    workspace = _remove_ticket_worktree(root)
+    assert not workspace.exists()
     ticket = project / "tickets" / "board" / "queue" / "demo.md"
     ticket_before = ticket.read_bytes()
     resolved_roots: list[Path] = []

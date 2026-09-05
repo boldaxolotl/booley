@@ -297,6 +297,7 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
         "summary: Demo\n"
         "type: feature\n"
         "branch: main\n"
+        "project_destination_ref: refs/heads/main\n"
         "scope: [README.md]\n"
         "criteria: {mandatory: {review_rtl_bugs: true}}\n"
         "---\n\n"

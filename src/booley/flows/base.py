@@ -174,13 +174,13 @@ class BooleyFlow(McpTool):
         try:
             ticket_path = Path(ticket_file)
             project_root = detect_project_root()
-            contract = TicketIO(
+            basis = TicketIO(
                 resolve_project_dir(project_root) / "tickets",
                 project_root=project_root,
             ).load_basis(ticket_path.stem, runtime_ticket_path=ticket_path)
-            self._acceptance_basis = contract
+            self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
-            assert_inputs_unchanged(contract, work_dir)
+            assert_inputs_unchanged(basis, work_dir)
         except (OSError, AcceptanceBasisError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,

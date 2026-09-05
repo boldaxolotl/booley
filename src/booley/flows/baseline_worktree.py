@@ -227,16 +227,16 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
 
         ticket_path = Path(ticket_file)
         project_root = detect_project_root()
-        contract = TicketIO(
+        basis = TicketIO(
             resolve_project_dir(project_root) / "tickets",
             project_root=project_root,
         ).load_basis(ticket_path.stem, runtime_ticket_path=ticket_path)
-        if contract is not None and contract.project_sha:
+        if basis is not None and basis.project_sha:
             try:
-                return resolve_commit(project_worktree, contract.project_sha)
+                return resolve_commit(project_worktree, basis.project_sha)
             except ValueError as exc:
                 raise BaselineWorktreeError(
-                    f"recorded paired project contract cannot be resolved: {exc}"
+                    f"recorded paired project Acceptance Basis cannot be resolved: {exc}"
                 ) from exc
     upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
     if upstream.returncode != 0:

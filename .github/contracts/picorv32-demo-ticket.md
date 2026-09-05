@@ -2,6 +2,7 @@
 summary: Add opt-in RV32 Zbb PCPI co-processor
 type: feature
 branch: main
+project_destination_ref: refs/heads/main
 scope:
   - picorv32.v
   - testbench.v

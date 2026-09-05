@@ -17,7 +17,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.fusesoc import fusesoc_registry
 from booley.harness.models import TicketContext
-from booley.harness.setup.intake import _apply_contract_selectors
+from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
@@ -82,7 +82,7 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def _sealed_contract() -> AcceptanceBasis:
+def _acceptance_basis() -> AcceptanceBasis:
     return AcceptanceBasis(
         bindings=(
             AcceptanceTargetBinding(
@@ -124,9 +124,9 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         branch="main",
         summary="Qualified Cycle Count Target",
         project_root=Path(),
-        acceptance_basis=_sealed_contract(),
+        acceptance_basis=_acceptance_basis(),
     )
-    _apply_contract_selectors(context, template, expanded, params)
+    _apply_basis_selectors(context, template, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = object.__new__(SimulateFlow)

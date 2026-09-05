@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_list,
+    require_str,
+)
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
@@ -85,7 +91,11 @@ class AcceptancePathPolicy:
     schema: int = SCHEMA_VERSION
 
     def discover(self, project_root: Path | str) -> tuple[str, ...]:
-        if self.schema != SCHEMA_VERSION:
+        if (
+            not isinstance(self.schema, int)
+            or isinstance(self.schema, bool)
+            or self.schema != SCHEMA_VERSION
+        ):
             raise AcceptanceBasisError(f"unsupported Acceptance Path Policy {self.schema}")
         from .acceptance_targets import acceptance_control_paths
 
@@ -130,7 +140,11 @@ class AcceptanceBasis:
     schema: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema != SCHEMA_VERSION:
+        if (
+            not isinstance(self.schema, int)
+            or isinstance(self.schema, bool)
+            or self.schema != SCHEMA_VERSION
+        ):
             raise AcceptanceBasisError(
                 f"acceptance_basis.schema must be {SCHEMA_VERSION}, got {self.schema!r}"
             )
@@ -155,7 +169,11 @@ class AcceptanceBasis:
             raise AcceptanceBasisError(
                 "acceptance_basis must contain exactly schema and participants"
             )
-        if data.get("schema") != SCHEMA_VERSION:
+        try:
+            schema = require_int(data.get("schema"), field="acceptance_basis.schema")
+        except BoundaryError as exc:
+            raise AcceptanceBasisError(str(exc)) from exc
+        if schema != SCHEMA_VERSION:
             raise AcceptanceBasisError(
                 f"acceptance_basis.schema must be {SCHEMA_VERSION}, got {data.get('schema')!r}"
             )
@@ -192,11 +210,36 @@ class AcceptanceBasis:
 
     def with_record(self, record: Mapping[str, Any]) -> AcceptanceBasis:
         bindings = tuple(_binding_from_record(row) for row in record.get("bindings", ()))
-        on_success = record.get("ticket", {}).get("frontmatter", {}).get("on_success", {})
+        frontmatter = record.get("ticket", {}).get("frontmatter", {})
+        if not isinstance(frontmatter, Mapping):
+            raise AcceptanceBasisError("Acceptance Basis record frontmatter is invalid")
+        _validate_record_routing(self, frontmatter)
+        on_success = frontmatter.get("on_success", {})
         removals = (
             tuple(on_success.get("remove_targets", ())) if isinstance(on_success, Mapping) else ()
         )
         return AcceptanceBasis(self.participants, bindings, removals, self.schema)
+
+
+def _validate_record_routing(basis: AcceptanceBasis, frontmatter: Mapping[str, Any]) -> None:
+    destination = frontmatter.get("branch")
+    outer = basis.participant("outer")
+    if not isinstance(destination, str) or outer.destination_ref != f"refs/heads/{destination}":
+        raise AcceptanceBasisError(
+            "Acceptance Basis outer destination disagrees with its committed Ticket record"
+        )
+    project = next((item for item in basis.participants if item.role == "project"), None)
+    project_destination = frontmatter.get("project_destination_ref")
+    if project is None:
+        if project_destination is not None:
+            raise AcceptanceBasisError(
+                "Acceptance Basis record declares a project destination without a participant"
+            )
+        return
+    if not isinstance(project_destination, str) or project.destination_ref != project_destination:
+        raise AcceptanceBasisError(
+            "Acceptance Basis project destination disagrees with its committed Ticket record"
+        )
 
 
 def _parse_participant(value: Any, index: int) -> BasisParticipant:
@@ -220,19 +263,25 @@ def _parse_participant(value: Any, index: int) -> BasisParticipant:
         raise AcceptanceBasisError(f"{field}.role must be outer or project")
     if not _COMMIT_RE.fullmatch(authoring_sha) or not _COMMIT_RE.fullmatch(destination_sha):
         raise AcceptanceBasisError(f"{field} commit identities must be full Git SHAs")
-    if not ticket_ref.startswith(TICKET_REF_PREFIX + "/") or not _valid_ref(ticket_ref):
+    if not valid_ticket_ref(ticket_ref):
         raise AcceptanceBasisError(f"{field}.ticket_ref is not a generation-qualified ref")
-    if not _valid_ref(destination_ref):
+    if not valid_branch_ref(destination_ref):
         raise AcceptanceBasisError(f"{field}.destination_ref must be a full branch ref")
     return BasisParticipant(role, authoring_sha, ticket_ref, destination_ref, destination_sha)
 
 
-def _valid_ref(value: str) -> bool:
+def valid_branch_ref(value: str) -> bool:
+    """Return whether *value* is a canonical full local branch ref."""
     return (
         bool(_SAFE_REF_RE.fullmatch(value))
         and not any(token in value for token in ("..", "//", "@{", "\\"))
         and not value.endswith(("/", ".", ".lock"))
     )
+
+
+def valid_ticket_ref(value: str) -> bool:
+    """Return whether *value* is a generation-qualified Ticket branch ref."""
+    return value.startswith(TICKET_REF_PREFIX + "/") and valid_branch_ref(value)
 
 
 def canonical_json(value: Any) -> bytes:
@@ -299,8 +348,6 @@ def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
-    if not isinstance(value, Mapping):
-        raise AcceptanceBasisError("Acceptance Basis binding must be a mapping")
     expected = {
         "flow",
         "criterion",
@@ -309,19 +356,19 @@ def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
         "candidate_identity",
         "candidate_selector",
     }
-    if set(value) != expected or not all(isinstance(value[key], str) for key in expected):
-        raise AcceptanceBasisError("Acceptance Basis binding has an invalid schema")
-    binding = AcceptanceTargetBinding(
-        flow=value["flow"],
-        criterion=value["criterion"],
-        baseline=value["baseline_identity"],
-        candidate=value["candidate_identity"],
-        baseline_selector=value["baseline_selector"],
-        candidate_selector=value["candidate_selector"],
-    )
     try:
-        _ = binding.criterion_key
-    except ValueError as exc:
+        mapping = require_dict(value, field="Acceptance Basis binding")
+        if set(mapping) != expected:
+            raise BoundaryError("Acceptance Basis binding has an invalid schema")
+        binding = AcceptanceTargetBinding(
+            flow=require_str(mapping, "flow"),
+            criterion=require_str(mapping, "criterion"),
+            baseline=require_str(mapping, "baseline_identity"),
+            candidate=require_str(mapping, "candidate_identity"),
+            baseline_selector=require_str(mapping, "baseline_selector"),
+            candidate_selector=require_str(mapping, "candidate_selector"),
+        ).validate_persisted()
+    except (BoundaryError, ValueError) as exc:
         raise AcceptanceBasisError(str(exc)) from exc
     return binding
 
@@ -376,7 +423,11 @@ def _validate_record(value: Any) -> None:
         raise AcceptanceBasisError(str(exc)) from exc
     if set(record) != {"schema", "ticket", "bindings"}:
         raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
-    if record.get("schema") != RECORD_SCHEMA_VERSION:
+    try:
+        schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    if schema != RECORD_SCHEMA_VERSION:
         raise AcceptanceBasisError("Acceptance Basis record has an unsupported schema")
     if set(ticket) != {"frontmatter", "body"} or not isinstance(body, str):
         raise AcceptanceBasisError("Acceptance Basis record.ticket has an invalid schema")
@@ -506,6 +557,7 @@ def _validate_receipt(
         raise AcceptanceBasisError(f"Acceptance Basis receipt is unavailable: {path}") from exc
     try:
         actual = require_dict(decoded, field="Acceptance Basis receipt")
+        receipt_schema = require_int(actual.get("schema"), field="Acceptance Basis receipt.schema")
         source_identity = require_str(actual, "source_sha256")
         operation_identity = require_str(actual, "operation_id")
     except BoundaryError as exc:
@@ -522,7 +574,12 @@ def _validate_receipt(
         re.fullmatch(r"[0-9a-f]{64}", source_identity) is not None
         and re.fullmatch(r"[0-9a-f]{32}", operation_identity) is not None
     )
-    if not identities_valid or actual != expected or canonical_json(actual) != path.read_bytes():
+    if (
+        receipt_schema != SCHEMA_VERSION
+        or not identities_valid
+        or actual != expected
+        or canonical_json(actual) != path.read_bytes()
+    ):
         raise AcceptanceBasisError(f"{BLOCK_REASON}: Acceptance Basis receipt mismatch")
     return actual
 
@@ -591,12 +648,7 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
         ) from exc
     with tempfile.TemporaryDirectory(prefix="booley-basis-controls-") as raw_directory:
         baseline = Path(raw_directory) / "outer"
-        _clone_commit(root, baseline, basis.outer_sha)
-        project = next((row for row in basis.participants if row.role == "project"), None)
-        if project is not None:
-            source = _project_repository(root)
-            project_relative = checkout_project_dir_relative_to(root)
-            _clone_commit(source, baseline / project_relative, project.authoring_sha)
+        materialize_basis_checkout(root, basis, baseline)
         try:
             current.update(discover(baseline))
         except (FileNotFoundError, OSError, ValueError) as exc:
@@ -604,6 +656,23 @@ def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> s
                 f"{BLOCK_REASON}: protected-input discovery failed in {baseline}: {exc}"
             ) from exc
     return current
+
+
+def materialize_basis_checkout(
+    project_root: Path | str,
+    basis: AcceptanceBasis,
+    destination: Path | str,
+) -> Path:
+    """Materialize the immutable outer and paired-project commits for inspection."""
+    root = Path(project_root).resolve()
+    checkout = Path(destination)
+    _clone_commit(root, checkout, basis.outer_sha)
+    project = next((row for row in basis.participants if row.role == "project"), None)
+    if project is not None:
+        source = _project_repository(root)
+        project_relative = checkout_project_dir_relative_to(root)
+        _clone_commit(source, checkout / project_relative, project.authoring_sha)
+    return checkout
 
 
 def _project_repository(root: Path) -> Path:

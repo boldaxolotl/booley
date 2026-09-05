@@ -528,14 +528,14 @@ class TicketIO:
         slug = ticket_path.stem
         with ticket_path.open(encoding="utf-8") as stream:
             fields, _body = parse_frontmatter(stream.read())
-        contract_errors = self._validate_enqueue_contract(slug, fields)
-        if contract_errors:
+        basis_errors = self._validate_enqueue_basis(slug, fields)
+        if basis_errors:
             print(
                 "Error: acceptance-input-change-required: ticket must have a published "
                 "Acceptance Basis before fresh execution:",
                 file=sys.stderr,
             )
-            for error in contract_errors:
+            for error in basis_errors:
                 print(f"  - {error}", file=sys.stderr)
             return None
 
@@ -646,19 +646,23 @@ class TicketIO:
         file_path = drafts_dir / f"{slug}.md"
 
         created = self._atomic_write_ticket(file_path, fields, body)
-        if created is not None and (self._project_root / ".git").exists():
-            try:
-                worktrees = TicketWorkspace.ensure_authoring(self._project_root, created, slug)
-                print(f"Ticket workspace: {worktrees.outer}")
-                if worktrees.project is not None:
-                    print(f"Project workspace: {worktrees.project}")
-            except (RuntimeError, ValueError, OSError) as exc:
-                print(
-                    f"Warning: ticket draft was created but its workspace could not be "
-                    f"materialized: {exc}",
-                    file=sys.stderr,
-                )
+        self._materialize_ticket_workspace(created, slug)
         return created
+
+    def _materialize_ticket_workspace(self, ticket: Path | None, slug: str) -> None:
+        if ticket is None or not (self._project_root / ".git").exists():
+            return
+        try:
+            worktrees = TicketWorkspace.ensure_authoring(self._project_root, ticket, slug)
+            print(f"Ticket workspace: {worktrees.outer}")
+            if worktrees.project is not None:
+                print(f"Project workspace: {worktrees.project}")
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(
+                "Warning: ticket draft was created but its workspace could not be "
+                f"materialized: {exc}",
+                file=sys.stderr,
+            )
 
     @staticmethod
     def _atomic_write_ticket(file_path: Path, fields: dict[str, Any], body: str) -> Path | None:
@@ -851,9 +855,9 @@ class TicketIO:
         except (RuntimeError, ValueError, OSError) as exc:
             self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
             return None
-        contract_errors = self._validate_enqueue_contract(slug, effective_fields)
-        if contract_errors:
-            self._print_enqueue_errors("ticket Acceptance Basis is invalid", contract_errors)
+        basis_errors = self._validate_enqueue_basis(slug, effective_fields)
+        if basis_errors:
+            self._print_enqueue_errors("ticket Acceptance Basis is invalid", basis_errors)
             return None
         return effective_fields, body, receipt
 
@@ -961,7 +965,7 @@ class TicketIO:
 
         return resolve_project_dir(self._project_root) / "worktrees" / slug
 
-    def _validate_enqueue_contract(self, slug: str, fields: dict[str, Any]) -> list[str]:
+    def _validate_enqueue_basis(self, slug: str, fields: dict[str, Any]) -> list[str]:
         """Require durable basis refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities

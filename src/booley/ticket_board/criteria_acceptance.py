@@ -164,7 +164,7 @@ def _sim_contract_requirements(
     registry: dict[str, dict],
     selected: set[str],
 ) -> tuple[set[str], int | None]:
-    """Resolve required names and minimum count from a sealed simulation criterion."""
+    """Resolve required names and minimum count from a basis-bound simulation criterion."""
     from booley.config.project_config import lookup_target_section
     from booley.criteria.actions import criterion_target
 
@@ -275,9 +275,7 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
         if (entry.params or {}).get("from_state") == "fail" and not (
             _has_matching_failing_evidence(entry)
         ):
-            reason = (
-                "sealed fail -> pass transition has no matching fingerprinted failing evidence"
-            )
+            reason = "basis-bound fail -> pass transition has no matching fingerprinted failing evidence"
         elif key.startswith("sim_pass"):
             reason = registry_error or _sim_evidence_error(key, entry, registry)
         if reason is None:
@@ -354,7 +352,7 @@ def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], no
             entry,
             categories=categories,
             now=now,
-            reason=f"Reviewer Target contract can no longer be resolved: {exc}",
+            reason=f"Reviewer Target requirement can no longer be resolved: {exc}",
             dimensions=["target_surface"],
         )
     if not changed:
@@ -364,7 +362,7 @@ def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], no
         categories=categories,
         now=now,
         reason=(
-            "Reviewer contract changed after the recorded verdict "
+            "Reviewer requirement changed after the recorded verdict "
             f"({', '.join(changed)}); re-run Reviewer."
         ),
         dimensions=changed,

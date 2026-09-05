@@ -266,7 +266,7 @@ def _build_rules_section(
 
 
 def _has_baseline_relative_qor_criteria(criteria: dict[str, Any] | None) -> bool:
-    """Return whether ticket criteria require a sealed-recipe QoR baseline."""
+    """Return whether ticket criteria require a basis-bound QoR baseline."""
     if not criteria:
         return False
     for section_name in ("mandatory", "optional"):

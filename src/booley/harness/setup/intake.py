@@ -403,7 +403,7 @@ def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
         raise FatalError(f"acceptance-input-change-required: {'; '.join(errors)}", slug=ctx.slug)
 
 
-def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
+def _acceptance_basis_fields(ctx: TicketContext) -> dict[str, Any]:
     return ctx.acceptance_basis_fields()
 
 
@@ -461,7 +461,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     category_overrides = template.category_overrides(targets)
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
-    _apply_contract_selectors(ctx, template, expanded, criterion_params)
+    _apply_basis_selectors(ctx, template, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
@@ -527,7 +527,7 @@ def _reject_retired_criteria(ctx: TicketContext, expanded: dict[str, bool]) -> N
         )
 
 
-def _apply_contract_selectors(
+def _apply_basis_selectors(
     ctx: TicketContext,
     template: CriteriaTemplate,
     expanded: dict[str, bool],
@@ -538,7 +538,7 @@ def _apply_contract_selectors(
     if basis is None:
         return
     for key in expanded:
-        unique = _matching_contract_bindings(
+        unique = _matching_basis_bindings(
             basis.bindings,
             criterion_key=key,
             authored=criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM),
@@ -558,7 +558,7 @@ def _apply_contract_selectors(
     _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
 
 
-def _matching_contract_bindings(
+def _matching_basis_bindings(
     bindings: tuple[AcceptanceTargetBinding, ...],
     *,
     criterion_key: str,
@@ -606,7 +606,7 @@ def _derive_scalar_tb_review_binding(
     }
     owners: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for authored in sorted(authored_targets):
-        unique = _matching_contract_bindings(
+        unique = _matching_basis_bindings(
             basis.bindings,
             criterion_key="sim_pass",
             authored=authored,

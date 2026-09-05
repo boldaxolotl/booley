@@ -303,7 +303,7 @@ async def _run_setup_step(ctx: TicketContext, project_root: Path) -> bool:
     return False
 
 
-def _resumed_contract_failure(ctx: TicketContext) -> str | None:
+def _resumed_basis_failure(ctx: TicketContext) -> str | None:
     """Return a setup-blocking error when a reused Acceptance Basis view is invalid."""
     if ctx.acceptance_basis is None:
         return None
@@ -316,7 +316,7 @@ def _resumed_contract_failure(ctx: TicketContext) -> str | None:
 
 
 def _deferred_criteria_failure(ctx: TicketContext) -> str | None:
-    """Initialize sealed criteria after setup, returning a blocking error."""
+    """Initialize basis-bound criteria after setup, returning a blocking error."""
     if not ctx.criteria_state_needs_init:
         return None
     from .setup.intake import _init_criteria_state
@@ -370,9 +370,9 @@ async def _run_ticket_body(
             return None
 
     if resume_uses_existing_setup:
-        contract_failure = _resumed_contract_failure(ctx)
-        if contract_failure is not None:
-            block_ticket(ctx, contract_failure, "setup")
+        basis_failure = _resumed_basis_failure(ctx)
+        if basis_failure is not None:
+            block_ticket(ctx, basis_failure, "setup")
             await _prepare_blocked_triage(ctx, project_root)
             return None
 
@@ -872,7 +872,7 @@ async def _discover_mcp_surface(
 
 
 def _validate_required_endpoints_available(criteria: dict, mcp_tool_names: list[str]) -> None:
-    """Fail early when a ticket-contract Flow or Specialist was not discovered."""
+    """Fail early when a required Flow or Specialist was not discovered."""
     required = _builtin_endpoints_required_by_criteria(criteria) | {"submit_run_report"}
     missing = sorted(required - set(mcp_tool_names))
     if not missing:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from booley.runtime.ticket_repositories import resolve_inner_project_repo
 from .acceptance_basis import (
     AcceptanceBasisError,
     assert_inputs_unchanged,
+    materialize_basis_checkout,
 )
 from .acceptance_targets import resolve_commit, validate_binding_selectors
 from .frontmatter import parse_frontmatter
@@ -88,9 +90,16 @@ def _validate_checkout_basis(
                 )
             resolve_commit(project_repository, basis.project_sha)
         inspection_root = _worktree_for_ref(root, basis.participant("outer").ticket_ref)
-        authoring_root = inspection_root or root
-        assert_inputs_unchanged(basis, authoring_root)
-        selector_errors = validate_binding_selectors(authoring_root, basis.bindings)
+        if inspection_root is not None:
+            assert_inputs_unchanged(basis, inspection_root)
+            selector_errors = validate_binding_selectors(inspection_root, basis.bindings)
+        else:
+            with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
+                authoring_root = materialize_basis_checkout(
+                    root, basis, Path(directory) / "checkout"
+                )
+                assert_inputs_unchanged(basis, authoring_root)
+                selector_errors = validate_binding_selectors(authoring_root, basis.bindings)
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
     return selector_errors

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -132,7 +133,11 @@ class BasisResetPlan:
     requested_branch: str
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(
+    cwd: Path,
+    *args: str,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", *args],
@@ -141,6 +146,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             text=True,
             timeout=120,
             check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AcceptanceBasisOperationError(
@@ -148,8 +154,12 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
-def _require_git(cwd: Path, *args: str) -> str:
-    result = _git(cwd, *args)
+def _require_git(
+    cwd: Path,
+    *args: str,
+    environment: dict[str, str] | None = None,
+) -> str:
+    result = _git(cwd, *args, environment=environment)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise AcceptanceBasisOperationError(
@@ -674,11 +684,18 @@ def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:
 
 
 def _validate_authoring_changes(
-    repository: Path, surface_root: Path, project_repository: bool
+    repository: Path,
+    surface_root: Path,
+    project_repository: bool,
+    recovery_paths: set[str],
 ) -> list[str]:
     changed = _status_paths(repository)
     manifest = _local_manifest_paths(surface_root, project_repository)
-    invalid = [path for path in changed if not _is_authoring_path(repository, path, manifest)]
+    invalid = [
+        path
+        for path in changed
+        if path not in recovery_paths and not _is_authoring_path(repository, path, manifest)
+    ]
     if invalid:
         raise AcceptanceBasisOperationError(
             "Ticket Workspace contains non-authoring changes: " + ", ".join(invalid)
@@ -687,15 +704,23 @@ def _validate_authoring_changes(
 
 
 def _staged_tree(repository: Path, paths: list[str]) -> tuple[str, str]:
-    """Stage validated authoring paths and return the parent and tree identities."""
-    if paths:
-        # Contract paths have already passed the manifest policy above. Force
-        # them through user/global ignore rules because integrated projects
-        # commonly hide ``.booley_project/`` while still tracking its control
-        # files explicitly.
-        _require_git(repository, "add", "-f", "--", *paths)
+    """Build a tree in an isolated index, leaving the authoring index untouched."""
     parent = _full_commit(repository, "HEAD")
-    return parent, _require_git(repository, "write-tree")
+    with tempfile.TemporaryDirectory(prefix="booley-basis-index-") as directory:
+        environment = dict(os.environ)
+        environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
+        _require_git(repository, "read-tree", parent, environment=environment)
+        if paths:
+            _require_git(
+                repository,
+                "add",
+                "-f",
+                "--",
+                *paths,
+                environment=environment,
+            )
+        tree = _require_git(repository, "write-tree", environment=environment)
+    return parent, tree
 
 
 def _basis_validation(
@@ -770,11 +795,28 @@ def _prepare_basis(
     if not outer.is_dir():
         raise AcceptanceBasisOperationError(f"Ticket Workspace is not open: {outer}")
     _prepare_workspace_project(root, outer, ticket, slug)
-    outer_changes = _validate_authoring_changes(outer, outer, project_repository=False)
     paired = paired_project_repository(outer)
     project = paired.worktree if paired is not None else None
+    record_path = (
+        record_relative_path(outer, project_participant=project is not None) / f"{slug}.json"
+    ).as_posix()
+    outer_recovery = {record_path} if project is None else set()
+    project_recovery = {record_path} if project is not None else set()
+    outer_changes = _validate_authoring_changes(
+        outer,
+        outer,
+        project_repository=False,
+        recovery_paths=outer_recovery,
+    )
     project_changes = (
-        _validate_authoring_changes(project, outer, True) if project is not None else []
+        _validate_authoring_changes(
+            project,
+            outer,
+            True,
+            recovery_paths=project_recovery,
+        )
+        if project is not None
+        else []
     )
     errors = _basis_validation(
         fields,
@@ -812,13 +854,27 @@ def _participant_preparations(
     ]
     if prepared.project is not None:
         project_parent, project_tree = _staged_tree(prepared.project, prepared.project_changes)
-        upstream = _require_git(prepared.project, "rev-parse", "--abbrev-ref", "@{upstream}")
+        project_destination = fields.get("project_destination_ref")
+        if not isinstance(project_destination, str) or not project_destination.startswith(
+            "refs/heads/"
+        ):
+            raise AcceptanceBasisOperationError(
+                "paired Ticket has no canonical project_destination_ref"
+            )
+        upstream = _require_git(
+            prepared.project, "rev-parse", "--symbolic-full-name", "@{upstream}"
+        )
+        if upstream != project_destination:
+            raise AcceptanceBasisOperationError(
+                "paired Ticket Workspace upstream changed after authoring; "
+                f"expected {project_destination}, found {upstream}"
+            )
         participants.append(
             ParticipantPreparation(
                 role="project",
                 ticket_ref=f"refs/heads/{_current_branch(prepared.project)}",
-                destination_ref=f"refs/heads/{upstream}",
-                destination_sha=_full_commit(prepared.project, upstream),
+                destination_ref=project_destination,
+                destination_sha=_full_commit(prepared.project, project_destination),
                 expected_old_sha=project_parent,
                 tree_sha=project_tree,
                 message=f"chore({slug}): publish project Acceptance Basis",
@@ -876,18 +932,20 @@ def prepare_acceptance_basis(
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    if effective_fields is not None:
+        fields = effective_fields
+    effective_sha256 = hashlib.sha256(canonical_json({"fields": fields, "body": body})).hexdigest()
     existing = load_basis_publication(root, slug)
     if existing is not None:
         return publish_basis_commits(
             root,
             slug,
             source_sha256,
+            effective_sha256,
             _authoring_repositories(root, slug),
         )
     prepared = _prepare_basis(project_root, ticket_path, slug)
-    fields, body = parse_frontmatter(prepared.ticket.read_text(encoding="utf-8"))
-    if effective_fields is not None:
-        fields = effective_fields
     basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
     bindings, removals = basis_inputs
     participants = _participant_preparations(slug, fields, prepared)
@@ -895,6 +953,7 @@ def prepare_acceptance_basis(
         root,
         slug,
         source_sha256,
+        effective_sha256,
         _authoring_repositories(root, slug),
         operation_id=secrets.token_hex(16),
         participants=participants,
@@ -1065,17 +1124,27 @@ def reset_basis_worktrees(
         raise AcceptanceBasisOperationError(
             "Acceptance Basis reset plan does not match this request"
         )
-    source = current_plan.project_source
-    outer = current_plan.outer_worktree
+    _apply_basis_reset(current_plan, basis, slug)
+
+
+def _apply_basis_reset(
+    plan: BasisResetPlan,
+    basis: AcceptanceBasis,
+    slug: str,
+) -> None:
+    """Apply one fully validated reset plan, preserving publish-last ordering."""
+    root = plan.root
+    source = plan.project_source
+    outer = plan.outer_worktree
     _remove_authoring_worktrees(
         root,
         outer,
-        current_plan.paired_worktree,
+        plan.paired_worktree,
         source,
     )
     publication_order = {"project": 0, "outer": 1}
     for item in sorted(
-        current_plan.participants,
+        plan.participants,
         key=lambda row: publication_order[row.participant.role],
     ):
         _require_git(
@@ -1093,7 +1162,7 @@ def reset_basis_worktrees(
         root,
         basis,
         slug=slug,
-        destination_branch=requested_branch,
+        destination_branch=plan.requested_branch,
         exact_ticket_heads=True,
     )
     if errors:
@@ -1119,13 +1188,33 @@ def preflight_basis_reset(
         destination_branch=requested_branch,
     )
     outer = resolve_project_dir(root) / "worktrees" / slug
+    paired = paired_project_repository(outer) if outer.is_dir() else None
+    _validate_reset_worktrees(root, source, outer, paired, basis)
+    reset_participants = _reset_participants(root, source, basis, heads)
+    return BasisResetPlan(
+        root,
+        source,
+        outer,
+        paired,
+        reset_participants,
+        basis.basis_id,
+        requested_branch,
+    )
+
+
+def _validate_reset_worktrees(
+    root: Path,
+    source: Path | None,
+    outer: Path,
+    paired: TicketRepository | None,
+    basis: AcceptanceBasis,
+) -> None:
     outer_participant = basis.participant("outer")
     outer_branch = outer_participant.ticket_ref.removeprefix("refs/heads/")
     if outer.exists() and not _worktree_owns_branch(root, outer, outer_branch):
         raise AcceptanceBasisOperationError(
             f"Ticket Workspace {outer} does not own {outer_participant.ticket_ref}"
         )
-    paired = paired_project_repository(outer) if outer.is_dir() else None
     if paired is not None:
         if source is None:
             raise AcceptanceBasisOperationError(
@@ -1138,6 +1227,14 @@ def preflight_basis_reset(
                 f"paired Ticket Workspace {paired.worktree} does not own "
                 f"{project_participant.ticket_ref}"
             )
+
+
+def _reset_participants(
+    root: Path,
+    source: Path | None,
+    basis: AcceptanceBasis,
+    heads: dict[str, str],
+) -> tuple[_ResetParticipant, ...]:
     reset_participants: list[_ResetParticipant] = []
     for participant in basis.participants:
         repository = root if participant.role == "outer" else source
@@ -1148,15 +1245,7 @@ def preflight_basis_reset(
         reset_participants.append(
             _ResetParticipant(repository, participant, heads[participant.role])
         )
-    return BasisResetPlan(
-        root,
-        source,
-        outer,
-        paired,
-        tuple(reset_participants),
-        basis.basis_id,
-        requested_branch,
-    )
+    return tuple(reset_participants)
 
 
 def _validate_reset_project_source(source: Path | None, basis: AcceptanceBasis) -> None:

@@ -46,6 +46,28 @@ class AcceptanceTargetBinding:
     baseline_selector: str = ""
     candidate_selector: str = ""
 
+    def validate_persisted(self) -> AcceptanceTargetBinding:
+        """Reject incomplete or non-canonical values at persistence boundaries."""
+        values = {
+            "flow": self.flow,
+            "criterion": self.criterion,
+            "baseline": self.baseline,
+            "candidate": self.candidate,
+            "baseline_selector": self.baseline_selector,
+            "candidate_selector": self.candidate_selector,
+        }
+        invalid = [
+            name
+            for name, value in values.items()
+            if not isinstance(value, str) or not value.strip() or value != value.strip()
+        ]
+        if invalid:
+            raise ValueError(
+                "Acceptance Target binding requires canonical non-empty " + ", ".join(invalid)
+            )
+        _ = self.criterion_key
+        return self
+
     @property
     def criterion_key(self) -> str:
         """Return the criterion name from its persisted full frontmatter path."""
