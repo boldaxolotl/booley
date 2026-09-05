@@ -47,10 +47,10 @@ from .basis_publication import (
 )
 from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
+from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
 from .validation import validate_ticket_fields
 
-_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _GENERATION_PREFIX = "booley-generation"
 
 
@@ -516,8 +516,10 @@ def ensure_ticket_workspace(
     slug: str,
 ) -> AuthoringWorkspace:
     """Create the outer and optional project-data authoring worktrees."""
-    if not _SAFE_SLUG_RE.fullmatch(slug):
-        raise AcceptanceBasisOperationError(f"unsafe ticket slug: {slug!r}")
+    try:
+        validate_ticket_slug(slug)
+    except TicketSlugError as exc:
+        raise AcceptanceBasisOperationError(str(exc)) from exc
     root = Path(project_root).resolve()
     fields, _body = parse_frontmatter(Path(ticket_path).read_text(encoding="utf-8"))
     branch = fields.get("branch")

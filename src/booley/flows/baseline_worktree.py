@@ -222,18 +222,24 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
     if ticket_file:
         from booley.runtime.project_dir import resolve_project_dir
         from booley.ticket_board.acceptance_targets import resolve_commit
-        from booley.ticket_board.helpers import detect_project_root
+        from booley.ticket_board.helpers import (
+            TicketSlugError,
+            detect_project_root,
+            resolve_runtime_ticket_slug,
+        )
         from booley.ticket_board.io import TicketIO
 
         ticket_path = Path(ticket_file)
+        try:
+            slug = resolve_runtime_ticket_slug(ticket_path)
+        except TicketSlugError as exc:
+            raise BaselineWorktreeError(str(exc)) from exc
         project_root = detect_project_root()
         basis = TicketIO(
             resolve_project_dir(project_root) / "tickets",
             project_root=project_root,
         ).load_basis(
-            os.environ.get("BOOLEY_SLUG")
-            or os.environ.get("BOOLEY_TICKET_SLUG")
-            or ticket_path.stem,
+            slug,
             runtime_ticket_path=ticket_path,
         )
         if basis is not None and basis.project_sha:

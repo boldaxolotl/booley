@@ -215,6 +215,62 @@ class TestBooleyFlowExecution:
         assert rejected.exit_code == EXIT_ERROR
         assert "acceptance-input-change-required" in rejected.report_text
 
+    def test_acceptance_basis_uses_nonblank_runtime_ticket_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import runtime_context
+
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text("ticket\n", encoding="utf-8")
+        loaded_slugs = []
+        basis = _flow_acceptance_basis()
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
+
+        def load_basis(_tio, slug, **_kwargs):
+            loaded_slugs.append(slug)
+            return basis
+
+        monkeypatch.setattr(
+            "booley.ticket_board.io.TicketIO.load_basis",
+            load_basis,
+        )
+        monkeypatch.setattr(
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        monkeypatch.setenv("BOOLEY_SLUG", "   ")
+        monkeypatch.setenv("BOOLEY_TICKET_SLUG", "actual-ticket")
+
+        flow = EchoFlow()
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+
+        assert flow._pre_state_gate() is None
+        assert loaded_slugs == ["actual-ticket"]
+
+    def test_acceptance_basis_rejects_unsafe_runtime_ticket_slug_before_loading(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import runtime_context
+
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text("ticket\n", encoding="utf-8")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        load_basis = patch("booley.ticket_board.io.TicketIO.load_basis")
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        monkeypatch.setenv("BOOLEY_SLUG", "../../outside")
+
+        flow = EchoFlow()
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+        with load_basis as load:
+            rejected = flow._pre_state_gate()
+
+        assert rejected is not None
+        assert rejected.exit_code == EXIT_ERROR
+        assert "unsafe ticket slug" in rejected.report_text
+        load.assert_not_called()
+
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         from booley.criteria.state import DevelopmentState

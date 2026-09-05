@@ -19,6 +19,29 @@ from booley.runtime.timefmt import format_human_datetime, parse_timestamp, utc_n
 
 is_pid_alive = runtime_pid.is_pid_alive
 
+_SAFE_TICKET_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+class TicketSlugError(ValueError):
+    """A ticket slug from an external boundary is unsafe."""
+
+
+def validate_ticket_slug(slug: str) -> str:
+    """Return *slug* when it is safe for refs and project-relative paths."""
+    if not _SAFE_TICKET_SLUG_RE.fullmatch(slug):
+        raise TicketSlugError(f"unsafe ticket slug: {slug!r}")
+    return slug
+
+
+def resolve_runtime_ticket_slug(ticket_path: Path) -> str:
+    """Resolve and validate the Ticket Mode slug from its environment boundary."""
+    slug = (
+        os.environ.get("BOOLEY_SLUG", "").strip()
+        or os.environ.get("BOOLEY_TICKET_SLUG", "").strip()
+        or ticket_path.stem
+    )
+    return validate_ticket_slug(slug)
+
 
 def lock_fd(f: IO) -> None:
     """Compatibility wrapper for the runtime-owned lock primitive."""

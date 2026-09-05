@@ -49,6 +49,18 @@ def test_paired_project_basis_uses_runtime_ticket_slug(
     assert loaded_slugs == ["actual-ticket"]
 
 
+def test_paired_project_basis_rejects_unsafe_runtime_ticket_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("ticket\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "../../outside")
+
+    with pytest.raises(BaselineWorktreeError, match="unsafe ticket slug"):
+        baseline_module._paired_project_base_sha(tmp_path)
+
+
 def _git(repo: Path, *a: str) -> None:
     subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True)
 

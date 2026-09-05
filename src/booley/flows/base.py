@@ -168,25 +168,28 @@ class BooleyFlow(McpTool):
             AcceptanceBasisError,
             assert_inputs_unchanged,
         )
-        from booley.ticket_board.helpers import detect_project_root
+        from booley.ticket_board.helpers import (
+            TicketSlugError,
+            detect_project_root,
+            resolve_runtime_ticket_slug,
+        )
         from booley.ticket_board.io import TicketIO
 
         try:
             ticket_path = Path(ticket_file)
+            slug = resolve_runtime_ticket_slug(ticket_path)
             project_root = detect_project_root()
             basis = TicketIO(
                 resolve_project_dir(project_root) / "tickets",
                 project_root=project_root,
             ).load_basis(
-                os.environ.get("BOOLEY_SLUG")
-                or os.environ.get("BOOLEY_TICKET_SLUG")
-                or ticket_path.stem,
+                slug,
                 runtime_ticket_path=ticket_path,
             )
             self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
             assert_inputs_unchanged(basis, work_dir)
-        except (OSError, AcceptanceBasisError) as exc:
+        except (OSError, AcceptanceBasisError, TicketSlugError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
