@@ -249,6 +249,48 @@ class TestBooleyFlowExecution:
         assert flow._pre_state_gate() is None
         assert loaded_slugs == ["actual-ticket"]
 
+    def test_acceptance_basis_uses_control_plane_ticket_board(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import runtime_context
+
+        control_root = tmp_path / "control"
+        control_tickets = control_root / ".booley_project" / "tickets"
+        ticket = tmp_path / "runtime" / "ticket.md"
+        ticket.parent.mkdir()
+        ticket.write_text("ticket\n", encoding="utf-8")
+        basis = _flow_acceptance_basis()
+        constructed = []
+
+        class FakeTicketIO:
+            def __init__(self, tickets_dir, *, project_root):
+                constructed.append((tickets_dir, project_root))
+
+            def load_basis(self, _slug, **_kwargs):
+                return basis
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        monkeypatch.setattr(
+            "booley.ticket_board.helpers.detect_project_root", lambda: control_root
+        )
+        monkeypatch.setattr(
+            "booley.runtime.project_dir.resolve_checkout_project_dir",
+            lambda root: root / ".booley_project",
+        )
+        monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
+        monkeypatch.setattr(
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
+
+        flow = EchoFlow()
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+
+        assert flow._pre_state_gate() is None
+        assert constructed == [(control_tickets, control_root)]
+
     def test_acceptance_basis_rejects_unsafe_runtime_ticket_slug_before_loading(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

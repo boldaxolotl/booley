@@ -38,7 +38,9 @@ def test_paired_project_basis_uses_runtime_ticket_slug(
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
     monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: tmp_path
+    )
     monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
     monkeypatch.setattr(
         "booley.ticket_board.acceptance_targets.resolve_commit",

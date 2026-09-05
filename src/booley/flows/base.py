@@ -162,7 +162,7 @@ class BooleyFlow(McpTool):
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.project_dir import resolve_checkout_project_dir
         from booley.ticket_board.acceptance_basis import (
             BLOCK_REASON,
             AcceptanceBasisError,
@@ -180,7 +180,7 @@ class BooleyFlow(McpTool):
             slug = resolve_runtime_ticket_slug(ticket_path)
             project_root = detect_project_root()
             basis = TicketIO(
-                resolve_project_dir(project_root) / "tickets",
+                resolve_checkout_project_dir(project_root) / "tickets",
                 project_root=project_root,
             ).load_basis(
                 slug,

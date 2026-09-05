@@ -1953,6 +1953,7 @@ async def _launch_developer_agent(
     if project_root is not None:
         from booley.runtime.project_dir import resolve_checkout_project_dir
 
+        endpoint_env["BOOLEY_CONTROL_PROJECT_ROOT"] = str(project_root)
         endpoint_env["BOOLEY_PROJECT_DIR"] = str(resolve_checkout_project_dir(Path(cwd)))
     if mcp_tools is not None:
         # Explicit MCP-exposure allowlist for the developer's stdio server

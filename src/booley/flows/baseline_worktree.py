@@ -220,7 +220,7 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
     """Resolve the immutable fork point of a paired ticket project branch."""
     ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
     if ticket_file:
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.project_dir import resolve_checkout_project_dir
         from booley.ticket_board.acceptance_targets import resolve_commit
         from booley.ticket_board.helpers import (
             TicketSlugError,
@@ -236,7 +236,7 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
             raise BaselineWorktreeError(str(exc)) from exc
         project_root = detect_project_root()
         basis = TicketIO(
-            resolve_project_dir(project_root) / "tickets",
+            resolve_checkout_project_dir(project_root) / "tickets",
             project_root=project_root,
         ).load_basis(
             slug,
