@@ -151,7 +151,7 @@ class BooleyFlow(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
-        self._target_contract = None
+        self._acceptance_basis = None
         location_error = runtime_context.container_only_error(f"booley flow {self.name}")
         if location_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=location_error)
@@ -162,31 +162,37 @@ class BooleyFlow(McpTool):
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
-        from booley.ticket_board.frontmatter import parse_frontmatter
-        from booley.ticket_board.target_contract import (
-            CONTRACT_BLOCK_REASON,
-            TargetContractError,
-            load_ticket_contract,
-            validate_contract_fields,
-            verify_surface,
+        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.ticket_board.acceptance_basis import (
+            BLOCK_REASON,
+            AcceptanceBasisError,
+            assert_inputs_unchanged,
         )
+        from booley.ticket_board.helpers import (
+            TicketSlugError,
+            detect_project_root,
+            resolve_runtime_ticket_slug,
+        )
+        from booley.ticket_board.io import TicketIO
 
         try:
-            contract = load_ticket_contract(ticket_file)
-            if contract is None:
-                logger.warning("Legacy ticket Flow run has no immutable Target contract")
-                return None
-            self._target_contract = contract
+            ticket_path = Path(ticket_file)
+            slug = resolve_runtime_ticket_slug(ticket_path)
+            project_root = detect_project_root()
+            basis = TicketIO(
+                resolve_checkout_project_dir(project_root) / "tickets",
+                project_root=project_root,
+            ).load_basis(
+                slug,
+                runtime_ticket_path=ticket_path,
+            )
+            self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
-            verify_surface(contract, work_dir)
-            fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-            errors = validate_contract_fields(fields, work_dir)
-            if errors:
-                raise TargetContractError("; ".join(errors))
-        except (OSError, TargetContractError) as exc:
+            assert_inputs_unchanged(basis, work_dir)
+        except (OSError, AcceptanceBasisError, TicketSlugError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"BLOCKED: {CONTRACT_BLOCK_REASON}: {exc}",
+                report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
             )
         return None
 

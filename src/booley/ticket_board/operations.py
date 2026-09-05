@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -19,13 +20,7 @@ from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
 
-from .git_ops import (
-    cleanup_worktree_and_branch,
-    delete_branch,
-    find_worktree_for_branch,
-    prune_worktrees,
-    remove_worktree,
-)
+from .git_ops import cleanup_worktree_and_branch
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
 from .lifecycle import (
@@ -46,6 +41,8 @@ from .paths import (
 
 if TYPE_CHECKING:  # booley.core.models is imported lazily in the bodies below
     from booley.core.models import OnSuccess
+
+    from .acceptance_ledger import AcceptanceSnapshot
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -417,38 +414,129 @@ def _handoff_to_review(
     return ok
 
 
-def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gates
+def _prepare_handoff_snapshot(
     tio: Any,
     slug: str,
     entry: dict | None,
     expected_execution_id: str | None,
 ) -> bool:
     """Fence Jobs and freeze live acceptance before a review transition."""
-    from booley.criteria.state import DevelopmentState
+    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    if not _handoff_jobs_clear(log_dir, slug):
+        return False
+    participant_heads = _handoff_basis_heads(tio, slug)
+    if participant_heads is None:
+        return False
+    existing = _bind_existing_handoff_snapshot(log_dir, slug, participant_heads)
+    if existing is not None:
+        return existing
+    return _freeze_handoff_snapshot(
+        tio,
+        slug,
+        entry,
+        expected_execution_id,
+        log_dir,
+        participant_heads,
+    )
+
+
+def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
+    """Validate current and live Basis views, returning exact participant heads."""
+    from .acceptance_basis import (
+        AcceptanceBasisError,
+        assert_live_inputs_unchanged,
+        materialize_ticket_commits,
+        validate_current_basis_refs,
+    )
+
+    try:
+        basis = _load_handoff_basis(tio, slug)
+        heads = validate_current_basis_refs(tio._project_root, basis)
+        with tempfile.TemporaryDirectory(prefix="booley-handoff-basis-") as directory:
+            current = materialize_ticket_commits(
+                tio._project_root,
+                basis,
+                Path(directory) / "checkout",
+                heads,
+            )
+            errors = _prepare_materialized_basis_view(tio, slug, current, basis)
+            assert_live_inputs_unchanged(basis, tio._project_root, current)
+        if errors:
+            raise AcceptanceBasisError("Acceptance Basis selectors changed: " + "; ".join(errors))
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
+        print(f"Error: cannot hand off '{slug}': {exc}", file=sys.stderr)
+        return None
+    return heads
+
+
+def _prepare_materialized_basis_view(
+    tio: Any,
+    slug: str,
+    checkout: Path,
+    basis: Any,
+) -> list[str]:
+    """Prepare and validate one exact composite through the runtime contract."""
+    from booley.flows.execution import flow_enabled
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.project_prepare import prepare_project
+
+    from .acceptance_basis import AcceptanceBasisError, validate_ticket_view
+    from .io import find_ticket_file
+
+    ticket, _status = find_ticket_file(tio.tickets_dir, slug)
+    if ticket is None:
+        raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during Basis validation")
+    try:
+        project_dir = resolve_checkout_project_dir(checkout).resolve()
+        project_dir.relative_to(checkout.resolve())
+        preparation = prepare_project(
+            tio._project_root,
+            checkout,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", checkout),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise AcceptanceBasisError(
+            f"cannot prepare materialized Acceptance Basis at {checkout}: {exc}"
+        ) from exc
+    if not preparation.ok:
+        raise AcceptanceBasisError(preparation.error)
+    return validate_ticket_view(checkout, basis, allow_generated=True)
+
+
+def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
     from booley.harness.job_fence import active_ticket_jobs
 
-    from .acceptance_ledger import (
-        AcceptanceLedgerError,
-        bind_review_package,
-        freeze_acceptance,
-        read_acceptance,
-    )
-    from .criteria_acceptance import check_criteria_acceptance
-
-    log_dir = ticket_log_dir(tio.logs_dir, slug)
     active = active_ticket_jobs(log_dir)
-    if active:
-        names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
-        print(
-            f"Error: cannot hand off '{slug}' while endpoint Jobs are active: {names}",
-            file=sys.stderr,
-        )
-        return False
+    if not active:
+        return True
+    names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
+    print(
+        f"Error: cannot hand off '{slug}' while endpoint Jobs are active: {names}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _bind_existing_handoff_snapshot(
+    log_dir: Path,
+    slug: str,
+    participant_heads: dict[str, str],
+) -> bool | None:
+    from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, read_acceptance
+
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
                 f"Error: cannot hand off '{slug}': accepted snapshot is unreadable",
+                file=sys.stderr,
+            )
+            return False
+        if accepted.snapshot.participant_heads != participant_heads:
+            print(
+                f"Error: cannot hand off '{slug}': Ticket heads changed after acceptance freeze",
                 file=sys.stderr,
             )
             return False
@@ -461,10 +549,30 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
     if accepted.kind == "corrupt":
         print(f"Error: cannot hand off '{slug}': {accepted.reason}", file=sys.stderr)
         return False
+    return None
+
+
+def _freeze_handoff_snapshot(
+    tio: Any,
+    slug: str,
+    entry: dict | None,
+    expected_execution_id: str | None,
+    log_dir: Path,
+    participant_heads: dict[str, str],
+) -> bool:
+    from booley.criteria.state import DevelopmentState
+
+    from .acceptance_basis import AcceptanceBasisError
+    from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, freeze_acceptance
+    from .criteria_acceptance import check_criteria_acceptance
 
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     if not state_path.exists():
-        return True  # Legacy Ticket: no durable snapshot can be reconstructed honestly.
+        print(
+            f"Error: cannot hand off '{slug}': durable criteria state is unavailable",
+            file=sys.stderr,
+        )
+        return False
     state = DevelopmentState.load(state_path)
     work_dir = Path(state.work_dir) if state.work_dir else None
     verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
@@ -476,17 +584,32 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
         return False
     execution_id = expected_execution_id or str((entry or {}).get("execution_id", ""))
     try:
+        evidence_basis = _handoff_basis_evidence(tio, slug)
         snapshot = freeze_acceptance(
             log_dir,
             DevelopmentState.load(state_path),
             execution_id=execution_id,
-            target_contract=(entry or {}).get("target_contract"),
+            acceptance_basis=evidence_basis,
+            participant_heads=participant_heads,
         )
         bind_review_package(log_dir, snapshot)
-    except AcceptanceLedgerError as exc:
+    except (AcceptanceBasisError, AcceptanceLedgerError) as exc:
         print(f"Error: cannot freeze acceptance for '{slug}': {exc}", file=sys.stderr)
         return False
     return True
+
+
+def _handoff_basis_evidence(tio: Any, slug: str) -> dict:
+    """Load the durable enqueue receipt embedded in an Acceptance Snapshot."""
+    from .acceptance_basis import load_basis_receipt
+
+    basis = _load_handoff_basis(tio, slug)
+    return load_basis_receipt(tio._project_root, slug, basis.as_dict())
+
+
+def _load_handoff_basis(tio: Any, slug: str) -> Any:
+    runtime_ticket = ticket_log_dir(tio.logs_dir, slug) / "ticket.md"
+    return tio._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket)
 
 
 def op_handoff(
@@ -637,10 +760,10 @@ def _append_unblock_marker(tio, slug):
             f.write(f"\n### Unblocked ({timestamp})\n")
 
 
-def op_approve(
+def _approve_transition(
     tio: Any, slug: str, actor: str = "ticket-triage", detail: str = "user approved merge"
 ) -> bool:
-    """Approve a review ticket: move review->done, mark complete, log."""
+    """Apply only the final board transition after terminal validation."""
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -655,6 +778,11 @@ def op_approve(
     return _op_move_and_log(
         tio, slug, "done", {"step": "complete"}, ("review:summary", "done:complete", actor, detail)
     )
+
+
+def op_approve(tio: Any, slug: str) -> bool:
+    """Complete a review Ticket through the validated terminal boundary."""
+    return op_complete(tio, slug)
 
 
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
@@ -695,37 +823,14 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_cleanup(slug: str, entry: dict, on_success: OnSuccess, project_root: Path) -> bool:
-    """Perform the cleanup step of op_complete."""
-    ok, _detail = TicketWorkspace.retire(
-        project_root,
-        slug,
-        WorkspaceDisposition.DISCARD,
-    )
-    if not ok:
-        return False
-    fb = entry.get("feature_branch", "") or entry.get("branch", "")
-    if not fb:
-        return True
-    wt_path = find_worktree_for_branch(fb)
-    if wt_path:
-        remove_worktree(wt_path)
-        prune_worktrees()
-    feature_branch = entry.get("feature_branch", "")
-    if on_success.merge or not feature_branch:
-        return True
-    return delete_branch(feature_branch, force=True)
-
-
 def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> OnSuccess:
     """The ticket's ``on_success`` with the per-invocation overrides applied.
 
     The overrides are subtractive only: they can turn a configured action OFF,
-    never on. Every downstream decision (the merge step, the cleanup step, the
-    force-delete-the-branch branch inside :func:`_do_cleanup`, the worktree-lock
-    GC) must read the EFFECTIVE values — reading the raw frontmatter after a
-    ``--no-merge`` is how ``--no-merge --cleanup`` would leave the feature
-    branch behind.
+    never on. Every downstream decision must read the effective values.
+    Destructive cleanup is valid only with journaled merge publication, so
+    ``--no-merge`` must be paired with ``--no-cleanup`` when cleanup was
+    configured.
     """
     from dataclasses import replace
 
@@ -749,42 +854,77 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     return "inspect the Ticket and Acceptance Journal before retrying"
 
 
-def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
-    """Refuse destructive terminal actions when durable acceptance is broken."""
-    from booley.criteria.state import DevelopmentState
-
-    from .acceptance_ledger import (
-        AcceptanceLedgerError,
-        read_acceptance,
-        validate_review_package_binding,
+def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
+    from .acceptance_basis import (
+        assert_live_inputs_unchanged,
+        load_basis_receipt,
+        materialize_ticket_commits,
+        validate_current_basis_refs,
     )
+    from .acceptance_journal import completion_basis_sources
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+
+    validate_review_package_binding(log_dir, snapshot)
+    basis = tio.load_basis(slug)
+    current_receipt = load_basis_receipt(tio._project_root, slug, basis.as_dict())
+    if snapshot.acceptance_basis != current_receipt:
+        raise AcceptanceLedgerError("Acceptance Snapshot names a different Board Acceptance Basis")
+    with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
+        snapshot_sources = snapshot.participant_heads
+        sources = completion_basis_sources(
+            Path(tio._project_root),
+            slug,
+            basis,
+            expected_sources=snapshot_sources,
+        )
+        if sources is None:
+            current_sources = validate_current_basis_refs(tio._project_root, basis)
+            if current_sources != snapshot_sources:
+                raise AcceptanceLedgerError(
+                    "Ticket heads changed after the accepted snapshot was frozen"
+                )
+            sources = snapshot_sources
+        authoring = materialize_ticket_commits(
+            tio._project_root,
+            basis,
+            Path(directory) / "checkout",
+            sources,
+        )
+        selector_errors = _prepare_materialized_basis_view(tio, slug, authoring, basis)
+        assert_live_inputs_unchanged(basis, tio._project_root, authoring)
+    if selector_errors:
+        raise AcceptanceLedgerError(
+            "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
+        )
+
+
+def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | None:
+    """Refuse destructive terminal actions when durable acceptance is broken."""
+    from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
-            return False
+            return None
         try:
-            validate_review_package_binding(log_dir, accepted.snapshot)
-        except AcceptanceLedgerError as exc:
+            _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
+        except (AcceptanceLedgerError, ValueError, OSError) as exc:
             print(
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",
                 file=sys.stderr,
             )
-            return False
-        return True
+            return None
+        return accepted.snapshot
     if accepted.kind == "corrupt":
         print(
             f"Error: accepted snapshot for '{slug}' is corrupt: {accepted.reason}",
             file=sys.stderr,
         )
-        return False
-    state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
-    if state_path.exists() and DevelopmentState.load(state_path).strict_criteria:
-        print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
-        return False
-    return True  # Legacy review Ticket created before durable acceptance.
+        return None
+    print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
+    return None
 
 
 def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
@@ -831,14 +971,15 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
             file=sys.stderr,
         )
         return False
-    if not _completion_acceptance_valid(tio, slug):
+    accepted_snapshot = _completion_acceptance_valid(tio, slug)
+    if accepted_snapshot is None:
         return False
 
-    from .target_contract import TargetContract, TargetContractError
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 
     try:
-        TargetContract.from_mapping(entry.get("target_contract"))
-    except TargetContractError as exc:
+        AcceptanceBasis.from_mapping(entry.get("acceptance_basis"))
+    except AcceptanceBasisError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return False
 
@@ -846,7 +987,12 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         from .acceptance_journal import cleanup_finished
         from .completion import complete_review_ticket
 
-        if not complete_review_ticket(tio, slug, on_success):
+        if not complete_review_ticket(
+            tio,
+            slug,
+            on_success,
+            expected_sources=accepted_snapshot.participant_heads,
+        ):
             detail = _acceptance_failure_detail(tio, slug)
             print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
             return False
@@ -856,18 +1002,10 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
         return True
 
-    if (
-        on_success.cleanup
-        and not on_success.merge
-        and not _do_cleanup(slug, entry, on_success, tio._project_root)
-    ):
-        print(f"Error: cleanup failed for '{slug}'; ticket stays in review", file=sys.stderr)
+    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
 
-    if not op_approve(tio, slug, actor="op-complete", detail="terminal actions"):
-        return False
-
-    _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+    _finish_completed_ticket(tio, slug, cleanup=False)
     return True
 
 
@@ -1135,14 +1273,42 @@ def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
     return file_path if _queue_destination_available(tio, file_path) else None
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
+def _validated_reset_context(
+    tio: Any, slug: str
+) -> tuple[Path, dict[str, Any], Any | None] | None:
+    """Reload the reset target and its authoritative basis while locked."""
+    file_path = _locked_reset_candidate(tio, slug)
+    if file_path is None:
+        return None
+    current = tio.find_ticket(slug)
+    if current is None:
+        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        return None
+    if current.get("acceptance_basis") is None:
+        return file_path, current, None
+    from .acceptance_basis import AcceptanceBasisError
+
+    try:
+        basis = tio._load_basis_unlocked(slug)
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
+        print(
+            f"Error: reset could not validate the Acceptance Basis for '{slug}': {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return file_path, current, basis
+
+
+def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
     """Reset under the ticket lock, publishing queue state only at the end."""
     with tio._ticket_lock(slug):
-        # Recheck after waiting for the ticket lock. This closes the stale
-        # pre-lock observation that could otherwise erase a job which became
-        # active while reset was blocked on another ticket operation.
-        file_path = _locked_reset_candidate(tio, slug)
-        if file_path is None:
+        context = _validated_reset_context(tio, slug)
+        if context is None:
+            return False
+        file_path, current, basis = context
+
+        reset_plan = _preflight_reset_branches(tio._project_root, slug, current, basis)
+        if basis is not None and reset_plan is None:
             return False
 
         try:
@@ -1153,7 +1319,13 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> b
                 file=sys.stderr,
             )
             return False
-        if not _reset_ticket_branches(tio._project_root, slug, entry):
+        if not _reset_ticket_branches(
+            tio._project_root,
+            slug,
+            current,
+            basis,
+            reset_plan=reset_plan,
+        ):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -1161,7 +1333,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> b
 
         tio._append_transition_unlocked(
             slug,
-            f"{entry.get('status', 'unknown')}:{entry.get('step', '')}",
+            f"{current.get('status', 'unknown')}:{current.get('step', '')}",
             "queued:reset",
             "ticket-triage",
             reason,
@@ -1192,29 +1364,67 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
     return True
 
 
-def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any]) -> bool:
-    """Restore a sealed contract or remove legacy ticket branches."""
-    raw_contract = entry.get("target_contract")
-    if raw_contract is None:
+def _reset_ticket_branches(
+    project_root: Path,
+    slug: str,
+    entry: dict[str, Any],
+    basis: Any | None,
+    *,
+    reset_plan: Any | None = None,
+) -> bool:
+    """Restore an Acceptance Basis generation or remove draft branches."""
+    raw_basis = entry.get("acceptance_basis")
+    if raw_basis is None:
         return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
-    from .contract_ops import ContractOperationError, reset_contract_worktrees
-    from .target_contract import TargetContract, TargetContractError
+    from .acceptance_basis import AcceptanceBasisError
+    from .workspace_ops import AcceptanceBasisOperationError, reset_basis_worktrees
 
     try:
-        contract = TargetContract.from_mapping(raw_contract)
-        reset_contract_worktrees(
+        if basis is None:
+            raise AcceptanceBasisError("authoritative Acceptance Basis is unavailable")
+        reset_basis_worktrees(
             project_root,
             slug,
-            contract,
+            basis,
             str(entry.get("branch", "")),
+            plan=reset_plan,
         )
-    except (ContractOperationError, TargetContractError, OSError) as exc:
+    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
         print(
-            f"Error: reset could not restore sealed contract for '{slug}': {exc}",
+            f"Error: reset could not restore the Acceptance Basis for '{slug}': {exc}",
             file=sys.stderr,
         )
         return False
     return True
+
+
+def _preflight_reset_branches(
+    project_root: Path,
+    slug: str,
+    entry: dict[str, Any],
+    basis: Any | None,
+) -> Any | None:
+    """Resolve every Acceptance Basis identity before runtime cleanup begins."""
+    if entry.get("acceptance_basis") is None:
+        return None
+    from .acceptance_basis import AcceptanceBasisError
+    from .workspace_ops import AcceptanceBasisOperationError, preflight_basis_reset
+
+    try:
+        if basis is None:
+            raise AcceptanceBasisError("authoritative Acceptance Basis is unavailable")
+        return preflight_basis_reset(
+            project_root,
+            slug,
+            basis,
+            str(entry.get("branch", "")),
+        )
+    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
+        print(
+            f"Error: reset could not preflight the Acceptance Basis for '{slug}': {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def op_reset(
@@ -1233,14 +1443,10 @@ def op_reset(
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
     project_root = Path(getattr(tio, "_project_root", ""))
-    if (
-        entry.get("status") == "blocked"
-        and entry.get("target_contract") is None
-        and (project_root / ".git").exists()
-    ):
+    if entry.get("acceptance_basis") is None and (project_root / ".git").exists():
         print(
-            f"Error: legacy blocked ticket '{slug}' must be sealed with a Target "
-            "contract before it can restart; run contract-open and contract-seal first.",
+            f"Error: ticket '{slug}' has no Acceptance Basis; return it to draft and "
+            "enqueue a new generation.",
             file=sys.stderr,
         )
         return False
@@ -1253,4 +1459,4 @@ def op_reset(
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
         return False
-    return _perform_reset(tio, canonical_slug, entry, reason)
+    return _perform_reset(tio, canonical_slug, reason)

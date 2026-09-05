@@ -25,6 +25,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.targets.target import select_target
 
 _BOOLEY_ENV_VARS = (
+    "BOOLEY_CONTROL_PROJECT_ROOT",
     "BOOLEY_SLUG",
     "BOOLEY_STATE_FILE",
     "BOOLEY_LOGS_DIR",

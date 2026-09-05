@@ -38,13 +38,13 @@ async def test_setup_block_prepares_blocked_triage_dossier(tmp_path: Path, monke
 
 
 @pytest.mark.asyncio
-async def test_invalid_resumed_contract_prepares_blocked_triage(
+async def test_invalid_resumed_basis_prepares_blocked_triage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _context(
         tmp_path,
         completed_steps=["setup"],
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=tmp_path / "worktree",
     )
     monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
@@ -52,8 +52,8 @@ async def test_invalid_resumed_contract_prepares_blocked_triage(
     monkeypatch.setattr(developer, "_invalidate_missing_worktree", lambda *_args: None)
     monkeypatch.setattr(
         developer,
-        "_resumed_contract_failure",
-        lambda _ctx: "target-contract-change-required: contract changed",
+        "_resumed_basis_failure",
+        lambda _ctx: "acceptance-input-change-required: basis changed",
     )
     block = MagicMock()
     monkeypatch.setattr(developer, "block_ticket", block)
@@ -64,7 +64,7 @@ async def test_invalid_resumed_contract_prepares_blocked_triage(
 
     block.assert_called_once_with(
         ctx,
-        "target-contract-change-required: contract changed",
+        "acceptance-input-change-required: basis changed",
         "setup",
     )
     prepare.assert_awaited_once_with(ctx, tmp_path)
@@ -93,55 +93,55 @@ def test_missing_resumed_worktree_invalidates_completed_setup(tmp_path: Path) ->
     assert ctx.feature_branch == ""
 
 
-def test_resumed_contract_is_revalidated_in_existing_worktree(
+def test_resumed_basis_is_revalidated_in_existing_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=worktree,
     )
-    validate = MagicMock(return_value=StepResult(block_reason="contract changed"))
+    validate = MagicMock(return_value=StepResult(block_reason="basis changed"))
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
         validate,
     )
 
-    assert developer._resumed_contract_failure(ctx) == "contract changed"
+    assert developer._resumed_basis_failure(ctx) == "basis changed"
     validate.assert_called_once_with(ctx, worktree)
 
 
-def test_valid_resumed_contract_allows_execution(
+def test_valid_resumed_basis_allows_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree = tmp_path / "worktree"
     ctx = _context(
         tmp_path,
-        target_contract=MagicMock(),
+        acceptance_basis=MagicMock(),
         worktree_path=worktree,
     )
     validate = MagicMock(return_value=None)
     monkeypatch.setattr(
-        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        "booley.harness.setup.workspace._validate_materialized_acceptance_basis",
         validate,
     )
 
-    assert developer._resumed_contract_failure(ctx) is None
+    assert developer._resumed_basis_failure(ctx) is None
     validate.assert_called_once_with(ctx, worktree)
 
 
-def test_legacy_resume_needs_no_contract_validation(tmp_path: Path) -> None:
+def test_basisless_resume_needs_no_basis_validation(tmp_path: Path) -> None:
     ctx = _context(tmp_path)
 
-    assert developer._resumed_contract_failure(ctx) is None
+    assert developer._resumed_basis_failure(ctx) is None
 
 
-def test_sealed_resume_without_worktree_reports_contract_failure(tmp_path: Path) -> None:
-    ctx = _context(tmp_path, target_contract=MagicMock())
+def test_basis_bound_resume_without_worktree_reports_basis_failure(tmp_path: Path) -> None:
+    ctx = _context(tmp_path, acceptance_basis=MagicMock())
 
-    assert developer._resumed_contract_failure(ctx) == (
-        "target-contract-change-required: Ticket worktree is unavailable"
+    assert developer._resumed_basis_failure(ctx) == (
+        "acceptance-input-change-required: Ticket worktree is unavailable"
     )
 
 

@@ -20,17 +20,18 @@ from booley.criteria.templates import (
     find_retired_criteria,
 )
 from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+)
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import (
     existing_runtime_file,
     migrate_runtime_file,
     ticket_log_dir,
     ticket_runtime_dir,
-)
-from booley.ticket_board.target_contract import (
-    ContractTargetBinding,
-    TargetContract,
-    TargetContractError,
 )
 
 from .. import ticket_cli
@@ -100,25 +101,8 @@ def _build_context(
     fields: dict,
 ) -> TicketContext:
     """Construct a TicketContext from parsed frontmatter fields."""
-    # Migration: reject retired plan-file fields (the planner specialists were pruned).
-    retired_plan_fields = [
-        k for k in ("plan_file", "rtl_plan_file", "verification_plan_file") if fields.get(k)
-    ]
-    if retired_plan_fields:
-        raise FatalError(
-            f"Retired field(s) in ticket YAML: {', '.join(retired_plan_fields)}. Remove them — "
-            "the planner specialists were pruned; put the plan in the ticket body instead.",
-            slug=slug,
-        )
-
-    raw_contract = fields.get("target_contract")
-    try:
-        target_contract = (
-            TargetContract.from_mapping(raw_contract) if raw_contract is not None else None
-        )
-    except TargetContractError as exc:
-        raise FatalError(f"Invalid Target contract: {exc}", slug=slug) from exc
-
+    _reject_retired_ticket_fields(fields, slug)
+    acceptance_basis = _load_context_basis(project_root, ticket_path, slug, fields)
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -130,14 +114,52 @@ def _build_context(
         on_success=OnSuccess.from_dict(fields.get("on_success")),
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
-        base_sha=fields.get("base_sha", ""),
-        target_contract=target_contract,
+        base_sha=acceptance_basis.outer_sha if acceptance_basis is not None else "",
+        acceptance_basis=acceptance_basis,
         feature_branch=fields.get("feature_branch", ""),
         completed_steps=fields.get("steps_completed", []),
         current_step=fields.get("stage", ""),
         project_root=project_root,
         criteria=fields.get("criteria", {}),
     )
+
+
+def _reject_retired_ticket_fields(fields: dict[str, Any], slug: str) -> None:
+    retired_plan_fields = [
+        k for k in ("plan_file", "rtl_plan_file", "verification_plan_file") if fields.get(k)
+    ]
+    if retired_plan_fields:
+        raise FatalError(
+            f"Retired field(s) in ticket YAML: {', '.join(retired_plan_fields)}. Remove them — "
+            "the planner specialists were pruned; put the plan in the ticket body instead.",
+            slug=slug,
+        )
+    if fields.get("target_contract") is not None:
+        raise FatalError(
+            "Legacy Target Contract tickets are unsupported after the hard cutoff; "
+            "recreate the Ticket.",
+            slug=slug,
+        )
+
+
+def _load_context_basis(
+    project_root: Path,
+    ticket_path: Path,
+    slug: str,
+    fields: dict[str, Any],
+) -> AcceptanceBasis | None:
+    raw_basis = fields.get("acceptance_basis")
+    try:
+        return (
+            TicketIO(
+                tickets_dir_from_project_root(project_root),
+                project_root=project_root,
+            ).load_basis(slug, runtime_ticket_path=ticket_path)
+            if raw_basis is not None
+            else None
+        )
+    except AcceptanceBasisError as exc:
+        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
 
 
 def _check_dependencies(ctx: TicketContext) -> None:
@@ -347,10 +369,11 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     action = _detect_and_apply_resume(ctx, fields)
 
-    _verify_target_contract(ctx, action)
+    _verify_acceptance_basis(ctx, action)
+    _validate_retired_criteria(ctx)
 
     criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
-    if ctx.target_contract is None:
+    if ctx.acceptance_basis is None:
         if criteria_state_needs_init:
             _init_criteria_state(ctx)
     else:
@@ -359,32 +382,29 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     return ctx
 
 
-def _verify_target_contract(ctx: TicketContext, action: str) -> None:
-    """Verify durable sealed refs before criteria state can be initialized."""
+def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
+    """Verify durable Acceptance Basis refs before criteria state can be initialized."""
     del action
-    contract = ctx.target_contract
-    if contract is None:
-        logger.warning("Legacy ticket %s has no immutable Target contract", ctx.slug)
-        return
-    from booley.ticket_board.contract_ops import validate_sealed_refs
-    from booley.ticket_board.target_contract import validate_contract_fields
+    basis = ctx.acceptance_basis
+    if basis is None:
+        raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
+    from booley.ticket_board.workspace_ops import validate_basis_refs
 
     try:
-        errors = validate_sealed_refs(
+        errors = validate_basis_refs(
             ctx.project_root,
-            contract,
+            basis,
             slug=ctx.slug,
             destination_branch=ctx.branch,
         )
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
-    errors.extend(validate_contract_fields(_contract_fields(ctx)))
     if errors:
-        raise FatalError(f"target-contract-change-required: {'; '.join(errors)}", slug=ctx.slug)
+        raise FatalError(f"acceptance-input-change-required: {'; '.join(errors)}", slug=ctx.slug)
 
 
-def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
-    return ctx.sealed_contract_fields()
+def _acceptance_basis_fields(ctx: TicketContext) -> dict[str, Any]:
+    return ctx.acceptance_basis_fields()
 
 
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
@@ -441,7 +461,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     category_overrides = template.category_overrides(targets)
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
-    _apply_contract_selectors(ctx, template, expanded, criterion_params)
+    _apply_basis_selectors(ctx, template, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
@@ -452,14 +472,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     # essential: without it the developer's FatalError handler skips ticket_cli.fail(),
     # so this specific, actionable error never reaches any ticket-scoped log and the
     # ticket is left orphaned in active/ (later swept as a bogus "SIGINT" crash).
-    stale = find_retired_criteria(expanded)
-    if stale:
-        keys = ", ".join(k for k, _ in stale)
-        details = "; ".join(f"{k} -> {hint}" for k, hint in stale)
-        raise FatalError(
-            f"Retired criterion key(s) in ticket YAML: {keys}. {details}.",
-            slug=ctx.slug,
-        )
+    _reject_retired_criteria(ctx, expanded)
 
     _seed_project_criteria(ctx.work_dir, expanded, category_overrides, targets)
     # Internal mandatory criterion (hidden from users via `_` prefix) -- the
@@ -494,26 +507,46 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     )
 
 
-def _apply_contract_selectors(
+def _validate_retired_criteria(ctx: TicketContext) -> None:
+    template = (
+        CriteriaTemplate.from_yaml(ctx.criteria)
+        if ctx.criteria
+        else CriteriaTemplate.for_ticket_type(ctx.ticket_type)
+    )
+    _reject_retired_criteria(ctx, template.expand(ctx.sim_targets))
+
+
+def _reject_retired_criteria(ctx: TicketContext, expanded: dict[str, bool]) -> None:
+    stale = find_retired_criteria(expanded)
+    if stale:
+        keys = ", ".join(k for k, _ in stale)
+        details = "; ".join(f"{k} -> {hint}" for k, hint in stale)
+        raise FatalError(
+            f"Retired criterion key(s) in ticket YAML: {keys}. {details}.",
+            slug=ctx.slug,
+        )
+
+
+def _apply_basis_selectors(
     ctx: TicketContext,
     template: CriteriaTemplate,
     expanded: dict[str, bool],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
-    """Seed sealed identities and callable selectors into runtime criteria."""
-    contract = ctx.target_contract
-    if contract is None or contract.schema < 4:
+    """Seed basis identities and callable selectors into runtime Criteria."""
+    basis = ctx.acceptance_basis
+    if basis is None:
         return
     for key in expanded:
-        unique = _matching_contract_bindings(
-            contract.bindings,
+        unique = _matching_basis_bindings(
+            basis.bindings,
             criterion_key=key,
             authored=criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM),
         )
         if len(unique) > 1:
             choices = ", ".join(sorted(selector for _, selector in unique))
             raise FatalError(
-                f"Criterion {key!r} Target is ambiguous across sealed selectors: {choices}",
+                f"Criterion {key!r} Target is ambiguous across basis selectors: {choices}",
                 slug=ctx.slug,
             )
         if unique:
@@ -525,19 +558,20 @@ def _apply_contract_selectors(
     _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
 
 
-def _matching_contract_bindings(
-    bindings: tuple[ContractTargetBinding, ...],
+def _matching_basis_bindings(
+    bindings: tuple[AcceptanceTargetBinding, ...],
     *,
     criterion_key: str,
     authored: object,
-) -> dict[tuple[str, str], ContractTargetBinding]:
-    """Return unique sealed bindings selected by one authored Target value."""
-    matches: dict[tuple[str, str], ContractTargetBinding] = {}
+) -> dict[tuple[str, str], AcceptanceTargetBinding]:
+    """Return unique basis bindings selected by one authored Target value."""
+    matches: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for binding in bindings:
         if not binding.candidate_selector:
             continue
-        prefix = f"{binding.criterion}_"
-        if criterion_key != binding.criterion and not criterion_key.startswith(prefix):
+        binding_key = binding.criterion_key
+        prefix = f"{binding_key}_"
+        if criterion_key != binding_key and not criterion_key.startswith(prefix):
             continue
         candidate_authored = authored
         if not isinstance(candidate_authored, str) and criterion_key.startswith(prefix):
@@ -555,8 +589,8 @@ def _derive_scalar_tb_review_binding(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Bind a scalar TB review when structured simulation proves one owner."""
-    contract = ctx.target_contract
-    assert contract is not None
+    basis = ctx.acceptance_basis
+    assert basis is not None
     review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
     if not review_keys or all(
         criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM) for key in review_keys
@@ -570,10 +604,10 @@ def _derive_scalar_tb_review_binding(
         and isinstance(spec.params.get("tb_path"), str)
         and isinstance(spec.params.get(TARGET_IDENTITY_PARAM), str)
     }
-    owners: dict[tuple[str, str], ContractTargetBinding] = {}
+    owners: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for authored in sorted(authored_targets):
-        unique = _matching_contract_bindings(
-            contract.bindings,
+        unique = _matching_basis_bindings(
+            basis.bindings,
             criterion_key="sim_pass",
             authored=authored,
         )
@@ -663,7 +697,7 @@ def _freeze_recipe_family(
     flow_label: str,
     snapshot_builder: Callable[[Any, str], dict[str, Any]],
 ) -> None:
-    """Freeze one implementation criterion family's sealed contract recipes."""
+    """Freeze one implementation criterion family's recorded Target recipes."""
     from booley.flows.recipe_evidence import (
         RECIPE_FINGERPRINT_PARAM,
         RECIPE_SNAPSHOT_PARAM,

@@ -56,18 +56,54 @@ runs:
           '/.booley-projected-*.core' \
           >> demo/.git/info/exclude
 
-    - name: Require reviewed revisions on public refs
+    - name: Require reviewed revisions and materialize destination refs
       shell: bash
       run: |
         git -C demo merge-base --is-ancestor HEAD origin/main
         git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main
+        git -C demo branch --force main HEAD
+        git -C demo/.booley_project branch --force main HEAD
+
+    # Publishing the Acceptance Basis performs real Target discovery, so the
+    # host-side installer needs Booley's production Python dependencies.
+    - name: Install Booley runtime dependencies
+      shell: bash
+      run: >-
+        python -m pip install --disable-pip-version-check --quiet
+        "${GITHUB_WORKSPACE}"
+
+    # Acceptance Basis publication runs the project's deterministic preparation
+    # hook. Use the same reviewed multilib Newlib toolchain family as Booley's
+    # RISC-V image so PicoRV32 can compile both rv32im firmware programs.
+    - name: Install host RISC-V preparation toolchain
+      shell: bash
+      env:
+        TOOLCHAIN_URL: ${{ steps.contract.outputs.toolchain_url }}
+        TOOLCHAIN_SHA256: ${{ steps.contract.outputs.toolchain_sha256 }}
+      run: |
+        archive="${RUNNER_TEMP}/riscv-toolchain.tar.gz"
+        tool_root="${RUNNER_TEMP}/riscv-toolchain"
+        curl --proto '=https' --tlsv1.2 -fsSL "${TOOLCHAIN_URL}" -o "${archive}"
+        echo "${TOOLCHAIN_SHA256}  ${archive}" | sha256sum -c -
+        mkdir -p "${tool_root}"
+        tar -xzf "${archive}" -C "${tool_root}" --strip-components=1
+        for executable in "${tool_root}"/bin/riscv-none-elf-*; do
+          helper="${executable##*riscv-none-elf-}"
+          ln -sf "${executable}" "${tool_root}/bin/riscv32-unknown-elf-${helper}"
+        done
+        echo "${tool_root}/bin" >> "${GITHUB_PATH}"
 
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash
       env:
+        PYTHONPATH: ${{ github.workspace }}/src
         TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
         TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
       run: >-
+        git -C demo config user.name booley-ci &&
+        git -C demo config user.email booley-ci@users.noreply.github.com &&
+        git -C demo/.booley_project config user.name booley-ci &&
+        git -C demo/.booley_project config user.email booley-ci@users.noreply.github.com &&
         python "${GITHUB_WORKSPACE}/.github/scripts/install_demo_ticket.py"
         --project-dir demo/.booley_project
         --fixture "${TICKET_FIXTURE}"

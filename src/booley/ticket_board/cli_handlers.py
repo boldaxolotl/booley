@@ -13,6 +13,7 @@ from pathlib import Path
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import OnSuccess
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
 
 from .analytics import (
@@ -125,7 +126,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("target_contract") is not None
+        if entry.get("acceptance_basis") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -204,14 +205,39 @@ def _cmd_validate_ticket(tio, args):
     with path.open(encoding="utf-8") as f:
         text = f.read()
     fields, body = parse_frontmatter(text)
+    project_root = detect_project_root()
+    validation_root = project_root
+    allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
+    if (project_root / ".git").exists():
+        try:
+            workspace = TicketWorkspace.ensure_authoring(project_root, path, path.stem)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
+            return 1
+        validation_root = workspace.outer
+        from .acceptance_targets import acceptance_control_paths
+
+        allowed_dirty_paths = tuple(
+            validation_root / item for item in acceptance_control_paths(validation_root)
+        )
     results = validate_ticket_fields(
         fields,
         body,
         check_files=True,
-        check_git=args.check_git,
-        project_root=str(detect_project_root()),
-        allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        check_git=False if validation_root != project_root else args.check_git,
+        project_root=str(validation_root),
+        allowed_dirty_paths=allowed_dirty_paths,
     )
+    if args.check_git and validation_root != project_root:
+        root_results = validate_ticket_fields(
+            fields,
+            body,
+            check_files=False,
+            check_git=True,
+            project_root=str(project_root),
+            allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        )
+        results = list(dict.fromkeys([*results, *root_results]))
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]
     for w in warnings:
@@ -481,7 +507,7 @@ def _cmd_reset_to_deprecated(tio, args):
 
 
 def _cmd_approve(tio, args):
-    ok = op_approve(tio, args.slug, actor=args.actor, detail=args.detail)
+    ok = op_approve(tio, args.slug)
     if ok:
         # Check if any waiting tickets are now executable
         promoted = op_promote_waiting(tio)
@@ -591,6 +617,7 @@ def _cmd_create_file(tio, args):
             summary=args.summary,
             ticket_type=args.ticket_type,
             branch=args.branch,
+            project_destination_ref=args.project_destination_ref,
             scope=args.scope,
             spec=args.spec,
             dependencies=args.dependencies,
@@ -603,31 +630,9 @@ def _cmd_create_file(tio, args):
     return 0 if result else 2
 
 
-def _cmd_contract_open(tio, args):
+def _cmd_return_to_draft(tio, args):
     try:
-        result = tio.contract_open(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_contract_seal(tio, args):
-    try:
-        result = tio.contract_seal(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_revise_contract(tio, args):
-    try:
-        result = tio.contract_revise(args.slug)
+        result = tio.return_to_draft(args.slug)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

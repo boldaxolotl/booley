@@ -469,7 +469,7 @@ class DevelopmentState:
 
         if self.strict_criteria:
             logger.error(
-                "Rejecting undeclared criterion %r for sealed ticket %r",
+                "Rejecting undeclared criterion %r for basis-bound Ticket %r",
                 key,
                 self.slug,
             )
@@ -678,7 +678,7 @@ class DevelopmentState:
                 "expected": evidence.expected_ref or evidence.expected_recipe,
                 "actual": evidence.actual_ref or evidence.actual_recipe,
                 "pass": evidence.complete,
-                "detail": "baseline and candidate evidence match the sealed Target pair"
+                "detail": "baseline and candidate evidence match the recorded Target pair"
                 if evidence.complete
                 else "implementation recipe comparison evidence is incomplete",
             }

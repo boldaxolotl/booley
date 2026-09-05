@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,8 @@ from typing import Any, Literal
 
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
+
+from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
 
@@ -36,7 +37,8 @@ class AcceptanceSnapshot:
     ticket_type: str
     execution_id: str
     accepted_at: str
-    target_contract: dict[str, Any]
+    acceptance_basis: dict[str, Any]
+    participant_heads: dict[str, str]
     criteria: dict[str, dict[str, Any]]
     evidence: tuple[dict[str, Any], ...]
 
@@ -66,21 +68,10 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
 
 def _write_once(path: Path, content: bytes) -> None:
     """Atomically create *path*, accepting an identical existing value."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(raw_tmp)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            if path.read_bytes() != content:
-                raise AcceptanceLedgerError(f"conflicting acceptance record: {path}") from None
-    finally:
-        tmp.unlink(missing_ok=True)
+        atomic_write_once(path, content)
+    except WriteOnceConflictError as exc:
+        raise AcceptanceLedgerError(f"conflicting acceptance record: {path}") from exc
 
 
 def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> AcceptanceSnapshot:
@@ -91,12 +82,27 @@ def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> Acceptanc
             ticket_type=str(payload["ticket_type"]),
             execution_id=str(payload["execution_id"]),
             accepted_at=str(payload["accepted_at"]),
-            target_contract=dict(payload.get("target_contract") or {}),
+            acceptance_basis=dict(payload.get("acceptance_basis") or {}),
+            participant_heads=_participant_heads(payload["participant_heads"]),
             criteria={key: dict(value) for key, value in dict(payload["criteria"]).items()},
             evidence=tuple(dict(value) for value in payload.get("evidence", [])),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AcceptanceLedgerError(f"invalid acceptance snapshot: {exc}") from exc
+
+
+def _participant_heads(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise AcceptanceLedgerError("participant_heads must be a mapping")
+    heads = dict(value)
+    if not set(heads) <= {"outer", "project"} or any(
+        not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None
+        for commit in heads.values()
+    ):
+        raise AcceptanceLedgerError("participant_heads contains an invalid commit identity")
+    if "outer" not in heads:
+        raise AcceptanceLedgerError("participant_heads requires an outer commit identity")
+    return heads
 
 
 def _reserve_sequence(root: Path) -> tuple[int, Path]:
@@ -168,7 +174,7 @@ def record_changes(
     invocation_id: str,
     producer: str,
     execution_id: str,
-    target_contract: Mapping[str, Any] | None = None,
+    acceptance_basis: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
 ) -> tuple[EvidenceRef, ...]:
     """Persist normalized effective Criterion changes in completion order."""
@@ -197,7 +203,7 @@ def record_changes(
             "mandatory": change.mandatory,
             "params": change.params,
             "detail": change.detail,
-            "target_contract": dict(target_contract or {}),
+            "acceptance_basis": dict(acceptance_basis or {}),
             "recorded_at": timestamp,
         }
         encoded = _canonical(payload)
@@ -212,7 +218,8 @@ def freeze_acceptance(
     state: DevelopmentState,
     *,
     execution_id: str,
-    target_contract: Mapping[str, Any] | None,
+    acceptance_basis: Mapping[str, Any] | None,
+    participant_heads: Mapping[str, str],
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
     """Freeze and select one accepted snapshot for the current Ticket epoch."""
@@ -223,7 +230,8 @@ def freeze_acceptance(
         "ticket_type": state.ticket_type,
         "execution_id": execution_id,
         "accepted_at": accepted_at or utc_now_rfc3339(),
-        "target_contract": dict(target_contract or {}),
+        "acceptance_basis": dict(acceptance_basis or {}),
+        "participant_heads": _participant_heads(participant_heads),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
         "evidence": _read_evidence_refs(log_dir),
     }
@@ -253,6 +261,7 @@ def bind_review_package(log_dir: Path, snapshot: AcceptanceSnapshot) -> bool:
         manifest = json.loads(manifest_bytes)
         if manifest.get("status") != "ready":
             raise ValueError("review package manifest is not ready")
+        _validate_manifest_identity(manifest, snapshot)
         briefing_path = Path(manifest["briefing_path"])
         briefing_bytes = briefing_path.read_bytes()
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -280,6 +289,7 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
         binding = json.loads(binding_path.read_text(encoding="utf-8"))
         manifest_bytes = manifest_path.read_bytes()
         manifest = json.loads(manifest_bytes)
+        _validate_manifest_identity(manifest, snapshot)
         briefing_bytes = Path(manifest["briefing_path"]).read_bytes()
         actual = {
             "snapshot_digest": snapshot.digest,
@@ -290,6 +300,18 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
             raise ValueError("bound review artifacts changed")
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise AcceptanceLedgerError(f"invalid review package binding: {exc}") from exc
+
+
+def _validate_manifest_identity(manifest: Mapping[str, Any], snapshot: AcceptanceSnapshot) -> None:
+    manifest_basis = manifest.get("acceptance_basis_id")
+    snapshot_basis = snapshot.acceptance_basis.get("basis_id")
+    if not isinstance(manifest_basis, str) or manifest_basis != snapshot_basis:
+        raise ValueError("review package names a different Acceptance Basis")
+    heads = {"outer": manifest.get("head_sha")}
+    if "project_head_sha" in manifest:
+        heads["project"] = manifest.get("project_head_sha")
+    if _participant_heads(heads) != snapshot.participant_heads:
+        raise ValueError("review package heads disagree with the accepted snapshot")
 
 
 def read_acceptance(log_dir: Path) -> AcceptanceReadResult:

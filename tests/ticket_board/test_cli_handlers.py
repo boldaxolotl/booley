@@ -239,7 +239,8 @@ class TestCmdShow:
             tio.logs_dir / "completed",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
 

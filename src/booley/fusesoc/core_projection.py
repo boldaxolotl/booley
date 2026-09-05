@@ -19,6 +19,8 @@ from urllib.parse import quote
 
 import yaml
 
+from booley.core.boundary import as_dict
+
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
 ISOLATED_REGISTRY_SUBDIR = Path(".booley_project/tmp/fusesoc-isolated-cores")
@@ -119,6 +121,18 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     except ValueError as exc:
         raise CoreProjectionError(f"core is outside the stealth core root: {core_file}") from exc
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
+
+
+def isolated_core_contents_equivalent(
+    left: Path,
+    right: Path,
+    *,
+    left_checkout_root: Path | None = None,
+) -> bool:
+    """Compare generated isolated cores independent of their checkout roots."""
+    left_content = _normalized_isolated_core(left, checkout_root=left_checkout_root)
+    right_content = _normalized_isolated_core(right)
+    return left_content is not None and left_content == right_content
 
 
 def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
@@ -280,6 +294,51 @@ def _is_owned_projection(path: Path) -> bool:
             return stream.readline().startswith(_MARKER_PREFIX)
     except OSError:
         return False
+
+
+def _normalized_isolated_core(
+    path: Path,
+    *,
+    checkout_root: Path | None = None,
+) -> tuple[str, object] | None:
+    registry = path.parent
+    suffix = ISOLATED_REGISTRY_SUBDIR.parts
+    if tuple(registry.parts[-len(suffix) :]) != suffix:
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    lines = content.splitlines()
+    if len(lines) < 2 or not lines[1].startswith(_MARKER_PREFIX):
+        return None
+    try:
+        document = as_dict(yaml.safe_load(content))
+    except yaml.YAMLError:
+        return None
+    if document is None or "CAPI=2" not in document:
+        return None
+    root = checkout_root or registry.parents[len(suffix) - 1].resolve()
+    return lines[1], _normalize_checkout_paths(document, str(root))
+
+
+def _normalize_checkout_paths(value: object, checkout_root: str) -> object:
+    if isinstance(value, str):
+        if value == checkout_root:
+            return "${BOOLEY_WORKTREE}"
+        if value.startswith(checkout_root + os.sep):
+            return "${BOOLEY_WORKTREE}" + value[len(checkout_root) :]
+        return value
+    if isinstance(value, Mapping):
+        return {
+            _normalize_checkout_paths(key, checkout_root): _normalize_checkout_paths(
+                item, checkout_root
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_checkout_paths(item, checkout_root) for item in value]
+    return value
 
 
 def _under_ignore(path: Path, core_root: Path) -> bool:

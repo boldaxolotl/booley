@@ -55,6 +55,10 @@ def source_checkout_root(start: Path) -> Path | None:
     for candidate in (current, *current.parents):
         if is_booley_source_checkout(candidate):
             return candidate
+        # A nested repository is an independent checkout boundary. Do not
+        # classify it from the contents of an enclosing repository.
+        if (candidate / ".git").exists():
+            return None
     return None
 
 

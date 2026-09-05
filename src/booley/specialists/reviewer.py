@@ -1298,7 +1298,7 @@ class ReviewerSpecialist(Specialist):
         return f"review_{self.args.category}_{focus}"
 
     def _default_target_args(self) -> None:
-        """Default a Target from the active sealed TB-review criterion."""
+        """Default a Target from the active Acceptance Basis TB-review criterion."""
         super()._default_target_args()
         if self.args.target or self._state is None:
             return
