@@ -191,6 +191,22 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
 
 
+def test_composite_materialization_normalizes_invalid_paired_checkout(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    project = source / ".booley_project"
+    project.mkdir()
+    (project / ".git").write_text("gitdir: /missing/project\n", encoding="utf-8")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+
+    with pytest.raises(
+        SubmoduleMaterializationError,
+        match="paired project repository is unavailable",
+    ):
+        materialize_ticket_submodules(source, destination)
+
+
 def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _init_repo(source)

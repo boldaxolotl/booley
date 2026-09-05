@@ -58,13 +58,17 @@ def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> 
     """Populate every repository in a composite Ticket checkout offline."""
     from booley.runtime.project_dir import checkout_project_dir_relative_to
     from booley.runtime.ticket_repositories import (
+        TicketWorkspaceError,
         paired_project_repository,
         resolve_inner_project_repo,
     )
 
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
-    paired_source = paired_project_repository(source_root)
+    try:
+        paired_source = paired_project_repository(source_root)
+    except TicketWorkspaceError as exc:
+        raise SubmoduleMaterializationError(str(exc)) from exc
     project_source = (
         paired_source.worktree
         if paired_source is not None

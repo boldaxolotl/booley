@@ -1480,13 +1480,15 @@ What this asks of you, once, on the host:
 
 ```bash
 git submodule update --init --recursive
+# If .booley_project is a standalone Git repository:
+git -C .booley_project submodule update --init --recursive
 ```
 
-Every selected submodule must be **present, clean, and non-shallow** in the main
-Project before a ticket or baseline Flow starts. Its local object database must
-also contain the complete object closure for the destination's pinned commit.
-Worktree setup hard-errors when one of these preconditions is not met, for
-example:
+Every selected submodule must be **present, clean, and non-shallow** in its
+owning outer or paired project repository before a ticket or baseline Flow
+starts. Its local object database must also contain the complete object closure
+for the destination's pinned commit. Worktree setup hard-errors when one of
+these preconditions is not met, for example:
 
 - `submodule <path> not found in source Project; initialize it first`
 - `submodule <path> is dirty`
@@ -1513,9 +1515,10 @@ list is an allowlist intersected with that revision's top-level gitlinks;
 anything omitted remains an empty gitlink directory in the worktree. Nested
 gitlinks below a selected entry are always reconstructed recursively.
 
-Submodules inside a separately paired `.booley_project` repository are not
-currently materialized; keep build inputs in the outer Project's submodule
-tree.
+For a separately paired `.booley_project` repository, the allowlist above
+selects gitlinks in the outer repository. Booley also materializes every
+top-level gitlink recorded by the paired project repository, recursively and
+offline, because that repository can own acceptance controls and build inputs.
 
 ## Doctor waivers (`doctor-waivers.toml`)
 
