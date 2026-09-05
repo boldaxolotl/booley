@@ -602,6 +602,33 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
     assert context.feature_branch == basis.participant("outer").ticket_ref.removeprefix(
         "refs/heads/"
     )
+    assert _git(outer, "rev-parse", f"{basis.outer_sha}:.booley_project") == basis.project_sha
+    assert _git(outer, "status", "--porcelain") == ""
+
+
+def test_generated_runtime_constraints_do_not_count_as_acceptance_input_drift(
+    tmp_path: Path,
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "generated-runtime",
+        TicketFileSpec(
+            summary="Ignore generated runtime constraints",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("generated-runtime") is True
+    basis = tio.load_basis("generated-runtime")
+    workspace = project_dir / "worktrees/generated-runtime"
+    generated = workspace / ".runtime/edalize/synth/src/core/constraints/generated.sdc"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("create_clock -period 10 clk\n", encoding="utf-8")
+
+    assert_inputs_unchanged(basis, workspace)
 
 
 def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Path) -> None:

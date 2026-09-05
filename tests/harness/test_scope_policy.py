@@ -65,6 +65,16 @@ class TestTiers:
         """Non-contract project adapters and docs remain ordinary authored content."""
         assert classify_path(SCOPE, path) is ScopeTier.ADVISORY
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".runtime/edalize/synth/constraints/generated.sdc",
+            "build/generated.core",
+        ],
+    )
+    def test_generated_control_artifacts_are_not_forbidden(self, path):
+        assert classify_path(SCOPE, path) is ScopeTier.ADVISORY
+
     def test_backslashes_and_dot_prefix_normalize(self):
         assert is_forbidden_path(r".booley_project\booley.toml")
         assert is_forbidden_path("./.scope.json")

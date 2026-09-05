@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -78,7 +80,11 @@ def _journal_path(project_root: Path, slug: str) -> Path:
     return runtime_dir(project_root) / "acceptance" / "basis-publication" / f"{slug}.json"
 
 
-def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(
+    repository: Path,
+    *args: str,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", *args],
@@ -87,13 +93,22 @@ def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
             text=True,
             timeout=120,
             check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BasisPublicationError(f"git {' '.join(args)} failed in {repository}: {exc}") from exc
 
 
-def _require_git(repository: Path, *args: str) -> str:
-    result = _git(repository, *args)
+def _require_git(
+    repository: Path,
+    *args: str,
+    environment: dict[str, str] | None = None,
+) -> str:
+    result = (
+        _git(repository, *args)
+        if environment is None
+        else _git(repository, *args, environment=environment)
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "no diagnostic"
         raise BasisPublicationError(
@@ -323,13 +338,68 @@ def _prepare_participant_commits(
             plans[role],
             sha,
         )
-    for plan in journal.participants:
-        if plan.role in journal.prepared:
+    for role in (item for item in ("project", "outer") if item in plans):
+        if role in journal.prepared:
             continue
-        sha = _recover_or_create_commit(repositories[plan.role], journal.operation_id, plan)
-        journal = journal.with_prepared(plan.role, sha)
+        plan = plans[role]
+        if role == "outer" and "project" in plans:
+            plan = replace(
+                plan,
+                tree_sha=_tree_with_project_gitlink(
+                    repositories["outer"],
+                    repositories["project"],
+                    plan.tree_sha,
+                    journal.prepared["project"],
+                ),
+            )
+            journal = replace(
+                journal,
+                participants=tuple(
+                    plan if item.role == "outer" else item for item in journal.participants
+                ),
+            )
+            plans["outer"] = plan
+            _write(project_root, journal)
+        sha = _recover_or_create_commit(repositories[role], journal.operation_id, plan)
+        journal = journal.with_prepared(role, sha)
         _write(project_root, journal)
     return journal
+
+
+def _tree_with_project_gitlink(
+    outer_repository: Path,
+    project_repository: Path,
+    outer_tree_sha: str,
+    project_commit_sha: str,
+) -> str:
+    try:
+        project_path = project_repository.resolve().relative_to(outer_repository.resolve())
+    except ValueError as exc:
+        raise BasisPublicationError(
+            "paired project repository is not inside the outer repository"
+        ) from exc
+    if project_path == Path():
+        raise BasisPublicationError("paired project repository is the outer repository")
+    environment = dict(os.environ)
+    with tempfile.TemporaryDirectory(prefix="booley-basis-index-") as temp_dir:
+        environment["GIT_INDEX_FILE"] = str(Path(temp_dir) / "index")
+        _require_git(
+            outer_repository,
+            "read-tree",
+            outer_tree_sha,
+            environment=environment,
+        )
+        _require_git(
+            outer_repository,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000",
+            project_commit_sha,
+            project_path.as_posix(),
+            environment=environment,
+        )
+        return _require_git(outer_repository, "write-tree", environment=environment)
 
 
 def _publish_participant_commits(
