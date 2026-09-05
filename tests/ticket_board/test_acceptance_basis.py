@@ -359,6 +359,19 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+def _enable_isolated_test_core(project_dir: Path) -> None:
+    (project_dir / "booley.toml").write_text(
+        "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    cores = project_dir / "cores"
+    cores.mkdir()
+    (cores / "demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {rtl: {files: [rtl/demo.v]}}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+
+
 def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None:
     _root, _project_dir, tio = _paired_basis_project(tmp_path)
 
@@ -544,16 +557,7 @@ def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None
     from booley.fusesoc.core_projection import isolated_registry_root
 
     root, project_dir, _tio = _basis_project(tmp_path)
-    (project_dir / "booley.toml").write_text(
-        "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    cores = project_dir / "cores"
-    cores.mkdir()
-    (cores / "demo.core").write_text(
-        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
-        encoding="utf-8",
-    )
+    _enable_isolated_test_core(project_dir)
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "enable projected core")
     commit = _git(root, "rev-parse", "HEAD")
@@ -572,6 +576,53 @@ def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None
     assert validate_ticket_view(root, basis, allow_generated=True) == []
     assert (root / ".booley-projected-demo.core").is_file()
     assert tuple(isolated_registry_root(root).glob("*.core"))
+
+
+def test_live_isolated_cores_accept_recorded_host_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.fusesoc.core_projection import (
+        isolated_registry_root,
+        reconcile_isolated_registry,
+        reconcile_projected_cores,
+    )
+
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _enable_isolated_test_core(project_dir)
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "enable isolated core")
+    ticket = tio.create_ticket_file(
+        "mounted-generated",
+        TicketFileSpec(
+            summary="Compare mounted generated input",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("mounted-generated") is True
+    basis = tio.load_basis("mounted-generated")
+    workspace = project_dir / "worktrees/mounted-generated"
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+    validate_ticket_view(reference, basis, allow_generated=True)
+    reconcile_projected_cores(workspace)
+    reconcile_isolated_registry(workspace)
+    host_root = Path("/host/worktrees/mounted-generated")
+    for core in isolated_registry_root(workspace).glob("*.core"):
+        core.write_text(
+            core.read_text(encoding="utf-8").replace(str(workspace), str(host_root)),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        acceptance_basis_module,
+        "_recorded_worktree_path",
+        lambda *_args: host_root / ".booley_project",
+    )
+
+    assert_live_inputs_unchanged(basis, root, reference)
 
 
 def test_live_project_worktree_uses_canonical_admin_mount(

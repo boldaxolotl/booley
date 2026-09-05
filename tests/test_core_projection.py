@@ -150,15 +150,30 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
 
 
 def test_isolated_core_equivalence_normalizes_only_checkout_root(tmp_path: Path) -> None:
-    left_root, _left_core = _project(tmp_path / "left")
+    left_root, left_core = _project(tmp_path / "left")
     right_root, right_core = _project(tmp_path / "right")
     config = "[stealth]\nenabled = true\nignore_native_cores = true\n"
+    core = _CORE.replace("filesets: {}", "filesets: {rtl: {files: [rtl/demo.v]}}")
     (left_root / ".booley_project/booley.toml").write_text(config, encoding="utf-8")
     (right_root / ".booley_project/booley.toml").write_text(config, encoding="utf-8")
+    left_core.write_text(core, encoding="utf-8")
+    right_core.write_text(core, encoding="utf-8")
     left = reconcile_isolated_registry(left_root).written[0]
     right = reconcile_isolated_registry(right_root).written[0]
 
     assert isolated_core_contents_equivalent(left, right)
+
+    host_root = Path("/host/checkout")
+    left.write_text(
+        left.read_text(encoding="utf-8").replace(str(left_root.resolve()), str(host_root)),
+        encoding="utf-8",
+    )
+    assert not isolated_core_contents_equivalent(left, right)
+    assert isolated_core_contents_equivalent(
+        left,
+        right,
+        left_checkout_root=host_root,
+    )
 
     right_core.write_text(_CORE.replace("demo:0", "changed:0"), encoding="utf-8")
     reconcile_isolated_registry(right_root)

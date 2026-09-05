@@ -713,12 +713,18 @@ def assert_live_inputs_unchanged(
     project_owner = _project_repository(root)
     project_worktree = worktree_for_ref(project_owner, project.ticket_ref)
     if project_worktree is not None:
+        recorded = _recorded_worktree_path(project_owner, project.ticket_ref)
+        if recorded is None:
+            raise AcceptanceBasisError(
+                f"registered worktree for {project.ticket_ref} disappeared during validation"
+            )
         _assert_repository_inputs_unchanged(
             project_worktree,
             project.authoring_sha,
             project_protected,
             git_owner=project_owner,
             generated_reference=reference / prefix,
+            generated_checkout_root=recorded.parent,
             ticket_prefix=prefix,
         )
 
@@ -893,12 +899,10 @@ def validate_ticket_view(
     return validate_binding_selectors(root, basis.bindings)
 
 
-def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
-    """Return the checkout for one full branch ref, when it is materialized."""
-    root = Path(repository).resolve()
+def _worktree_records(repository: Path) -> tuple[tuple[Path, str | None], ...]:
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
-        cwd=root,
+        cwd=repository,
         capture_output=True,
         text=True,
         timeout=30,
@@ -906,7 +910,7 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-        raise AcceptanceBasisError(f"git worktree list failed in {root}: {detail}")
+        raise AcceptanceBasisError(f"git worktree list failed in {repository}: {detail}")
     records: list[tuple[Path, str | None]] = []
     worktree: Path | None = None
     branch: str | None = None
@@ -920,6 +924,20 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
                 records.append((worktree, branch))
             worktree = None
             branch = None
+    return tuple(records)
+
+
+def _recorded_worktree_path(repository: Path, ref: str) -> Path | None:
+    return next(
+        (path for path, item_ref in _worktree_records(repository) if item_ref == ref),
+        None,
+    )
+
+
+def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
+    """Return the checkout for one full branch ref, when it is materialized."""
+    root = Path(repository).resolve()
+    records = _worktree_records(root)
     match = next((path for path, item_ref in records if item_ref == ref), None)
     if match is None:
         return match
@@ -1111,6 +1129,7 @@ def _assert_repository_inputs_unchanged(
     *,
     git_owner: Path | None = None,
     generated_reference: Path | None = None,
+    generated_checkout_root: Path | None = None,
     ticket_prefix: str = "",
     excluded_prefixes: tuple[str, ...] = (),
 ) -> None:
@@ -1119,6 +1138,7 @@ def _assert_repository_inputs_unchanged(
         authoring_sha,
         git_owner=git_owner,
         generated_reference=generated_reference,
+        generated_checkout_root=generated_checkout_root,
         excluded_prefixes=excluded_prefixes,
     )
     violations = sorted(
@@ -1143,6 +1163,7 @@ def _repository_changed_paths(
     *,
     git_owner: Path | None,
     generated_reference: Path | None,
+    generated_checkout_root: Path | None,
     excluded_prefixes: tuple[str, ...],
 ) -> set[str]:
     pathspec = (
@@ -1169,7 +1190,11 @@ def _repository_changed_paths(
         generated = {
             path
             for path in generated | reference_generated
-            if not _same_generated_path(repository / path, generated_reference / path)
+            if not _same_generated_path(
+                repository / path,
+                generated_reference / path,
+                live_checkout_root=generated_checkout_root,
+            )
         }
     changed.update(generated)
     return {
@@ -1193,7 +1218,12 @@ def _collect_repository_paths(
     return paths
 
 
-def _same_generated_path(live: Path, reference: Path) -> bool:
+def _same_generated_path(
+    live: Path,
+    reference: Path,
+    *,
+    live_checkout_root: Path | None = None,
+) -> bool:
     """Return whether a generated input exactly matches its prepared reference."""
     if live.is_symlink() or reference.is_symlink():
         return (
@@ -1211,6 +1241,10 @@ def _same_generated_path(live: Path, reference: Path) -> bool:
             return True
         from booley.fusesoc.core_projection import isolated_core_contents_equivalent
 
-        return isolated_core_contents_equivalent(live, reference)
+        return isolated_core_contents_equivalent(
+            live,
+            reference,
+            left_checkout_root=live_checkout_root,
+        )
     except OSError:
         return False
