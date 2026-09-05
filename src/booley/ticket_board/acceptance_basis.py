@@ -591,7 +591,7 @@ def _validate_receipt(
 
 def _git_paths(repository: Path, *args: str) -> set[str]:
     result = subprocess.run(
-        ["git", *args],
+        [*_worktree_git_command(repository), *args],
         cwd=repository,
         capture_output=True,
         text=True,
@@ -603,6 +603,30 @@ def _git_paths(repository: Path, *args: str) -> set[str]:
             f"git {' '.join(args)} failed in {repository}: {result.stderr.strip()}"
         )
     return {item for item in result.stdout.split("\0") if item}
+
+
+def _worktree_git_command(repository: Path) -> list[str]:
+    """Return Git arguments that survive host paths in bind-mounted worktrees."""
+    dot_git = repository / ".git"
+    if not dot_git.is_file():
+        return ["git"]
+    try:
+        marker, raw_path = dot_git.read_text(encoding="utf-8").strip().split(":", 1)
+    except (OSError, ValueError):
+        return ["git"]
+    if marker != "gitdir":
+        return ["git"]
+    recorded = Path(raw_path.strip())
+    if not recorded.is_absolute():
+        recorded = (repository / recorded).resolve()
+    if recorded.is_dir():
+        return ["git"]
+    admin_name = recorded.name
+    for parent in (repository, *repository.parents):
+        mounted = parent / ".git" / "worktrees" / admin_name
+        if mounted.is_dir():
+            return ["git", f"--git-dir={mounted}", f"--work-tree={repository}"]
+    return ["git"]
 
 
 def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) -> None:
@@ -842,10 +866,26 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     match = next((path for path, item_ref in records if item_ref == ref), None)
     if match is None or match.exists():
         return match
-    return _mounted_worktree_path(root, match, records[0][0] if records else None) or match
+    mounted = _mounted_worktree_path(
+        root,
+        match,
+        records[0][0] if records else None,
+        ref,
+    )
+    if mounted is None:
+        raise AcceptanceBasisError(
+            f"registered worktree for {ref} is unavailable at {match} and could not be "
+            "identified in the current mount"
+        )
+    return mounted
 
 
-def _mounted_worktree_path(root: Path, recorded: Path, primary: Path | None) -> Path | None:
+def _mounted_worktree_path(
+    root: Path,
+    recorded: Path,
+    primary: Path | None,
+    ref: str,
+) -> Path | None:
     """Translate host-recorded worktree paths into the current bind mount."""
     candidates: list[Path] = []
     if primary is not None:
@@ -863,7 +903,47 @@ def _mounted_worktree_path(root: Path, recorded: Path, primary: Path | None) -> 
         pass
     else:
         candidates.append(project_dir / suffix)
-    return next((candidate for candidate in candidates if candidate.exists()), None)
+    matches = {
+        candidate.resolve()
+        for candidate in candidates
+        if candidate.is_dir() and _worktree_has_identity(candidate, ref)
+    }
+    if len(matches) > 1:
+        rendered = ", ".join(str(candidate) for candidate in sorted(matches))
+        raise AcceptanceBasisError(
+            f"registered worktree for {ref} is ambiguous in the current mount: {rendered}"
+        )
+    return next(iter(matches), None)
+
+
+def _worktree_has_identity(candidate: Path, ref: str) -> bool:
+    """Return whether a remapped checkout proves its top-level and branch identity."""
+    command = _worktree_git_command(candidate)
+    top_level = subprocess.run(
+        [*command, "rev-parse", "--show-toplevel"],
+        cwd=candidate,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if top_level.returncode != 0:
+        return False
+    try:
+        discovered = Path(top_level.stdout.strip()).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if discovered != candidate.resolve():
+        return False
+    branch = subprocess.run(
+        [*command, "symbolic-ref", "--quiet", "HEAD"],
+        cwd=candidate,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return branch.returncode == 0 and branch.stdout.strip() == ref
 
 
 def _materialize_participant_commits(

@@ -14,10 +14,9 @@ from booley.runtime.ticket_repositories import resolve_inner_project_repo
 from .acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
-    assert_inputs_unchanged,
+    assert_live_inputs_unchanged,
     materialize_current_ticket_checkout,
     validate_ticket_view,
-    worktree_for_ref,
 )
 from .acceptance_targets import resolve_commit
 from .frontmatter import parse_frontmatter
@@ -93,9 +92,6 @@ def _validate_checkout_basis(
                     "Acceptance Basis project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
-        inspection_root = worktree_for_ref(root, basis.participant("outer").ticket_ref)
-        if inspection_root is not None:
-            assert_inputs_unchanged(basis, inspection_root)
         ticket, _status = find_ticket_file(tickets_dir, slug)
         if ticket is None:
             raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
@@ -124,6 +120,7 @@ def _validate_current_ticket_view(
 
     with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
         current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
+        assert_live_inputs_unchanged(basis, root, current)
         preparation = prepare_project(
             root,
             current,

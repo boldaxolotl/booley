@@ -427,6 +427,12 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
     assert tio.enqueue_ticket("live-input-drift") is True
     basis = tio.load_basis("live-input-drift")
     workspace = project_dir / "worktrees/live-input-drift"
+    dot_git = workspace / ".git"
+    admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    dot_git.write_text(
+        f"gitdir: /host/checkout/.git/worktrees/{admin_name}\n",
+        encoding="utf-8",
+    )
     (workspace / ".booley_project/booley.toml").write_text(
         "[flows]\ndrift = true\n",
         encoding="utf-8",
@@ -450,13 +456,47 @@ def test_worktree_discovery_remaps_host_paths_inside_bind_mount(
         f"worktree {host_root}/.booley_project/worktrees/demo\n"
         f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
     )
-    monkeypatch.setattr(
-        acceptance_basis_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, output, ""),
-    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["worktree", "list", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, output, "")
+        if command[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
+        if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, "refs/heads/demo\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
 
     assert worktree_for_ref(mounted_root, "refs/heads/demo") == mounted_ticket
+
+
+def test_worktree_discovery_rejects_ambiguous_bind_mount_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mounted_root = tmp_path / "work"
+    (mounted_root / "worktrees/demo").mkdir(parents=True)
+    (mounted_root / ".booley_project/worktrees/demo").mkdir(parents=True)
+    output = (
+        f"worktree {mounted_root}\nHEAD {'a' * 40}\ndetached\n\n"
+        f"worktree /host/checkout/.booley_project/worktrees/demo\n"
+        f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["worktree", "list", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, output, "")
+        if command[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
+        if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, "refs/heads/demo\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+
+    with pytest.raises(AcceptanceBasisError, match="ambiguous"):
+        worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
 def test_changed_targets_ignore_non_public_doctor_selftests(tmp_path: Path) -> None:
