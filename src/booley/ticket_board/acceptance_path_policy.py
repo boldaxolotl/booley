@@ -11,14 +11,14 @@ PROJECT_CONTROL_FILES = frozenset(
 PROJECT_CONTROL_PREFIXES = (".booley_project/hooks/", ".booley_project/generators/")
 
 
-def normalize_contract_path(path: str) -> str:
+def normalize_acceptance_path(path: str) -> str:
     """Return a repository-relative POSIX spelling for policy checks."""
     return path.replace("\\", "/").strip().removeprefix("./")
 
 
-def is_static_contract_path(path: str) -> bool:
+def is_static_acceptance_path(path: str) -> bool:
     """Recognize paths that can belong to the immutable Target surface."""
-    normalized = normalize_contract_path(path)
+    normalized = normalize_acceptance_path(path)
     if PurePosixPath(normalized).suffix.casefold() in CONTROL_SUFFIXES:
         return True
     if normalized in PROJECT_CONTROL_FILES:

@@ -78,9 +78,9 @@ def _install_scope_hook(
 
         require_project_checkout(project_root)
     scope_file = worktree_path / ".scope.json"
-    controls = _hook_contract_controls(worktree_path, contract_surface_root)
+    controls = _hook_acceptance_controls(worktree_path, contract_surface_root)
     scope_file.write_text(
-        json.dumps({"scope": scope, "contract_control": controls}, indent=2) + "\n",
+        json.dumps({"scope": scope, "acceptance_control": controls}, indent=2) + "\n",
         encoding="utf-8",
     )
     logger.debug("Wrote scope file: %s (%d entries)", scope_file, len(scope))
@@ -120,15 +120,15 @@ def _install_scope_hook(
         _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
 
 
-def _hook_contract_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
+def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
     """Translate sealed surface paths for the repository receiving the hook."""
     root = surface_root or worktree_path
     try:
-        from booley.ticket_board.acceptance_targets import contract_control_paths
+        from booley.ticket_board.acceptance_targets import acceptance_control_paths
 
-        controls = contract_control_paths(root)
+        controls = acceptance_control_paths(root)
     except (OSError, ValueError):
-        logger.warning("Could not enumerate Target contract controls for %s", root)
+        logger.warning("Could not enumerate Acceptance Basis controls for %s", root)
         return []
     if worktree_path == root:
         return [path for path in controls if not path.startswith(".booley_project/")]
@@ -403,7 +403,7 @@ def _create_feature_branch(
     worktree_path: Path,
     base_ref: str,
 ) -> StepResult | None:
-    """Create the Ticket-owned feature branch from its sealed revision."""
+    """Create the Ticket-owned feature branch from its basis revision."""
     branch_name = ctx.slug
     logger.info("Feature branch from %s", base_ref)
     existing = git_run(

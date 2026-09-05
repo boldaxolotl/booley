@@ -87,7 +87,7 @@ def _sealed_contract() -> AcceptanceBasis:
         bindings=(
             AcceptanceTargetBinding(
                 flow="sim",
-                criterion="cycle_count",
+                criterion="criteria.mandatory.cycle_count",
                 baseline=_TARGET_IDENTITY,
                 candidate=_TARGET_IDENTITY,
                 baseline_selector=_TARGET_SELECTOR,

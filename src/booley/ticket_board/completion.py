@@ -103,7 +103,7 @@ def _request(
     return AcceptanceRequest(
         root=Path(tio._project_root).resolve(),
         slug=slug,
-        contract=basis,
+        basis=basis,
         cleanup=cleanup,
         ticket_status=entry["status"],
         allowed_board_rename=allowed_board_rename,

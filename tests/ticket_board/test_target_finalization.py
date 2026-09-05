@@ -13,7 +13,7 @@ from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
     plan_target_removals,
-    validate_remove_targets_for_seal,
+    validate_acceptance_removals,
 )
 
 
@@ -26,7 +26,8 @@ def _write_core(path: Path, *, vlnv: str, targets: str) -> None:
 
 def _binding(*targets: str) -> tuple[AcceptanceTargetBinding, ...]:
     return tuple(
-        AcceptanceTargetBinding("synth", "synthesis_ok", target, target) for target in targets
+        AcceptanceTargetBinding("synth", "criteria.mandatory.synthesis_ok", target, target)
+        for target in targets
     )
 
 
@@ -102,7 +103,7 @@ def test_last_target_leaves_valid_empty_targets_mapping(tmp_path: Path) -> None:
     assert fusesoc_registry.read_core(core)["targets"] == {}
 
 
-def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
+def test_enqueue_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
     _write_core(
         tmp_path / "toy.core",
         vlnv="acme:lib:toy:1.0",
@@ -113,7 +114,7 @@ def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> Non
         "criteria": {"mandatory": {"lint_clean": ["baseline"]}},
     }
 
-    errors = validate_remove_targets_for_seal(fields, tmp_path)
+    errors = validate_acceptance_removals(fields, tmp_path)
 
     assert errors == [
         "on_success.remove_targets target 'acme:lib:toy:1.0#unrelated' is not bound "
@@ -121,7 +122,7 @@ def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> Non
     ]
 
 
-def test_seal_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
+def test_enqueue_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
     _write_core(tmp_path / "a.core", vlnv="acme:lib:a:1.0", targets="  synth: {}\n")
     _write_core(tmp_path / "b.core", vlnv="acme:lib:b:1.0", targets="  synth: {}\n")
     fields = {
@@ -129,7 +130,7 @@ def test_seal_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
         "criteria": {"mandatory": {"synthesis_ok": {"targets": ["a#synth"]}}},
     }
 
-    errors = validate_remove_targets_for_seal(fields, tmp_path)
+    errors = validate_acceptance_removals(fields, tmp_path)
 
     assert len(errors) == 1
     assert "Target 'synth' is declared by 2 cores" in errors[0]

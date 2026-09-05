@@ -13,6 +13,7 @@ from pathlib import Path
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import OnSuccess
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
 
 from .analytics import (
@@ -204,14 +205,39 @@ def _cmd_validate_ticket(tio, args):
     with path.open(encoding="utf-8") as f:
         text = f.read()
     fields, body = parse_frontmatter(text)
+    project_root = detect_project_root()
+    validation_root = project_root
+    allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
+    if (project_root / ".git").exists():
+        try:
+            workspace = TicketWorkspace.ensure_authoring(project_root, path, path.stem)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
+            return 1
+        validation_root = workspace.outer
+        from .acceptance_targets import acceptance_control_paths
+
+        allowed_dirty_paths = tuple(
+            validation_root / item for item in acceptance_control_paths(validation_root)
+        )
     results = validate_ticket_fields(
         fields,
         body,
         check_files=True,
-        check_git=args.check_git,
-        project_root=str(detect_project_root()),
-        allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        check_git=False if validation_root != project_root else args.check_git,
+        project_root=str(validation_root),
+        allowed_dirty_paths=allowed_dirty_paths,
     )
+    if args.check_git and validation_root != project_root:
+        root_results = validate_ticket_fields(
+            fields,
+            body,
+            check_files=False,
+            check_git=True,
+            project_root=str(project_root),
+            allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        )
+        results = list(dict.fromkeys([*results, *root_results]))
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]
     for w in warnings:

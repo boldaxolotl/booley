@@ -56,10 +56,6 @@ class Candidate:
         """Retain compact field access inside repository mechanics."""
         return getattr(self, key)
 
-    def with_prepared(self, sha: str) -> Candidate:
-        """Return this candidate with its recovered prepared identity."""
-        return replace(self, prepared_sha=sha)
-
     def with_finalized(self, sha: str) -> Candidate:
         """Return this candidate with its finalized identity."""
         return replace(self, finalized_sha=sha)
@@ -153,7 +149,7 @@ class AcceptanceJournal:
 
     @property
     def roles(self) -> tuple[str, ...]:
-        """Return participant roles in contract order."""
+        """Return participant roles in Acceptance Basis order."""
         return tuple(item["role"] for item in self.participants)
 
     @property
@@ -188,12 +184,6 @@ class AcceptanceJournal:
             raise AcceptanceJournalError("candidate preparation is not legal in this state")
         candidates = dict(self.candidates)
         candidates[role] = candidate
-        return replace(self, candidates=MappingProxyType(candidates))
-
-    def with_prepared_identity(self, role: str, sha: str) -> AcceptanceJournal:
-        """Restore a prepared identity omitted by an older journal schema."""
-        candidates = dict(self.candidates)
-        candidates[role] = candidates[role].with_prepared(sha)
         return replace(self, candidates=MappingProxyType(candidates))
 
     def with_finalized_identity(self, role: str, sha: str) -> AcceptanceJournal:
@@ -375,6 +365,11 @@ def _optional_sha(candidate: dict[str, Any], role: str, key: str) -> str | None:
 def _validate_candidate(candidate: Candidate, role: str, transaction: str) -> None:
     if candidate.prepared_sha is None and candidate.finalized_sha is None:
         raise BoundaryError(f"acceptance journal candidate {role!r} has no recorded identity")
+    if candidate.prepared_sha is None and candidate.finalized_sha is not None:
+        raise BoundaryError(
+            f"acceptance journal candidate {role!r} has a finalized identity "
+            "without its prepared identity"
+        )
     expected_destination = candidate.expected_destination_sha
     if not _SHA_RE.fullmatch(expected_destination):
         raise BoundaryError(
@@ -588,7 +583,7 @@ def load_journal(
 
 
 def load_persisted_journal(path: Path) -> AcceptanceJournal:
-    """Read and fully validate a journal when its Ticket contract is unavailable."""
+    """Read and fully validate a journal when its Acceptance Basis is unavailable."""
     value = read_json(path)
     try:
         mapping = require_dict(value, field="acceptance journal")

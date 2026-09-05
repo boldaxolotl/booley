@@ -304,7 +304,7 @@ async def _run_setup_step(ctx: TicketContext, project_root: Path) -> bool:
 
 
 def _resumed_contract_failure(ctx: TicketContext) -> str | None:
-    """Return a setup-blocking error when a reused contract view is invalid."""
+    """Return a setup-blocking error when a reused Acceptance Basis view is invalid."""
     if ctx.acceptance_basis is None:
         return None
     if ctx.worktree_path is None:
@@ -1473,8 +1473,8 @@ async def _resolve_ticket_disposition(
 
 def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
     """Fail closed before review handoff when Acceptance Basis inputs changed."""
-    contract = ctx.acceptance_basis
-    if contract is None:
+    basis = ctx.acceptance_basis
+    if basis is None:
         logger.warning("Ticket %s reaches handoff without an Acceptance Basis", ctx.slug)
         return False
     from booley.ticket_board.acceptance_basis import (
@@ -1484,7 +1484,7 @@ def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
     )
 
     try:
-        assert_inputs_unchanged(contract, ctx.work_dir)
+        assert_inputs_unchanged(basis, ctx.work_dir)
     except (OSError, AcceptanceBasisError) as exc:
         reason = f"{BLOCK_REASON}: {exc}"
         block_ticket(ctx, reason, "developer", run_index=run_index)

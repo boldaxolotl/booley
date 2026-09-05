@@ -126,6 +126,29 @@ def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.Mon
         readiness_module._checkout_statuses(root)
 
 
+def test_worktree_discovery_failure_is_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+
+    def failed_worktree(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["git", "worktree", "list"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: worktree metadata is unreadable",
+        )
+
+    monkeypatch.setattr(readiness_module.subprocess, "run", failed_worktree)
+
+    with pytest.raises(
+        readiness_module.ReadinessInspectionError,
+        match="worktree metadata is unreadable",
+    ):
+        readiness_module._worktree_for_ref(root, "refs/heads/main")
+
+
 def test_executable_readiness_uses_authoritative_basis_reader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

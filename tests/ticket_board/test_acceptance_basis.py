@@ -13,9 +13,10 @@ from booley.runtime.project_dir import reset_cache
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.ticket_board import (
     acceptance_targets,
-    contract_ops,
+    basis_publication,
     draft_transition,
     enqueue_publication,
+    workspace_ops,
 )
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
@@ -66,6 +67,30 @@ def test_minimal_basis_round_trips_through_ticket_frontmatter() -> None:
 
     assert AcceptanceBasis.from_mapping(fields["acceptance_basis"]) == basis
     assert set(fields["acceptance_basis"]) == {"schema", "participants"}
+
+
+@pytest.mark.parametrize("section", ["mandatory", "optional"])
+def test_canonical_binding_preserves_full_criterion_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    section: str,
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets,
+        "select_target",
+        lambda _root, target: SimpleNamespace(identity=f"acme:lib:toy#{target}", selector=target),
+    )
+    specification = acceptance_targets.CriterionTarget(
+        section,
+        "synthesis_ok",
+        "synth_toy",
+        "synth",
+        False,
+    )
+
+    (binding,) = acceptance_targets.canonical_acceptance_bindings(tmp_path, (specification,))
+
+    assert binding.criterion == f"criteria.{section}.synthesis_ok"
 
 
 @pytest.mark.parametrize(
@@ -196,6 +221,66 @@ def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "initial outer")
+
+    project_dir = root / ".booley_project"
+    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    _git(project_dir, "init", "-b", "main")
+    _git(project_dir, "config", "user.name", "Test")
+    _git(project_dir, "config", "user.email", "test@example.invalid")
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "initial project")
+    return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
+
+
+def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None:
+    _root, _project_dir, tio = _paired_basis_project(tmp_path)
+
+    ticket = tio.create_ticket_file(
+        "paired-destination",
+        TicketFileSpec(
+            summary="Persist paired destination",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is not None
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert fields["project_destination_ref"] == "refs/heads/main"
+
+
+def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
+    _root, project_dir, tio = _paired_basis_project(tmp_path)
+
+    ticket = tio.create_ticket_file(
+        "missing-paired-destination",
+        TicketFileSpec(
+            summary="Missing paired destination",
+            ticket_type="feature",
+            branch="release",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+
+    assert ticket is None
+    assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
+
+
 def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
 
@@ -236,6 +321,33 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     assert evidence["record"]["sha256"]
     assert len(evidence["source_sha256"]) == 64
     assert len(evidence["operation_id"]) == 32
+
+
+def test_validate_ticket_recreates_missing_authoring_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.ticket_board.cli import main
+
+    root, project_dir, tio = _basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "validate-workspace",
+        TicketFileSpec(
+            summary="Validate from workspace",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+            body="## Description\n\nValidate the draft.\n",
+        ),
+    )
+    assert ticket is not None
+    workspace = project_dir / "worktrees/validate-workspace"
+    _git(root, "worktree", "remove", "--force", str(workspace))
+    assert not workspace.exists()
+    monkeypatch.chdir(root)
+
+    assert main(["validate-ticket", str(ticket), "--check-git"]) == 0
+    assert workspace.is_dir()
 
 
 def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
@@ -365,6 +477,62 @@ def test_enqueue_retry_finishes_interrupted_board_publication(
     assert transitions.read_text(encoding="utf-8").count("enqueue operation") == 1
 
 
+def test_enqueue_retry_rolls_forward_after_ticket_ref_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    write_journal = basis_publication._write
+    interrupted = False
+
+    def interrupt_after_ref(project_root, journal):
+        nonlocal interrupted
+        if journal.published and not interrupted:
+            interrupted = True
+            raise OSError("after Ticket ref publication")
+        write_journal(project_root, journal)
+
+    monkeypatch.setattr(basis_publication, "_write", interrupt_after_ref)
+    assert tio.enqueue_ticket("transaction") is False
+
+    journal = basis_publication.load_basis_publication(root, "transaction")
+    assert journal is not None
+    prepared = journal.prepared["outer"]
+    ticket_ref = journal.participants[0].ticket_ref
+    assert _git(root, "rev-parse", ticket_ref) == prepared
+    assert (project_dir / "tickets/board/drafts/transaction.md").exists()
+
+    monkeypatch.setattr(basis_publication, "_write", write_journal)
+    assert tio.enqueue_ticket("transaction") is True
+    assert basis_publication.load_basis_publication(root, "transaction") is None
+
+
+def test_basis_reset_uses_preflighted_expected_head_cas(tmp_path: Path) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    assert tio.enqueue_ticket("transaction") is True
+    queued = project_dir / "tickets/board/queue/transaction.md"
+    fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    workspace = project_dir / "worktrees/transaction"
+    (workspace / "implementation.txt").write_text("work\n", encoding="utf-8")
+    _git(workspace, "add", "implementation.txt")
+    _git(workspace, "commit", "-m", "implementation")
+    implementation_sha = _git(workspace, "rev-parse", "HEAD")
+
+    plan = workspace_ops.preflight_basis_reset(root, "transaction", basis, "main")
+    assert plan.participants[0].expected_head == implementation_sha
+
+    workspace_ops.reset_basis_worktrees(
+        root,
+        "transaction",
+        basis,
+        "main",
+        plan=plan,
+    )
+
+    assert _git(root, "rev-parse", basis.participant("outer").ticket_ref) == basis.outer_sha
+    assert _git(workspace, "rev-parse", "HEAD") == basis.outer_sha
+
+
 def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> None:
     _root, project_dir, tio = _prepared_ticket(tmp_path)
     assert tio.enqueue_ticket("transaction")
@@ -447,34 +615,45 @@ def test_enqueue_rejects_stale_receipt_after_source_only_edit(
     assert draft.exists()
 
 
-def test_partial_keepalive_creation_rolls_back(
+def test_partial_keepalive_creation_rolls_forward_on_retry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     basis = AcceptanceBasis((_participant("outer"), _participant("project")))
     outer = tmp_path / "outer"
     project = tmp_path / "project"
-    deleted: list[tuple[Path, str]] = []
+    refs: dict[tuple[Path, str], str] = {}
+    fail_project = True
 
     def fake_git(repository: Path, *args: str):
-        if args[:2] == ("update-ref", "-d"):
-            deleted.append((repository, args[2]))
-        return subprocess.CompletedProcess(args, 1, "", "")
-
-    calls = 0
+        ref = args[-1].removesuffix("^{commit}")
+        value = refs.get((repository, ref))
+        return subprocess.CompletedProcess(
+            args, 0 if value else 1, f"{value}\n" if value else "", ""
+        )
 
     def fake_require(repository: Path, *args: str) -> str:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise contract_ops.ContractOperationError("project ref failed")
+        nonlocal fail_project
+        ref = args[1]
+        if repository == project and fail_project:
+            fail_project = False
+            raise basis_publication.BasisPublicationError("project ref failed")
+        refs[(repository, ref)] = args[2]
         return ""
 
-    monkeypatch.setattr(contract_ops, "_git", fake_git)
-    monkeypatch.setattr(contract_ops, "_require_git", fake_require)
+    monkeypatch.setattr(basis_publication, "_git", fake_git)
+    monkeypatch.setattr(basis_publication, "_require_git", fake_require)
 
-    with pytest.raises(contract_ops.ContractOperationError, match="project ref failed"):
-        contract_ops._publish_basis_keepalives(basis, outer, project)
-    assert deleted == [(outer, f"refs/booley/bases/{basis.basis_id}/outer")]
+    repositories = {"outer": outer, "project": project}
+    with pytest.raises(basis_publication.BasisPublicationError, match="project ref failed"):
+        basis_publication._publish_basis_keepalives(repositories, basis)
+
+    outer_ref = f"refs/booley/bases/{basis.basis_id}/outer"
+    assert refs[(outer, outer_ref)] == basis.participant("outer").authoring_sha
+
+    basis_publication._publish_basis_keepalives(repositories, basis)
+
+    project_ref = f"refs/booley/bases/{basis.basis_id}/project"
+    assert refs[(project, project_ref)] == basis.participant("project").authoring_sha
 
 
 def test_malformed_committed_record_fails_with_basis_error(tmp_path: Path) -> None:
@@ -631,7 +810,12 @@ def test_binding_selector_validation_rejects_changed_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binding = AcceptanceTargetBinding(
-        "sim", "sim_pass", "acme:lib:old#sim", "acme:lib:old#sim", "sim", "sim"
+        "sim",
+        "criteria.mandatory.sim_pass",
+        "acme:lib:old#sim",
+        "acme:lib:old#sim",
+        "sim",
+        "sim",
     )
     monkeypatch.setattr(
         "booley.ticket_board.acceptance_targets.select_target",

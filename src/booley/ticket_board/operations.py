@@ -1216,6 +1216,10 @@ def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
             return False
         file_path, current, basis = context
 
+        reset_plan = _preflight_reset_branches(tio._project_root, slug, current, basis)
+        if basis is not None and reset_plan is None:
+            return False
+
         try:
             _reset_runtime_state(tio, slug)
         except OSError as exc:
@@ -1224,7 +1228,13 @@ def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
                 file=sys.stderr,
             )
             return False
-        if not _reset_ticket_branches(tio._project_root, slug, current, basis):
+        if not _reset_ticket_branches(
+            tio._project_root,
+            slug,
+            current,
+            basis,
+            reset_plan=reset_plan,
+        ):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -1268,13 +1278,15 @@ def _reset_ticket_branches(
     slug: str,
     entry: dict[str, Any],
     basis: Any | None,
+    *,
+    reset_plan: Any | None = None,
 ) -> bool:
     """Restore an Acceptance Basis generation or remove draft branches."""
-    raw_contract = entry.get("acceptance_basis")
-    if raw_contract is None:
+    raw_basis = entry.get("acceptance_basis")
+    if raw_basis is None:
         return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
     from .acceptance_basis import AcceptanceBasisError
-    from .contract_ops import ContractOperationError, reset_basis_worktrees
+    from .workspace_ops import AcceptanceBasisOperationError, reset_basis_worktrees
 
     try:
         if basis is None:
@@ -1284,14 +1296,44 @@ def _reset_ticket_branches(
             slug,
             basis,
             str(entry.get("branch", "")),
+            plan=reset_plan,
         )
-    except (ContractOperationError, AcceptanceBasisError, OSError) as exc:
+    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
         print(
             f"Error: reset could not restore the Acceptance Basis for '{slug}': {exc}",
             file=sys.stderr,
         )
         return False
     return True
+
+
+def _preflight_reset_branches(
+    project_root: Path,
+    slug: str,
+    entry: dict[str, Any],
+    basis: Any | None,
+) -> Any | None:
+    """Resolve every Acceptance Basis identity before runtime cleanup begins."""
+    if entry.get("acceptance_basis") is None:
+        return None
+    from .acceptance_basis import AcceptanceBasisError
+    from .workspace_ops import AcceptanceBasisOperationError, preflight_basis_reset
+
+    try:
+        if basis is None:
+            raise AcceptanceBasisError("authoritative Acceptance Basis is unavailable")
+        return preflight_basis_reset(
+            project_root,
+            slug,
+            basis,
+            str(entry.get("branch", "")),
+        )
+    except (AcceptanceBasisOperationError, AcceptanceBasisError, OSError) as exc:
+        print(
+            f"Error: reset could not preflight the Acceptance Basis for '{slug}': {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def op_reset(

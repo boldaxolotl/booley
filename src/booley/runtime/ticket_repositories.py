@@ -8,6 +8,10 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 from booley.runtime import git as runtime_git
 from booley.runtime.agent_errors import BlockingError
@@ -92,6 +96,47 @@ class TicketWorkspace:
 
     def __init__(self, request: TicketWorkspaceRequest) -> None:
         self.request = request
+
+    @classmethod
+    def ensure_authoring(
+        cls,
+        project_root: Path | str,
+        ticket_path: Path | str,
+        slug: str,
+    ) -> AuthoringWorkspace:
+        """Idempotently materialize the Ticket generation's authoring checkout set."""
+        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+        return ensure_ticket_workspace(project_root, ticket_path, slug)
+
+    @staticmethod
+    def project_destination_ref(
+        project_root: Path | str,
+        destination_branch: str,
+        requested_ref: str = "",
+    ) -> str:
+        """Resolve the paired project destination to a full local branch ref."""
+        root = Path(project_root).resolve()
+        source = resolve_inner_project_repo(root)
+        if source is None:
+            if requested_ref:
+                raise TicketWorkspaceError(
+                    "project_destination_ref requires a standalone project repository"
+                )
+            return ""
+        ref = requested_ref or f"refs/heads/{destination_branch}"
+        if not ref.startswith("refs/heads/"):
+            raise TicketWorkspaceError(
+                "project_destination_ref must be a full refs/heads/... name"
+            )
+        result = _git(source, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise TicketWorkspaceError(
+                f"paired project destination {ref!r} does not exist as a local branch{suffix}"
+            )
+        return ref
 
     @classmethod
     def open(cls, request: TicketWorkspaceRequest) -> TicketWorkspace:

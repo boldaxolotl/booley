@@ -53,7 +53,7 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_args, **_kwargs: _TEST_BASIS,
     )
     monkeypatch.setattr(
-        "booley.ticket_board.contract_ops.validate_basis_refs",
+        "booley.ticket_board.workspace_ops.validate_basis_refs",
         lambda *_args, **_kwargs: [],
     )
 
@@ -69,7 +69,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         bindings=(
             AcceptanceTargetBinding(
                 flow="lint",
-                criterion="lint_clean",
+                criterion="criteria.mandatory.lint_clean",
                 baseline="acme:ip:uart:1.0#lint_uart",
                 candidate="acme:ip:uart:1.0#lint_uart",
                 baseline_selector="uart#lint_uart",
@@ -77,7 +77,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
             ),
             AcceptanceTargetBinding(
                 flow="sim",
-                criterion="review_tb_quality",
+                criterion="criteria.mandatory.review_tb_quality",
                 baseline="acme:ip:uart:1.0#sim_uart",
                 candidate="acme:ip:uart:1.0#sim_uart",
                 baseline_selector="uart#sim_uart",
@@ -143,7 +143,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
         bindings=(
             AcceptanceTargetBinding(
                 flow="sim",
-                criterion="sim_pass",
+                criterion="criteria.mandatory.sim_pass",
                 baseline=identity,
                 candidate=identity,
                 baseline_selector="uart#sim_uart",
@@ -235,7 +235,7 @@ def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
 
     with (
         patch(
-            "booley.ticket_board.contract_ops.validate_basis_refs",
+            "booley.ticket_board.workspace_ops.validate_basis_refs",
             return_value=[],
         ) as validate_refs,
     ):

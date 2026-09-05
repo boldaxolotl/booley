@@ -29,15 +29,15 @@ from booley.runtime.project_dir import (
 from booley.runtime.ticket_repositories import resolve_inner_project_repo, ticket_project_worktree
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis
-from .contract_ops import (
-    ContractWorktrees,
+from .frontmatter import format_frontmatter, parse_frontmatter
+from .persistence import atomic_replace_bytes
+from .workspace_ops import (
+    AuthoringWorkspace,
     _generation_branch,
     _generation_file,
     _open_generation,
     validate_basis_refs,
 )
-from .frontmatter import format_frontmatter, parse_frontmatter
-from .persistence import atomic_replace_bytes
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
 _STATES = {"initializing", "prepared", "cutover-ready", "published"}
@@ -320,7 +320,7 @@ def _move_worktree(repository: Path, ref: str, destination: Path) -> None:
 
 def _relocate_worktrees(
     root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     operation = _operation_dir(root, journal.operation_id)
     canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project_repository = resolve_inner_project_repo(root)
@@ -339,7 +339,7 @@ def _relocate_worktrees(
     if journal.has_project and project_repository is not None:
         project_path = ticket_project_worktree(canonical_outer)
         _move_worktree(project_repository, new_ref, project_path)
-    return ContractWorktrees(
+    return AuthoringWorkspace(
         canonical_outer,
         project_path,
         old_outer.destination_sha,
@@ -350,11 +350,11 @@ def _relocate_worktrees(
 
 def _published_worktrees(
     root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project = ticket_project_worktree(outer) if journal.has_project else None
     project_base = basis.participant("project").destination_sha if journal.has_project else ""
-    return ContractWorktrees(
+    return AuthoringWorkspace(
         outer,
         project,
         basis.participant("outer").destination_sha,
@@ -365,7 +365,7 @@ def _published_worktrees(
 
 def _finish_published_transition(
     root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     """Confirm published identities, then retire the slug-level recovery journal."""
     draft = Path(journal.draft_ticket)
     _require_file(draft, journal.draft_sha256, "published draft")
@@ -456,7 +456,7 @@ def return_to_draft(
     status: str,
     logs_dir: Path | str,
     append_transition: Callable[[str], None],
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     """Prepare and recoverably publish a new authoring generation."""
     root = Path(project_root).resolve()
     logs = Path(logs_dir)

@@ -26,13 +26,13 @@ from ..acceptance_basis import (
     BasisParticipant,
     assert_inputs_unchanged,
 )
-from ..contract_ops import ContractOperationError, pin_basis_refs
 from ..git_ops import worktree_is_clean
 from ..target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
     plan_target_removals,
 )
+from ..workspace_ops import AcceptanceBasisOperationError, pin_basis_refs
 from ._model import (
     AcceptanceJournal,
     AcceptanceJournalError,
@@ -85,7 +85,7 @@ class AcceptanceRequest:
 
     root: Path
     slug: str
-    contract: AcceptanceBasis
+    basis: AcceptanceBasis
     cleanup: bool
     ticket_status: Literal["review", "done"]
     allowed_board_rename: tuple[Path, Path] | None
@@ -150,14 +150,14 @@ def _repository_for(
 
 def _initial_journal(
     slug: str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
 ) -> AcceptanceJournal:
     return initial_journal(
         slug,
-        [item.as_dict() for item in contract.participants],
+        [item.as_dict() for item in basis.participants],
         cleanup=cleanup,
         removal_targets=removal_targets,
     )
@@ -166,16 +166,16 @@ def _initial_journal(
 def _load_journal(
     path: Path,
     slug: str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
     store: AcceptanceStore | None = None,
 ) -> AcceptanceJournal:
     store = store or FileAcceptanceStore()
-    expected = [item.as_dict() for item in contract.participants]
+    expected = [item.as_dict() for item in basis.participants]
     if not path.exists():
-        return _initial_journal(slug, contract, cleanup=cleanup, removal_targets=removal_targets)
+        return _initial_journal(slug, basis, cleanup=cleanup, removal_targets=removal_targets)
     try:
         return store.load(
             path,
@@ -291,11 +291,11 @@ def _plan_candidate(
 def _validate_source_surface(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     sources: Mapping[str, str],
 ) -> None:
-    """Rebuild the recorded composite checkout and reject contract-control drift."""
-    participants = {item.role: item for item in contract.participants}
+    """Rebuild the recorded composite checkout and reject acceptance-input drift."""
+    participants = {item.role: item for item in basis.participants}
     with tempfile.TemporaryDirectory(prefix="booley-accept-surface-") as directory:
         temporary = Path(directory) / "outer"
         _clone_checkout(root, temporary, sources["outer"])
@@ -310,10 +310,10 @@ def _validate_source_surface(
             project_checkout = temporary / project_relative
             _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
-            assert_inputs_unchanged(contract, temporary)
+            assert_inputs_unchanged(basis, temporary)
             from ..acceptance_targets import validate_binding_selectors
 
-            selector_errors = validate_binding_selectors(temporary, contract.bindings)
+            selector_errors = validate_binding_selectors(temporary, basis.bindings)
             if selector_errors:
                 raise AcceptanceBasisError(
                     "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
@@ -492,13 +492,13 @@ def _plan_missing_candidates(
     root: Path,
     project_repository: Path | None,
     slug: str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
     plan_directory: Path,
     repositories: AcceptanceRepositories,
 ) -> dict[str, _CandidatePlan]:
     plans: dict[str, _CandidatePlan] = {}
-    for participant in contract.participants:
+    for participant in basis.participants:
         if participant.role in journal["candidates"]:
             continue
         repository = _repository_for(root, project_repository, participant)
@@ -560,7 +560,7 @@ def _validate_candidate_surface(
         outer,
         _candidate_identity("outer", transaction.journal, plans),
     )
-    if any(row.role == "project" for row in transaction.contract.participants):
+    if any(row.role == "project" for row in transaction.basis.participants):
         project_source = _candidate_repository(
             transaction.root, transaction.project_repository, "project", plans
         )
@@ -571,7 +571,7 @@ def _validate_candidate_surface(
             _candidate_identity("project", transaction.journal, plans),
         )
     try:
-        assert_inputs_unchanged(transaction.contract, outer)
+        assert_inputs_unchanged(transaction.basis, outer)
     except AcceptanceBasisError as exc:
         raise AcceptanceOperationError(str(exc)) from exc
 
@@ -691,10 +691,10 @@ def _reject_unjournaled_keepalives(
 def _reconcile_prepared_refs(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
-    by_role = {item.role: item for item in contract.participants}
+    by_role = {item.role: item for item in basis.participants}
     plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, by_role[role])
@@ -714,70 +714,36 @@ def _reconcile_prepared_refs(
     _reconcile_refs(plans)
 
 
-def _legacy_prepared_identity(
-    repository: Path,
-    candidate: Candidate,
-    ticket: str,
-) -> str | None:
-    """Recover the parent recorded implicitly by a legacy finalization commit."""
-    finalized = _required_finalized_sha(candidate)
-    current = _direct_ref_identity(repository, candidate.staging_ref)
-    if current is None or current == finalized:
-        return None
-    metadata = _require_git(repository, "show", "-s", "--format=%P%n%s", finalized).splitlines()
-    parents = metadata[0].split()
-    subject = metadata[1] if len(metadata) > 1 else ""
-    expected_subject = f"chore({ticket}): remove completed Ticket Targets"
-    if parents == [current] and subject == expected_subject:
-        return current
-    raise AcceptanceRecoveryBlockedError(
-        f"acceptance ref {candidate['staging_ref']} has unknown legacy identity {current}; "
-        f"expected absent, the exact parent of finalized {finalized}, or the finalized candidate"
-    )
-
-
 def _reconcile_finalized_refs(
     transaction: _AcceptanceTransaction,
 ) -> None:
     plans: list[_RefReconciliation] = []
-    recovered: dict[str, str] = {}
     journal = transaction.journal
     for role, candidate in journal["candidates"].items():
         repository = transaction.repository(transaction.participants[role])
         finalized = _required_finalized_sha(candidate)
-        prepared = candidate.prepared_sha
-        if prepared is None:
-            prepared = _legacy_prepared_identity(repository, candidate, journal["ticket"])
-            if prepared is not None:
-                recovered[role] = prepared
+        prepared = _required_prepared_sha(candidate)
         ref = candidate.staging_ref
         _commit(repository, finalized)
-        allowed = {None, finalized}
-        if prepared is not None:
-            allowed.add(prepared)
         plans.append(
             _RefReconciliation(
                 repository,
                 ref,
                 finalized,
-                frozenset(allowed),
+                frozenset({None, prepared, finalized}),
                 "expected absent, its exact prepared candidate, or its finalized candidate",
             )
         )
-    for role, prepared in recovered.items():
-        journal = journal.with_prepared_identity(role, prepared)
-    if recovered:
-        transaction.persist(journal, _Checkpoint.LEGACY_PREPARED_RECOVERED)
     _reconcile_refs(plans)
 
 
 def _validate_ticket_refs(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
-    for participant in contract.participants:
+    for participant in basis.participants:
         repository = _repository_for(root, project_repository, participant)
         expected = journal["sources"][participant.role]
         current = _direct_ref_identity(repository, participant.ticket_ref)
@@ -827,7 +793,7 @@ def _prepare_all(
             transaction.root,
             transaction.project_repository,
             transaction.slug,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
             plan_directory,
             transaction.repositories,
@@ -895,13 +861,13 @@ def _add_finalization_worktrees(
 
 
 def _planned_finalization_paths(
-    temporary: Path, contract: AcceptanceBasis, journal: AcceptanceJournal
+    temporary: Path, basis: AcceptanceBasis, journal: AcceptanceJournal
 ) -> list[Path]:
     try:
         plan = plan_target_removals(
             temporary,
             list(journal.removal_targets),
-            contract.bindings,
+            basis.bindings,
         )
         return list(apply_target_removals(temporary, plan))
     except (TargetFinalizationError, OSError, ValueError) as exc:
@@ -980,7 +946,7 @@ def _finalization_was_recorded(
         persisted = transaction.store.load(
             transaction.path,
             transaction.slug,
-            [item.as_dict() for item in transaction.contract.participants],
+            [item.as_dict() for item in transaction.basis.participants],
             cleanup=journal.cleanup,
             removal_targets=journal.removal_targets,
         )
@@ -1004,7 +970,7 @@ def _compute_finalized_journal(
         "project" in transaction.participants,
         journal,
     )
-    changed = _planned_finalization_paths(temporary, transaction.contract, journal)
+    changed = _planned_finalization_paths(temporary, transaction.basis, journal)
     finalized = _commit_finalized_candidates(
         temporary, project_checkout, changed, transaction.slug
     )
@@ -1095,12 +1061,12 @@ def _publish_all(
 def _validate_recorded_destinations(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
     *,
     after_approval: bool,
 ) -> None:
-    by_role = {item.role: item for item in contract.participants}
+    by_role = {item.role: item for item in basis.participants}
     for role in journal["published"]:
         participant = by_role[role]
         repository = _repository_for(root, project_repository, participant)
@@ -1120,18 +1086,18 @@ def _validate_recorded_destinations(
 def _validate_published_destinations(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
     *,
     after_approval: bool,
 ) -> None:
-    expected = {item.role for item in contract.participants}
+    expected = {item.role for item in basis.participants}
     if set(journal["published"]) != expected:
         raise AcceptanceOperationError("cannot approve before every repository is published")
     _validate_recorded_destinations(
         root,
         project_repository,
-        contract,
+        basis,
         journal,
         after_approval=after_approval,
     )
@@ -1179,14 +1145,14 @@ def _ensure_sources(
         try:
             current = pin_basis_refs(
                 transaction.root,
-                transaction.contract,
+                transaction.basis,
                 slug=transaction.slug,
                 destination_branch=destination_branch,
             )
-        except ContractOperationError as exc:
+        except AcceptanceBasisOperationError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
     plans: list[_RefReconciliation] = []
-    for participant in transaction.contract.participants:
+    for participant in transaction.basis.participants:
         source, plan = _source_reconciliation(
             transaction, participant, sources, current, has_journaled_sources
         )
@@ -1226,10 +1192,10 @@ def _validated_source_keepalive(
 def _validated_keepalives(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> list[tuple[Path, str, str]]:
-    by_role = {item.role: item for item in contract.participants}
+    by_role = {item.role: item for item in basis.participants}
     refs: list[tuple[Path, str, str]] = []
     for role, participant in by_role.items():
         repository = _repository_for(root, project_repository, participant)
@@ -1263,10 +1229,10 @@ def _validated_keepalives(
 def _retire_keepalives(
     root: Path,
     project_repository: Path | None,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     journal: AcceptanceJournal,
 ) -> None:
-    refs = _validated_keepalives(root, project_repository, contract, journal)
+    refs = _validated_keepalives(root, project_repository, basis, journal)
     for repository, ref, finalized in refs:
         _delete_ref_at(repository, ref, finalized)
 
@@ -1336,7 +1302,7 @@ def _cleanup_all(transaction: _AcceptanceTransaction) -> None:
         _validate_ticket_refs(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
         )
     else:
@@ -1351,7 +1317,7 @@ class _AcceptanceTransaction:
     root: Path
     project_repository: Path | None
     slug: str
-    contract: AcceptanceBasis
+    basis: AcceptanceBasis
     journal: AcceptanceJournal
     path: Path
     store: AcceptanceStore
@@ -1359,10 +1325,10 @@ class _AcceptanceTransaction:
 
     @property
     def participants(self) -> dict[str, BasisParticipant]:
-        return {item.role: item for item in self.contract.participants}
+        return {item.role: item for item in self.basis.participants}
 
     def repository(self, participant: BasisParticipant) -> Path:
-        """Resolve one contract participant to its local repository."""
+        """Resolve one Acceptance Basis participant to its local repository."""
         return _repository_for(self.root, self.project_repository, participant)
 
     def persist(
@@ -1382,7 +1348,7 @@ def _prepare_pending_publication(
     _validate_source_surface(
         transaction.root,
         transaction.project_repository,
-        transaction.contract,
+        transaction.basis,
         transaction.journal["sources"],
     )
     _prepare_all(transaction)
@@ -1392,7 +1358,7 @@ def _prepare_pending_publication(
         _validate_ticket_refs(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
         )
 
@@ -1404,7 +1370,7 @@ def _publish_pending_candidates(
     _validate_recorded_destinations(
         transaction.root,
         transaction.project_repository,
-        transaction.contract,
+        transaction.basis,
         transaction.journal,
         after_approval=False,
     )
@@ -1413,14 +1379,14 @@ def _publish_pending_candidates(
     _validate_published_destinations(
         transaction.root,
         transaction.project_repository,
-        transaction.contract,
+        transaction.basis,
         transaction.journal,
         after_approval=False,
     )
 
 
-def _destination_branch(contract: AcceptanceBasis) -> str:
-    outer = next(item for item in contract.participants if item.role == "outer")
+def _destination_branch(basis: AcceptanceBasis) -> str:
+    outer = next(item for item in basis.participants if item.role == "outer")
     prefix = "refs/heads/"
     if not outer.destination_ref.startswith(prefix):
         raise AcceptanceOperationError("outer Acceptance Basis destination must be a branch ref")
@@ -1452,7 +1418,7 @@ def _finish_done(transaction: _AcceptanceTransaction) -> AcceptanceProgress:
     _validate_published_destinations(
         transaction.root,
         transaction.project_repository,
-        transaction.contract,
+        transaction.basis,
         transaction.journal,
         after_approval=True,
     )
@@ -1460,7 +1426,7 @@ def _finish_done(transaction: _AcceptanceTransaction) -> AcceptanceProgress:
         _retire_keepalives(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
         )
     except AcceptanceRecoveryBlockedError:
@@ -1482,14 +1448,14 @@ def _advance_publication(
         _validate_published_destinations(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
             after_approval=request.ticket_status == "done",
         )
     else:
         _prepare_pending_publication(
             transaction,
-            _destination_branch(request.contract),
+            _destination_branch(request.basis),
             cleanup=request.cleanup,
         )
         _publish_pending_candidates(transaction, request.allowed_board_rename)
@@ -1502,7 +1468,7 @@ def _advance_after_approval(transaction: _AcceptanceTransaction) -> AcceptancePr
     _validate_published_destinations(
         transaction.root,
         transaction.project_repository,
-        transaction.contract,
+        transaction.basis,
         transaction.journal,
         after_approval=True,
     )
@@ -1512,14 +1478,14 @@ def _advance_after_approval(transaction: _AcceptanceTransaction) -> AcceptancePr
         _validated_keepalives(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
         )
         _cleanup_all(transaction)
         _retire_keepalives(
             transaction.root,
             transaction.project_repository,
-            transaction.contract,
+            transaction.basis,
             transaction.journal,
         )
     except AcceptanceRecoveryBlockedError:
@@ -1542,9 +1508,9 @@ def _advance_locked(
     journal = _load_journal(
         path,
         request.slug,
-        request.contract,
+        request.basis,
         cleanup=request.cleanup,
-        removal_targets=request.contract.removal_targets,
+        removal_targets=request.basis.removal_targets,
         store=runner.store,
     )
     _validate_ticket_status(journal, request.ticket_status)
@@ -1553,7 +1519,7 @@ def _advance_locked(
         root,
         project_repository,
         request.slug,
-        request.contract,
+        request.basis,
         journal,
         path,
         runner.store,

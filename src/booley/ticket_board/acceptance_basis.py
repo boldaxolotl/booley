@@ -20,8 +20,8 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
 )
 
+from .acceptance_path_policy import is_static_acceptance_path
 from .acceptance_targets import AcceptanceTargetBinding
-from .contract_path_policy import is_static_contract_path
 from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
@@ -87,10 +87,10 @@ class AcceptancePathPolicy:
     def discover(self, project_root: Path | str) -> tuple[str, ...]:
         if self.schema != SCHEMA_VERSION:
             raise AcceptanceBasisError(f"unsupported Acceptance Path Policy {self.schema}")
-        from .acceptance_targets import contract_control_paths
+        from .acceptance_targets import acceptance_control_paths
 
         try:
-            return contract_control_paths(project_root)
+            return acceptance_control_paths(project_root)
         except (OSError, ValueError) as exc:
             raise AcceptanceBasisError(
                 f"{BLOCK_REASON}: protected-input discovery failed in {project_root}: {exc}"
@@ -311,7 +311,7 @@ def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
     }
     if set(value) != expected or not all(isinstance(value[key], str) for key in expected):
         raise AcceptanceBasisError("Acceptance Basis binding has an invalid schema")
-    return AcceptanceTargetBinding(
+    binding = AcceptanceTargetBinding(
         flow=value["flow"],
         criterion=value["criterion"],
         baseline=value["baseline_identity"],
@@ -319,6 +319,11 @@ def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
         baseline_selector=value["baseline_selector"],
         candidate_selector=value["candidate_selector"],
     )
+    try:
+        _ = binding.criterion_key
+    except ValueError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    return binding
 
 
 def record_relative_path(project_root: Path | str, *, project_participant: bool) -> Path:
@@ -670,7 +675,7 @@ def _assert_repository_inputs_unchanged(
         if path in protected
         or any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in protected)
         or any(prefix.startswith(path.rstrip("/") + "/") for prefix in protected)
-        or is_static_contract_path(f"{ticket_prefix}{path}")
+        or is_static_acceptance_path(f"{ticket_prefix}{path}")
         or path.endswith("/FUSESOC_IGNORE")
         or path == "FUSESOC_IGNORE"
     )

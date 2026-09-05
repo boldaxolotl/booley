@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from .acceptance_basis import (
     AcceptanceBasisError,
     assert_inputs_unchanged,
 )
-from .acceptance_targets import resolve_commit, validate_targets_for_seal
+from .acceptance_targets import resolve_commit, validate_binding_selectors
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
 from .validation import validate_ticket_fields
@@ -79,18 +78,22 @@ def _validate_checkout_basis(
     try:
         from .io import TicketIO
 
-        contract = TicketIO(tickets_dir, project_root=root).load_basis(slug)
-        resolve_commit(root, contract.outer_sha)
-        if contract.project_sha:
+        basis = TicketIO(tickets_dir, project_root=root).load_basis(slug)
+        resolve_commit(root, basis.outer_sha)
+        if basis.project_sha:
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
-                return ["Acceptance Basis project participant repository is missing"]
-            resolve_commit(project_repository, contract.project_sha)
-        inspection_root = _worktree_for_ref(root, contract.participant("outer").ticket_ref)
-        assert_inputs_unchanged(contract, inspection_root or root)
+                raise AcceptanceBasisError(
+                    "Acceptance Basis project participant repository is missing"
+                )
+            resolve_commit(project_repository, basis.project_sha)
+        inspection_root = _worktree_for_ref(root, basis.participant("outer").ticket_ref)
+        authoring_root = inspection_root or root
+        assert_inputs_unchanged(basis, authoring_root)
+        selector_errors = validate_binding_selectors(authoring_root, basis.bindings)
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
-    return []
+    return selector_errors
 
 
 def _worktree_for_ref(repository: Path, ref: str) -> Path | None:
@@ -103,7 +106,10 @@ def _worktree_for_ref(repository: Path, ref: str) -> Path | None:
         check=False,
     )
     if result.returncode != 0:
-        return None
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
+        raise ReadinessInspectionError(
+            f"git worktree list failed in {repository} (rc={result.returncode}): {detail}"
+        )
     worktree: Path | None = None
     for line in [*result.stdout.splitlines(), ""]:
         if line.startswith("worktree "):
@@ -153,7 +159,4 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
     errors.extend(_validate_checkout_basis(root, tickets_dir, slug, fields))
-    if not errors:
-        with tempfile.TemporaryDirectory(prefix="booley-ready-") as build_root:
-            errors.extend(validate_targets_for_seal(fields, root, build_root))
     return ReadinessResult(ticket, tuple(errors), warnings)

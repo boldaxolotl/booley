@@ -552,8 +552,8 @@ def _validate_criteria(
     errors.extend(_validate_retired_criteria(criteria))
     errors.extend(_validate_known_mandatory_criteria(criteria, project_root))
 
-    # Structured sim entry validation. Sealed Tickets resolve Targets only after
-    # setup materializes their contract checkout; project_root is the destination
+    # Structured sim entry validation. Basis-bound Tickets resolve Targets only after
+    # setup materializes their Ticket Workspace; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
     if project_root and fields.get("acceptance_basis") is None:

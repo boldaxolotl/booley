@@ -491,20 +491,22 @@ def test_checkout_ticket_and_fixture_helpers(
     assert fields["summary"] == "Demo"
     assert found == ticket
 
-    contract_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
-    contract_path.parent.mkdir(parents=True)
+    acceptance_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
+    acceptance_path.parent.mkdir(parents=True)
     fixture_name = ".github/contracts/ticket.md"
-    assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == [
-        f"CI-owned ticket fixture is missing: {fixture_name}"
-    ]
+    assert demo_contract_module._validate_ticket_fixture(
+        acceptance_path, fixture_name, ticket
+    ) == [f"CI-owned ticket fixture is missing: {fixture_name}"]
     fixture = tmp_path / "repo" / fixture_name
     fixture.write_text("different\n", encoding="utf-8")
     assert (
         "does not match"
-        in demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket)[0]
+        in demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket)[0]
     )
     fixture.write_bytes(ticket.read_bytes())
-    assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == []
+    assert (
+        demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket) == []
+    )
 
 
 def test_target_validation_handles_future_missing_invalid_and_broken_targets(

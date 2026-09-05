@@ -2507,6 +2507,33 @@ class TestOpReset:
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
         assert status == "blocked"
 
+    def test_reset_preflights_basis_refs_before_runtime_mutation(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations as operations_module
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+            extra_fields={"acceptance_basis": {"schema": 1}},
+        )
+        basis = object()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args: basis)
+        monkeypatch.setattr(
+            operations_module,
+            "_preflight_reset_branches",
+            lambda *_args: None,
+        )
+        monkeypatch.setattr(
+            operations_module,
+            "_reset_runtime_state",
+            lambda *_args: pytest.fail("runtime mutation preceded basis-ref preflight"),
+        )
+
+        assert op_reset(tio, "my-ticket") is False
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
+
     def test_reset_force_deletes_the_ticket_branch(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "blocked", "my-ticket")

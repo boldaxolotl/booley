@@ -50,7 +50,7 @@ class PlannedTargetRemoval:
 
 @dataclass(frozen=True)
 class TargetRemovalPlan:
-    """A deterministic, seal-validated set of acceptance-time removals."""
+    """A deterministic, basis-validated set of acceptance-time removals."""
 
     targets: tuple[PlannedTargetRemoval, ...]
 
@@ -90,7 +90,7 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
     if matching[0] == ref.name and len(declarations) > 1:
         raise TargetFinalizationError(
             f"ambiguous bare tests.toml section [{ref.name}] is shared by "
-            f"{len(declarations)} cores; use a VLNV-qualified table before sealing"
+            f"{len(declarations)} cores; use a VLNV-qualified table before enqueue"
         )
     return matching[0]
 
@@ -151,10 +151,8 @@ def canonical_remove_targets(
     return plan_target_removals(project_root, selectors, bindings).canonical_targets
 
 
-def validate_remove_targets_for_seal(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> list[str]:
-    """Return seal-time diagnostics for acceptance-time Target removal."""
+def validate_acceptance_removals(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
+    """Return enqueue-time diagnostics for acceptance-time Target removal."""
     try:
         canonical_remove_targets(fields, project_root)
     except (TargetFinalizationError, fusesoc_registry.FuseSocError) as exc:

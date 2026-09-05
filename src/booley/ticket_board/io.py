@@ -10,11 +10,12 @@ import os
 import shutil
 import sys
 import time
-import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from booley.runtime.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
     from .acceptance_basis import AcceptanceBasis
@@ -626,6 +627,17 @@ class TicketIO:
             print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
             return None
 
+        try:
+            project_destination_ref = TicketWorkspace.project_destination_ref(
+                self._project_root,
+                spec.branch,
+                spec.project_destination_ref,
+            )
+        except TicketWorkspaceError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None
+        if project_destination_ref != spec.project_destination_ref:
+            spec = replace(spec, project_destination_ref=project_destination_ref)
         fields = self._build_ticket_fields(spec)
         body = spec.body or "\n## Description\n\nTODO: Add description.\n"
 
@@ -636,9 +648,7 @@ class TicketIO:
         created = self._atomic_write_ticket(file_path, fields, body)
         if created is not None and (self._project_root / ".git").exists():
             try:
-                from .contract_ops import open_contract
-
-                worktrees = open_contract(self._project_root, created, slug)
+                worktrees = TicketWorkspace.ensure_authoring(self._project_root, created, slug)
                 print(f"Ticket workspace: {worktrees.outer}")
                 if worktrees.project is not None:
                     print(f"Project workspace: {worktrees.project}")
@@ -735,7 +745,7 @@ class TicketIO:
     def _validate_enqueue_journal_basis(self, journal) -> None:
         """Revalidate immutable basis evidence before resuming publication."""
         from .acceptance_basis import AcceptanceBasis, load_basis_receipt
-        from .contract_ops import validate_basis_refs
+        from .workspace_ops import validate_basis_refs
 
         basis = AcceptanceBasis.from_mapping(journal.basis)
         receipt = load_basis_receipt(self._project_root, journal.slug, journal.basis)
@@ -822,9 +832,9 @@ class TicketIO:
             return None
         try:
             from .acceptance_basis import write_basis_receipt
-            from .contract_ops import prepare_acceptance_basis
+            from .workspace_ops import prepare_acceptance_basis
 
-            basis = prepare_acceptance_basis(
+            basis, operation_id = prepare_acceptance_basis(
                 self._project_root,
                 ticket_path,
                 slug,
@@ -835,7 +845,7 @@ class TicketIO:
                 slug,
                 basis,
                 source_sha256=hashlib.sha256(ticket_path.read_bytes()).hexdigest(),
-                operation_id=uuid.uuid4().hex,
+                operation_id=operation_id,
             )
             effective_fields["acceptance_basis"] = basis.as_dict()
         except (RuntimeError, ValueError, OSError) as exc:
@@ -886,9 +896,7 @@ class TicketIO:
     ) -> bool:
         if (self._project_root / ".git").exists():
             try:
-                from .contract_ops import open_contract
-
-                open_contract(self._project_root, ticket_path, slug)
+                TicketWorkspace.ensure_authoring(self._project_root, ticket_path, slug)
             except (RuntimeError, ValueError, OSError) as exc:
                 self._print_enqueue_errors("Ticket workspace preparation failed", [str(exc)])
                 return False
@@ -946,7 +954,7 @@ class TicketIO:
             print(f"  - {error}", file=sys.stderr)
 
     def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
-        """Validate sealed tickets against their immutable authoring checkout."""
+        """Validate basis-bound Tickets against their immutable authoring checkout."""
         if not (self._project_root / ".git").exists():
             return self._project_root
         from booley.runtime.project_dir import resolve_project_dir
@@ -954,11 +962,11 @@ class TicketIO:
         return resolve_project_dir(self._project_root) / "worktrees" / slug
 
     def _validate_enqueue_contract(self, slug: str, fields: dict[str, Any]) -> list[str]:
-        """Require durable sealed refs before a real Git project becomes executable."""
+        """Require durable basis refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities
         from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
-        from .contract_ops import validate_basis_refs
+        from .workspace_ops import validate_basis_refs
 
         if fields.get("target_contract") is not None:
             return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
@@ -966,13 +974,13 @@ class TicketIO:
         if raw is None:
             return ["acceptance_basis is required for executable Tickets"]
         try:
-            contract = AcceptanceBasis.from_mapping(raw)
+            basis = AcceptanceBasis.from_mapping(raw)
         except AcceptanceBasisError as exc:
             return [str(exc)]
         try:
             return validate_basis_refs(
                 self._project_root,
-                contract,
+                basis,
                 slug=slug,
                 destination_branch=str(fields.get("branch", "")),
             )

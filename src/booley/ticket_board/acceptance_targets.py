@@ -46,6 +46,17 @@ class AcceptanceTargetBinding:
     baseline_selector: str = ""
     candidate_selector: str = ""
 
+    @property
+    def criterion_key(self) -> str:
+        """Return the criterion name from its persisted full frontmatter path."""
+        for prefix in ("criteria.mandatory.", "criteria.optional."):
+            if self.criterion.startswith(prefix) and self.criterion != prefix:
+                return self.criterion.removeprefix(prefix)
+        raise ValueError(
+            "Acceptance Target binding criterion must be a full "
+            "criteria.<mandatory|optional>.<criterion> path"
+        )
+
     def as_dict(self) -> dict[str, str]:
         return {
             "flow": self.flow,
@@ -162,7 +173,7 @@ def _config_auxiliary_paths(root: Path, config_path: Path) -> set[Path]:
     )
 
 
-def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
+def acceptance_control_paths(project_root: Path | str) -> tuple[str, ...]:
     """Return control inputs and entries capable of redirecting them."""
     root = Path(project_root).resolve()
     paths: set[Path] = set()
@@ -392,7 +403,7 @@ def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | s
     return errors
 
 
-def validate_targets_for_seal(
+def validate_acceptance_targets(
     fields: Mapping[str, Any],
     project_root: Path | str,
     build_root: Path | str,
@@ -483,7 +494,7 @@ def _validate_changed_targets(
             continue
         if missing:
             continue
-        binding = CriterionTarget("contract", "changed_target", target, "", False)
+        binding = CriterionTarget("acceptance", "changed_target", target, "", False)
         target_build = build_root / _safe_target_dir(target)
         errors.extend(_dry_resolve_binding(binding, root, target_build))
     return errors
@@ -498,7 +509,7 @@ def _validate_comparison_basis(
     root: Path,
     build_root: Path,
 ) -> list[str]:
-    """Fail sealing when two resolvable Targets change measurement methodology."""
+    """Reject bindings whose resolvable Targets change measurement methodology."""
     try:
         snapshots = _comparison_snapshots(binding, root, build_root)
     except (fusesoc_registry.FuseSocError, BoundaryError, OSError) as exc:
@@ -626,7 +637,7 @@ def canonical_acceptance_bindings(
         rows.add(
             AcceptanceTargetBinding(
                 flow=binding.flow,
-                criterion=binding.key,
+                criterion=binding.label,
                 baseline=baseline.identity,
                 candidate=candidate.identity,
                 baseline_selector=baseline.selector,

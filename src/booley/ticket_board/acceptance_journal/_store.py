@@ -25,7 +25,6 @@ class AcceptanceCheckpoint(StrEnum):
     CANDIDATES_PREPARED = "candidates-prepared"
     PREPARATION_COMPLETE = "preparation-complete"
     CANDIDATES_FINALIZED = "candidates-finalized"
-    LEGACY_PREPARED_RECOVERED = "legacy-prepared-recovered"
     PROJECT_PUBLISHED = "project-published"
     OUTER_PUBLISHED = "outer-published"
     ACCEPTED = "accepted"

@@ -253,6 +253,9 @@ def finish_enqueue(project_root: Path, journal: EnqueueJournal) -> EnqueueJourna
     _require_digest(destination, journal.candidate_sha256, "queued Ticket")
     done = journal.with_state("done")
     write_enqueue_journal(project_root, done)
+    from .basis_publication import finish_basis_publication
+
+    finish_basis_publication(project_root, done.slug, done.operation_id)
     Path(done.backup).unlink(missing_ok=True)
     Path(done.candidate).unlink(missing_ok=True)
     _journal_path(project_root, done.slug).unlink(missing_ok=True)

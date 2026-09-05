@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -24,7 +25,7 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
     ticket_project_worktree,
 )
-from booley.ticket_board.contract_path_policy import is_static_contract_path
+from booley.ticket_board.acceptance_path_policy import is_static_acceptance_path
 
 from .acceptance_basis import (
     AcceptanceBasis,
@@ -35,12 +36,17 @@ from .acceptance_basis import (
     record_relative_path,
 )
 from .acceptance_targets import (
+    acceptance_control_paths,
     canonical_acceptance_bindings,
-    contract_control_paths,
     criterion_targets,
     resolve_commit,
+    validate_acceptance_targets,
     validate_criterion_targets,
-    validate_targets_for_seal,
+)
+from .basis_publication import (
+    ParticipantPreparation,
+    load_basis_publication,
+    publish_basis_commits,
 )
 from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
@@ -51,12 +57,12 @@ _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _GENERATION_PREFIX = "booley-generation"
 
 
-class ContractOperationError(RuntimeError):
-    """A contract authoring or sealing transaction could not complete."""
+class AcceptanceBasisOperationError(RuntimeError):
+    """A Ticket Workspace or Acceptance Basis transaction could not complete."""
 
 
 @dataclass(frozen=True)
-class ContractWorktrees:
+class AuthoringWorkspace:
     """Paths and initial revisions returned to the ticket author."""
 
     outer: Path
@@ -77,7 +83,7 @@ class ContractWorktrees:
 
 
 @dataclass(frozen=True)
-class _SealInputs:
+class _BasisPreparation:
     ticket: Path
     fields: dict
     outer: Path
@@ -106,6 +112,26 @@ class _OpenAttachment:
     upstream_changed: bool = False
 
 
+@dataclass(frozen=True)
+class _ResetParticipant:
+    repository: Path
+    participant: BasisParticipant
+    expected_head: str
+
+
+@dataclass(frozen=True)
+class BasisResetPlan:
+    """Fully validated identities and checkout paths for one execution reset."""
+
+    root: Path
+    project_source: Path | None
+    outer_worktree: Path
+    paired_worktree: TicketRepository | None
+    participants: tuple[_ResetParticipant, ...]
+    basis_id: str
+    requested_branch: str
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -117,14 +143,16 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ContractOperationError(f"git {' '.join(args)} failed in {cwd}: {exc}") from exc
+        raise AcceptanceBasisOperationError(
+            f"git {' '.join(args)} failed in {cwd}: {exc}"
+        ) from exc
 
 
 def _require_git(cwd: Path, *args: str) -> str:
     result = _git(cwd, *args)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"git {' '.join(args)} failed in {cwd} (rc={result.returncode}): {detail}"
         )
     return result.stdout.strip()
@@ -148,8 +176,8 @@ def _strict_branch_sha(repository: Path, branch: str) -> str | None:
     if result.returncode == 1:
         return None
     detail = (result.stderr or result.stdout).strip()
-    raise ContractOperationError(
-        f"could not inspect contract branch {branch!r} in {repository} "
+    raise AcceptanceBasisOperationError(
+        f"could not inspect Ticket Workspace branch {branch!r} in {repository} "
         f"(rc={result.returncode}): {detail}"
     )
 
@@ -158,12 +186,12 @@ def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref:
     base_sha = _full_commit(repository, base_ref)
     existing_sha = _branch_sha(repository, branch)
     if existing_sha and existing_sha != base_sha:
-        raise ContractOperationError(
-            f"contract branch {branch!r} already points at {existing_sha[:12]}, "
+        raise AcceptanceBasisOperationError(
+            f"Ticket Workspace branch {branch!r} already points at {existing_sha[:12]}, "
             f"not destination baseline {base_sha[:12]}"
         )
     if destination.exists():
-        raise ContractOperationError(f"contract worktree path already exists: {destination}")
+        raise AcceptanceBasisOperationError(f"Ticket Workspace path already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     args = ("worktree", "add", str(destination), branch)
     if not existing_sha:
@@ -175,7 +203,7 @@ def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref:
 def _current_branch(repository: Path) -> str:
     branch = _require_git(repository, "branch", "--show-current")
     if not branch:
-        raise ContractOperationError(f"repository {repository} has a detached HEAD")
+        raise AcceptanceBasisOperationError(f"repository {repository} has a detached HEAD")
     return branch
 
 
@@ -183,7 +211,7 @@ def _project_base_branch(repository: Path, requested: str) -> str:
     if requested.startswith("refs/heads/"):
         requested = requested.removeprefix("refs/heads/")
     if _strict_branch_sha(repository, requested) is None:
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"paired project destination refs/heads/{requested} does not exist; "
             "set project_destination_ref explicitly"
         )
@@ -199,7 +227,9 @@ def _preflight_project_repository(
         return None
     requested = project_destination_ref or f"refs/heads/{requested_branch}"
     if not isinstance(requested, str) or not requested.startswith("refs/heads/"):
-        raise ContractOperationError("project_destination_ref must be a full refs/heads/... name")
+        raise AcceptanceBasisOperationError(
+            "project_destination_ref must be a full refs/heads/... name"
+        )
     base_branch = _project_base_branch(source, requested)
     base_sha = _full_commit(source, base_branch)
     return _ProjectOpenPlan(source, base_branch, base_sha)
@@ -210,12 +240,12 @@ def _plan_open_attachment(
 ) -> _OpenAttachment:
     existing_sha = _strict_branch_sha(repository, branch)
     if existing_sha is not None and existing_sha != base_sha:
-        raise ContractOperationError(
-            f"contract branch {branch!r} already points at {existing_sha[:12]}, "
+        raise AcceptanceBasisOperationError(
+            f"Ticket Workspace branch {branch!r} already points at {existing_sha[:12]}, "
             f"not destination baseline {base_sha[:12]}"
         )
     if worktree.exists() or worktree.is_symlink():
-        raise ContractOperationError(f"contract worktree path already exists: {worktree}")
+        raise AcceptanceBasisOperationError(f"Ticket Workspace path already exists: {worktree}")
     return _OpenAttachment(repository, worktree, branch, base_sha)
 
 
@@ -231,7 +261,7 @@ def _registered_worktree(repository: Path, worktree: Path) -> bool:
 
 
 def _worktree_owns_branch(repository: Path, worktree: Path, branch: str) -> bool:
-    """Whether an existing worktree proves ownership of a legacy ticket branch."""
+    """Whether an existing worktree proves ownership of a Ticket generation branch."""
     if not worktree.is_dir() or not _registered_worktree(repository, worktree):
         return False
     return _require_git(worktree, "branch", "--show-current") == branch
@@ -248,10 +278,10 @@ def _create_attachment(attachment: _OpenAttachment) -> None:
                 attachment.base_sha,
                 "0" * len(attachment.base_sha),
             )
-        except ContractOperationError as exc:
+        except AcceptanceBasisOperationError as exc:
             current = _strict_branch_sha(attachment.repository, attachment.branch)
             if current is not None:
-                raise ContractOperationError(
+                raise AcceptanceBasisOperationError(
                     f"{exc}; branch creation was not confirmed, so {ref} was retained"
                 ) from exc
             raise
@@ -265,13 +295,13 @@ def _create_attachment(attachment: _OpenAttachment) -> None:
             str(attachment.worktree),
             attachment.branch,
         )
-    except ContractOperationError:
+    except AcceptanceBasisOperationError:
         attachment.partial_path = attachment.worktree.exists() or attachment.worktree.is_symlink()
         raise
     attachment.worktree_attached = True
     if _full_commit(attachment.worktree, "HEAD") != attachment.base_sha:
-        raise ContractOperationError(
-            f"contract destination moved while attaching {attachment.branch!r}"
+        raise AcceptanceBasisOperationError(
+            f"Ticket Workspace destination moved while attaching {attachment.branch!r}"
         )
 
 
@@ -296,7 +326,7 @@ def _set_attachment_upstream(attachment: _OpenAttachment, upstream: str) -> None
             f"--set-upstream-to={upstream}",
             attachment.branch,
         )
-    except ContractOperationError:
+    except AcceptanceBasisOperationError:
         attachment.upstream_changed = (
             _branch_upstream(attachment.repository, attachment.branch) == upstream
         )
@@ -322,7 +352,7 @@ def _restore_attachment_upstream(attachment: _OpenAttachment) -> str | None:
                 f"--set-upstream-to={attachment.previous_upstream}",
                 attachment.branch,
             )
-    except ContractOperationError as exc:
+    except AcceptanceBasisOperationError as exc:
         return str(exc)
     if result.returncode == 0:
         return None
@@ -334,7 +364,7 @@ def _remove_attachment_worktree(attachment: _OpenAttachment) -> tuple[list[str],
     failures: list[str] = []
     try:
         registered = _registered_worktree(attachment.repository, attachment.worktree)
-    except ContractOperationError as exc:
+    except AcceptanceBasisOperationError as exc:
         return [str(exc)], False
     if registered and attachment.worktree_attached:
         try:
@@ -345,7 +375,7 @@ def _remove_attachment_worktree(attachment: _OpenAttachment) -> tuple[list[str],
                 "--force",
                 str(attachment.worktree),
             )
-        except ContractOperationError as exc:
+        except AcceptanceBasisOperationError as exc:
             return [str(exc)], False
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
@@ -372,7 +402,7 @@ def _delete_created_branch(attachment: _OpenAttachment, registered: bool) -> str
     error: str | None = None
     try:
         current = _strict_branch_sha(attachment.repository, attachment.branch)
-    except ContractOperationError as exc:
+    except AcceptanceBasisOperationError as exc:
         error = str(exc)
     else:
         if current is not None and current != attachment.base_sha:
@@ -386,7 +416,7 @@ def _delete_created_branch(attachment: _OpenAttachment, registered: bool) -> str
                     f"refs/heads/{attachment.branch}",
                     attachment.base_sha,
                 )
-            except ContractOperationError as exc:
+            except AcceptanceBasisOperationError as exc:
                 error = str(exc)
             else:
                 if result.returncode != 0:
@@ -427,11 +457,13 @@ def _validate_open_bases(
     project: _ProjectOpenPlan | None,
 ) -> None:
     if _full_commit(root, outer_branch) != outer_sha:
-        raise ContractOperationError(f"destination branch {outer_branch!r} moved during preflight")
+        raise AcceptanceBasisOperationError(
+            f"destination branch {outer_branch!r} moved during preflight"
+        )
     if project is None:
         return
     if _full_commit(project.source, project.base_branch) != project.base_sha:
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"paired project destination {project.base_branch!r} moved during preflight"
         )
 
@@ -449,16 +481,20 @@ def _draft_generation(root: Path, slug: str) -> str:
         try:
             value = json.loads(path.read_text(encoding="utf-8"))["generation"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise ContractOperationError(f"invalid draft generation descriptor: {path}") from exc
+            raise AcceptanceBasisOperationError(
+                f"invalid draft generation descriptor: {path}"
+            ) from exc
         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value):
             return value
-        raise ContractOperationError(f"invalid draft generation descriptor: {path}")
+        raise AcceptanceBasisOperationError(f"invalid draft generation descriptor: {path}")
     value = secrets.token_hex(8)
     payload = (json.dumps({"generation": value}, sort_keys=True) + "\n").encode()
     try:
         created = atomic_write_once(path, payload)
     except WriteOnceConflictError as exc:
-        raise ContractOperationError(f"conflicting draft generation descriptor: {path}") from exc
+        raise AcceptanceBasisOperationError(
+            f"conflicting draft generation descriptor: {path}"
+        ) from exc
     if not created:
         return _draft_generation(root, slug)
     return value
@@ -468,19 +504,19 @@ def _generation_branch(generation: str, slug: str) -> str:
     return f"{_GENERATION_PREFIX}/{generation}/{slug}"
 
 
-def open_contract(
+def ensure_ticket_workspace(
     project_root: Path | str,
     ticket_path: Path | str,
     slug: str,
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     """Create the outer and optional project-data authoring worktrees."""
     if not _SAFE_SLUG_RE.fullmatch(slug):
-        raise ContractOperationError(f"unsafe ticket slug: {slug!r}")
+        raise AcceptanceBasisOperationError(f"unsafe ticket slug: {slug!r}")
     root = Path(project_root).resolve()
     fields, _body = parse_frontmatter(Path(ticket_path).read_text(encoding="utf-8"))
     branch = fields.get("branch")
     if not isinstance(branch, str) or not branch:
-        raise ContractOperationError("ticket has no destination branch")
+        raise AcceptanceBasisOperationError("ticket has no destination branch")
     generation = _draft_generation(root, slug)
     outer = resolve_project_dir(root) / "worktrees" / slug
     return _open_generation(root, Path(ticket_path), slug, fields, generation, outer)
@@ -493,10 +529,10 @@ def _open_generation(
     fields: dict,
     generation: str,
     outer: Path,
-) -> ContractWorktrees:
+) -> AuthoringWorkspace:
     branch = fields.get("branch")
     if not isinstance(branch, str) or not branch:
-        raise ContractOperationError("ticket has no destination branch")
+        raise AcceptanceBasisOperationError("ticket has no destination branch")
     ticket_branch = _generation_branch(generation, slug)
     project_plan = _preflight_project_repository(
         root, branch, fields.get("project_destination_ref")
@@ -504,7 +540,7 @@ def _open_generation(
     outer_base = _full_commit(root, branch)
     if outer.is_dir() and _worktree_owns_branch(root, outer, ticket_branch):
         paired = _resume_project_attachment(root, ticket, slug, outer, ticket_branch, project_plan)
-        return ContractWorktrees(
+        return AuthoringWorkspace(
             outer,
             paired,
             outer_base,
@@ -519,18 +555,18 @@ def _open_generation(
         if project_attachment is not None and project_plan is not None:
             _create_attachment(project_attachment)
             _set_attachment_upstream(project_attachment, project_plan.base_branch)
-        _prepare_contract_project(root, outer, ticket, slug)
+        _prepare_workspace_project(root, outer, ticket, slug)
     except Exception as exc:
         rollback_failures = _rollback_open(outer_attachment, project_attachment)
         if rollback_failures:
-            raise ContractOperationError(
-                f"contract opening failed: {exc}; rollback incomplete: "
+            raise AcceptanceBasisOperationError(
+                f"Ticket Workspace creation failed: {exc}; rollback incomplete: "
                 + "; ".join(rollback_failures)
             ) from exc
         raise
     project = project_attachment.worktree if project_attachment is not None else None
     project_base = project_plan.base_sha if project_plan is not None else ""
-    return ContractWorktrees(outer, project, outer_base, project_base, generation)
+    return AuthoringWorkspace(outer, project, outer_base, project_base, generation)
 
 
 def _project_open_attachment(
@@ -560,25 +596,27 @@ def _resume_project_attachment(
     paired = paired_project_repository(outer)
     if project is None:
         if paired is not None:
-            raise ContractOperationError("unexpected paired project contract worktree")
-        _prepare_contract_project(root, outer, ticket, slug)
+            raise AcceptanceBasisOperationError("unexpected paired project Ticket Workspace")
+        _prepare_workspace_project(root, outer, ticket, slug)
         return None
     if paired is not None:
         if not _worktree_owns_branch(project.source, paired.worktree, ticket_branch):
-            raise ContractOperationError("paired project contract worktree has the wrong branch")
-        _prepare_contract_project(root, outer, ticket, slug)
+            raise AcceptanceBasisOperationError(
+                "paired project Ticket Workspace has the wrong branch"
+            )
+        _prepare_workspace_project(root, outer, ticket, slug)
         return paired.worktree
     attachment = _project_open_attachment(project, outer, ticket_branch)
     if attachment is None:  # Defensive: project is known to be present above.
-        raise ContractOperationError("paired project attachment could not be planned")
+        raise AcceptanceBasisOperationError("paired project attachment could not be planned")
     try:
         _create_attachment(attachment)
         _set_attachment_upstream(attachment, project.base_branch)
-        _prepare_contract_project(root, outer, ticket, slug)
+        _prepare_workspace_project(root, outer, ticket, slug)
     except Exception as exc:
         failures, _clear = _rollback_attachment(attachment)
         if failures:
-            raise ContractOperationError(
+            raise AcceptanceBasisOperationError(
                 f"project attachment recovery failed: {exc}; rollback incomplete: "
                 + "; ".join(failures)
             ) from exc
@@ -586,7 +624,7 @@ def _resume_project_attachment(
     return attachment.worktree
 
 
-def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
+def _prepare_workspace_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
     """Run the same deterministic preparation used by ticket execution."""
     from booley.flows.execution import flow_enabled
 
@@ -598,7 +636,7 @@ def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) 
         sim_flow_enabled=flow_enabled("sim", outer),
     )
     if not result.ok:
-        raise ContractOperationError(result.error)
+        raise AcceptanceBasisOperationError(result.error)
 
 
 def _status_paths(repository: Path) -> list[str]:
@@ -612,27 +650,27 @@ def _status_paths(repository: Path) -> list[str]:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"git status failed in {repository} (rc={result.returncode}): {detail}"
         )
     return [entry.path for entry in parse_porcelain_v1_z(result.stdout)]
 
 
 def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[str]:
-    paths = set(contract_control_paths(surface_root))
+    paths = set(acceptance_control_paths(surface_root))
     if not project_repository:
         return paths
     try:
         prefix = checkout_project_dir_relative_to(surface_root).as_posix().rstrip("/") + "/"
     except (FileNotFoundError, ValueError) as exc:
-        raise ContractOperationError(str(exc)) from exc
+        raise AcceptanceBasisOperationError(str(exc)) from exc
     return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
 
 
 def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:
     if path in manifest:
         return True
-    return not (repository / path).exists() and is_static_contract_path(path)
+    return not (repository / path).exists() and is_static_acceptance_path(path)
 
 
 def _validate_authoring_changes(
@@ -642,30 +680,25 @@ def _validate_authoring_changes(
     manifest = _local_manifest_paths(surface_root, project_repository)
     invalid = [path for path in changed if not _is_authoring_path(repository, path, manifest)]
     if invalid:
-        raise ContractOperationError(
-            "contract authoring worktree contains non-control changes: " + ", ".join(invalid)
+        raise AcceptanceBasisOperationError(
+            "Ticket Workspace contains non-authoring changes: " + ", ".join(invalid)
         )
     return changed
 
 
-def _commit_changes(repository: Path, paths: list[str], message: str) -> str:
+def _staged_tree(repository: Path, paths: list[str]) -> tuple[str, str]:
+    """Stage validated authoring paths and return the parent and tree identities."""
     if paths:
         # Contract paths have already passed the manifest policy above. Force
         # them through user/global ignore rules because integrated projects
         # commonly hide ``.booley_project/`` while still tracking its control
         # files explicitly.
         _require_git(repository, "add", "-f", "--", *paths)
-        staged = _git(repository, "diff", "--cached", "--quiet")
-        if staged.returncode not in {0, 1}:
-            raise ContractOperationError(
-                f"could not inspect staged contract changes in {repository}"
-            )
-        if staged.returncode == 1:
-            _require_git(repository, "commit", "-m", message)
-    return _full_commit(repository, "HEAD")
+    parent = _full_commit(repository, "HEAD")
+    return parent, _require_git(repository, "write-tree")
 
 
-def _seal_validation(
+def _basis_validation(
     fields: dict[str, object],
     body: str,
     worktree: Path,
@@ -680,14 +713,14 @@ def _seal_validation(
         check_tb_files=False,
     )
     errors.extend(validate_criterion_targets(fields, worktree))
-    from .target_finalization import validate_remove_targets_for_seal
+    from .target_finalization import validate_acceptance_removals
 
-    errors.extend(validate_remove_targets_for_seal(fields, worktree))
+    errors.extend(validate_acceptance_removals(fields, worktree))
     if errors:
         return errors
-    with tempfile.TemporaryDirectory(prefix="booley-contract-dry-run-") as build_root:
+    with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
         errors.extend(
-            validate_targets_for_seal(
+            validate_acceptance_targets(
                 fields,
                 worktree,
                 build_root,
@@ -715,87 +748,96 @@ def _changed_targets(
             try:
                 doc = fusesoc_registry.read_core(core_file)
             except fusesoc_registry.FuseSocError as exc:
-                raise ContractOperationError(str(exc)) from exc
+                raise AcceptanceBasisOperationError(str(exc)) from exc
             vlnv = doc.get("name")
             if not isinstance(vlnv, str) or not vlnv:
-                raise ContractOperationError(f"changed .core has no valid name: {core_file}")
+                raise AcceptanceBasisOperationError(
+                    f"changed .core has no valid name: {core_file}"
+                )
             selectors.update(
                 f"{vlnv}#{target}" for target in fusesoc_registry.core_target_names(doc)
             )
     return selectors
 
 
-def _prepare_seal(project_root: Path | str, ticket_path: Path | str, slug: str) -> _SealInputs:
+def _prepare_basis(
+    project_root: Path | str, ticket_path: Path | str, slug: str
+) -> _BasisPreparation:
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     outer = resolve_project_dir(root) / "worktrees" / slug
     if not outer.is_dir():
-        raise ContractOperationError(f"contract worktree is not open: {outer}")
-    _prepare_contract_project(root, outer, ticket, slug)
+        raise AcceptanceBasisOperationError(f"Ticket Workspace is not open: {outer}")
+    _prepare_workspace_project(root, outer, ticket, slug)
     outer_changes = _validate_authoring_changes(outer, outer, project_repository=False)
     paired = paired_project_repository(outer)
     project = paired.worktree if paired is not None else None
     project_changes = (
         _validate_authoring_changes(project, outer, True) if project is not None else []
     )
-    errors = _seal_validation(
+    errors = _basis_validation(
         fields,
         body,
         outer,
         _changed_targets(outer, outer_changes, project, project_changes),
     )
     if errors:
-        raise ContractOperationError("contract validation failed: " + "; ".join(errors))
-    return _SealInputs(ticket, fields, outer, outer_changes, project, project_changes)
+        raise AcceptanceBasisOperationError(
+            "Acceptance Basis validation failed: " + "; ".join(errors)
+        )
+    return _BasisPreparation(ticket, fields, outer, outer_changes, project, project_changes)
 
 
-def _sealed_participants(
+def _participant_preparations(
     slug: str,
     fields: dict[str, object],
-    outer: Path,
-    outer_sha: str,
-    project: Path | None,
-    project_sha: str,
-) -> tuple[BasisParticipant, ...]:
-    """Freeze repository routing while every authoring checkout is available."""
+    prepared: _BasisPreparation,
+) -> tuple[ParticipantPreparation, ...]:
+    """Freeze repository routing and staged trees before creating commits."""
     destination = fields.get("branch")
     if not isinstance(destination, str) or not destination:
-        raise ContractOperationError("ticket has no destination branch")
+        raise AcceptanceBasisOperationError("ticket has no destination branch")
+    outer_parent, outer_tree = _staged_tree(prepared.outer, prepared.outer_changes)
     participants = [
-        BasisParticipant(
+        ParticipantPreparation(
             role="outer",
-            authoring_sha=outer_sha,
-            ticket_ref=f"refs/heads/{_current_branch(outer)}",
+            ticket_ref=f"refs/heads/{_current_branch(prepared.outer)}",
             destination_ref=f"refs/heads/{destination}",
-            destination_sha=_full_commit(outer, destination),
+            destination_sha=_full_commit(prepared.outer, destination),
+            expected_old_sha=outer_parent,
+            tree_sha=outer_tree,
+            message=f"chore({slug}): publish Acceptance Basis",
         )
     ]
-    if project is not None:
-        upstream = _require_git(project, "rev-parse", "--abbrev-ref", "@{upstream}")
+    if prepared.project is not None:
+        project_parent, project_tree = _staged_tree(prepared.project, prepared.project_changes)
+        upstream = _require_git(prepared.project, "rev-parse", "--abbrev-ref", "@{upstream}")
         participants.append(
-            BasisParticipant(
+            ParticipantPreparation(
                 role="project",
-                authoring_sha=project_sha,
-                ticket_ref=f"refs/heads/{_current_branch(project)}",
+                ticket_ref=f"refs/heads/{_current_branch(prepared.project)}",
                 destination_ref=f"refs/heads/{upstream}",
-                destination_sha=_full_commit(project, upstream),
+                destination_sha=_full_commit(prepared.project, upstream),
+                expected_old_sha=project_parent,
+                tree_sha=project_tree,
+                message=f"chore({slug}): publish project Acceptance Basis",
             )
         )
-    return tuple(participants)
+    return tuple(sorted(participants, key=lambda item: item.role))
 
 
-def _record_path(prepared: _SealInputs, slug: str) -> tuple[Path, bool]:
+def _record_path(prepared: _BasisPreparation, slug: str) -> tuple[Path, bool]:
     project_owner = prepared.project is not None
     owner = prepared.project if project_owner else prepared.outer
     if owner is None:
-        raise ContractOperationError("Acceptance Basis record has no repository owner")
+        raise AcceptanceBasisOperationError("Acceptance Basis record has no repository owner")
     relative_dir = record_relative_path(prepared.outer, project_participant=project_owner)
     return owner / relative_dir / f"{slug}.json", project_owner
 
 
 def _write_authored_record(
-    prepared: _SealInputs,
+    prepared: _BasisPreparation,
     slug: str,
     fields: dict[str, object],
     body: str,
@@ -805,16 +847,18 @@ def _write_authored_record(
     try:
         payload = canonical_json(authored_ticket_record(fields, body, bindings))
     except AcceptanceBasisError as exc:
-        raise ContractOperationError(str(exc)) from exc
+        raise AcceptanceBasisOperationError(str(exc)) from exc
     path, project_owner = _record_path(prepared, slug)
     try:
         atomic_write_once(path, payload, mode=0o644)
     except WriteOnceConflictError as exc:
-        raise ContractOperationError(f"Acceptance Basis record already exists: {path}") from exc
+        raise AcceptanceBasisOperationError(
+            f"Acceptance Basis record already exists: {path}"
+        ) from exc
     repository = prepared.project if project_owner else prepared.outer
     changes = prepared.project_changes if project_owner else prepared.outer_changes
     if repository is None:
-        raise ContractOperationError("Acceptance Basis record owner disappeared")
+        raise AcceptanceBasisOperationError("Acceptance Basis record owner disappeared")
     relative = path.relative_to(repository).as_posix()
     if relative not in changes:
         changes.append(relative)
@@ -827,18 +871,40 @@ def prepare_acceptance_basis(
     slug: str,
     *,
     effective_fields: dict[str, object] | None = None,
-) -> AcceptanceBasis:
+) -> tuple[AcceptanceBasis, str]:
     """Validate and commit authoring state without publishing the Board transition."""
-    prepared = _prepare_seal(project_root, ticket_path, slug)
+    root = Path(project_root).resolve()
+    ticket = Path(ticket_path)
+    source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    existing = load_basis_publication(root, slug)
+    if existing is not None:
+        return publish_basis_commits(
+            root,
+            slug,
+            source_sha256,
+            _authoring_repositories(root, slug),
+        )
+    prepared = _prepare_basis(project_root, ticket_path, slug)
     fields, body = parse_frontmatter(prepared.ticket.read_text(encoding="utf-8"))
     if effective_fields is not None:
         fields = effective_fields
     basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
-    return _commit_acceptance_basis(prepared, slug, fields, *basis_inputs)
+    bindings, removals = basis_inputs
+    participants = _participant_preparations(slug, fields, prepared)
+    return publish_basis_commits(
+        root,
+        slug,
+        source_sha256,
+        _authoring_repositories(root, slug),
+        operation_id=secrets.token_hex(16),
+        participants=participants,
+        bindings=bindings,
+        removal_targets=removals,
+    )
 
 
 def _prepare_basis_inputs(
-    prepared: _SealInputs,
+    prepared: _BasisPreparation,
     slug: str,
     fields: dict[str, object],
     body: str,
@@ -850,89 +916,13 @@ def _prepare_basis_inputs(
     return bindings, removals
 
 
-def _commit_acceptance_basis(
-    prepared: _SealInputs,
-    slug: str,
-    fields: dict[str, object],
-    bindings: tuple,
-    removals: tuple[str, ...],
-) -> AcceptanceBasis:
-    outer_start = _full_commit(prepared.outer, "HEAD")
-    project_start = _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
-    outer_sha = outer_start
-    project_sha = project_start
-    created_keepalives: list[tuple[Path, str, str]] = []
-    try:
-        if prepared.project is not None:
-            project_sha = _commit_changes(
-                prepared.project,
-                prepared.project_changes,
-                f"chore({slug}): publish project Acceptance Basis",
-            )
-        outer_sha = _commit_changes(
-            prepared.outer,
-            prepared.outer_changes,
-            f"chore({slug}): publish Acceptance Basis",
-        )
-        basis = AcceptanceBasis(
-            _sealed_participants(
-                slug,
-                fields,
-                prepared.outer,
-                outer_sha,
-                prepared.project,
-                project_sha,
-            ),
-            bindings,
-            removals,
-        )
-        created_keepalives = _publish_basis_keepalives(
-            basis,
-            prepared.outer,
-            prepared.project,
-        )
-    except Exception:
-        for repository, ref, sha in reversed(created_keepalives):
-            _git(repository, "update-ref", "-d", ref, sha)
-        _restore_unpublished_commit(prepared.outer, outer_start, outer_sha)
-        if prepared.project is not None:
-            _restore_unpublished_commit(prepared.project, project_start, project_sha)
-        raise
-    return basis
-
-
-def _publish_basis_keepalives(
-    basis: AcceptanceBasis,
-    outer: Path,
-    project: Path | None,
-) -> list[tuple[Path, str, str]]:
-    created: list[tuple[Path, str, str]] = []
-    try:
-        for participant in basis.participants:
-            repository = outer if participant.role == "outer" else project
-            if repository is None:
-                raise ContractOperationError(
-                    f"Acceptance Basis {participant.role} repository disappeared"
-                )
-            ref = f"refs/booley/bases/{basis.basis_id}/{participant.role}"
-            current = _git(repository, "rev-parse", "--verify", "--quiet", ref)
-            if current.returncode == 0:
-                if current.stdout.strip() != participant.authoring_sha:
-                    raise ContractOperationError(f"keepalive ref {ref} names another commit")
-                continue
-            _require_git(repository, "update-ref", ref, participant.authoring_sha, "")
-            created.append((repository, ref, participant.authoring_sha))
-    except Exception:
-        for repository, ref, sha in reversed(created):
-            _git(repository, "update-ref", "-d", ref, sha)
-        raise
-    return created
-
-
-def _restore_unpublished_commit(repository: Path, start_sha: str, current_sha: str) -> None:
-    """Move an unpublished branch back while preserving authored changes staged."""
-    if current_sha != start_sha:
-        _require_git(repository, "reset", "--soft", start_sha)
+def _authoring_repositories(root: Path, slug: str) -> dict[str, Path]:
+    outer = resolve_project_dir(root) / "worktrees" / slug
+    repositories = {"outer": outer}
+    paired = paired_project_repository(outer)
+    if paired is not None:
+        repositories["project"] = paired.worktree
+    return repositories
 
 
 def _require_ancestor(repository: Path, ancestor: str, descendant: str, message: str) -> None:
@@ -940,16 +930,16 @@ def _require_ancestor(repository: Path, ancestor: str, descendant: str, message:
     if result.returncode == 0:
         return
     if result.returncode == 1:
-        raise ContractOperationError(message)
+        raise AcceptanceBasisOperationError(message)
     detail = (result.stderr or result.stdout).strip()
-    raise ContractOperationError(
+    raise AcceptanceBasisOperationError(
         f"git merge-base --is-ancestor failed in {repository} (rc={result.returncode}): {detail}"
     )
 
 
 def pin_basis_refs(
     project_root: Path | str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
@@ -959,15 +949,19 @@ def pin_basis_refs(
     """Validate canonical routing and resolve mutable Ticket refs once."""
     root = Path(project_root).resolve()
     source = resolve_inner_project_repo(root)
-    participants = {participant.role: participant for participant in contract.participants}
+    participants = {participant.role: participant for participant in basis.participants}
     expected_roles = {"outer", "project"} if source is not None else {"outer"}
     if set(participants) != expected_roles:
-        raise ContractOperationError("Acceptance Basis participants do not match this project")
+        raise AcceptanceBasisOperationError(
+            "Acceptance Basis participants do not match this project"
+        )
     sources: dict[str, str] = {}
     for role, participant in participants.items():
         repository = root if role == "outer" else source
         if repository is None:
-            raise ContractOperationError(f"Acceptance Basis {role} repository is unavailable")
+            raise AcceptanceBasisOperationError(
+                f"Acceptance Basis {role} repository is unavailable"
+            )
         sources[role] = _validate_basis_participant(
             repository,
             participant,
@@ -992,7 +986,7 @@ def _validate_basis_participant(
     ticket_ref = participant.ticket_ref
     destination_ref = participant.destination_ref
     if role == "outer" and destination_ref != f"refs/heads/{destination_branch}":
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"Acceptance Basis outer destination does not match Ticket {slug!r}"
         )
     authoring = _full_commit(repository, participant.authoring_sha)
@@ -1000,9 +994,11 @@ def _validate_basis_participant(
     destination = _full_commit(repository, destination_ref)
     source_sha = _full_commit(repository, ticket_ref)
     if exact_ticket_head and source_sha != authoring:
-        raise ContractOperationError(f"ticket ref {ticket_ref!r} moved after enqueue preparation")
+        raise AcceptanceBasisOperationError(
+            f"ticket ref {ticket_ref!r} moved after enqueue preparation"
+        )
     if exact_destination_head and destination != destination_identity:
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             f"destination ref {destination_ref!r} moved after enqueue preparation"
         )
     _require_ancestor(
@@ -1028,7 +1024,7 @@ def _validate_basis_participant(
 
 def validate_basis_refs(
     project_root: Path | str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     *,
     slug: str,
     destination_branch: str,
@@ -1039,13 +1035,13 @@ def validate_basis_refs(
     try:
         pin_basis_refs(
             project_root,
-            contract,
+            basis,
             slug=slug,
             destination_branch=destination_branch,
             exact_ticket_heads=exact_ticket_heads,
             exact_destination_heads=exact_destination_heads,
         )
-    except (ContractOperationError, ValueError) as exc:
+    except (AcceptanceBasisOperationError, ValueError) as exc:
         return [str(exc)]
     return []
 
@@ -1053,57 +1049,141 @@ def validate_basis_refs(
 def reset_basis_worktrees(
     project_root: Path | str,
     slug: str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
     requested_branch: str,
+    *,
+    plan: BasisResetPlan | None = None,
 ) -> None:
     """Discard implementation state and restore the recorded authoring checkouts."""
+    current_plan = plan or preflight_basis_reset(project_root, slug, basis, requested_branch)
     root = Path(project_root).resolve()
-    _full_commit(root, contract.outer_sha)
-    source = resolve_inner_project_repo(root)
-    _validate_reset_project_source(source, contract)
-    outer = resolve_project_dir(root) / "worktrees" / slug
-    paired = paired_project_repository(outer) if outer.is_dir() else None
-    _remove_contract_worktrees(root, outer, paired, source)
-    outer_participant = next(row for row in contract.participants if row.role == "outer")
+    if (
+        current_plan.root != root
+        or current_plan.basis_id != basis.basis_id
+        or current_plan.requested_branch != requested_branch
+    ):
+        raise AcceptanceBasisOperationError(
+            "Acceptance Basis reset plan does not match this request"
+        )
+    source = current_plan.project_source
+    outer = current_plan.outer_worktree
+    _remove_authoring_worktrees(
+        root,
+        outer,
+        current_plan.paired_worktree,
+        source,
+    )
+    publication_order = {"project": 0, "outer": 1}
+    for item in sorted(
+        current_plan.participants,
+        key=lambda row: publication_order[row.participant.role],
+    ):
+        _require_git(
+            item.repository,
+            "update-ref",
+            item.participant.ticket_ref,
+            item.participant.authoring_sha,
+            item.expected_head,
+        )
+    outer_participant = basis.participant("outer")
     outer_branch = outer_participant.ticket_ref.removeprefix("refs/heads/")
-    _require_git(root, "update-ref", outer_participant.ticket_ref, contract.outer_sha)
-    _attach_worktree(root, outer, outer_branch, contract.outer_sha)
-    _restore_project_contract(source, outer, slug, requested_branch, contract)
-    errors = validate_basis_refs(root, contract, slug=slug, destination_branch=requested_branch)
+    _attach_worktree(root, outer, outer_branch, outer_participant.authoring_sha)
+    _restore_project_workspace(source, outer, basis)
+    errors = validate_basis_refs(
+        root,
+        basis,
+        slug=slug,
+        destination_branch=requested_branch,
+        exact_ticket_heads=True,
+    )
     if errors:
-        raise ContractOperationError(
+        raise AcceptanceBasisOperationError(
             "could not restore the Acceptance Basis: " + "; ".join(errors)
         )
 
 
-def _validate_reset_project_source(source: Path | None, contract: AcceptanceBasis) -> None:
-    if contract.project_sha and source is None:
-        raise ContractOperationError("Acceptance Basis project repository is unavailable")
-    if source is not None and not contract.project_sha:
-        raise ContractOperationError("Acceptance Basis has no project repository commit")
+def preflight_basis_reset(
+    project_root: Path | str,
+    slug: str,
+    basis: AcceptanceBasis,
+    requested_branch: str,
+) -> BasisResetPlan:
+    """Validate every reset identity and checkout before any state is mutated."""
+    root = Path(project_root).resolve()
+    source = resolve_inner_project_repo(root)
+    _validate_reset_project_source(source, basis)
+    heads = pin_basis_refs(
+        root,
+        basis,
+        slug=slug,
+        destination_branch=requested_branch,
+    )
+    outer = resolve_project_dir(root) / "worktrees" / slug
+    outer_participant = basis.participant("outer")
+    outer_branch = outer_participant.ticket_ref.removeprefix("refs/heads/")
+    if outer.exists() and not _worktree_owns_branch(root, outer, outer_branch):
+        raise AcceptanceBasisOperationError(
+            f"Ticket Workspace {outer} does not own {outer_participant.ticket_ref}"
+        )
+    paired = paired_project_repository(outer) if outer.is_dir() else None
+    if paired is not None:
+        if source is None:
+            raise AcceptanceBasisOperationError(
+                "Acceptance Basis project repository is unavailable"
+            )
+        project_participant = basis.participant("project")
+        branch = project_participant.ticket_ref.removeprefix("refs/heads/")
+        if not _worktree_owns_branch(source, paired.worktree, branch):
+            raise AcceptanceBasisOperationError(
+                f"paired Ticket Workspace {paired.worktree} does not own "
+                f"{project_participant.ticket_ref}"
+            )
+    reset_participants: list[_ResetParticipant] = []
+    for participant in basis.participants:
+        repository = root if participant.role == "outer" else source
+        if repository is None:
+            raise AcceptanceBasisOperationError(
+                f"Acceptance Basis {participant.role} repository is unavailable"
+            )
+        reset_participants.append(
+            _ResetParticipant(repository, participant, heads[participant.role])
+        )
+    return BasisResetPlan(
+        root,
+        source,
+        outer,
+        paired,
+        tuple(reset_participants),
+        basis.basis_id,
+        requested_branch,
+    )
+
+
+def _validate_reset_project_source(source: Path | None, basis: AcceptanceBasis) -> None:
+    if basis.project_sha and source is None:
+        raise AcceptanceBasisOperationError("Acceptance Basis project repository is unavailable")
+    if source is not None and not basis.project_sha:
+        raise AcceptanceBasisOperationError("Acceptance Basis has no project repository commit")
     if source is not None:
-        _full_commit(source, contract.project_sha)
+        _full_commit(source, basis.project_sha)
 
 
-def _restore_project_contract(
+def _restore_project_workspace(
     source: Path | None,
     outer: Path,
-    slug: str,
-    requested_branch: str,
-    contract: AcceptanceBasis,
+    basis: AcceptanceBasis,
 ) -> None:
     if source is None:
         return
-    participant = next(row for row in contract.participants if row.role == "project")
+    participant = basis.participant("project")
     branch = participant.ticket_ref.removeprefix("refs/heads/")
     destination = ticket_project_worktree(outer)
-    _require_git(source, "update-ref", participant.ticket_ref, contract.project_sha)
-    _attach_worktree(source, destination, branch, contract.project_sha)
+    _attach_worktree(source, destination, branch, participant.authoring_sha)
     base_branch = participant.destination_ref.removeprefix("refs/heads/")
     _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
 
 
-def _remove_contract_worktrees(
+def _remove_authoring_worktrees(
     root: Path,
     outer: Path,
     paired: TicketRepository | None,

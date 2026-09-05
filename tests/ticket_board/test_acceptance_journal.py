@@ -52,7 +52,7 @@ def _single_repository_acceptance(
     request = AcceptanceRequest(
         root=root,
         slug="change-target",
-        contract=contract,
+        basis=contract,
         cleanup=False,
         ticket_status="review",
         allowed_board_rename=None,
@@ -72,7 +72,7 @@ def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: P
         AcceptanceRequest(
             root=request.root,
             slug=request.slug,
-            contract=request.contract,
+            basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
             allowed_board_rename=None,
@@ -90,7 +90,7 @@ def test_done_ticket_cannot_start_unpublished_acceptance(tmp_path: Path) -> None
     request = AcceptanceRequest(
         root=request.root,
         slug=request.slug,
-        contract=request.contract,
+        basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
         allowed_board_rename=None,
@@ -109,7 +109,7 @@ def test_invalid_ticket_status_cannot_create_or_publish_acceptance(tmp_path: Pat
     invalid = AcceptanceRequest(
         root=request.root,
         slug=request.slug,
-        contract=request.contract,
+        basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="bogus",  # type: ignore[arg-type] - exercise the runtime boundary
         allowed_board_rename=None,
@@ -141,7 +141,7 @@ def test_destination_rewrite_after_approval_requires_inspection(tmp_path: Path) 
     done = AcceptanceRequest(
         root=request.root,
         slug=request.slug,
-        contract=request.contract,
+        basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
         allowed_board_rename=None,
@@ -190,7 +190,7 @@ def test_source_keepalive_preserves_pinned_commit_before_preparation(
         AcceptanceRequest(
             root=request.root,
             slug=request.slug,
-            contract=request.contract,
+            basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
             allowed_board_rename=None,

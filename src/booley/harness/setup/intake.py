@@ -383,12 +383,12 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
 
 def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
-    """Verify durable sealed refs before criteria state can be initialized."""
+    """Verify durable Acceptance Basis refs before criteria state can be initialized."""
     del action
     basis = ctx.acceptance_basis
     if basis is None:
         raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
-    from booley.ticket_board.contract_ops import validate_basis_refs
+    from booley.ticket_board.workspace_ops import validate_basis_refs
 
     try:
         errors = validate_basis_refs(
@@ -533,20 +533,20 @@ def _apply_contract_selectors(
     expanded: dict[str, bool],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
-    """Seed sealed identities and callable selectors into runtime criteria."""
-    contract = ctx.acceptance_basis
-    if contract is None:
+    """Seed basis identities and callable selectors into runtime Criteria."""
+    basis = ctx.acceptance_basis
+    if basis is None:
         return
     for key in expanded:
         unique = _matching_contract_bindings(
-            contract.bindings,
+            basis.bindings,
             criterion_key=key,
             authored=criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM),
         )
         if len(unique) > 1:
             choices = ", ".join(sorted(selector for _, selector in unique))
             raise FatalError(
-                f"Criterion {key!r} Target is ambiguous across sealed selectors: {choices}",
+                f"Criterion {key!r} Target is ambiguous across basis selectors: {choices}",
                 slug=ctx.slug,
             )
         if unique:
@@ -564,13 +564,14 @@ def _matching_contract_bindings(
     criterion_key: str,
     authored: object,
 ) -> dict[tuple[str, str], AcceptanceTargetBinding]:
-    """Return unique sealed bindings selected by one authored Target value."""
+    """Return unique basis bindings selected by one authored Target value."""
     matches: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for binding in bindings:
         if not binding.candidate_selector:
             continue
-        prefix = f"{binding.criterion}_"
-        if criterion_key != binding.criterion and not criterion_key.startswith(prefix):
+        binding_key = binding.criterion_key
+        prefix = f"{binding_key}_"
+        if criterion_key != binding_key and not criterion_key.startswith(prefix):
             continue
         candidate_authored = authored
         if not isinstance(candidate_authored, str) and criterion_key.startswith(prefix):
@@ -588,8 +589,8 @@ def _derive_scalar_tb_review_binding(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Bind a scalar TB review when structured simulation proves one owner."""
-    contract = ctx.acceptance_basis
-    assert contract is not None
+    basis = ctx.acceptance_basis
+    assert basis is not None
     review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
     if not review_keys or all(
         criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM) for key in review_keys
@@ -606,7 +607,7 @@ def _derive_scalar_tb_review_binding(
     owners: dict[tuple[str, str], AcceptanceTargetBinding] = {}
     for authored in sorted(authored_targets):
         unique = _matching_contract_bindings(
-            contract.bindings,
+            basis.bindings,
             criterion_key="sim_pass",
             authored=authored,
         )
