@@ -20,13 +20,7 @@ from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
 
-from .git_ops import (
-    cleanup_worktree_and_branch,
-    delete_branch,
-    find_worktree_for_branch,
-    prune_worktrees,
-    remove_worktree,
-)
+from .git_ops import cleanup_worktree_and_branch
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
 from .lifecycle import (
@@ -794,37 +788,14 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_cleanup(slug: str, entry: dict, on_success: OnSuccess, project_root: Path) -> bool:
-    """Perform the cleanup step of op_complete."""
-    ok, _detail = TicketWorkspace.retire(
-        project_root,
-        slug,
-        WorkspaceDisposition.DISCARD,
-    )
-    if not ok:
-        return False
-    fb = entry.get("feature_branch", "") or entry.get("branch", "")
-    if not fb:
-        return True
-    wt_path = find_worktree_for_branch(fb)
-    if wt_path:
-        remove_worktree(wt_path)
-        prune_worktrees()
-    feature_branch = entry.get("feature_branch", "")
-    if on_success.merge or not feature_branch:
-        return True
-    return delete_branch(feature_branch, force=True)
-
-
 def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> OnSuccess:
     """The ticket's ``on_success`` with the per-invocation overrides applied.
 
     The overrides are subtractive only: they can turn a configured action OFF,
-    never on. Every downstream decision (the merge step, the cleanup step, the
-    force-delete-the-branch branch inside :func:`_do_cleanup`, the worktree-lock
-    GC) must read the EFFECTIVE values — reading the raw frontmatter after a
-    ``--no-merge`` is how ``--no-merge --cleanup`` would leave the feature
-    branch behind.
+    never on. Every downstream decision must read the effective values.
+    Destructive cleanup is valid only with journaled merge publication, so
+    ``--no-merge`` must be paired with ``--no-cleanup`` when cleanup was
+    configured.
     """
     from dataclasses import replace
 
@@ -997,18 +968,10 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
         return True
 
-    if (
-        on_success.cleanup
-        and not on_success.merge
-        and not _do_cleanup(slug, entry, on_success, tio._project_root)
-    ):
-        print(f"Error: cleanup failed for '{slug}'; ticket stays in review", file=sys.stderr)
-        return False
-
     if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
 
-    _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+    _finish_completed_ticket(tio, slug, cleanup=False)
     return True
 
 

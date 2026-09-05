@@ -698,6 +698,11 @@ on_success:
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
+Destructive completion cleanup requires `merge: true`, so the Acceptance Journal can
+pin the accepted source before removing its branch and worktree. To finish without
+merging, set both `merge: false` and `cleanup: false`; with CLI overrides, pair
+`--no-merge` with `--no-cleanup`.
+
 `remove_targets` handles Targets that must exist while the Ticket runs—for example, a
 frozen comparison baseline—but must not remain in the accepted Project. It is fixed and
 bound into the Acceptance Basis during enqueue, requires `merge: true`, and may name only

@@ -11,7 +11,7 @@ spec: ""                         # optional path to architecture spec
 on_success:
   destination: review               # review | done
   merge: true                       # merge feature branch on completion
-  cleanup: true                     # delete worktree/branch on completion
+  cleanup: true                     # after merge, delete worktree/branch on completion
   triage_report: true               # prepare rich HTML explanation before review
   remove_targets: []                # criterion-bound Targets deleted only from accepted merge
 dependencies: []

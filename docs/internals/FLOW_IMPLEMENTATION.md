@@ -589,7 +589,7 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
-#### Ticket baselines and sealed recipes
+#### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
 [Ticket Acceptance Bases](#ticket-acceptance-bases).
@@ -811,7 +811,7 @@ clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
-#### Ticket baselines and sealed recipes
+#### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
 [Ticket Acceptance Bases](#ticket-acceptance-bases).

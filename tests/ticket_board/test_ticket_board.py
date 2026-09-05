@@ -3652,7 +3652,7 @@ class TestEnqueueOnSuccess:
 
     def test_enqueue_with_on_success(self, tmp_path):
         tio = make_tio(tmp_path)
-        on_success = {"destination": "done", "merge": False, "cleanup": True}
+        on_success = {"destination": "done", "merge": False, "cleanup": False}
         make_ticket_in_dir(
             tio,
             "queue",
@@ -3664,7 +3664,7 @@ class TestEnqueueOnSuccess:
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields["on_success"]["destination"] == "done"
         assert fields["on_success"]["merge"] is False
-        assert fields["on_success"]["cleanup"] is True
+        assert fields["on_success"]["cleanup"] is False
 
     def test_enqueue_default_no_on_success(self, tmp_path):
         """Without on_success param, field should not be stamped by enqueue."""
@@ -4394,7 +4394,7 @@ class TestDraftsDirectory:
         on_success = {
             "destination": "done",
             "merge": False,
-            "cleanup": True,
+            "cleanup": False,
             "triage_report": False,
         }
 
@@ -4434,7 +4434,7 @@ class TestDraftsDirectory:
                     {
                         "destination": "done",
                         "merge": False,
-                        "cleanup": True,
+                        "cleanup": False,
                         "triage_report": False,
                         "remove_targets": [],
                         "unexpected": True,
@@ -4678,7 +4678,7 @@ class TestEnqueueAppliesParams:
     def test_on_success_applied(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "queue", "t1", extra_fields={"summary": "t1"})
-        on_success = {"destination": "done", "merge": False, "cleanup": True}
+        on_success = {"destination": "done", "merge": False, "cleanup": False}
         # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
         # In normal workflow, enqueue is called before find_ticket_file can find it.
         with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
@@ -5652,8 +5652,8 @@ class TestBoardMoveTerminalActionOverrides:
 
     Both flags used to be accepted, documented in --help, and then silently
     dropped: the worktree was destroyed anyway. These pin the wiring end to
-    end plus the two coupling traps (the merge step tears the worktree down
-    itself; the cleanup step branches on the merge decision)."""
+    end and require destructive cleanup to remain journaled with merge
+    publication."""
 
     @pytest.fixture(autouse=True)
     def _accepted_snapshot(self, monkeypatch):
@@ -5733,40 +5733,28 @@ class TestBoardMoveTerminalActionOverrides:
 
     def test_no_cleanup_skips_the_cleanup_step(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=False, cleanup=True)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
-        do_cleanup.assert_not_called()
+        assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
 
     def test_no_cleanup_keeps_the_worktree_even_when_merging(self, tmp_path):
         """Trap: the merge step removes the worktree and branch itself, so
         --no-cleanup has to reach into it too."""
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with (
-            patch(
-                "booley.ticket_board.completion.complete_review_ticket", return_value=True
-            ) as complete,
-            patch("booley.ticket_board.operations._do_cleanup") as do_cleanup,
-        ):
+        with patch(
+            "booley.ticket_board.completion.complete_review_ticket", return_value=True
+        ) as complete:
             assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
         assert complete.call_args.args[2].cleanup is False
-        do_cleanup.assert_not_called()
 
-    def test_cleanup_sees_the_effective_merge_decision(self, tmp_path):
-        """Trap: _do_cleanup force-deletes the feature branch only when the
-        run did NOT merge — so it must read the overridden value, not the
-        ticket's frontmatter."""
+    def test_no_merge_rejects_configured_destructive_cleanup(self, tmp_path, capsys):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
-        assert do_cleanup.call_args.args[2].merge is False
+        assert op_board_move(tio, "my-ticket", "done", no_merge=True) is False
+        assert "on_success.cleanup requires on_success.merge: true" in capsys.readouterr().err
 
     def test_overrides_never_enable_a_declined_action(self, tmp_path):
         """Subtractive only: a ticket that opted out of merging does not start
         merging because the flags were left off."""
         tio = self._review_ticket(tmp_path, merge=False, cleanup=False)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done") is True
-        do_cleanup.assert_not_called()
+        assert op_board_move(tio, "my-ticket", "done") is True
 
     def test_flags_are_announced_as_ignored_on_other_edges(self, tmp_path, capsys):
         tio = make_tio(tmp_path)

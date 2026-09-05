@@ -175,7 +175,7 @@ only how to *infer* a value from the conversation and the repo.
 | `branch` | `git branch --show-current` |
 | `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
 | `spec` | Include when an arch spec exists near scope |
-| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Benchmark: `{destination: done, merge: false, cleanup: true, triage_report: true, remove_targets: []}` |
+| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Destructive cleanup also requires `merge: true`, because journaled publication pins the accepted source before branch removal. Benchmark: `{destination: done, merge: false, cleanup: false, triage_report: true, remove_targets: []}` |
 | `dependencies` | From scan (§A) + grilling; user confirms |
 | `priority` | Default `medium` |
 | `criteria` | Start with §D defaults, then apply relevant §E guidance; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |

@@ -32,7 +32,7 @@ class OnSuccess:
 
     destination: when terminal actions fire — "done" skips review, "review" is default.
     merge: whether to merge the feature branch into the base branch.
-    cleanup: whether to delete the worktree and (if not merged) force-delete the branch.
+    cleanup: whether to delete the worktree and branch after a successful merge.
     triage_report: whether to prepare the rich HTML explanation before handoff.
         remove_targets: recorded Targets to delete from the accepted merge candidate.
     """
@@ -67,6 +67,8 @@ class OnSuccess:
             errors.append("on_success.merge must be true or false")
         if not isinstance(self.cleanup, bool):
             errors.append("on_success.cleanup must be true or false")
+        elif self.cleanup and self.merge is False:
+            errors.append("on_success.cleanup requires on_success.merge: true")
         if not (
             isinstance(self.remove_targets, tuple)
             and is_str_list(list(self.remove_targets))

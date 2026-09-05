@@ -283,7 +283,10 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
         help="Merge feature branch on completion",
     )
     p.add_argument(
-        "--no-merge", action="store_false", dest="merge", help="Skip merge on completion"
+        "--no-merge",
+        action="store_false",
+        dest="merge",
+        help="Skip merge on completion (also use --no-cleanup when cleanup is configured)",
     )
     p.add_argument(
         "--cleanup",
