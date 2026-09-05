@@ -147,13 +147,19 @@ def detect_project_root() -> Path:
         return Path(os.environ["BOOLEY_CONTROL_PROJECT_ROOT"])
     runtime_ticket = os.environ.get("BOOLEY_TICKET_FILE")
     if runtime_ticket:
+        from booley.runtime.project_dir import PROJECT_DIR_NAME
+
         ticket_path = Path(runtime_ticket).resolve()
         for parent in ticket_path.parents:
-            if parent.name != "tickets":
+            if parent.name != "tickets" or parent.parent.name != PROJECT_DIR_NAME:
                 continue
-            control_root = parent.parent.parent
-            if control_root != control_root.parent:
-                return control_root
+            relative = ticket_path.relative_to(parent)
+            if (
+                len(relative.parts) == 3
+                and relative.parts[0] == "logs"
+                and relative.name == "ticket.md"
+            ):
+                return parent.parent.parent
     if "PROJECT_ROOT" in os.environ:
         return Path(os.environ["PROJECT_ROOT"])
     try:

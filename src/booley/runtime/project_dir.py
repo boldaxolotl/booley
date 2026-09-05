@@ -159,6 +159,13 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
     return resolve_project_dir(root)
 
 
+def checkout_runtime_dir(project_root: Path) -> Path:
+    """Return the runtime tree anchored to one explicitly selected checkout."""
+    directory = resolve_checkout_project_dir(project_root) / ".runtime"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def checkout_project_dir_relative_to(project_root: Path) -> Path:
     """Return the selected checkout's project directory as a safe relative path."""
     root = project_root.resolve()
