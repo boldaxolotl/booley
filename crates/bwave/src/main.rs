@@ -23,7 +23,7 @@ use bwave::cache::{
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
     trace_from_cache, wave_from_cache, ColumnCache,
 };
-use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal};
+use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal, TimeToken};
 use bwave::parser::try_parse_header;
 use bwave::ExtractConfig;
 
@@ -164,9 +164,9 @@ struct VirtualOpts {
 
 #[derive(Args, Debug, Clone, Default)]
 struct MarkerOpts {
-    /// Named marker for output: --marker NAME CYCLE (repeatable)
+    /// Named wave annotation: --marker NAME TIME (repeatable)
     #[arg(long = "marker", num_args = 2, action = clap::ArgAction::Append,
-          value_names = &["NAME", "CYCLE"])]
+          value_names = &["NAME", "TIME"], allow_hyphen_values = true)]
     markers: Vec<String>,
 }
 
@@ -264,9 +264,6 @@ struct SignalArgs {
     time: Option<String>,
 
     #[command(flatten)]
-    marker: MarkerOpts,
-
-    #[command(flatten)]
     global: GlobalOpts,
 }
 
@@ -323,9 +320,6 @@ struct ValueArgs {
     virtuals: VirtualOpts,
 
     #[command(flatten)]
-    marker: MarkerOpts,
-
-    #[command(flatten)]
     global: GlobalOpts,
 }
 
@@ -377,9 +371,6 @@ struct FindArgs {
     virtuals: VirtualOpts,
 
     #[command(flatten)]
-    marker: MarkerOpts,
-
-    #[command(flatten)]
     global: GlobalOpts,
 }
 
@@ -408,9 +399,6 @@ struct SampleArgs {
     virtuals: VirtualOpts,
 
     #[command(flatten)]
-    marker: MarkerOpts,
-
-    #[command(flatten)]
     global: GlobalOpts,
 }
 
@@ -431,9 +419,6 @@ struct DiffArgs {
     #[arg(short = 's', long = "signals", action = clap::ArgAction::Append,
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
-
-    #[command(flatten)]
-    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -469,9 +454,6 @@ struct DistanceArgs {
 
     #[command(flatten)]
     virtuals: VirtualOpts,
-
-    #[command(flatten)]
-    marker: MarkerOpts,
 
     #[command(flatten)]
     global: GlobalOpts,
@@ -553,17 +535,22 @@ fn normalize_value(val: &str) -> String {
     }
 }
 
-/// Parse `--marker NAME CYCLE` repeatable pairs into (name, cycle) tuples.
-fn parse_markers(raw: &[String]) -> Vec<(String, i64)> {
-    raw.chunks(2)
-        .filter_map(|chunk| {
-            if chunk.len() == 2 {
-                chunk[1].parse::<i64>().ok().map(|c| (chunk[0].clone(), c))
-            } else {
-                None
-            }
+/// Parse repeatable `--marker NAME TIME` pairs before touching the store.
+fn parse_markers(raw: &[String], async_mode: bool) -> Result<Vec<(String, TimeToken)>, String> {
+    let mut chunks = raw.chunks_exact(2);
+    let markers = chunks
+        .by_ref()
+        .map(|chunk| {
+            let token = TimeToken::parse(&chunk[1], async_mode)
+                .map_err(|error| format!("--marker {} {}: {error}", chunk[0], chunk[1]))?;
+            Ok((chunk[0].clone(), token))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    debug_assert!(
+        chunks.remainder().is_empty(),
+        "clap groups markers in pairs"
+    );
+    Ok(markers)
 }
 
 // ===================================================================
@@ -944,7 +931,6 @@ fn run_signal(args: SignalArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -953,6 +939,10 @@ fn run_signal(args: SignalArgs) {
 
 fn run_wave(args: WaveArgs) {
     let g = args.global;
+    let marker_tokens = parse_markers(&args.marker.markers, g.async_mode).unwrap_or_else(|error| {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    });
     // Grid rendering operates on the built store.
     require_bwave(&args.bwave, "bwave wave");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
@@ -968,7 +958,7 @@ fn run_wave(args: WaveArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
+        marker_tokens,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
@@ -993,7 +983,6 @@ fn run_value(args: ValueArgs) {
         reset_pattern: g.reset,
         with_reset: g.with_reset,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
@@ -1080,7 +1069,6 @@ fn run_find(args: FindArgs) {
         time_max: modifiers.time_max,
         time_str: modifiers.time_str,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
@@ -1112,7 +1100,6 @@ fn run_sample(args: SampleArgs) {
         time_max: modifiers.time_max,
         time_str: modifiers.time_str,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()
@@ -1135,7 +1122,6 @@ fn run_diff(args: DiffArgs) {
         reset_pattern: g.reset,
         with_reset: g.with_reset,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         json_format: g.format == "json",
         ..Default::default()
     };
@@ -1168,7 +1154,6 @@ fn run_distance(args: DistanceArgs) {
         with_reset: g.with_reset,
         time_str: args.time,
         max_lines: g.limit,
-        markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
         ..Default::default()

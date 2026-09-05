@@ -475,7 +475,7 @@ fn help_virtual_examples_parse() {
 }
 
 #[test]
-fn signal_and_diff_reject_virtual_but_keep_marker() {
+fn signal_and_diff_reject_virtual() {
     for subcommand in ["signal", "diff"] {
         let (help, stderr, code) = run(&[subcommand, "--help"]);
         assert_eq!(code, 0, "{subcommand} --help failed: {stderr}");
@@ -483,10 +483,6 @@ fn signal_and_diff_reject_virtual_but_keep_marker() {
         assert!(
             !usage.contains("--virtual"),
             "{subcommand} must not advertise --virtual:\n{help}"
-        );
-        assert!(
-            usage.contains("--marker"),
-            "{subcommand} must preserve its current --marker surface:\n{help}"
         );
 
         let args: Vec<&str> = if subcommand == "signal" {
@@ -502,6 +498,158 @@ fn signal_and_diff_reject_virtual_but_keep_marker() {
             "{subcommand} rejection did not come from clap: {stderr}"
         );
     }
+}
+
+#[test]
+fn marker_option_is_wave_only() {
+    let help_cases: &[(&str, &[&str])] = &[
+        ("build", &["build", "--help"]),
+        ("list", &["list", "--help"]),
+        ("signal", &["signal", "--help"]),
+        ("wave", &["wave", "--help"]),
+        ("value", &["value", "--help"]),
+        ("find", &["find", "--help"]),
+        ("sample", &["sample", "--help"]),
+        ("diff", &["diff", "--help"]),
+        ("distance", &["distance", "--help"]),
+        ("stats", &["stats", "--help"]),
+        ("stuck", &["stuck", "--help"]),
+        ("schema", &["schema", "--help"]),
+        ("docs", &["docs", "topics", "--help"]),
+        ("skill", &["skill", "--help"]),
+    ];
+    for (name, args) in help_cases {
+        let (help, stderr, code) = run(args);
+        assert_eq!(code, 0, "{name} --help failed: {stderr}");
+        assert_eq!(
+            live_usage(&help).contains("--marker"),
+            *name == "wave",
+            "unexpected --marker help surface for {name}:\n{help}"
+        );
+    }
+
+    let rejection_cases: &[(&str, &[&str])] = &[
+        (
+            "build",
+            &[
+                "build",
+                "missing.vcd",
+                "-o",
+                "unused.fst",
+                "--marker",
+                "m",
+                "1",
+            ],
+        ),
+        ("list", &["list", "missing.fst", "--marker", "m", "1"]),
+        ("signal", &["signal", "missing.fst", "--marker", "m", "1"]),
+        (
+            "value",
+            &["value", "missing.fst", "--at", "1", "--marker", "m", "1"],
+        ),
+        (
+            "find",
+            &["find", "missing.fst", "sig", "1", "--marker", "m", "1"],
+        ),
+        (
+            "sample",
+            &["sample", "missing.fst", "sig", "1", "--marker", "m", "1"],
+        ),
+        (
+            "diff",
+            &["diff", "missing.fst", "1", "2", "--marker", "m", "1"],
+        ),
+        (
+            "distance",
+            &["distance", "missing.fst", "sig", "1", "--marker", "m", "1"],
+        ),
+        ("stats", &["stats", "missing.fst", "--marker", "m", "1"]),
+        ("stuck", &["stuck", "missing.fst", "--marker", "m", "1"]),
+        ("schema", &["schema", "--marker", "m", "1"]),
+        ("docs", &["docs", "topics", "--marker", "m", "1"]),
+        ("skill", &["skill", "--marker", "m", "1"]),
+    ];
+    for (name, args) in rejection_cases {
+        let (stdout, stderr, code) = run(args);
+        assert_eq!(code, 2, "{name} accepted --marker: {stderr}");
+        assert!(
+            stdout.is_empty(),
+            "{name} parser rejection wrote stdout: {stdout}"
+        );
+        assert!(
+            stderr.contains("unexpected argument '--marker'"),
+            "{name} rejection did not come from clap: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn wave_renders_sync_marker_and_rejects_malformed_time() {
+    let bwave = build_bwave("test_basic.vcd", "marker_sync");
+    let store_path = bwave.to_string_lossy().to_string();
+
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "-t",
+        "4:8",
+        "--with-reset",
+        "--marker",
+        "checkpoint",
+        "6c",
+    ]);
+    assert_eq!(code, 0, "sync marker wave failed: {stderr}");
+    assert!(
+        stdout.contains("checkpoint"),
+        "marker label is absent:\n{stdout}"
+    );
+
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "-t",
+        "4:8",
+        "--marker",
+        "checkpoint",
+        "nope",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 2, "malformed marker time was accepted: {stderr}");
+    assert!(stdout.is_empty(), "malformed marker wrote stdout: {stdout}");
+    assert!(
+        stderr.contains("invalid time token"),
+        "wrong error: {stderr}"
+    );
+}
+
+#[test]
+fn async_marker_adds_and_preserves_a_quiet_tick_column() {
+    let bwave = build_bwave("test_ps_timescale.vcd", "marker_async");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "counter",
+        "-t",
+        "0t:40000t",
+        "--async",
+        "--rle",
+        "--marker",
+        "quiet",
+        "22500t",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "async marker wave failed: {stderr}");
+    assert!(
+        stdout.contains("quiet"),
+        "quiet-tick marker is absent:\n{stdout}"
+    );
 }
 
 #[test]

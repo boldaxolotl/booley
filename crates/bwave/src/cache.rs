@@ -3081,6 +3081,14 @@ fn elide_wide_cells(
     }
 }
 
+fn wave_column_position(sync_mode: bool, header: &str, tick: u64) -> Option<i64> {
+    if sync_mode {
+        header.parse::<i64>().ok()
+    } else {
+        i64::try_from(tick).ok()
+    }
+}
+
 fn render_wave_grid(
     display_names: &[String],
     col_headers: &[String],
@@ -3108,14 +3116,12 @@ fn render_wave_grid(
     let (col_headers, grid, col_ticks) = if rle && !col_headers.is_empty() {
         let n_cols = col_headers.len();
         let mut keep: Vec<bool> = vec![true; n_cols];
-        let marker_cycles: std::collections::HashSet<i64> =
+        let marker_positions: std::collections::HashSet<i64> =
             markers.iter().map(|(_, c)| *c).collect();
         for j in 1..n_cols {
             let same = grid.iter().all(|row| row[j] == row[j - 1]);
-            let is_marker_col = col_headers[j]
-                .parse::<i64>()
-                .ok()
-                .map(|c| marker_cycles.contains(&c))
+            let is_marker_col = wave_column_position(sync_mode, &col_headers[j], col_ticks[j])
+                .map(|position| marker_positions.contains(&position))
                 .unwrap_or(false);
             if same && !is_marker_col {
                 keep[j] = false;
@@ -3170,16 +3176,17 @@ fn render_wave_grid(
     let marker_labels: Vec<String> = if !markers.is_empty() {
         col_headers
             .iter()
-            .map(|hdr| {
-                if let Ok(col_val) = hdr.parse::<i64>() {
-                    markers
-                        .iter()
-                        .find(|(_, cycle)| *cycle == col_val)
-                        .map(|(name, _)| name.clone())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
+            .zip(col_ticks.iter())
+            .map(|(header, tick)| {
+                let Some(position) = wave_column_position(sync_mode, header, *tick) else {
+                    return String::new();
+                };
+                markers
+                    .iter()
+                    .filter(|(_, marker_position)| *marker_position == position)
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             })
             .collect()
     } else {
@@ -3410,21 +3417,12 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     } else {
         // Async: need range-bounded decode, then collect tick set from results
-        let range_start_tick = if cache.ticks_to_ns > 0.0 {
-            (range_start as f64 / cache.ticks_to_ns) as u64
-        } else {
-            range_start as u64
-        };
-        let range_end_tick = match range_end_opt {
-            Some(e) => {
-                if cache.ticks_to_ns > 0.0 {
-                    (e as f64 / cache.ticks_to_ns) as u64
-                } else {
-                    e as u64
-                }
-            }
-            None => cache.sim_end_tick,
-        };
+        // Async time tokens were already resolved to raw ticks in
+        // ExtractConfig::resolve_time_tokens(). Do not scale them a second time.
+        let range_start_tick = u64::try_from(range_start).unwrap_or(0);
+        let range_end_tick = range_end_opt
+            .and_then(|end| u64::try_from(end).ok())
+            .unwrap_or(cache.sim_end_tick);
 
         cache.prefetch_window(&matched, range_end_tick);
         let range_results: Vec<(Option<String>, Vec<(u64, String)>)> = matched
@@ -3445,6 +3443,15 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             for (tick, _) in &ve.transitions {
                 if *tick >= range_start_tick && *tick <= range_end_tick {
                     tick_set.insert(*tick);
+                }
+            }
+        }
+        // A marker is itself a requested observation point. Keep an in-window
+        // column even when no selected signal transitions at that exact tick.
+        for (_, marker_tick) in &cfg.markers {
+            if let Ok(tick) = u64::try_from(*marker_tick) {
+                if tick >= range_start_tick && tick <= range_end_tick {
+                    tick_set.insert(tick);
                 }
             }
         }

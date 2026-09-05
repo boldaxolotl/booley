@@ -72,11 +72,12 @@ Available on every query/introspect subcommand:
   Virtual Signal rows from one combined name set. Definitions
   that serve only as helpers are evaluated but not displayed.
 
-Marker availability is documented separately in
-`reference/markers`:
+Native marker annotation is `wave`-only:
 
-- `--marker NAME CYCLE`: pin a named cycle for display
-  (especially in `wave`).
+- `--marker NAME TIME`: pin a named time for display in
+  `wave`. Every other native command rejects the option
+  during argument parsing. See `reference/markers` for
+  the complete matrix and the separate wrapper workflow.
 
 ## File-input rule
 

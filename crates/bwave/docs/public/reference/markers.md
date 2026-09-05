@@ -1,31 +1,39 @@
 # Markers
 
-Named cycle references. A marker is just `(NAME,
-CYCLE)`. Once defined for a query, B-Wave shows the
-name above the cycle column in `wave` output and (via
-the Python wrapper integration) lets you refer to the
-cycle by name in subsequent queries.
+Markers are named time annotations. The native option is deliberately
+`wave`-only because the horizontal wave table is the only native output with
+columns where an annotation can be rendered.
 
-## CLI usage on consumer subcommands
+## Native command matrix
 
+| Command | `--marker` contract |
+|---|---|
+| `wave` | Accepted and rendered above the matching time column. |
+| `build`, `list`, `signal`, `value`, `find`, `sample`, `diff`, `distance`, `stats`, `stuck`, `schema`, `docs`, `skill` | Rejected during argument parsing with exit 2. |
+
+This matrix concerns the native option. The Python wrapper's persisted marker
+names remain usable as time references on other commands; see
+[Wrapper integration](#wrapper-integration-bwave-markers).
+
+## Native `wave` usage
+
+```text
+--marker NAME TIME
 ```
---marker NAME CYCLE
-```
 
-Repeatable. Accepted on: `wave`, `find`, `sample`,
-`distance`, `value`, `signal`.
+The option is repeatable. TIME uses the same typed grammar as `-t`:
 
-The CYCLE is a literal integer. In sync mode it's a
-cycle number; in async mode it's a tick. The typed time
-tokens of `-t`/`--at` (see `reference/time-tokens`) do
-not apply here: `--marker` takes bare integers only.
+- In sync mode, a bare integer or `Nc` is a cycle.
+- `Nt` is a raw simulation tick.
+- `Nps`, `Nns`, `Nus`, and `Nms` are physical times.
+- In async mode, the suffix is required; a bare integer is ambiguous and is
+  rejected.
 
-## Visual rendering in `wave`
+Each in-window marker becomes a label above its column. In async mode, B-Wave
+adds a column at the marker tick even if no selected signal transitions there.
+Markers outside the `-t` window are silently omitted.
 
-`wave` is where markers shine. Each marker becomes a
-label above the cycle header, anchored at its column:
-
-```
+```text
               err_start              dma_done
               v                      v
               500         510         520         530
@@ -34,77 +42,56 @@ clk           ^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_
 state         'h2  'h2  'h2  'h5  'h5  'h5  'h0  'h0  'h0
 ```
 
-B-Wave silently drops markers outside the `-t` window
-(no warning).
-
-## Other commands
-
-In `find`, `sample`, `distance`, `value`, `signal` the
-marker is accepted but not visually rendered: the
-binary just remembers the names. The intended use is
-that another component (the Python wrapper) sets markers and
-then references them by name in subsequent invocations.
-
 ## Wrapper integration: `bwave markers`
 
-The Booley `booley.bwave.cli` wrapper has a `markers`
-subcommand that persists named markers per registered
-trace alias. Workflow:
+The Booley Python wrapper persists named cycle references per registered trace
+alias:
 
-1. Register a trace: `bwave register @dut sim.fst`.
-2. Set named markers: `bwave markers @dut set
-   err_start 1234`.
-3. Use the name anywhere a cycle is expected:
-   `bwave @dut wave -t err_start:dma_done -s "*err*"`.
+1. Register a trace: `bwave register sim.fst --as dut`.
+2. Set markers: `bwave markers @dut set err_start 1234`.
+3. Use names where a command accepts a cycle, for example
+   `bwave @dut value --at err_start` or
+   `bwave @dut diff err_start err_done`.
 
-The wrapper resolves names to integers and passes
-`--marker NAME CYCLE` (and the equivalent integer for
-`-t`) into the binary. From the binary's perspective the
-input is plain integers and `--marker` annotations; the
-naming is wrapper-layer state.
+The wrapper substitutes those names into time arguments before invoking the
+native binary. Stored cycles are passed as explicit `Nc` tokens where the
+native command accepts typed time. For `wave`, the wrapper additionally passes
+each persisted marker as `--marker NAME Nc`, so the native renderer draws its
+label.
 
-This means: the binary does **not** persist markers.
-Every invocation that wants named markers has to either
-declare them with `--marker` or go through the wrapper.
+The native binary does not persist markers and does not resolve names across
+invocations. Native `--marker` annotates only the current `wave` output.
 
-## Common patterns
+## Examples
 
-Set markers around an error window and inspect:
+Persist markers through the wrapper and reuse them across commands:
 
 ```bash
-# via wrapper
 bwave markers @dut set err_start 1234
 bwave markers @dut set err_done 1450
+bwave @dut value --at err_start -s "*state*"
+bwave @dut diff err_start err_done -s "*state*"
 bwave @dut wave -t err_start:err_done -s "*err*"
 ```
 
-Annotate a wave plot without persistence (binary
-directly):
+Annotate one native wave invocation without persistence:
 
 ```bash
-bwave wave sim.fst -s "*err*" -t 1200:1500 \
-    --marker err_start 1234 --marker err_done 1450
+bwave wave sim.fst -s "*err*" -t 1200c:1500c \
+    --marker err_start 1234c --marker err_done 1450c
 ```
 
-Multiple markers in one invocation:
+Use physical time in async mode:
 
 ```bash
-bwave wave sim.fst -s "*fsm*" -t 0:500 \
-    --marker reset_done 5 \
-    --marker first_req 42 \
-    --marker first_ack 46
+bwave wave sim.fst --async -s "*fsm*" -t 1us:2us \
+    --marker request 1250ns --marker response 1275ns
 ```
 
-## Constraints
+## Collision and range rules
 
-- Marker names are arbitrary strings but should avoid
-  whitespace and shell metacharacters (you'll fight
-  quoting otherwise).
-- Two markers with the same name in one invocation:
-  last one wins (no error).
-- Negative cycle markers are accepted (useful when
-  `--with-reset` is set and the reset extended into
-  negative cycle space relative to the deassertion
-  origin).
-- Markers do not affect query semantics. They are
-  pure annotation.
+- Repeating a marker name updates it; the last occurrence wins.
+- Distinct names at the same time share a comma-separated label.
+- Negative sync-cycle markers are accepted. They render only if the selected
+  reset-inclusive range contains that cycle.
+- Markers annotate output; they do not alter signal values or query matching.

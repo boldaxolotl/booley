@@ -7,7 +7,7 @@ bwave find <FST_FILE> <PATTERN> <VALUE>
            [--first | --last | --before N | --after N] [--count]
            [-t START:END]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-           [--virtual "name = expr"] [--marker NAME CYCLE]
+           [--virtual "name = expr"]
            [--format text|json] [--limit N]
 ```
 

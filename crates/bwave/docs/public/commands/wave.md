@@ -5,7 +5,7 @@
 ```bash
 bwave wave <FST_FILE> -t START:END [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-           [--virtual "name = expr"] [--marker NAME CYCLE]
+           [--virtual "name = expr"] [--marker NAME TIME]
            [--format text|json] [--limit N]
 ```
 
@@ -31,9 +31,10 @@ the row reads like an ASCII waveform.
 - `-s PATTERN` optionally selects stored and Virtual Signal
   rows. Without it, every stored and virtual row is selected.
   Wide tables truncate at terminal width.
-- `--marker NAME CYCLE` is most useful here: markers
+- `--marker NAME TIME` adds a named annotation: markers
   appear as labels above the cycle header so you can
-  annotate a region.
+  annotate a region. TIME accepts the same typed time
+  tokens as `-t`; bare integers mean cycles in sync mode.
 
 ## Output shape
 
@@ -91,7 +92,7 @@ Annotate a window with markers:
 
 ```bash
 bwave wave sim.fst -s "*err*" \
-    --marker err_start 1234 --marker err_done 1450 \
+    --marker err_start 1234c --marker err_done 1450c \
     -t 1200:1500
 ```
 

@@ -154,28 +154,32 @@ def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
     if not markers:
         return
 
-    def resolve_token(tok: str) -> str:
-        """Replace marker name with cycle number if it matches."""
+    def resolve_token(tok: str, *, typed: bool = False) -> str:
+        """Replace a marker name with its stored cycle when it matches."""
         if tok in markers:
-            return str(markers[tok])
+            cycle = str(markers[tok])
+            return f"{cycle}c" if typed else cycle
         return tok
 
     def resolve_time_range(val: str) -> str:
         """Resolve markers in a -t style range (START:END)."""
         if ":" in val:
             parts = val.split(":", 1)
-            return f"{resolve_token(parts[0])}:{resolve_token(parts[1])}"
-        return resolve_token(val)
+            return (
+                f"{resolve_token(parts[0], typed=True)}:"
+                f"{resolve_token(parts[1], typed=True)}"
+            )
+        return resolve_token(val, typed=True)
 
     if extra:
         sub = extra[0]
         if sub == "diff" and len(extra) >= 3:
-            extra[1] = resolve_token(extra[1])
-            extra[2] = resolve_token(extra[2])
+            extra[1] = resolve_token(extra[1], typed=True)
+            extra[2] = resolve_token(extra[2], typed=True)
         elif sub == "value":
             for j, tok in enumerate(extra):
                 if tok == "--at" and j + 1 < len(extra):
-                    extra[j + 1] = resolve_token(extra[j + 1])
+                    extra[j + 1] = resolve_token(extra[j + 1], typed=True)
                     break
 
     i = 0
@@ -184,7 +188,6 @@ def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
             extra[i + 1] = resolve_time_range(extra[i + 1])
             i += 2
         elif extra[i] in (
-            "--at",
             "--at-time",
             "--at-cycle",
             "--before",
@@ -192,9 +195,12 @@ def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
         ) and i + 1 < len(extra):
             extra[i + 1] = resolve_token(extra[i + 1])
             i += 2
+        elif extra[i] == "--at" and i + 1 < len(extra):
+            extra[i + 1] = resolve_token(extra[i + 1], typed=True)
+            i += 2
         elif extra[i] == "--diff" and i + 2 < len(extra):
-            extra[i + 1] = resolve_token(extra[i + 1])
-            extra[i + 2] = resolve_token(extra[i + 2])
+            extra[i + 1] = resolve_token(extra[i + 1], typed=True)
+            extra[i + 2] = resolve_token(extra[i + 2], typed=True)
             i += 3
         else:
             i += 1
@@ -202,7 +208,7 @@ def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
 
 def _inject_marker_flags(extra: list[str], alias: str) -> None:
     """For wave queries (both legacy --wave and v0.2 `wave` subcommand),
-    inject --marker NAME CYCLE flags for every registered marker so the
+    inject --marker NAME TIME flags for every registered marker so the
     Rust renderer can draw the label row above the cycle header."""
     # Detect either the legacy mode flag or the v0.2 subcommand. The
     # subcommand form is the first token after the optional @alias/path,
@@ -215,7 +221,7 @@ def _inject_marker_flags(extra: list[str], alias: str) -> None:
     if not markers:
         return
     for name, cycle in markers.items():
-        extra.extend(["--marker", name, str(cycle)])
+        extra.extend(["--marker", name, f"{cycle}c"])
 
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1250,7 @@ Named markers (set via 'bwave markers'):
   Marker names resolve anywhere a cycle number is accepted in the
   wrapper layer: -t error_start:dma_done, --before checkpoint,
   diff A B. In wave mode they appear as labels above the cycle header.
+  The native --marker annotation option itself is wave-only.
 
 Sync vs async:
   Default sync mode samples at the rising clock edge and reports
