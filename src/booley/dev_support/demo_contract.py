@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -27,6 +26,8 @@ from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import find_ticket_file
+
+from .toolchain_provenance import validate_toolchain_provenance
 
 
 class DemoContractError(ValueError):
@@ -134,6 +135,23 @@ def _parse_generated_inputs(document: Mapping[str, Any]) -> tuple[GeneratedInput
     return tuple(inputs)
 
 
+def _require_commit(document: Mapping[str, Any], key: str) -> str:
+    commit = _require_trimmed_str(document, key)
+    if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
+        raise BoundaryError(f"{key} must be a full lowercase Git commit SHA")
+    return commit
+
+
+def _parse_toolchain_provenance(document: Mapping[str, Any]) -> tuple[str, str]:
+    url = _require_trimmed_str(document, "toolchain_url")
+    sha256 = _require_trimmed_str(document, "toolchain_sha256")
+    try:
+        validate_toolchain_provenance(url, sha256)
+    except ValueError as exc:
+        raise BoundaryError(str(exc)) from exc
+    return url, sha256
+
+
 def load_contract(path: Path | str) -> DemoContract:
     """Load and structurally validate a demo contract."""
     contract_path = Path(path)
@@ -146,28 +164,10 @@ def load_contract(path: Path | str) -> DemoContract:
         if schema != 1:
             raise BoundaryError("schema must be 1")
         upstream_repository = _require_trimmed_str(document, "upstream_repository")
-        upstream_ref = _require_trimmed_str(document, "upstream_ref")
+        upstream_ref = _require_commit(document, "upstream_ref")
         project_repository = _require_trimmed_str(document, "project_repository")
-        project_ref = _require_trimmed_str(document, "project_ref")
-        toolchain_url = _require_trimmed_str(document, "toolchain_url")
-        toolchain_sha256 = _require_trimmed_str(document, "toolchain_sha256")
-        for key, commit in (("upstream_ref", upstream_ref), ("project_ref", project_ref)):
-            if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
-                raise BoundaryError(f"{key} must be a full lowercase Git commit SHA")
-        parsed_toolchain_url = urllib.parse.urlsplit(toolchain_url)
-        if (
-            parsed_toolchain_url.scheme != "https"
-            or not parsed_toolchain_url.hostname
-            or parsed_toolchain_url.username is not None
-            or parsed_toolchain_url.password is not None
-            or parsed_toolchain_url.query
-            or parsed_toolchain_url.fragment
-        ):
-            raise BoundaryError("toolchain_url must be a plain HTTPS URL")
-        if len(toolchain_sha256) != 64 or any(
-            char not in "0123456789abcdef" for char in toolchain_sha256
-        ):
-            raise BoundaryError("toolchain_sha256 must be a lowercase SHA-256 digest")
+        project_ref = _require_commit(document, "project_ref")
+        toolchain_url, toolchain_sha256 = _parse_toolchain_provenance(document)
 
         raw_targets = document.get("required_targets")
         if not is_str_list(raw_targets) or not raw_targets or not all(raw_targets):

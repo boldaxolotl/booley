@@ -3,12 +3,14 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.ticket_board.acceptance_ledger import (
     AcceptanceLedgerError,
+    EvidenceRef,
     bind_review_package,
     freeze_acceptance,
     read_acceptance,
@@ -60,8 +62,9 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
     assert result.snapshot.participant_heads == {"outer": "a" * 40}
 
 
-def test_normalized_observations_receive_deterministic_completion_sequences(tmp_path):
-    log_dir = tmp_path / "logs" / "fix-uart"
+def _record_red_green_observations(
+    log_dir: Path,
+) -> tuple[DevelopmentState, tuple[EvidenceRef, ...], tuple[EvidenceRef, ...]]:
     state = DevelopmentState()
     state.slug = "fix-uart"
     state.init_criteria(
@@ -95,6 +98,12 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
         producer="sim",
         execution_id="generation-2",
     )
+    return state, red_refs, green_refs
+
+
+def test_normalized_observations_receive_deterministic_completion_sequences(tmp_path):
+    log_dir = tmp_path / "logs" / "fix-uart"
+    state, red_refs, green_refs = _record_red_green_observations(log_dir)
 
     assert [red_refs[0].sequence, green_refs[0].sequence] == [1, 2]
     assert red_refs[0].role == "baseline"
