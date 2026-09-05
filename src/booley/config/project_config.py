@@ -392,6 +392,33 @@ def lookup_target_section(sections: Mapping[str, Any], target: str) -> Any:
     return None
 
 
+def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
+    """Load ``tests.toml`` for one explicit checkout without using the CWD cache.
+
+    The explicit checkout is authoritative. Compatibility constants remain
+    available through ``_get`` for callers that intentionally use the active
+    Project, but cannot influence a root-scoped read.
+    """
+    try:
+        project_dir = resolve_checkout_project_dir(Path(work_dir))
+        with (project_dir / "tests.toml").open("rb") as stream:
+            return normalize_tests_toml(tomllib.load(stream))
+    except FileNotFoundError:
+        return {}
+
+
+def load_test_configuration_field(
+    work_dir: Path | str,
+    field: str,
+) -> dict[str, Any]:
+    """Project-root-scoped mapping for one normalized ``tests.toml`` field."""
+    return {
+        target: section[field]
+        for target, section in load_test_configuration(work_dir).items()
+        if field in section
+    }
+
+
 def _normalize_tests_section(
     target: str,
     section: Any,
@@ -502,7 +529,13 @@ def resolve_test_name(target: str, name: str) -> int:
     return matches[0][0]
 
 
-def render_test_selector(target: str, index: int, name: str) -> str:
+def render_test_selector(
+    target: str,
+    index: int,
+    name: str,
+    *,
+    work_dir: Path | str | None = None,
+) -> str:
     """Render the per-Target plusarg that selects test ``index`` (decision 16).
 
     Booley renders the Target's ``select`` template (from tests.toml) into the
@@ -511,7 +544,12 @@ def render_test_selector(target: str, index: int, name: str) -> str:
     :data:`DEFAULT_TEST_SELECT`, preserving the legacy ``+test_id=N`` contract.
     The returned string is the full plusarg, leading ``+`` included.
     """
-    template = lookup_target_section(_get("TEST_SELECT"), target)
+    templates = (
+        _get("TEST_SELECT")
+        if work_dir is None
+        else load_test_configuration_field(work_dir, "select")
+    )
+    template = lookup_target_section(templates, target)
     if template is None:
         template = DEFAULT_TEST_SELECT
     return template.format(index=index, name=name)

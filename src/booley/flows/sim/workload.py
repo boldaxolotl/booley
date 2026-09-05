@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -60,6 +60,20 @@ def _fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def capture_workload_inputs(
+    work_dir: Path,
+    resolved: ResolvedTarget,
+) -> tuple[dict[str, Any], ...]:
+    """Capture declared input bytes independently of a selected test name."""
+    root = Path(work_dir).resolve()
+    return tuple(
+        sorted(
+            (_input_row(root, file, resolved.build_root) for file in resolved.files),
+            key=lambda row: (row["path"], row["role"]),
+        )
+    )
+
+
 def build_workload_snapshot(
     work_dir: Path,
     target: str,
@@ -67,6 +81,7 @@ def build_workload_snapshot(
     resolved: ResolvedTarget,
     *,
     controls: Mapping[str, Any] | None = None,
+    inputs: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic Target/test workload description."""
     root = Path(work_dir).resolve()
@@ -80,10 +95,7 @@ def build_workload_snapshot(
         "parameters": jsonable(resolved.parameters),
         "flow_options": jsonable(resolved.flow_options),
         "controls": jsonable(controls or {}),
-        "inputs": sorted(
-            (_input_row(root, file, resolved.build_root) for file in resolved.files),
-            key=lambda row: (row["path"], row["role"]),
-        ),
+        "inputs": [dict(row) for row in (inputs or capture_workload_inputs(root, resolved))],
         "provenance_limitation": PROVENANCE_LIMITATION,
     }
     snapshot["fingerprint"] = _fingerprint(snapshot)

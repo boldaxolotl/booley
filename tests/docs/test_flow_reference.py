@@ -152,7 +152,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
     sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
     sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
-    sim._artifacts_for = lambda _target, _result: {}  # type: ignore[method-assign]
+    sim._artifacts_for = lambda _result: {}  # type: ignore[method-assign]
     sim._write_target_report(
         TargetResult(
             target="sim_demo",

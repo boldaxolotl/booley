@@ -627,7 +627,7 @@ class TestDeclaredTraceFiles:
         monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
         (tmp_path / "huge.vcd").write_bytes(b"0" * 64)
 
-        suffix = vr._finalize_trace(
+        suffix, evidence = vr._finalize_trace(
             TraceSession(tmp_path),
             None,
             None,
@@ -637,6 +637,7 @@ class TestDeclaredTraceFiles:
 
         assert "TRACE_OK:" not in suffix
         assert "TRACE_INCIDENT:" in suffix
+        assert evidence.status == "incident"
         assert "not a queryable FST" in suffix
 
     def test_vcd_under_the_cap_is_still_converted(self, tmp_path: Path):
@@ -672,10 +673,11 @@ class TestDeclaredTraceFiles:
                 return store if self.postprocessed else None
 
         trace = _Trace()
-        suffix = vr._finalize_trace(
+        suffix, evidence = vr._finalize_trace(
             trace, None, None, trace_files=["fpu.vcd"], search_dirs=[tmp_path]
         )
         assert f"TRACE_OK: {store}" in suffix
+        assert evidence.path == str(store)
 
     def test_incident_names_the_knob_when_nothing_is_declared(self, tmp_path: Path, capsys):
         class _Trace(TestDeclaredTraceFiles._FakeTrace):
@@ -684,8 +686,9 @@ class TestDeclaredTraceFiles:
                 path.write_text(reason)
                 return path
 
-        suffix = vr._finalize_trace(_Trace(None), None, None)
+        suffix, evidence = vr._finalize_trace(_Trace(None), None, None)
         assert "trace_files" in suffix
+        assert evidence.status == "incident"
 
 
 def test_trace_file_round_trips_through_the_cli():

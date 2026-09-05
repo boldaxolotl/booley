@@ -203,6 +203,10 @@ def recover_timeout_progress(
     parsed: CocotbResults | None = None,
 ) -> CocotbResults:
     """Recover completed, active, and not-run tests from cocotb progress lines."""
+    if not selected:
+        xml_names = [test.name for test in parsed.tests] if parsed is not None else []
+        running_names = re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
+        selected = list(dict.fromkeys((*xml_names, *running_names)))
     passed = {
         name
         for name in selected
