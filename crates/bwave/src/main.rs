@@ -328,6 +328,33 @@ struct ValueArgs {
 }
 
 #[derive(Args, Debug)]
+struct MatchModifiers {
+    /// Time range START:END
+    #[arg(short = 't', long = "time")]
+    time: Option<String>,
+
+    /// Stop after first match
+    #[arg(long)]
+    first: bool,
+
+    /// Return only the last match
+    #[arg(long)]
+    last: bool,
+
+    /// Select the last match at or before cycle/time N (sets -t :N)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
+    before: Option<i64>,
+
+    /// Select the first match at or after cycle/time N (sets -t N:)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
+    after: Option<i64>,
+
+    /// Print only match count
+    #[arg(long)]
+    count: bool,
+}
+
+#[derive(Args, Debug)]
 struct FindArgs {
     #[arg(value_name = "STORE_FILE")]
     bwave: String,
@@ -341,29 +368,8 @@ struct FindArgs {
     #[arg(value_name = "VALUE")]
     value: String,
 
-    /// Time range START:END
-    #[arg(short = 't', long = "time")]
-    time: Option<String>,
-
-    /// Stop after first match
-    #[arg(long)]
-    first: bool,
-
-    /// Return only the last match
-    #[arg(long)]
-    last: bool,
-
-    /// Find before cycle/time N (implies --last, sets -t :N)
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
-    before: Option<i64>,
-
-    /// Find after cycle/time N (implies --first, sets -t N:)
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
-    after: Option<i64>,
-
-    /// Print only match count
-    #[arg(long)]
-    count: bool,
+    #[command(flatten)]
+    modifiers: MatchModifiers,
 
     #[command(flatten)]
     virtuals: VirtualOpts,
@@ -393,19 +399,8 @@ struct SampleArgs {
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
 
-    #[arg(short = 't', long = "time")]
-    time: Option<String>,
-
-    #[arg(long)]
-    first: bool,
-    #[arg(long)]
-    last: bool,
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
-    before: Option<i64>,
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(i64))]
-    after: Option<i64>,
-    #[arg(long)]
-    count: bool,
+    #[command(flatten)]
+    modifiers: MatchModifiers,
 
     #[command(flatten)]
     virtuals: VirtualOpts,
@@ -1004,50 +999,65 @@ fn run_value(args: ValueArgs) {
     query_bwave(&args.bwave, cfg);
 }
 
+struct ResolvedMatchModifiers {
+    first_match: bool,
+    last_match: bool,
+    count_only: bool,
+    time_min: i64,
+    time_max: Option<i64>,
+    time_str: Option<String>,
+}
+
+impl MatchModifiers {
+    fn resolve(self) -> ResolvedMatchModifiers {
+        if self.first && self.last {
+            eprintln!("ERROR: --first and --last are mutually exclusive");
+            process::exit(2);
+        }
+        if self.last && self.count {
+            eprintln!("ERROR: --last and --count are mutually exclusive");
+            process::exit(2);
+        }
+        if self.before.is_some() && self.after.is_some() {
+            eprintln!("ERROR: --before and --after are mutually exclusive");
+            process::exit(2);
+        }
+        if (self.before.is_some() || self.after.is_some()) && self.time.is_some() {
+            eprintln!("ERROR: --before/--after cannot be combined with -t/--time");
+            process::exit(2);
+        }
+        if (self.before.is_some() || self.after.is_some()) && (self.first || self.last) {
+            eprintln!(
+                "ERROR: --before/--after cannot be combined with --first/--last (direction is implied)"
+            );
+            process::exit(2);
+        }
+        // --before/--after take bare i64 (cycle in sync, tick in async).
+        // They are bounds rather than time tokens, so the Phase-4 grammar
+        // does not apply here.
+        let (first_match, last_match, time_min, time_max, time_str) = if let Some(n) = self.before {
+            (false, true, 0, Some(n), None)
+        } else if let Some(n) = self.after {
+            (true, false, n, None, None)
+        } else {
+            (self.first, self.last, 0, None, self.time)
+        };
+
+        ResolvedMatchModifiers {
+            first_match,
+            last_match,
+            count_only: self.count,
+            time_min,
+            time_max,
+            time_str,
+        }
+    }
+}
+
 fn run_find(args: FindArgs) {
     let g = args.global;
     require_bwave(&args.bwave, "bwave find");
-
-    if args.first && args.last {
-        eprintln!("ERROR: --first and --last are mutually exclusive");
-        process::exit(2);
-    }
-    if args.last && args.count {
-        eprintln!("ERROR: --last and --count are mutually exclusive");
-        process::exit(2);
-    }
-    if args.before.is_some() && args.after.is_some() {
-        eprintln!("ERROR: --before and --after are mutually exclusive");
-        process::exit(2);
-    }
-    if (args.before.is_some() || args.after.is_some()) && args.time.is_some() {
-        eprintln!("ERROR: --before/--after cannot be combined with -t/--time");
-        process::exit(2);
-    }
-    if (args.before.is_some() || args.after.is_some()) && (args.first || args.last) {
-        eprintln!(
-            "ERROR: --before/--after cannot be combined with --first/--last (direction is implied)"
-        );
-        process::exit(2);
-    }
-
-    // Expand --before / --after into time-range + direction.
-    // --before/--after take bare i64 (cycle in sync, tick in async) — they're
-    // *bounds*, not tokens, so the Phase-4 grammar doesn't apply here.
-    let mut first_match = args.first;
-    let mut last_match = args.last;
-    let mut time_min: i64 = 0;
-    let mut time_max: Option<i64> = None;
-    let mut time_str: Option<String> = None;
-    if let Some(n) = args.before {
-        last_match = true;
-        time_max = Some(n);
-    } else if let Some(n) = args.after {
-        first_match = true;
-        time_min = n;
-    } else {
-        time_str = args.time;
-    }
+    let modifiers = args.modifiers.resolve();
 
     let value = normalize_value(&args.value);
     let (patterns, signal_radixes) = (vec!["*".to_string()], Vec::new());
@@ -1057,16 +1067,16 @@ fn run_find(args: FindArgs) {
         signal_radixes,
         find_pattern: Some(args.pattern),
         find_value: Some(value),
-        first_match,
-        last_match,
-        count_only: args.count,
+        first_match: modifiers.first_match,
+        last_match: modifiers.last_match,
+        count_only: modifiers.count_only,
         async_mode: g.async_mode,
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
-        time_min,
-        time_max,
-        time_str,
+        time_min: modifiers.time_min,
+        time_max: modifiers.time_max,
+        time_str: modifiers.time_str,
         max_lines: g.limit,
         markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
@@ -1079,44 +1089,7 @@ fn run_find(args: FindArgs) {
 fn run_sample(args: SampleArgs) {
     let g = args.global;
     require_bwave(&args.bwave, "bwave sample");
-
-    if args.first && args.last {
-        eprintln!("ERROR: --first and --last are mutually exclusive");
-        process::exit(2);
-    }
-    if args.last && args.count {
-        eprintln!("ERROR: --last and --count are mutually exclusive");
-        process::exit(2);
-    }
-    if args.before.is_some() && args.after.is_some() {
-        eprintln!("ERROR: --before and --after are mutually exclusive");
-        process::exit(2);
-    }
-    if (args.before.is_some() || args.after.is_some()) && args.time.is_some() {
-        eprintln!("ERROR: --before/--after cannot be combined with -t/--time");
-        process::exit(2);
-    }
-    if (args.before.is_some() || args.after.is_some()) && (args.first || args.last) {
-        eprintln!(
-            "ERROR: --before/--after cannot be combined with --first/--last (direction is implied)"
-        );
-        process::exit(2);
-    }
-
-    let mut first_match = args.first;
-    let mut last_match = args.last;
-    let mut time_min: i64 = 0;
-    let mut time_max: Option<i64> = None;
-    let mut time_str: Option<String> = None;
-    if let Some(n) = args.before {
-        last_match = true;
-        time_max = Some(n);
-    } else if let Some(n) = args.after {
-        first_match = true;
-        time_min = n;
-    } else {
-        time_str = args.time;
-    }
+    let modifiers = args.modifiers.resolve();
 
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
     let value = normalize_value(&args.value);
@@ -1126,16 +1099,16 @@ fn run_sample(args: SampleArgs) {
         signal_radixes,
         sample_at_pattern: Some(args.trigger),
         sample_at_value: Some(value),
-        first_match,
-        last_match,
-        count_only: args.count,
+        first_match: modifiers.first_match,
+        last_match: modifiers.last_match,
+        count_only: modifiers.count_only,
         async_mode: g.async_mode,
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
-        time_min,
-        time_max,
-        time_str,
+        time_min: modifiers.time_min,
+        time_max: modifiers.time_max,
+        time_str: modifiers.time_str,
         max_lines: g.limit,
         markers: parse_markers(&args.marker.markers),
         virtual_defs: args.virtuals.virtual_defs,
