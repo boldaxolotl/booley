@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -93,6 +94,7 @@ def _simulate_host_mounted_project_worktree(
 ) -> None:
     dot_git = project_worktree / ".git"
     admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    dot_git.chmod(dot_git.stat().st_mode | stat.S_IWRITE)
     dot_git.write_text(
         f"gitdir: /host/project/.git/worktrees/{admin_name}\n",
         encoding="utf-8",
@@ -516,6 +518,7 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
     workspace = project_dir / "worktrees/live-input-drift"
     dot_git = workspace / ".git"
     admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    dot_git.chmod(dot_git.stat().st_mode | stat.S_IWRITE)
     dot_git.write_text(
         f"gitdir: /host/checkout/.git/worktrees/{admin_name}\n",
         encoding="utf-8",

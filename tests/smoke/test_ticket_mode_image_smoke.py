@@ -126,6 +126,7 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
         "summary": f"Production-image smoke for {slug}",
         "type": "verification",
         "branch": "main",
+        "project_destination_ref": "refs/heads/main",
         "scope": scope,
         "criteria": criteria,
         "on_success": {
