@@ -88,20 +88,29 @@ def test_doctor_reuses_one_target_source_inspector(
     )
     refs = fusesoc_registry.enumerate_targets(tmp_path)
     managers: list[object] = []
+    resolutions = 0
     real_manager = target_inspection.CoreManager
+    real_get_depends = real_manager.get_depends
 
     def counting_manager(*args, **kwargs):
         manager = real_manager(*args, **kwargs)
         managers.append(manager)
         return manager
 
+    def counting_get_depends(self, *args, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return real_get_depends(self, *args, **kwargs)
+
     monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
+    monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
 
     inputs = doctor._CoreAuditInputs(tmp_path, refs)
     for name in target_names:
         assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
 
     assert len(managers) == 1
+    assert resolutions == 1
 
 
 def _write_project(

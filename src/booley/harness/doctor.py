@@ -52,6 +52,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
 from booley.harness import (
@@ -113,7 +114,6 @@ from booley.runtime.project_dir import (
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.flow_names import config_section
-from booley.targets.target import TargetSourceInspector
 from booley.targets.target import inspect_target_selector as inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 

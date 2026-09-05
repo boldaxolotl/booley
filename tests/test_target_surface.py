@@ -11,17 +11,17 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
     projected_core_path,
     reconcile_projected_cores,
 )
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
+from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.targets import target_surface
 from booley.targets.target import (
     TargetHandle,
-    TargetSourceInspector,
     inspect_target,
     select_target,
     select_targets,
@@ -492,7 +492,9 @@ class TestTargetInterface:
         assert inspection.eda_tool == "verilator"
 
     def test_source_inspector_keeps_target_conditions_isolated_in_a_b_a_order(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         (tmp_path / "conditional.core").write_text(
             textwrap.dedent(
@@ -521,6 +523,19 @@ class TestTargetInterface:
         )
         refs = fusesoc_registry.enumerate_targets(tmp_path)
         inspector = TargetSourceInspector(tmp_path)
+        resolutions = 0
+        real_get_depends = target_inspection.CoreManager.get_depends
+
+        def counting_get_depends(self, *args, **kwargs):
+            nonlocal resolutions
+            resolutions += 1
+            return real_get_depends(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            target_inspection.CoreManager,
+            "get_depends",
+            counting_get_depends,
+        )
 
         observed = [
             inspector.inspect(refs[name]).rtl_source_files
@@ -528,6 +543,7 @@ class TestTargetInterface:
         ]
 
         assert observed == [("rtl/a.sv",), ("rtl/b.sv",), ("rtl/a.sv",)]
+        assert resolutions == 2
 
     def test_source_inspector_continues_after_one_target_cannot_resolve(
         self, tmp_path: Path
