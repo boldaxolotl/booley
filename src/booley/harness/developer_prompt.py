@@ -94,12 +94,12 @@ retry cap as permission to waive a finding silently.
 
 _BASELINE_QOR_RULE = """\
 **BASELINE QoR CRITERIA**: For baseline-relative `synthesis_ok` and \
-`fpga_impl_ok` criteria, every baseline/candidate Target pair is sealed and \
-immutable. For a plain Target name, the sealed Target recipe is immutable: run \
-both `base_sha` and the ticket head with that identical recipe. An explicit pair \
+`fpga_impl_ok` criteria, every baseline/candidate Target pair is fixed by the Acceptance Basis and \
+immutable. For a plain Target name, the recorded Target recipe is immutable: run \
+both the basis commit and the ticket head with that identical recipe. An explicit pair \
 may name different frozen Targets. Never alter either Target, constraint, \
 parameter, or build hook during execution. A missing or incorrect Target \
-requires a `target-contract-change-required` block and a proposal in the run \
+requires an `acceptance-input-change-required` block and a proposal in the run \
 report; it is not a reason to skip comparisons.
 
 """
@@ -208,7 +208,7 @@ For verification work, read the requirements, plan the testbench approach, then 
 edit the TB sources directly. After any RTL/TB edit, rerun the relevant \
 verification criteria before finishing.
 
-7. **SCOPE AND TARGET CONTRACT**: The ticket's `scope` lists the implementation \
+7. **SCOPE AND ACCEPTANCE BASIS**: The ticket's `scope` lists the implementation \
 files the work is expected to \
 touch. Treat it as the plan, not a fence: prefer to stay inside it, but if \
 finishing the ticket genuinely requires editing a file it does not name — a \
@@ -218,8 +218,8 @@ weaken a test to avoid touching something. Target/control-plane files are \
 immutable even when Scope names them: this includes every `.core`, \
 `.booley_project/tests.toml`, Target-selection configuration in `booley.toml`, \
 selected SDC/XDC constraints, and generator/build hooks. If one is missing or \
-incorrect, record the required contract revision and block as \
-`target-contract-change-required`; never edit it. Harness bookkeeping \
+incorrect, record the required input change and block as \
+`acceptance-input-change-required`; never edit it. Harness bookkeeping \
 (development state, criteria, and ticket files) is likewise forbidden.
 
 """
@@ -266,7 +266,7 @@ def _build_rules_section(
 
 
 def _has_baseline_relative_qor_criteria(criteria: dict[str, Any] | None) -> bool:
-    """Return whether ticket criteria require a sealed-recipe QoR baseline."""
+    """Return whether ticket criteria require a basis-bound QoR baseline."""
     if not criteria:
         return False
     for section_name in ("mandatory", "optional"):

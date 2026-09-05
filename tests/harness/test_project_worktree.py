@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from booley.runtime.ticket_repositories import (
     WorkspaceMode,
     project_repository_scope,
     project_ticket_branch,
+    resolve_inner_project_repo,
 )
 from booley.ticket_board.project_git_ops import (
     cleanup_project_ticket_branch,
@@ -132,6 +134,32 @@ def test_scoped_stealth_project_gets_paired_worktree(
     assert (nested / "cores" / "dut.core").read_text(encoding="utf-8").startswith("CAPI=2:")
     assert _git(nested, "branch", "--show-current") == project_ticket_branch(ctx.slug)
     assert _git(nested, "rev-parse", "--abbrev-ref", "@{upstream}") == "main"
+
+
+def test_control_project_repo_ignores_authored_project_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    nested = _workspace(ctx).prepare()
+    assert nested is not None
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(nested))
+    reset_cache()
+
+    assert resolve_inner_project_repo(ctx.project_root) == (ctx.project_root / ".booley_project")
+
+
+def test_basis_bound_workspace_does_not_recreate_missing_paired_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    request = replace(
+        workspace.request,
+        expected_ref="refs/heads/booley-generation/0123456789abcdef/project",
+    )
+
+    with pytest.raises(TicketWorkspaceError, match="expected but unavailable"):
+        TicketWorkspace(request).prepare()
 
 
 def test_project_scope_is_rebased_for_inner_precommit_hook() -> None:

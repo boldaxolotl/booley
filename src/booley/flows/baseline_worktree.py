@@ -35,7 +35,7 @@ from booley.core.boundary import as_dict, as_str
 from booley.fusesoc.fusesoc_registry import state_cores_dir
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
-    materialize_submodules,
+    materialize_ticket_submodules,
 )
 from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.target import TargetHandle
@@ -129,8 +129,8 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
     wt_dir = _create_baseline_worktree(project_root, ref)
     paired_baseline: Path | None = None
     try:
-        _materialize_baseline_submodules(project_root, wt_dir, ref)
         paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
+        _materialize_baseline_submodules(project_root, wt_dir, ref)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
         _copy_root_quarantine_marker(project_root, wt_dir)
@@ -166,7 +166,7 @@ def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
 
 def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: str) -> None:
     try:
-        materialize_submodules(project_root, worktree)
+        materialize_ticket_submodules(project_root, worktree)
     except SubmoduleMaterializationError as exc:
         raise BaselineWorktreeError(
             f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"
@@ -220,15 +220,34 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
     """Resolve the immutable fork point of a paired ticket project branch."""
     ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
     if ticket_file:
-        from booley.ticket_board.target_contract import load_ticket_contract, resolve_commit
+        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.ticket_board.acceptance_targets import resolve_commit
+        from booley.ticket_board.helpers import (
+            TicketSlugError,
+            detect_project_root,
+            resolve_runtime_ticket_slug,
+        )
+        from booley.ticket_board.io import TicketIO
 
-        contract = load_ticket_contract(ticket_file)
-        if contract is not None and contract.project_sha:
+        ticket_path = Path(ticket_file)
+        try:
+            slug = resolve_runtime_ticket_slug(ticket_path)
+        except TicketSlugError as exc:
+            raise BaselineWorktreeError(str(exc)) from exc
+        project_root = detect_project_root()
+        basis = TicketIO(
+            resolve_checkout_project_dir(project_root) / "tickets",
+            project_root=project_root,
+        ).load_basis(
+            slug,
+            runtime_ticket_path=ticket_path,
+        )
+        if basis is not None and basis.project_sha:
             try:
-                return resolve_commit(project_worktree, contract.project_sha)
+                return resolve_commit(project_worktree, basis.project_sha)
             except ValueError as exc:
                 raise BaselineWorktreeError(
-                    f"recorded paired project contract cannot be resolved: {exc}"
+                    f"recorded paired project Acceptance Basis cannot be resolved: {exc}"
                 ) from exc
     upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
     if upstream.returncode != 0:

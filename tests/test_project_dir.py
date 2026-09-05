@@ -90,6 +90,14 @@ class TestEnvVarOverride:
 
         assert detect_project_root() == tmp_path.resolve()
 
+    def test_detect_project_root_prefers_ticket_control_plane(self, tmp_path, monkeypatch):
+        control_root = tmp_path / "control"
+        monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(control_root))
+        monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "test-override"))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "authored-project"))
+
+        assert detect_project_root() == control_root
+
     def test_checkout_local_snapshot_overrides_session_global_dir(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"
         session_dir.mkdir()

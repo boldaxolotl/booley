@@ -9,6 +9,7 @@ from typing import Literal
 import pytest
 
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_basis import BasisParticipant
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -21,7 +22,6 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.target_contract import ContractParticipant
 from tests.ticket_board.test_completion import (
     _git,
     _paired_completion,
@@ -47,7 +47,7 @@ def _assert_finished(
     root: Path,
     project: Path,
     tio: _TicketIO,
-    participants: tuple[ContractParticipant, ...],
+    participants: tuple[BasisParticipant, ...],
     *,
     cleanup: bool,
 ) -> None:

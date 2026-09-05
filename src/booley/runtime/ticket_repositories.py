@@ -8,6 +8,10 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 from booley.runtime import git as runtime_git
 from booley.runtime.agent_errors import BlockingError
@@ -15,7 +19,6 @@ from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
-    resolve_project_dir,
 )
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
@@ -85,6 +88,7 @@ class TicketWorkspaceRequest:
     ticket_scope: tuple[str, ...]
     mode: WorkspaceMode
     expected_sha: str = ""
+    expected_ref: str = ""
 
 
 class TicketWorkspace:
@@ -92,6 +96,47 @@ class TicketWorkspace:
 
     def __init__(self, request: TicketWorkspaceRequest) -> None:
         self.request = request
+
+    @classmethod
+    def ensure_authoring(
+        cls,
+        project_root: Path | str,
+        ticket_path: Path | str,
+        slug: str,
+    ) -> AuthoringWorkspace:
+        """Idempotently materialize the Ticket generation's authoring checkout set."""
+        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+        return ensure_ticket_workspace(project_root, ticket_path, slug)
+
+    @staticmethod
+    def project_destination_ref(
+        project_root: Path | str,
+        destination_branch: str,
+        requested_ref: str = "",
+    ) -> str:
+        """Resolve the paired project destination to a full local branch ref."""
+        root = Path(project_root).resolve()
+        source = resolve_inner_project_repo(root)
+        if source is None:
+            if requested_ref:
+                raise TicketWorkspaceError(
+                    "project_destination_ref requires a standalone project repository"
+                )
+            return ""
+        ref = requested_ref or f"refs/heads/{destination_branch}"
+        if not ref.startswith("refs/heads/"):
+            raise TicketWorkspaceError(
+                "project_destination_ref must be a full refs/heads/... name"
+            )
+        result = _git(source, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            suffix = f": {detail}" if detail else ""
+            raise TicketWorkspaceError(
+                f"paired project destination {ref!r} does not exist as a local branch{suffix}"
+            )
+        return ref
 
     @classmethod
     def open(cls, request: TicketWorkspaceRequest) -> TicketWorkspace:
@@ -131,8 +176,14 @@ class TicketWorkspace:
                 source,
                 self.request.ticket_slug,
                 self.request.expected_sha,
+                self.request.expected_ref,
             )
             return existing.worktree
+
+        if self.request.expected_ref:
+            raise TicketWorkspaceError(
+                "paired Acceptance Basis worktree is expected but unavailable"
+            )
 
         if source is None:
             if scope_mentions_project_repo(
@@ -264,12 +315,9 @@ def project_repository_scope(scope: list[str]) -> list[str]:
 
 
 def resolve_inner_project_repo(project_root: Path) -> Path | None:
-    """Return the resolved project dir only when it is its own Git repo."""
-    configured = os.environ.get("BOOLEY_PROJECT_DIR")
-    if configured and not Path(configured).is_dir():
-        return None
+    """Return this checkout's project dir only when it is its own Git repo."""
     try:
-        project_dir = resolve_project_dir(project_root).resolve()
+        project_dir = resolve_checkout_project_dir(project_root).resolve()
     except FileNotFoundError:
         return None
     if not (project_dir / ".git").is_dir():
@@ -540,10 +588,14 @@ def _set_local_upstream(source: Path, branch: str, base: str) -> None:
 
 
 def _verify_existing_worktree(
-    worktree: Path, source: Path, slug: str, expected_sha: str = ""
+    worktree: Path,
+    source: Path,
+    slug: str,
+    expected_sha: str = "",
+    expected_ref: str = "",
 ) -> None:
     result = _git(worktree, "branch", "--show-current")
-    expected = project_ticket_branch(slug)
+    expected = expected_ref.removeprefix("refs/heads/") or project_ticket_branch(slug)
     if result.returncode != 0 or result.stdout.strip() != expected:
         raise TicketWorkspaceError(
             f"paired project worktree uses {result.stdout.strip()!r}, expected {expected!r}"

@@ -14,6 +14,7 @@ import pytest
 
 from booley.core.models import AgentResult
 from booley.review import preparation as rp
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 
 
 def _explanation() -> dict:
@@ -55,6 +56,35 @@ def _ctx(tmp_path: Path) -> rp.ReviewPrepContext:
         head_sha="b" * 40,
         feature_branch="demo",
     )
+
+
+def _basis(
+    *,
+    outer_sha: str = "a" * 40,
+    outer_ref: str = "refs/heads/booley-generation/0123456789abcdef/outer",
+    project_sha: str | None = None,
+    project_ref: str = "refs/heads/booley-generation/0123456789abcdef/project",
+) -> AcceptanceBasis:
+    participants = [
+        BasisParticipant(
+            role="outer",
+            authoring_sha=outer_sha,
+            ticket_ref=outer_ref,
+            destination_ref="refs/heads/main",
+            destination_sha="c" * 40,
+        )
+    ]
+    if project_sha is not None:
+        participants.append(
+            BasisParticipant(
+                role="project",
+                authoring_sha=project_sha,
+                ticket_ref=project_ref,
+                destination_ref="refs/heads/main",
+                destination_sha="d" * 40,
+            )
+        )
+    return AcceptanceBasis(tuple(participants))
 
 
 def _git_evidence(path: Path) -> dict[str, Path]:
@@ -137,20 +167,34 @@ def test_resolve_context_accepts_blocked_ticket(tmp_path: Path, monkeypatch):
                 "base_sha": "a" * 40,
             }
 
+        def load_basis(self, _slug):
+            return _basis(outer_sha="c" * 40)
+
     monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: tmp_path / "tickets")
     monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
     monkeypatch.setattr(rp, "_find_checkout", lambda *_args: checkout)
     monkeypatch.setattr(
         rp,
-        "_git",
-        lambda _worktree, *args: "b" * 40 if args[:2] == ("rev-parse", "HEAD") else "",
+        "validate_current_basis_refs",
+        lambda *_args: {"outer": "b" * 40},
     )
+
+    def fake_git(_worktree, *args):
+        if args == ("symbolic-ref", "HEAD"):
+            return _basis().participant("outer").ticket_ref
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "b" * 40
+        return ""
+
+    monkeypatch.setattr(rp, "_git", fake_git)
 
     ctx = rp._resolve_context(tmp_path, "demo", require_review=True)
 
     assert ctx.slug == "demo"
     assert ctx.worktree == checkout.resolve()
     assert ctx.ticket_path == tmp_path / "tickets" / "board/blocked/demo.md"
+    assert ctx.base_sha == "c" * 40
+    assert ctx.feature_branch == "booley-generation/0123456789abcdef/outer"
 
 
 def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
@@ -164,6 +208,7 @@ def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
 
     checkout = tmp_path / "worktree"
     head_sha = _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    _git(checkout, "branch", "-m", "booley-generation/0123456789abcdef/outer")
     (checkout / rp.PROJECT_DIR_NAME).mkdir()
     exclude = checkout / ".git" / "info" / "exclude"
     with exclude.open("a", encoding="utf-8") as stream:
@@ -174,16 +219,24 @@ def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
 
         def find_ticket(self, _slug):
             return {
-                "status": "review",
+                "status": "blocked",
                 "file": "board/review/demo.md",
                 "feature_branch": "demo",
                 "base_sha": head_sha,
                 "on_success": {"triage_report": False},
             }
 
+        def load_basis(self, _slug):
+            return _basis(outer_sha=head_sha)
+
     monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: project_dir / "tickets")
     monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
     monkeypatch.setattr(rp, "_find_checkout", lambda *_args: checkout)
+    monkeypatch.setattr(
+        rp,
+        "validate_current_basis_refs",
+        lambda *_args: {"outer": head_sha},
+    )
 
     ctx = rp._resolve_context(project_root, "demo", allow_report_disabled=True)
 
@@ -208,7 +261,107 @@ def test_project_review_repository_rejects_missing_pair_for_standalone_project_r
         stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
 
     with pytest.raises(rp.ReviewPrepError, match="has no paired ticket checkout"):
-        rp._resolve_project_review_repository(project_root, checkout, "demo")
+        rp._resolve_project_review_repository(
+            project_root,
+            checkout,
+            _basis(project_sha="b" * 40).participant("project"),
+        )
+
+
+def test_project_review_repository_uses_project_acceptance_basis(tmp_path: Path, monkeypatch):
+    project_checkout = tmp_path / "project-worktree"
+    project_checkout.mkdir()
+    participant = _basis(project_sha="b" * 40).participant("project")
+    monkeypatch.setattr(
+        rp,
+        "paired_project_repository",
+        lambda _worktree: SimpleNamespace(worktree=project_checkout),
+    )
+
+    def fake_git(_worktree, *args):
+        if args == ("symbolic-ref", "HEAD"):
+            return participant.ticket_ref
+        if args == ("rev-parse", "HEAD"):
+            return "e" * 40
+        raise AssertionError(args)
+
+    monkeypatch.setattr(rp, "_git", fake_git)
+
+    repository = rp._resolve_project_review_repository(tmp_path, tmp_path, participant)
+
+    assert repository is not None
+    assert repository.base_sha == participant.authoring_sha
+    assert repository.head_sha == "e" * 40
+    assert repository.feature_branch == participant.ticket_ref.removeprefix("refs/heads/")
+
+
+def test_review_snapshot_heads_requires_frozen_exact_participants(tmp_path: Path, monkeypatch):
+    basis = _basis(project_sha="b" * 40)
+    monkeypatch.setattr(
+        rp,
+        "read_acceptance",
+        lambda _log_dir: SimpleNamespace(kind="unavailable", snapshot=None, reason="missing"),
+    )
+    with pytest.raises(rp.ReviewPrepError, match="no accepted snapshot"):
+        rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
+
+    snapshot = SimpleNamespace(participant_heads={"outer": "c" * 40})
+    monkeypatch.setattr(
+        rp,
+        "read_acceptance",
+        lambda _log_dir: SimpleNamespace(kind="accepted", snapshot=snapshot, reason=""),
+    )
+    with pytest.raises(rp.ReviewPrepError, match="participants disagree"):
+        rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
+
+    receipt = {"basis_id": basis.basis_id}
+    snapshot = SimpleNamespace(
+        participant_heads={"outer": "c" * 40, "project": "d" * 40},
+        acceptance_basis={"basis_id": "f" * 64},
+    )
+    monkeypatch.setattr(
+        rp,
+        "read_acceptance",
+        lambda _log_dir: SimpleNamespace(kind="accepted", snapshot=snapshot, reason=""),
+    )
+    monkeypatch.setattr(rp, "load_basis_receipt", lambda *_args: receipt)
+    with pytest.raises(rp.ReviewPrepError, match="different Acceptance Basis"):
+        rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
+    snapshot.acceptance_basis = receipt
+    assert rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis) == {
+        "outer": "c" * 40,
+        "project": "d" * 40,
+    }
+
+
+def test_review_repositories_reject_rewritten_destination_ref(tmp_path: Path, monkeypatch):
+    def reject_destination(*_args):
+        raise rp.AcceptanceBasisError(
+            "acceptance-input-change-required: destination no longer descends"
+        )
+
+    monkeypatch.setattr(rp, "validate_current_basis_refs", reject_destination)
+
+    with pytest.raises(rp.ReviewPrepError, match="destination no longer descends"):
+        rp._resolve_review_repositories(tmp_path, _basis(), None)
+
+
+def test_review_repositories_reject_heads_outside_accepted_snapshot(tmp_path: Path, monkeypatch):
+    basis = _basis()
+    monkeypatch.setattr(
+        rp,
+        "validate_current_basis_refs",
+        lambda *_args: {"outer": "d" * 40},
+    )
+    monkeypatch.setattr(
+        rp,
+        "_resolve_outer_review_repository",
+        lambda *_args: (tmp_path, "d" * 40),
+    )
+    monkeypatch.setattr(rp, "_resolve_project_review_repository", lambda *_args: None)
+
+    with pytest.raises(rp.ReviewPrepError, match="accepted snapshot"):
+        rp._resolve_review_repositories(tmp_path, basis, {"outer": "e" * 40})
 
 
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):
@@ -268,6 +421,7 @@ def test_fresh_outcome_requires_matching_identity_and_files(tmp_path: Path):
         "status": "ready",
         "version": rp._PROMPT_VERSION,
         "prompt_sha256": "prompt",
+        "acceptance_basis_id": ctx.acceptance_basis_id,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "source_sha256": "source",
@@ -410,7 +564,7 @@ def test_find_checkout_uses_supplied_project_root(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(rp, "_git", git)
 
-    assert rp._find_checkout(tmp_path, "demo") == checkout.resolve()
+    assert rp._find_checkout(tmp_path, "refs/heads/demo") == checkout.resolve()
     assert calls == [(tmp_path, ("worktree", "list", "--porcelain"))]
 
 
@@ -533,6 +687,20 @@ def test_source_fingerprint_survives_ticket_handoff(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(rp, "_git", lambda *_args, **_kwargs: "")
 
     assert rp._source_fingerprint(running) == rp._source_fingerprint(review)
+
+
+def test_source_fingerprint_changes_after_clean_head_advance(tmp_path: Path):
+    worktree = tmp_path / "worktree"
+    _create_git_snapshot(worktree, {"source.txt": "before\n"})
+    ctx = replace(_ctx(tmp_path), worktree=worktree)
+    ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+    before = rp._source_fingerprint(ctx)
+
+    (worktree / "source.txt").write_text("after\n", encoding="utf-8")
+    _git(worktree, "add", "source.txt")
+    _git(worktree, "commit", "-qm", "advance head")
+
+    assert rp._source_fingerprint(ctx) != before
 
 
 def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monkeypatch):

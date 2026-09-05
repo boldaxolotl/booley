@@ -31,6 +31,14 @@ from booley.runtime.ticket_repositories import (
     project_repository_expected,
 )
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    BasisParticipant,
+    load_basis_receipt,
+    validate_current_basis_refs,
+)
+from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
@@ -89,6 +97,7 @@ class ReviewPrepContext:
     base_sha: str
     head_sha: str
     feature_branch: str
+    acceptance_basis_id: str = ""
     triage_report_enabled: bool = True
     project_repository: ProjectReviewRepository | None = None
 
@@ -168,30 +177,111 @@ def _git(worktree: Path, *args: str, timeout: int = 60) -> str:
     return result.stdout
 
 
-def _resolve_base_sha(worktree: Path, entry: dict[str, Any], head_sha: str) -> str:
-    configured = entry.get("base_sha")
-    if isinstance(configured, str) and configured.strip():
-        _git(worktree, "rev-parse", "--verify", f"{configured.strip()}^{{commit}}")
-        return configured.strip()
-    branch = entry.get("branch")
-    if not isinstance(branch, str) or not branch:
-        raise ReviewPrepError("ticket has neither base_sha nor a base branch")
-    return _git(worktree, "merge-base", branch, head_sha).strip()
-
-
-def _find_checkout(project_root: Path, feature_branch: str) -> Path | None:
+def _find_checkout(project_root: Path, ticket_ref: str) -> Path | None:
     """Find a branch checkout without depending on the caller's current directory."""
     output = _git(project_root, "worktree", "list", "--porcelain")
     checkout: Path | None = None
-    wanted = f"refs/heads/{feature_branch}"
     for line in [*output.splitlines(), ""]:
         if line.startswith("worktree "):
             checkout = Path(line.removeprefix("worktree "))
-        elif line == f"branch {wanted}" and checkout is not None:
+        elif line == f"branch {ticket_ref}" and checkout is not None:
             return checkout.resolve()
         elif not line:
             checkout = None
     return None
+
+
+def _load_review_basis(tio: TicketIO, slug: str) -> AcceptanceBasis:
+    try:
+        return tio.load_basis(slug)
+    except AcceptanceBasisError as exc:
+        raise ReviewPrepError(f"ticket '{slug}' has no valid Acceptance Basis: {exc}") from exc
+
+
+def _resolve_outer_review_repository(
+    project_root: Path, participant: BasisParticipant
+) -> tuple[Path, str]:
+    checkout = _find_checkout(project_root, participant.ticket_ref)
+    if not checkout:
+        raise ReviewPrepError(
+            f"no worktree has Acceptance Basis ref '{participant.ticket_ref}' checked out"
+        )
+    worktree = checkout.resolve()
+    checked_out_ref = _git(worktree, "symbolic-ref", "HEAD").strip()
+    if checked_out_ref != participant.ticket_ref:
+        raise ReviewPrepError(
+            f"ticket checkout uses ref {checked_out_ref!r}, expected {participant.ticket_ref!r}"
+        )
+    return worktree, _git(worktree, "rev-parse", "HEAD").strip()
+
+
+def _review_snapshot_heads(
+    project_root: Path,
+    log_dir: Path,
+    slug: str,
+    status: str,
+    basis: AcceptanceBasis,
+) -> dict[str, str] | None:
+    if status not in {"review", "blocked"}:
+        return None
+    accepted = read_acceptance(log_dir)
+    if accepted.kind == "corrupt":
+        raise ReviewPrepError(f"accepted snapshot is corrupt: {accepted.reason}")
+    if accepted.kind != "accepted" or accepted.snapshot is None:
+        if status == "review":
+            raise ReviewPrepError("review ticket has no accepted snapshot")
+        return None
+    expected_roles = {participant.role for participant in basis.participants}
+    if set(accepted.snapshot.participant_heads) != expected_roles:
+        raise ReviewPrepError("accepted snapshot participants disagree with Acceptance Basis")
+    try:
+        receipt = load_basis_receipt(project_root, slug, basis.as_dict())
+    except AcceptanceBasisError as exc:
+        raise ReviewPrepError(f"Acceptance Basis receipt is invalid: {exc}") from exc
+    if accepted.snapshot.acceptance_basis != receipt:
+        raise ReviewPrepError("accepted snapshot names a different Acceptance Basis")
+    return accepted.snapshot.participant_heads
+
+
+def _validate_review_entry(
+    entry: dict[str, Any],
+    slug: str,
+    *,
+    require_review: bool,
+    allow_report_disabled: bool,
+) -> bool:
+    allowed = {"review", "blocked"} if require_review else {"running", "review", "blocked"}
+    if entry.get("status") not in allowed:
+        expected = "review or blocked" if require_review else "running, review, or blocked"
+        raise ReviewPrepError(f"ticket '{slug}' is {entry.get('status')}, not {expected}")
+    on_success = entry.get("on_success")
+    enabled = not (isinstance(on_success, dict) and on_success.get("triage_report") is False)
+    if not enabled and not allow_report_disabled:
+        raise ReviewPrepError(f"ticket '{slug}' has on_success.triage_report disabled")
+    return enabled
+
+
+def _resolve_review_repositories(
+    project_root: Path,
+    basis: AcceptanceBasis,
+    expected_heads: dict[str, str] | None,
+) -> tuple[Path, str, ProjectReviewRepository | None]:
+    try:
+        current_heads = validate_current_basis_refs(project_root, basis)
+    except AcceptanceBasisError as exc:
+        raise ReviewPrepError(f"Acceptance Basis refs are invalid: {exc}") from exc
+    outer = basis.participant("outer")
+    worktree, head_sha = _resolve_outer_review_repository(project_root, outer)
+    project = next((row for row in basis.participants if row.role == "project"), None)
+    repository = _resolve_project_review_repository(project_root, worktree, project)
+    actual_heads = {"outer": head_sha}
+    if repository is not None:
+        actual_heads["project"] = repository.head_sha
+    if actual_heads != current_heads:
+        raise ReviewPrepError("live review checkouts disagree with Acceptance Basis refs")
+    if expected_heads is not None and actual_heads != expected_heads:
+        raise ReviewPrepError("live review heads disagree with the accepted snapshot")
+    return worktree, head_sha, repository
 
 
 def _resolve_context(
@@ -207,53 +297,50 @@ def _resolve_context(
     if not entry:
         raise ReviewPrepError(f"ticket '{slug}' was not found")
     slug = Path(str(entry["file"])).stem
-    allowed_statuses = (
-        {"review", "blocked"}
-        if require_review
-        else {
-            "running",
-            "review",
-            "blocked",
-        }
+    report_enabled = _validate_review_entry(
+        entry,
+        slug,
+        require_review=require_review,
+        allow_report_disabled=allow_report_disabled,
     )
-    if entry.get("status") not in allowed_statuses:
-        expected = "review or blocked" if require_review else "running, review, or blocked"
-        raise ReviewPrepError(f"ticket '{slug}' is {entry.get('status')}, not {expected}")
-    on_success = entry.get("on_success")
-    report_enabled = not (
-        isinstance(on_success, dict) and on_success.get("triage_report") is False
+    basis = _load_review_basis(tio, slug)
+    outer = basis.participant("outer")
+    feature_branch = outer.ticket_ref.removeprefix("refs/heads/")
+    log_dir = tio.logs_dir / slug
+    expected_heads = _review_snapshot_heads(
+        project_root,
+        log_dir,
+        slug,
+        str(entry.get("status")),
+        basis,
     )
-    if not report_enabled and not allow_report_disabled:
-        raise ReviewPrepError(f"ticket '{slug}' has on_success.triage_report disabled")
-    feature_branch = str(entry.get("feature_branch") or slug)
-    checkout = _find_checkout(project_root, feature_branch)
-    if not checkout:
-        raise ReviewPrepError(f"no worktree has feature branch '{feature_branch}' checked out")
-    worktree = Path(checkout).resolve()
-    head_sha = _git(worktree, "rev-parse", "HEAD").strip()
-    base_sha = _resolve_base_sha(worktree, entry, head_sha)
-    project_repository = _resolve_project_review_repository(project_root, worktree, slug)
+    worktree, head_sha, project_repository = _resolve_review_repositories(
+        project_root, basis, expected_heads
+    )
     return ReviewPrepContext(
         project_root=project_root,
         slug=slug,
-        log_dir=tio.logs_dir / slug,
-        runtime_dir=ticket_runtime_dir(tio.logs_dir / slug) / "triage-prep",
+        log_dir=log_dir,
+        runtime_dir=ticket_runtime_dir(log_dir) / "triage-prep",
         worktree=worktree,
         ticket_path=tickets_dir / str(entry["file"]),
-        base_sha=base_sha,
+        base_sha=outer.authoring_sha,
         head_sha=head_sha,
         feature_branch=feature_branch,
+        acceptance_basis_id=basis.basis_id,
         triage_report_enabled=report_enabled,
         project_repository=project_repository,
     )
 
 
 def _resolve_project_review_repository(
-    project_root: Path, worktree: Path, slug: str
+    project_root: Path,
+    worktree: Path,
+    participant: BasisParticipant | None,
 ) -> ProjectReviewRepository | None:
     repository = paired_project_repository(worktree)
     if repository is None:
-        if project_repository_expected(worktree):
+        if participant is not None or project_repository_expected(worktree):
             try:
                 configured_project_dir = resolve_project_dir(project_root)
             except FileNotFoundError:
@@ -263,16 +350,22 @@ def _resolve_project_review_repository(
                     "configured project repository has no paired ticket checkout"
                 )
         return None
-    feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
-    expected = f"booley-ticket/{slug}"
-    if feature_branch != expected:
+    if participant is None:
         raise ReviewPrepError(
-            f"paired project checkout uses branch {feature_branch!r}, expected {expected!r}"
+            "paired project checkout exists without a project Acceptance Basis participant"
+        )
+    ticket_ref = _git(repository.worktree, "symbolic-ref", "HEAD").strip()
+    if ticket_ref != participant.ticket_ref:
+        raise ReviewPrepError(
+            f"paired project checkout uses ref {ticket_ref!r}, expected {participant.ticket_ref!r}"
         )
     head_sha = _git(repository.worktree, "rev-parse", "HEAD").strip()
-    upstream = _git(repository.worktree, "rev-parse", "@{upstream}").strip()
-    base_sha = _git(repository.worktree, "merge-base", upstream, head_sha).strip()
-    return ProjectReviewRepository(repository.worktree, base_sha, head_sha, feature_branch)
+    return ProjectReviewRepository(
+        repository.worktree,
+        participant.authoring_sha,
+        head_sha,
+        participant.ticket_ref.removeprefix("refs/heads/"),
+    )
 
 
 def _prompt_text() -> str:
@@ -356,6 +449,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     source change. The agent still receives a copied pre-call ``run.log``.
     """
     digest = hashlib.sha256()
+    digest.update(_git(ctx.worktree, "rev-parse", "HEAD").strip().encode("ascii"))
     status = _git(
         ctx.worktree,
         "status",
@@ -367,7 +461,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     if ctx.project_repository is not None:
         project = ctx.project_repository
         digest.update(project.base_sha.encode("ascii"))
-        digest.update(project.head_sha.encode("ascii"))
+        digest.update(_git(project.worktree, "rev-parse", "HEAD").strip().encode("ascii"))
         digest.update(
             _git(
                 project.worktree,
@@ -402,6 +496,7 @@ def _fresh_outcome(
     expected = {
         "version": _PROMPT_VERSION,
         "prompt_sha256": prompt_sha,
+        "acceptance_basis_id": ctx.acceptance_basis_id,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "source_sha256": source_sha,
@@ -432,6 +527,7 @@ def _base_manifest(
         "status": status,
         "slug": ctx.slug,
         "feature_branch": ctx.feature_branch,
+        "acceptance_basis_id": ctx.acceptance_basis_id,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "prompt_sha256": prompt_sha,

@@ -9,6 +9,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from booley.ticket_board.io import TicketIO
+
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
@@ -25,7 +27,8 @@ def install_ticket_fixture(project_dir: Path, fixture: Path, slug: str) -> Path:
     if not _SAFE_SLUG_RE.fullmatch(slug):
         raise DemoTicketInstallError(f"unsafe Ticket slug: {slug!r}")
 
-    queue_dir = project_dir / "tickets" / "board" / "queue"
+    board_dir = project_dir / "tickets" / "board"
+    queue_dir = board_dir / "queue"
     destination = queue_dir / f"{slug}.md"
     if destination.exists():
         raise DemoTicketInstallError(f"Ticket destination already exists: {destination}")
@@ -37,11 +40,23 @@ def install_ticket_fixture(project_dir: Path, fixture: Path, slug: str) -> Path:
     exclude = project_dir / ".git" / "info" / "exclude"
     if not exclude.parent.is_dir():
         raise DemoTicketInstallError(f"demo project Git metadata is missing: {exclude.parent}")
-    queue_dir.mkdir(parents=True, exist_ok=True)
+    drafts_dir = board_dir / "drafts"
+    draft = drafts_dir / f"{slug}.md"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
     with exclude.open("a", encoding="utf-8") as stream:
+        stream.write(f"/tickets/board/drafts/{slug}.md\n")
         stream.write(f"/tickets/board/queue/{slug}.md\n")
-    shutil.copyfile(fixture, destination)
-    destination.chmod(0o644)
+    shutil.copyfile(fixture, draft)
+    draft.chmod(0o644)
+    try:
+        published = TicketIO(
+            project_dir / "tickets", project_root=project_dir.parent
+        ).enqueue_ticket(slug)
+        if not published:
+            raise DemoTicketInstallError("could not publish Ticket Acceptance Basis")
+        destination.chmod(0o644)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DemoTicketInstallError(f"could not publish Ticket Acceptance Basis: {exc}") from exc
     return destination
 
 

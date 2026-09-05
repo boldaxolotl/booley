@@ -97,7 +97,7 @@ and candidate synthesis breakdowns. It may find the evidence insufficient. Its
 advice cannot change the verdict, edit code, or push changes.
 
 Ticket Mode and CI call the same Criterion evaluator but keep separate
-orchestration. Ticket Mode passes a sealed Ticket and owns its lifecycle. CI
+orchestration. Ticket Mode passes a recorded Acceptance Basis and owns its lifecycle. CI
 passes Criteria, reports the verdict, and may start the investigator without
 depending on the Ticket Board or Harness lifecycle.
 
@@ -114,15 +114,15 @@ limits stay the same.
 local Markdown Ticket Board. Ticket creation, queue selection, execution, and
 triage should work through either surface. Booley should discover eligible
 issues from configured repositories and labels, claim each issue for exactly
-one Runner, prepare and seal the normal executable Ticket contract, and report
+one Runner, publish the normal executable Ticket Acceptance Basis, and report
 blocked, review, and done transitions back through labels and comments. Issue
 references should be usable for dependencies, while local Tickets retain the
 complete offline workflow.
 
 **The Harness contract does not change.** GitHub is the collaboration surface,
 but each run snapshots the issue into a durable local record before execution.
-Edits to an issue after it is claimed must not silently change its sealed Scope,
-Criteria, or base revision; retries and recovery use the same snapshot and
+Edits to an issue after it is claimed must not silently change its published authored
+inputs, Criteria, or base revision; retries and recovery use the same snapshot and
 evidence history. Credentials and network operations belong in a trusted
 host-side integration rather than the Session Runtime or Developer Agent, and
 remote updates must be idempotent and conflict-aware so a GitHub outage cannot

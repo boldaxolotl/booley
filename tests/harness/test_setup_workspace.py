@@ -68,16 +68,16 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 # ===========================================================================
 
 
-class TestMaterializedTargetContract:
+class TestMaterializedAcceptanceBasis:
     def _context(self, tmp_path: Path) -> MagicMock:
-        contract = MagicMock()
-        contract.as_dict.return_value = {"schema": 3}
+        basis = MagicMock()
+        basis.as_dict.return_value = {"schema": 3}
         ctx = MagicMock(
-            target_contract=contract,
+            acceptance_basis=basis,
             base_sha="a" * 40,
             criteria={"mandatory": {}},
         )
-        ctx.sealed_contract_fields.return_value = {
+        ctx.acceptance_basis_fields.return_value = {
             "base_sha": "a" * 40,
             "target_contract": {"schema": 3},
             "criteria": {"mandatory": {}},
@@ -93,45 +93,32 @@ class TestMaterializedTargetContract:
         return ctx
 
     def test_accepts_unchanged_materialized_surface(self, tmp_path: Path):
-        from booley.harness.setup.workspace import _validate_materialized_target_contract
+        from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
 
         ctx = self._context(tmp_path)
         with patch(
-            "booley.ticket_board.target_contract.validate_materialized_contract",
-            return_value=[],
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            return_value=None,
         ) as validate:
-            result = _validate_materialized_target_contract(ctx, tmp_path)
+            result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 
         assert result is None
-        validate.assert_called_once_with(
-            {
-                "base_sha": "a" * 40,
-                "target_contract": {"schema": 3},
-                "criteria": {"mandatory": {}},
-                "scope": [],
-                "on_success": {
-                    "destination": "review",
-                    "merge": True,
-                    "cleanup": True,
-                    "triage_report": True,
-                    "remove_targets": [],
-                },
-            },
-            tmp_path,
-        )
+        validate.assert_called_once_with(ctx.acceptance_basis, tmp_path)
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
-        from booley.harness.setup.workspace import _validate_materialized_target_contract
+        from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
 
         ctx = self._context(tmp_path)
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
         with patch(
-            "booley.ticket_board.target_contract.validate_materialized_contract",
-            return_value=["target-contract-change-required: surface changed"],
+            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            side_effect=AcceptanceBasisError("protected input changed"),
         ):
-            result = _validate_materialized_target_contract(ctx, tmp_path)
+            result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 
         assert result is not None
-        assert result.block_reason == "target-contract-change-required: surface changed"
+        assert result.block_reason == ("acceptance-input-change-required: protected input changed")
 
 
 class TestBranchCreation:
@@ -532,7 +519,7 @@ class TestWorkspaceRun:
         mock_sub.return_value = _mock_success()
 
         with patch(
-            "booley.harness.setup.workspace.materialize_submodules",
+            "booley.harness.setup.workspace.materialize_ticket_submodules",
             side_effect=SubmoduleMaterializationError("local objects missing"),
         ) as materialize:
             from booley.harness.setup.workspace import run
