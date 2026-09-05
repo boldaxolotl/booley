@@ -22,7 +22,11 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_submodules,
 )
-from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
+from booley.runtime.ticket_repositories import (
+    TicketWorkspaceError,
+    paired_project_repository,
+    project_repository_scope,
+)
 from booley.ticket_board.git_status import parse_porcelain_v1_z
 
 from ..models import StepResult, TicketContext
@@ -481,14 +485,42 @@ def _prepare_branch(
     )
 
 
+def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult | None:
+    """Require the outer checkout to remain on its generation-qualified basis ref."""
+    basis = ctx.acceptance_basis
+    if basis is None:
+        raise ValueError("Acceptance Basis is unavailable")
+    expected_ref = basis.participant("outer").ticket_ref
+    result = git_run(worktree_path, ["symbolic-ref", "--quiet", "HEAD"], timeout=10)
+    current_ref = result.stdout.strip()
+    if result.returncode != 0 or current_ref != expected_ref:
+        return StepResult(
+            block_reason=(
+                f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
+                f"expected Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
+    return None
+
+
 def _materialize_worktree_submodules(
     project_root: Path,
     worktree_path: Path,
 ) -> StepResult | None:
     """Populate the selected branch's gitlinks from local Project objects."""
     try:
-        materialize_submodules(project_root, worktree_path)
-    except SubmoduleMaterializationError as exc:
+        paired = paired_project_repository(worktree_path)
+        if paired is None:
+            materialize_submodules(project_root, worktree_path)
+        else:
+            materialize_submodules(
+                project_root,
+                worktree_path,
+                excluded_top_level=frozenset({paired.path_prefix}),
+            )
+            materialize_submodules(resolve_project_dir(project_root), paired.worktree)
+    except (SubmoduleMaterializationError, TicketWorkspaceError) as exc:
         return StepResult(block_reason=f"Submodule setup failed: {exc}")
     return None
 
@@ -703,9 +735,12 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
         if fail:
             return fail
     worktree_path = ctx.worktree_path
-    base_ref = ctx.acceptance_basis.outer_sha if ctx.acceptance_basis is not None else ctx.branch
+    if ctx.acceptance_basis is not None:
+        return _attach_basis_branch(ctx, worktree_path) or _materialize_worktree_submodules(
+            project_root, worktree_path
+        )
     logger.info("Worktree ready")
-    return _prepare_branch(ctx, worktree_path, base_ref) or _materialize_worktree_submodules(
+    return _prepare_branch(ctx, worktree_path, ctx.branch) or _materialize_worktree_submodules(
         project_root, worktree_path
     )
 

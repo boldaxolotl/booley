@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,20 @@ def test_scoped_stealth_project_gets_paired_worktree(
     assert (nested / "cores" / "dut.core").read_text(encoding="utf-8").startswith("CAPI=2:")
     assert _git(nested, "branch", "--show-current") == project_ticket_branch(ctx.slug)
     assert _git(nested, "rev-parse", "--abbrev-ref", "@{upstream}") == "main"
+
+
+def test_basis_bound_workspace_does_not_recreate_missing_paired_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    request = replace(
+        workspace.request,
+        expected_ref="refs/heads/booley-generation/0123456789abcdef/project",
+    )
+
+    with pytest.raises(TicketWorkspaceError, match="expected but unavailable"):
+        TicketWorkspace(request).prepare()
 
 
 def test_project_scope_is_rebased_for_inner_precommit_hook() -> None:

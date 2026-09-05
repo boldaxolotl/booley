@@ -89,6 +89,7 @@ class TicketWorkspaceRequest:
     ticket_scope: tuple[str, ...]
     mode: WorkspaceMode
     expected_sha: str = ""
+    expected_ref: str = ""
 
 
 class TicketWorkspace:
@@ -176,8 +177,14 @@ class TicketWorkspace:
                 source,
                 self.request.ticket_slug,
                 self.request.expected_sha,
+                self.request.expected_ref,
             )
             return existing.worktree
+
+        if self.request.expected_ref:
+            raise TicketWorkspaceError(
+                "paired Acceptance Basis worktree is expected but unavailable"
+            )
 
         if source is None:
             if scope_mentions_project_repo(
@@ -585,10 +592,14 @@ def _set_local_upstream(source: Path, branch: str, base: str) -> None:
 
 
 def _verify_existing_worktree(
-    worktree: Path, source: Path, slug: str, expected_sha: str = ""
+    worktree: Path,
+    source: Path,
+    slug: str,
+    expected_sha: str = "",
+    expected_ref: str = "",
 ) -> None:
     result = _git(worktree, "branch", "--show-current")
-    expected = project_ticket_branch(slug)
+    expected = expected_ref.removeprefix("refs/heads/") or project_ticket_branch(slug)
     if result.returncode != 0 or result.stdout.strip() != expected:
         raise TicketWorkspaceError(
             f"paired project worktree uses {result.stdout.strip()!r}, expected {expected!r}"

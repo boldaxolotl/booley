@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.harness.models import TicketContext
+from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime.project_dir import reset_cache
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.ticket_board import (
@@ -467,6 +469,53 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     assert evidence["record"]["sha256"]
     assert len(evidence["source_sha256"]) == 64
     assert len(evidence["operation_id"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_enqueued_paired_basis_materializes_for_ticket_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "clean-project-source",
+        TicketFileSpec(
+            summary="Keep the paired project source clean",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+
+    assert tio.enqueue_ticket("clean-project-source") is True
+    queued = project_dir / "tickets/board/queue/clean-project-source.md"
+    fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    basis = tio.load_basis("clean-project-source")
+    context = TicketContext(
+        slug="clean-project-source",
+        ticket_path=queued,
+        ticket_type="feature",
+        branch="main",
+        summary="Keep the paired project source clean",
+        scope_raw=fields["scope"],
+        criteria=fields["criteria"],
+        project_root=root,
+        acceptance_basis=basis,
+        base_sha=basis.outer_sha,
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+    result = await prepare_ticket_workspace(context)
+
+    assert result.block_reason is None
+    outer = project_dir / "worktrees/clean-project-source"
+    project = outer / ".booley_project"
+    assert _git(outer, "symbolic-ref", "HEAD") == basis.participant("outer").ticket_ref
+    assert _git(project, "symbolic-ref", "HEAD") == basis.participant("project").ticket_ref
+    assert context.feature_branch == basis.participant("outer").ticket_ref.removeprefix(
+        "refs/heads/"
+    )
 
 
 def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Path) -> None:

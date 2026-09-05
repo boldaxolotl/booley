@@ -18,13 +18,23 @@ class SubmoduleMaterializationError(RuntimeError):
     """A destination submodule could not be reconstructed from local objects."""
 
 
-def materialize_submodules(source_root: Path, destination_root: Path) -> None:
-    """Populate destination gitlinks from initialized same-path source repositories."""
+def materialize_submodules(
+    source_root: Path,
+    destination_root: Path,
+    *,
+    excluded_top_level: frozenset[str] = frozenset(),
+) -> None:
+    """Populate destination gitlinks from initialized same-path source repositories.
+
+    ``excluded_top_level`` names checkouts already owned by a higher-level workspace
+    transaction; their own nested gitlinks are materialized by that owner separately.
+    """
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
     created: list[tuple[Path, bool]] = []
     try:
         selected = _selected_top_level_paths(source_root, destination_root)
+        selected = [path for path in selected if path.as_posix() not in excluded_top_level]
         _materialize_tree(
             source_root,
             destination_root,

@@ -382,9 +382,17 @@ def _assert_retained_worktree(project: Path, slug: str, expected_diff: list[str]
     worktree = project / ".booley_project" / "worktrees" / slug
     assert worktree.is_dir()
     assert _run_git(worktree, "status", "--porcelain").stdout == ""
-    changed = _run_git(project, "diff", "--name-only", f"main...{slug}").stdout.splitlines()
+    tickets = project / ".booley_project" / "tickets"
+    basis = TicketIO(tickets, project_root=project).load_basis(slug)
+    participant = basis.participant("outer")
+    changed = _run_git(
+        project,
+        "diff",
+        "--name-only",
+        f"{participant.destination_ref}...{participant.ticket_ref}",
+    ).stdout.splitlines()
     assert changed == expected_diff
-    assert _run_git(project, "branch", "--list", slug).stdout.strip().endswith(slug)
+    assert _run_git(worktree, "symbolic-ref", "HEAD").stdout.strip() == participant.ticket_ref
 
 
 def _assert_board_state(project: Path, slug: str, expected: str) -> None:
