@@ -165,6 +165,11 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "Require reviewed revisions on public refs"
     )
     assert "git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main" in action
+    assert "Install Booley runtime dependencies" in action
+    assert "python -m pip install --disable-pip-version-check --quiet" in action
+    assert action.index("Install Booley runtime dependencies") < action.index(
+        "Install CI-owned Ticket fixture"
+    )
     assert "PYTHONPATH: ${{ github.workspace }}/src" in action
     assert "PROJECT_CONTRACT_REF" not in action
     assert "ci/agent-ticket-contract" not in action

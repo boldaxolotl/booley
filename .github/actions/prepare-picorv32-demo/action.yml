@@ -62,6 +62,14 @@ runs:
         git -C demo merge-base --is-ancestor HEAD origin/main
         git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main
 
+    # Publishing the Acceptance Basis performs real Target discovery, so the
+    # host-side installer needs Booley's production Python dependencies.
+    - name: Install Booley runtime dependencies
+      shell: bash
+      run: >-
+        python -m pip install --disable-pip-version-check --quiet
+        "${GITHUB_WORKSPACE}"
+
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash
       env:
