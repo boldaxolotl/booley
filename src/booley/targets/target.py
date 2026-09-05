@@ -8,7 +8,7 @@ produces EDAM after FuseSoC setup.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import InitVar, dataclass
 from pathlib import Path
 
@@ -112,16 +112,30 @@ class TargetInspection:
     inputs: tuple[TargetInput, ...]
 
     @property
+    def sources(self) -> fusesoc_registry.CoreSources:
+        """Return the selected inputs partitioned for source-aware callers."""
+        return partition_target_inputs(self.inputs)
+
+    @property
     def rtl_files(self) -> tuple[str, ...]:
         """Selected non-testbench, non-header source paths."""
-        return tuple(
-            item.path for item in self.inputs if "tb" not in item.tags and not item.is_include
-        )
+        return self.sources.rtl_source_files
 
     @property
     def tb_files(self) -> tuple[str, ...]:
         """Selected testbench source paths."""
-        return tuple(item.path for item in self.inputs if "tb" in item.tags)
+        return self.sources.tb_files
+
+
+def partition_target_inputs(inputs: Iterable[TargetInput]) -> fusesoc_registry.CoreSources:
+    """Apply Booley's single RTL/testbench partition policy to Target inputs."""
+    selected = tuple(inputs)
+    return fusesoc_registry.CoreSources(
+        rtl_source_files=tuple(
+            item.path for item in selected if "tb" not in item.tags and not item.is_include
+        ),
+        tb_files=tuple(item.path for item in selected if "tb" in item.tags),
+    )
 
 
 def _selection_bucket(project_root: Path, ref: TargetRef) -> list[TargetRef]:

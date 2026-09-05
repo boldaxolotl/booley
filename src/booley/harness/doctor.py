@@ -52,6 +52,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
 from booley.harness import (
@@ -248,18 +249,14 @@ class _CoreAuditInputs:
         refs: dict[str, fusesoc_registry.TargetRef],
     ) -> None:
         self.refs = refs
-        self._root = root
         self._sources: dict[str, fusesoc_registry.CoreSources] = {}
+        self._inspector = TargetSourceInspector(root)
 
     def sources_for(self, name: str) -> fusesoc_registry.CoreSources:
         """Return one Target partition, reading it once per audit."""
         if name not in self._sources:
             ref = self.refs[name]
-            inspection = inspect_target(self._root, f"{ref.vlnv}#{ref.name}")
-            self._sources[name] = fusesoc_registry.CoreSources(
-                rtl_source_files=inspection.rtl_files,
-                tb_files=inspection.tb_files,
-            )
+            self._sources[name] = self._inspector.inspect(ref)
         return self._sources[name]
 
 
@@ -372,6 +369,7 @@ class _Reporter:
     waivers: DoctorWaivers
     profile: _DoctorProfile
     verbose: bool = False
+    concise: bool = False
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DoctorFinding] | None = None
 
@@ -382,6 +380,7 @@ class _Reporter:
         *,
         profile: _DoctorProfile | None = None,
         verbose: bool = False,
+        concise: bool = False,
     ) -> _Reporter:
         waiver_set = waivers or DoctorWaivers.empty(Path(WAIVER_FILENAME))
         return cls(
@@ -389,6 +388,7 @@ class _Reporter:
             waivers=waiver_set,
             profile=profile or _DoctorProfile(),
             verbose=verbose,
+            concise=concise,
             _reported_warning_keys=set(),
             findings=[],
         )
@@ -396,7 +396,8 @@ class _Reporter:
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
         self.findings.append(DoctorFinding("pass", str(msg)))
-        ok(f"PASS  {msg}")
+        if not self.concise:
+            ok(f"PASS  {msg}")
         self.counts["pass"] += 1
 
     def note_(self, msg: str, fix: str = "") -> None:
@@ -517,9 +518,15 @@ def _create_reporter(
     *,
     profile: _DoctorProfile,
     verbose: bool,
+    concise: bool,
 ) -> _Reporter:
     waivers, waiver_error = _load_waivers(project_root)
-    reporter = _Reporter.create(waivers, profile=profile, verbose=verbose)
+    reporter = _Reporter.create(
+        waivers,
+        profile=profile,
+        verbose=verbose,
+        concise=concise,
+    )
     if waiver_error:
         reporter.fail_(
             f"Doctor waiver file invalid: {waiver_error}",
@@ -560,9 +567,15 @@ def run_doctor_result(
     print()
 
     verbose = getattr(args, "verbose", False)
+    concise = getattr(args, "concise", False)
     deep = getattr(args, "deep", False)
     profile = _DoctorProfile.from_args(args)
-    reporter = _create_reporter(project_root, profile=profile, verbose=verbose)
+    reporter = _create_reporter(
+        project_root,
+        profile=profile,
+        verbose=verbose,
+        concise=concise,
+    )
     report_progress = progress or (lambda _message: None)
     report_progress("host/project checks")
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)

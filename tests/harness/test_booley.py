@@ -48,6 +48,26 @@ def test_doctor_parser_accepts_deep_flag():
     assert args.deep is True
 
 
+def test_doctor_parser_accepts_concise_flag():
+    parser = tlr._build_parser()
+
+    args = tlr._normalize_args(parser, parser.parse_args(["doctor", "--concise"]))
+
+    assert args.concise is True
+
+
+def test_doctor_parser_rejects_concise_with_verbose(capsys):
+    parser = tlr._build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["doctor", "--concise", "--verbose"])
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "--concise" in error
+    assert "--verbose" in error
+
+
 def test_doctor_parser_accepts_skip_agent_checks_flag():
     parser = tlr._build_parser()
 

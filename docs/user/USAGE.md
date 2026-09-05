@@ -63,6 +63,10 @@ while reporting FPGA implementation as a target-specific manual check; it needs
 the Session Runtime. Both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
+On Projects with many Targets, `booley doctor --concise` hides successful check
+rows while preserving failures, warnings, waivers, notes, skips, and the final
+counts. It changes presentation only; Doctor still records every finding.
+
 Credential-free release automation can use
 `booley doctor --deep --skip-agent-checks`. Doctor reports the agent credential
 inspection, Ticket Mode backend-health check, and live Developer authorization
@@ -932,6 +936,9 @@ booley cheat --commands --project
 
 # Run diagnostics
 booley doctor
+
+# Hide successful rows while preserving findings and final counts
+booley doctor --concise
 
 # Run real smoke checks against marked sim/lint/synthesis Targets
 # (marked FPGA Targets get explicit manual implementation commands)

@@ -18,7 +18,7 @@ import pytest
 
 from booley import __version__
 from booley.audit import config_common, design_size, project_schema, resource_policy
-from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.harness import devcontainer as dc
 from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
 from booley.runtime import (
@@ -62,6 +62,55 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> 
 
     assert sources.rtl_source_files == ("rtl/selected.sv",)
     assert sources.tb_files == ("tb/selected.sv",)
+
+
+def test_doctor_reuses_one_target_source_inspector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_names = [f"lint_{index}" for index in range(100)]
+    targets = "".join(
+        f"  {name}:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "    toplevel: dut\n"
+        for name in target_names
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:design:1.0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files: [rtl/dut.sv]\n"
+        "targets:\n"
+        f"{targets}",
+        encoding="utf-8",
+    )
+    refs = fusesoc_registry.enumerate_targets(tmp_path)
+    managers: list[object] = []
+    resolutions = 0
+    real_manager = target_inspection.CoreManager
+    real_get_depends = real_manager.get_depends
+
+    def counting_manager(*args, **kwargs):
+        manager = real_manager(*args, **kwargs)
+        managers.append(manager)
+        return manager
+
+    def counting_get_depends(self, *args, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return real_get_depends(self, *args, **kwargs)
+
+    monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
+    monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
+
+    inputs = doctor._CoreAuditInputs(tmp_path, refs)
+    for name in target_names:
+        assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
+
+    assert len(managers) == 1
+    assert resolutions == 1
 
 
 def _write_project(
@@ -419,7 +468,8 @@ def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
     assert findings[0].subject == ".booley_project"
 
 
-def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch):
+@pytest.mark.parametrize("concise", [False, True])
+def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     project_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, project_dir)
     # This broad integration fixture intentionally leaves several environmental
@@ -452,9 +502,14 @@ permanent = true
         encoding="utf-8",
     )
 
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+    rc = doctor.run_doctor(
+        argparse.Namespace(verbose=False, deep=False, concise=concise),
+        tmp_path,
+    )
 
     assert rc == 0
+    output = capsys.readouterr().out
+    assert ("PASS  " not in output) is concise
     stamp = doctor_stamp.load_stamp(project_dir)
     assert stamp is not None
     assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(project_dir, tmp_path)
@@ -2784,15 +2839,15 @@ class TestCoreAudit:
             '$display("[SIM_RESULT] PASSED");\n',
             encoding="utf-8",
         )
-        original = doctor.inspect_target
+        original = doctor.TargetSourceInspector.inspect
         calls: list[str] = []
 
-        def inspect(root: Path, token: str):
-            result = original(root, token)
-            calls.append(result.handle.name)
+        def inspect(self, ref: fusesoc_registry.TargetRef):
+            result = original(self, ref)
+            calls.append(ref.name)
             return result
 
-        monkeypatch.setattr(doctor, "inspect_target", inspect)
+        monkeypatch.setattr(doctor.TargetSourceInspector, "inspect", inspect)
         monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
@@ -7068,6 +7123,42 @@ class TestReporterAcceptsFixHints:
         reporter = doctor._Reporter.create()
         with pytest.raises(TypeError, match="stable check ID"):
             reporter.warn_("just a warning")
+
+
+def test_concise_reporter_suppresses_only_pass_rendering(capsys) -> None:
+    reporter = doctor._Reporter.create(concise=True)
+
+    reporter.pass_("healthy Target")
+    reporter.note_("informational detail")
+    reporter.warn_(doctor.warning("test.concise", "actionable warning"), "repair warning")
+    reporter.skip_("optional probe unavailable")
+    reporter.fail_("broken runtime", "repair runtime")
+    exit_code = reporter.finish()
+
+    output = capsys.readouterr().out
+    assert "PASS  healthy Target" not in output
+    assert "NOTE  informational detail" in output
+    assert "WARN  actionable warning" in output
+    assert "SKIP  optional probe unavailable" in output
+    assert "FAIL  broken runtime" in output
+    assert "1 passed, 1 warning(s)" in output
+    assert reporter.counts == {
+        "pass": 1,
+        "fail": 1,
+        "warn": 1,
+        "waived": 0,
+        "note": 1,
+        "skip": 1,
+    }
+    assert reporter.findings is not None
+    assert [finding.severity for finding in reporter.findings] == [
+        "pass",
+        "note",
+        "warn",
+        "skip",
+        "fail",
+    ]
+    assert exit_code == 1
 
 
 class TestDisplayReportDir:
