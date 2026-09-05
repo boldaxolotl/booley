@@ -821,15 +821,32 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
         raise AcceptanceBasisError(f"git worktree list failed in {root}: {detail}")
+    records: list[tuple[Path, str | None]] = []
     worktree: Path | None = None
+    branch: str | None = None
     for line in [*result.stdout.splitlines(), ""]:
         if line.startswith("worktree "):
             worktree = Path(line.removeprefix("worktree "))
-        elif line == f"branch {ref}":
-            return worktree
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch ")
         elif not line:
+            if worktree is not None:
+                records.append((worktree, branch))
             worktree = None
-    return None
+            branch = None
+    match = next((path for path, item_ref in records if item_ref == ref), None)
+    if match is None or match.exists():
+        return match
+    primary = records[0][0] if records else None
+    if primary is not None:
+        try:
+            mounted = root / match.relative_to(primary)
+        except ValueError:
+            pass
+        else:
+            if mounted.exists():
+                return mounted
+    return match
 
 
 def _materialize_participant_commits(
