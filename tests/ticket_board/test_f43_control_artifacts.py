@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
@@ -228,7 +229,8 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "booley.ticket_board.operations._completion_acceptance_valid", lambda *_: True
+        "booley.ticket_board.operations._completion_acceptance_valid",
+        lambda *_: SimpleNamespace(participant_heads=None),
     )
     root, tio = _project(tmp_path, monkeypatch)
     draft = _ticket(tio, merge=True)

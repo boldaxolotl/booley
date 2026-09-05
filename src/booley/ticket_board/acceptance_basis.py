@@ -603,15 +603,8 @@ def _git_paths(repository: Path, *args: str) -> set[str]:
 def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) -> None:
     """Reject tracked, staged, or untracked changes to protected acceptance inputs."""
     root = Path(project_root).resolve()
-    protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
+    prefix, outer_protected, project_protected = _partition_protected_inputs(root, basis)
     project = next((row for row in basis.participants if row.role == "project"), None)
-    try:
-        prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
-    except (FileNotFoundError, ValueError):
-        prefix = ".booley_project/"
-    outer_protected = {path for path in protected if not path.startswith(prefix)}
-    if project is None:
-        outer_protected.add((Path(prefix) / "acceptance" / "bases").as_posix())
     _assert_repository_inputs_unchanged(
         root,
         basis.outer_sha,
@@ -626,16 +619,63 @@ def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) ->
     )
     if project_repository is None:
         raise AcceptanceBasisError(f"{BLOCK_REASON}: paired project repository is unavailable")
-    project_protected = {
-        path.removeprefix(prefix) for path in protected if path.startswith(prefix)
-    }
-    project_protected.add("acceptance/bases")
     _assert_repository_inputs_unchanged(
         project_repository,
         project.authoring_sha,
         project_protected,
         ticket_prefix=prefix,
     )
+
+
+def assert_live_inputs_unchanged(
+    basis: AcceptanceBasis,
+    project_root: Path | str,
+    reference_checkout: Path | str,
+) -> None:
+    """Reject protected changes in every checked-out participant Ticket ref."""
+    root = Path(project_root).resolve()
+    reference = Path(reference_checkout).resolve()
+    prefix, outer_protected, project_protected = _partition_protected_inputs(reference, basis)
+    outer = basis.participant("outer")
+    outer_worktree = worktree_for_ref(root, outer.ticket_ref)
+    if outer_worktree is not None:
+        _assert_repository_inputs_unchanged(
+            outer_worktree,
+            outer.authoring_sha,
+            outer_protected,
+            excluded_prefixes=(prefix,) if len(basis.participants) > 1 else (),
+        )
+    project = next((item for item in basis.participants if item.role == "project"), None)
+    if project is None:
+        return
+    project_worktree = worktree_for_ref(_project_repository(root), project.ticket_ref)
+    if project_worktree is not None:
+        _assert_repository_inputs_unchanged(
+            project_worktree,
+            project.authoring_sha,
+            project_protected,
+            ticket_prefix=prefix,
+        )
+
+
+def _partition_protected_inputs(
+    root: Path,
+    basis: AcceptanceBasis,
+) -> tuple[str, set[str], set[str]]:
+    protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
+    try:
+        prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
+    except (FileNotFoundError, ValueError):
+        prefix = ".booley_project/"
+    outer_protected = {path for path in protected if not path.startswith(prefix)}
+    project = next((row for row in basis.participants if row.role == "project"), None)
+    if project is None:
+        outer_protected.add((Path(prefix) / "acceptance" / "bases").as_posix())
+    project_protected = {
+        path.removeprefix(prefix) for path in protected if path.startswith(prefix)
+    }
+    project_protected.add("acceptance/bases")
+    return prefix, outer_protected, project_protected
 
 
 def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> set[str]:
@@ -765,6 +805,31 @@ def validate_ticket_view(checkout: Path | str, basis: AcceptanceBasis) -> list[s
     root = Path(checkout).resolve()
     assert_inputs_unchanged(basis, root)
     return validate_binding_selectors(root, basis.bindings)
+
+
+def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
+    """Return the checkout for one full branch ref, when it is materialized."""
+    root = Path(repository).resolve()
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
+        raise AcceptanceBasisError(f"git worktree list failed in {root}: {detail}")
+    worktree: Path | None = None
+    for line in [*result.stdout.splitlines(), ""]:
+        if line.startswith("worktree "):
+            worktree = Path(line.removeprefix("worktree "))
+        elif line == f"branch {ref}":
+            return worktree
+        elif not line:
+            worktree = None
+    return None
 
 
 def _materialize_participant_commits(

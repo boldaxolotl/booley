@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from booley.core.boundary import require_str
+from booley.dev_support.demo_contract import load_contract
 
 OUTPUT_KEYS = (
     "upstream_repository",
@@ -20,6 +19,8 @@ OUTPUT_KEYS = (
     "project_ref",
     "ticket_fixture",
     "ticket_slug",
+    "toolchain_url",
+    "toolchain_sha256",
 )
 
 
@@ -31,11 +32,9 @@ def main() -> int:
         default=Path(".github/contracts/picorv32-demo.toml"),
     )
     args = parser.parse_args()
-    contract = tomllib.loads(args.contract.read_text(encoding="utf-8"))
+    contract = load_contract(args.contract)
     for key in OUTPUT_KEYS:
-        value = require_str(contract, key)
-        if "\n" in value:
-            raise ValueError(f"{key} must be a single non-empty output line")
+        value = getattr(contract, key)
         print(f"{key}={value}")
     return 0
 

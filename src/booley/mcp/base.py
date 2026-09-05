@@ -886,8 +886,8 @@ class McpTool(ABC):
                 "unbound_targets": missing,
             },
             report_text=(
-                f"{self.name}: Target(s) {', '.join(missing)} do not bind a sealed "
-                f"Ticket criterion.\nPending compatible criteria:\n{pending_text}\n"
+                f"{self.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
+                f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
                 "Use --diagnostic only when this is intentionally a non-acceptance run."
             ),
         )

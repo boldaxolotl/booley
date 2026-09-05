@@ -299,7 +299,7 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB r
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's sealed simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
+Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's Acceptance Basis simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
 
 #### `mutation_tester`
 
@@ -443,7 +443,7 @@ surfaced rather than ignored or invented.
 
 Only `/booley-ticket-create` reads this file, and only while creating a Ticket. Its
 authority is limited to `criteria` and `on_success`; the resulting Ticket remains the
-structured artifact validated and sealed by Booley. Editing the guidance never changes an
+structured artifact validated by Booley. Editing the guidance never changes an
 existing Ticket. Projects initialized with the former `ticket_defaults.md` filename keep
 working: the skill reads it as free-form guidance when `ticket_creation.md` is absent and
 disregards the former scaffold's strict-format instructions.
@@ -535,7 +535,7 @@ A TB-quality review belongs to exactly one simulation Target. When structured
 `sim_pass` criteria establish one unique Target, Ticket Mode derives that
 binding. Otherwise author it explicitly as
 `review_tb_quality: {target: <sim-target>}`; the Target identity and callable
-selector are sealed with the ticket.
+selector are recorded in the Ticket's Acceptance Basis.
 This Reviewer-discovery binding does not change the condition-selected Target
 input behavior established by [#131](https://github.com/boldaxolotl/booley/issues/131).
 

@@ -28,10 +28,12 @@ from booley.ticket_board.acceptance_basis import (
     AcceptancePathPolicy,
     BasisParticipant,
     assert_inputs_unchanged,
+    assert_live_inputs_unchanged,
     authored_ticket_record,
     load_acceptance_basis,
     load_basis_receipt,
     load_basis_record,
+    materialize_current_ticket_checkout,
     validate_current_basis_refs,
 )
 from booley.ticket_board.acceptance_journal import JournalState
@@ -406,6 +408,32 @@ def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Pa
 
     with pytest.raises(AcceptanceBasisError, match="no longer descends"):
         validate_current_basis_refs(root, basis)
+
+
+def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "live-input-drift",
+        TicketFileSpec(
+            summary="Reject live drift",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("live-input-drift") is True
+    basis = tio.load_basis("live-input-drift")
+    workspace = project_dir / "worktrees/live-input-drift"
+    (workspace / ".booley_project/booley.toml").write_text(
+        "[flows]\ndrift = true\n",
+        encoding="utf-8",
+    )
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+
+    with pytest.raises(AcceptanceBasisError, match="protected path"):
+        assert_live_inputs_unchanged(basis, root, reference)
 
 
 def test_validate_ticket_recreates_missing_authoring_workspace(

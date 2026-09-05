@@ -89,6 +89,7 @@ class AcceptanceRequest:
     cleanup: bool
     ticket_status: Literal["review", "done"]
     allowed_board_rename: tuple[Path, Path] | None
+    expected_sources: Mapping[str, str] | None = None
 
 
 def _git(
@@ -1137,6 +1138,7 @@ def _source_reconciliation(
 def _ensure_sources(
     transaction: _AcceptanceTransaction,
     destination_branch: str,
+    expected_sources: Mapping[str, str] | None,
 ) -> None:
     sources = dict(transaction.journal.sources)
     has_journaled_sources = bool(sources)
@@ -1151,6 +1153,13 @@ def _ensure_sources(
             )
         except AcceptanceBasisOperationError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
+    if expected_sources is not None:
+        expected = dict(expected_sources)
+        actual = sources if has_journaled_sources else current
+        if set(expected) != set(transaction.participants) or actual != expected:
+            raise AcceptanceOperationError(
+                "Ticket heads changed after the accepted snapshot was frozen"
+            )
     plans: list[_RefReconciliation] = []
     for participant in transaction.basis.participants:
         source, plan = _source_reconciliation(
@@ -1342,9 +1351,13 @@ class _AcceptanceTransaction:
 
 
 def _prepare_pending_publication(
-    transaction: _AcceptanceTransaction, destination_branch: str, *, cleanup: bool
+    transaction: _AcceptanceTransaction,
+    destination_branch: str,
+    *,
+    cleanup: bool,
+    expected_sources: Mapping[str, str] | None,
 ) -> None:
-    _ensure_sources(transaction, destination_branch)
+    _ensure_sources(transaction, destination_branch, expected_sources)
     _validate_source_surface(
         transaction.root,
         transaction.project_repository,
@@ -1457,6 +1470,7 @@ def _advance_publication(
             transaction,
             _destination_branch(request.basis),
             cleanup=request.cleanup,
+            expected_sources=request.expected_sources,
         )
         _publish_pending_candidates(transaction, request.allowed_board_rename)
     if request.ticket_status == "review":

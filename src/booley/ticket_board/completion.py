@@ -94,6 +94,7 @@ def _request(
     basis: AcceptanceBasis,
     *,
     cleanup: bool,
+    expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
     ticket_name = Path(str(entry["file"])).name
     allowed_board_rename = (
@@ -107,6 +108,7 @@ def _request(
         cleanup=cleanup,
         ticket_status=entry["status"],
         allowed_board_rename=allowed_board_rename,
+        expected_sources=expected_sources,
     )
 
 
@@ -151,6 +153,7 @@ def _finish_progress(
     basis: AcceptanceBasis,
     cleanup: bool,
     progress: AcceptanceProgress,
+    expected_sources: Mapping[str, str] | None,
 ) -> AcceptanceProgress:
     if progress.outcome is not AcceptanceOutcome.APPROVAL_REQUIRED:
         return progress
@@ -168,7 +171,16 @@ def _finish_progress(
         if approval_error is not None:
             raise status_error from approval_error
         raise
-    return advance_acceptance(_request(tio, slug, current, basis, cleanup=cleanup))
+    return advance_acceptance(
+        _request(
+            tio,
+            slug,
+            current,
+            basis,
+            cleanup=cleanup,
+            expected_sources=expected_sources,
+        )
+    )
 
 
 def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
@@ -211,7 +223,13 @@ def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
     return False
 
 
-def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
+def complete_review_ticket(
+    tio: Any,
+    slug: str,
+    effective_policy: Any,
+    *,
+    expected_sources: Mapping[str, str] | None = None,
+) -> bool:
     """Apply Ticket Board policy around recoverable repository acceptance."""
     inputs = _completion_inputs(tio, slug, effective_policy)
     if inputs is None:
@@ -219,7 +237,14 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
     entry, basis = inputs
     try:
         progress = advance_acceptance(
-            _request(tio, slug, entry, basis, cleanup=effective_policy.cleanup)
+            _request(
+                tio,
+                slug,
+                entry,
+                basis,
+                cleanup=effective_policy.cleanup,
+                expected_sources=expected_sources,
+            )
         )
         progress = _finish_progress(
             tio,
@@ -228,6 +253,7 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
             basis,
             effective_policy.cleanup,
             progress,
+            expected_sources,
         )
     except LockContentionError:
         print("Error: another acceptance is already running", file=sys.stderr)

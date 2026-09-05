@@ -83,6 +83,10 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
     assert contract.ticket_fixture == ".github/contracts/picorv32-demo-ticket.md"
     assert contract.ticket_slug == "add-opt-in-rv32-zbb-pcpi-co-processor"
+    assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
+    assert contract.toolchain_sha256 == (
+        "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
+    )
     assert contract.required_targets == (
         "lint_core",
         "sim_core",
@@ -129,6 +133,8 @@ upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ticket_slug = "demo"
+toolchain_url = "https://example.invalid/toolchain.tar.gz"
+toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = "sim"
 """,
         encoding="utf-8",
@@ -149,6 +155,8 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "project_ref",
         "ticket_fixture",
         "ticket_slug",
+        "toolchain_url",
+        "toolchain_sha256",
     ):
         assert contract[key] not in action
         assert f"outputs.{key}" in action
@@ -172,11 +180,10 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "Install CI-owned Ticket fixture"
     )
     assert "Install host RISC-V preparation toolchain" in action
-    assert "gcc-riscv64-unknown-elf" in action
-    assert "picolibc-riscv64-unknown-elf" in action
-    assert "--specs=picolibc.specs" in action
+    assert "curl --proto '=https' --tlsv1.2 -fsSL" in action
+    assert "sha256sum -c -" in action
     assert "riscv32-unknown-elf-${helper}" in action
-    assert 'echo "${tool_dir}" >> "${GITHUB_PATH}"' in action
+    assert 'echo "${tool_root}/bin" >> "${GITHUB_PATH}"' in action
     assert action.index("Install host RISC-V preparation toolchain") < action.index(
         "Install CI-owned Ticket fixture"
     )
@@ -353,6 +360,8 @@ def test_contract_exporter_emits_all_workflow_fields() -> None:
             "project_ref",
             "ticket_fixture",
             "ticket_slug",
+            "toolchain_url",
+            "toolchain_sha256",
         )
     }
 
@@ -432,6 +441,8 @@ project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ticket_fixture = ".github/contracts/ticket.md"
 ticket_slug = "demo"
+toolchain_url = "https://example.invalid/toolchain.tar.gz"
+toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = ["sim"]
 
 [[required_binding]]
@@ -456,6 +467,14 @@ targets = ["sim"]
         (("schema = 1", "schema = 2"), "schema must be 1"),
         (("owner/upstream", "   "), "upstream_repository must be a non-empty string"),
         (("a" * 40, "ABC"), "upstream_ref must be a full lowercase Git commit SHA"),
+        (
+            (
+                "https://example.invalid/toolchain.tar.gz",
+                "http://example.invalid/toolchain.tar.gz",
+            ),
+            "toolchain_url",
+        ),
+        (("c" * 64, "ABC"), "toolchain_sha256"),
         ((".github/contracts/ticket.md", "../ticket.md"), "ticket_fixture"),
         (('required_targets = ["sim"]', "required_targets = []"), "required_targets"),
         (("[[required_binding]]", "[[other_binding]]"), "required_binding"),
@@ -620,6 +639,8 @@ def _demo_contract() -> DemoContract:
         project_ref="b" * 40,
         ticket_fixture=".github/contracts/ticket.md",
         ticket_slug="demo",
+        toolchain_url="https://example.invalid/toolchain.tar.gz",
+        toolchain_sha256="c" * 64,
         required_targets=("sim",),
         required_bindings=(RequiredBinding("criteria.mandatory.sim_pass", "sim"),),
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),

@@ -45,6 +45,7 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
         state,
         execution_id="resume-generation",
         acceptance_basis={"schema": 1, "participants": []},
+        participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
     state_path.unlink()
@@ -56,6 +57,7 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
     assert result.snapshot.digest == frozen.digest
     assert result.snapshot.criteria["sim_pass_uart"]["met"] is True
     assert result.snapshot.execution_id == "resume-generation"
+    assert result.snapshot.participant_heads == {"outer": "a" * 40}
 
 
 def test_normalized_observations_receive_deterministic_completion_sequences(tmp_path):
@@ -103,6 +105,7 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
         state,
         execution_id="generation-2",
         acceptance_basis=None,
+        participant_heads={"outer": "a" * 40},
     )
 
     assert [reference["sequence"] for reference in frozen.evidence] == [1, 2]
@@ -134,6 +137,7 @@ def test_freeze_rejects_mutable_state_that_disagrees_with_latest_evidence(tmp_pa
             state,
             execution_id="generation-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
 
 
@@ -168,6 +172,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
         state,
         execution_id="generation-1",
         acceptance_basis=None,
+        participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
     snapshot_path = log_dir / "acceptance" / "snapshots" / f"{frozen.digest}.json"
@@ -179,6 +184,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
             state,
             execution_id="generation-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
             accepted_at="2026-08-28T12:00:00Z",
         )
 
@@ -198,6 +204,7 @@ def test_freeze_rejects_evidence_whose_sequence_disagrees_with_its_directory(tmp
             _accepted_state(),
             execution_id="generation-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
 
 
@@ -234,6 +241,7 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
         _accepted_state(),
         execution_id="generation-1",
         acceptance_basis=None,
+        participant_heads={"outer": "a" * 40},
     )
 
     assert bind_review_package(log_dir, snapshot) is False

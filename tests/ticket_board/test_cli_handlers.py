@@ -240,6 +240,7 @@ class TestCmdShow:
             state,
             execution_id="run-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
 

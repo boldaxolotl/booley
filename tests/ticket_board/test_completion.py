@@ -1,4 +1,4 @@
-"""Recoverable publication of sealed Ticket repository participants."""
+"""Recoverable publication of Acceptance Basis repository participants."""
 
 from __future__ import annotations
 
@@ -464,7 +464,7 @@ def test_complete_rejects_destination_ref_as_cleanup_target(
     assert "Ticket ref is also the destination ref" in capsys.readouterr().err
 
 
-def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:
+def test_complete_publishes_recorded_branch_before_approving(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     base = _repository(root)
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
@@ -623,8 +623,56 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
         tio,
         "change-target",
         tmp_path / "logs",
-        SimpleNamespace(acceptance_basis=receipt),
+        SimpleNamespace(
+            acceptance_basis=receipt,
+            participant_heads={"outer": ticket_sha},
+        ),
     )
+
+
+def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.ticket_board import acceptance_basis as basis_module
+    from booley.ticket_board import acceptance_ledger, operations
+
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    basis = _contract(
+        root,
+        (
+            ContractParticipant(
+                role="outer",
+                authoring_sha=ticket_sha,
+                ticket_ref="refs/heads/change-target",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
+            ),
+        ),
+    )
+    tio = _TicketIO(root, basis)
+    _git(root, "switch", "change-target")
+    (root / "design.txt").write_text("changed after handoff\n", encoding="utf-8")
+    _git(root, "add", "design.txt")
+    _git(root, "commit", "-m", "late change")
+    _git(root, "switch", "main")
+    receipt = {"basis_id": basis.basis_id}
+    monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
+    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
+
+    with pytest.raises(acceptance_ledger.AcceptanceLedgerError, match="Ticket heads changed"):
+        operations._validate_accepted_snapshot(
+            tio,
+            "change-target",
+            tmp_path / "logs",
+            SimpleNamespace(
+                acceptance_basis=receipt,
+                participant_heads={"outer": ticket_sha},
+            ),
+        )
 
 
 def test_retry_cannot_change_frozen_cleanup_policy(tmp_path: Path, capsys) -> None:
@@ -1869,10 +1917,10 @@ def test_complete_rejects_target_control_drift_after_basis_publication(tmp_path:
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "add target")
     base = _git(root, "rev-parse", "HEAD")
-    sealed = _ticket_commit(root, "change-target", "implemented\n")
+    recorded = _ticket_commit(root, "change-target", "implemented\n")
     participant = ContractParticipant(
         "outer",
-        sealed,
+        recorded,
         "refs/heads/change-target",
         "refs/heads/main",
         base,
@@ -1884,7 +1932,7 @@ def test_complete_rejects_target_control_drift_after_basis_publication(tmp_path:
         "CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8"
     )
     _git(root, "add", "toy.core")
-    _git(root, "commit", "-m", "mutate sealed target")
+    _git(root, "commit", "-m", "mutate recorded target")
     _git(root, "switch", "main")
     tio = _TicketIO(root, basis)
 
@@ -1907,10 +1955,10 @@ def test_complete_rejects_concurrent_change_to_same_control_path(tmp_path: Path)
     core.write_text("CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "ticket target change")
-    sealed = _git(root, "rev-parse", "HEAD")
+    recorded = _git(root, "rev-parse", "HEAD")
     participant = ContractParticipant(
         "outer",
-        sealed,
+        recorded,
         "refs/heads/change-target",
         "refs/heads/main",
         base,

@@ -64,7 +64,7 @@ def _load_scope(wt: Path) -> list[str] | None:
 
 
 def _load_acceptance_controls(wt: Path) -> set[str]:
-    """Load exact sealed control paths; malformed policy fails closed to static rules."""
+    """Load exact acceptance control paths; malformed policy fails closed to static rules."""
     try:
         data = json.loads((wt / ".scope.json").read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):

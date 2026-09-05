@@ -17,6 +17,7 @@ from .acceptance_basis import (
     assert_inputs_unchanged,
     materialize_current_ticket_checkout,
     validate_ticket_view,
+    worktree_for_ref,
 )
 from .acceptance_targets import resolve_commit
 from .frontmatter import parse_frontmatter
@@ -92,7 +93,7 @@ def _validate_checkout_basis(
                     "Acceptance Basis project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
-        inspection_root = _worktree_for_ref(root, basis.participant("outer").ticket_ref)
+        inspection_root = worktree_for_ref(root, basis.participant("outer").ticket_ref)
         if inspection_root is not None:
             assert_inputs_unchanged(basis, inspection_root)
         ticket, _status = find_ticket_file(tickets_dir, slug)
@@ -142,31 +143,6 @@ def _validate_current_ticket_view(
         )
         errors.extend(validate_ticket_view(current, basis))
         return errors
-
-
-def _worktree_for_ref(repository: Path, ref: str) -> Path | None:
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-        raise ReadinessInspectionError(
-            f"git worktree list failed in {repository} (rc={result.returncode}): {detail}"
-        )
-    worktree: Path | None = None
-    for line in [*result.stdout.splitlines(), ""]:
-        if line.startswith("worktree "):
-            worktree = Path(line.removeprefix("worktree "))
-        elif line == f"branch {ref}":
-            return worktree
-        elif not line:
-            worktree = None
-    return None
 
 
 def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:

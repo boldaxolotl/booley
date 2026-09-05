@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -60,6 +61,8 @@ class DemoContract:
     project_ref: str
     ticket_fixture: str
     ticket_slug: str
+    toolchain_url: str
+    toolchain_sha256: str
     required_targets: tuple[str, ...]
     required_bindings: tuple[RequiredBinding, ...]
     generated_inputs: tuple[GeneratedInput, ...]
@@ -146,9 +149,25 @@ def load_contract(path: Path | str) -> DemoContract:
         upstream_ref = _require_trimmed_str(document, "upstream_ref")
         project_repository = _require_trimmed_str(document, "project_repository")
         project_ref = _require_trimmed_str(document, "project_ref")
+        toolchain_url = _require_trimmed_str(document, "toolchain_url")
+        toolchain_sha256 = _require_trimmed_str(document, "toolchain_sha256")
         for key, commit in (("upstream_ref", upstream_ref), ("project_ref", project_ref)):
             if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
                 raise BoundaryError(f"{key} must be a full lowercase Git commit SHA")
+        parsed_toolchain_url = urllib.parse.urlsplit(toolchain_url)
+        if (
+            parsed_toolchain_url.scheme != "https"
+            or not parsed_toolchain_url.hostname
+            or parsed_toolchain_url.username is not None
+            or parsed_toolchain_url.password is not None
+            or parsed_toolchain_url.query
+            or parsed_toolchain_url.fragment
+        ):
+            raise BoundaryError("toolchain_url must be a plain HTTPS URL")
+        if len(toolchain_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in toolchain_sha256
+        ):
+            raise BoundaryError("toolchain_sha256 must be a lowercase SHA-256 digest")
 
         raw_targets = document.get("required_targets")
         if not is_str_list(raw_targets) or not raw_targets or not all(raw_targets):
@@ -169,6 +188,8 @@ def load_contract(path: Path | str) -> DemoContract:
         project_ref=project_ref,
         ticket_fixture=ticket_fixture,
         ticket_slug=ticket_slug,
+        toolchain_url=toolchain_url,
+        toolchain_sha256=toolchain_sha256,
         required_targets=tuple(raw_targets),
         required_bindings=bindings,
         generated_inputs=generated_inputs,

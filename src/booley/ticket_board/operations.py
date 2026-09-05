@@ -48,6 +48,8 @@ from .paths import (
 if TYPE_CHECKING:  # booley.core.models is imported lazily in the bodies below
     from booley.core.models import OnSuccess
 
+    from .acceptance_ledger import AcceptanceSnapshot
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -428,37 +430,50 @@ def _prepare_handoff_snapshot(
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     if not _handoff_jobs_clear(log_dir, slug):
         return False
-    if not _validate_handoff_basis(tio, slug):
+    participant_heads = _handoff_basis_heads(tio, slug)
+    if participant_heads is None:
         return False
-    existing = _bind_existing_handoff_snapshot(log_dir, slug)
+    existing = _bind_existing_handoff_snapshot(log_dir, slug, participant_heads)
     if existing is not None:
         return existing
-    return _freeze_handoff_snapshot(tio, slug, entry, expected_execution_id, log_dir)
+    return _freeze_handoff_snapshot(
+        tio,
+        slug,
+        entry,
+        expected_execution_id,
+        log_dir,
+        participant_heads,
+    )
 
 
-def _validate_handoff_basis(tio: Any, slug: str) -> bool:
-    """Validate current Basis refs and selectors before freezing acceptance."""
+def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
+    """Validate current and live Basis views, returning exact participant heads."""
     from .acceptance_basis import (
         AcceptanceBasisError,
-        materialize_current_ticket_checkout,
+        assert_live_inputs_unchanged,
+        materialize_ticket_commits,
+        validate_current_basis_refs,
         validate_ticket_view,
     )
 
     try:
         basis = _load_handoff_basis(tio, slug)
+        heads = validate_current_basis_refs(tio._project_root, basis)
         with tempfile.TemporaryDirectory(prefix="booley-handoff-basis-") as directory:
-            current = materialize_current_ticket_checkout(
+            current = materialize_ticket_commits(
                 tio._project_root,
                 basis,
                 Path(directory) / "checkout",
+                heads,
             )
             errors = validate_ticket_view(current, basis)
+            assert_live_inputs_unchanged(basis, tio._project_root, current)
         if errors:
             raise AcceptanceBasisError("Acceptance Basis selectors changed: " + "; ".join(errors))
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         print(f"Error: cannot hand off '{slug}': {exc}", file=sys.stderr)
-        return False
-    return True
+        return None
+    return heads
 
 
 def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
@@ -475,7 +490,11 @@ def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
     return False
 
 
-def _bind_existing_handoff_snapshot(log_dir: Path, slug: str) -> bool | None:
+def _bind_existing_handoff_snapshot(
+    log_dir: Path,
+    slug: str,
+    participant_heads: dict[str, str],
+) -> bool | None:
     from .acceptance_ledger import AcceptanceLedgerError, bind_review_package, read_acceptance
 
     accepted = read_acceptance(log_dir)
@@ -483,6 +502,12 @@ def _bind_existing_handoff_snapshot(log_dir: Path, slug: str) -> bool | None:
         if accepted.snapshot is None:
             print(
                 f"Error: cannot hand off '{slug}': accepted snapshot is unreadable",
+                file=sys.stderr,
+            )
+            return False
+        if accepted.snapshot.participant_heads != participant_heads:
+            print(
+                f"Error: cannot hand off '{slug}': Ticket heads changed after acceptance freeze",
                 file=sys.stderr,
             )
             return False
@@ -504,6 +529,7 @@ def _freeze_handoff_snapshot(
     entry: dict | None,
     expected_execution_id: str | None,
     log_dir: Path,
+    participant_heads: dict[str, str],
 ) -> bool:
     from booley.criteria.state import DevelopmentState
 
@@ -535,6 +561,7 @@ def _freeze_handoff_snapshot(
             DevelopmentState.load(state_path),
             execution_id=execution_id,
             acceptance_basis=evidence_basis,
+            participant_heads=participant_heads,
         )
         bind_review_package(log_dir, snapshot)
     except (AcceptanceBasisError, AcceptanceLedgerError) as exc:
@@ -823,9 +850,10 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
 
 def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
     from .acceptance_basis import (
+        assert_live_inputs_unchanged,
         load_basis_receipt,
-        materialize_current_ticket_checkout,
         materialize_ticket_commits,
+        validate_current_basis_refs,
         validate_ticket_view,
     )
     from .acceptance_journal import completion_basis_sources
@@ -837,28 +865,35 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
     if snapshot.acceptance_basis != current_receipt:
         raise AcceptanceLedgerError("Acceptance Snapshot names a different Board Acceptance Basis")
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
-        sources = completion_basis_sources(Path(tio._project_root), slug, basis)
-        if sources is not None:
-            authoring = materialize_ticket_commits(
-                tio._project_root,
-                basis,
-                Path(directory) / "checkout",
-                sources,
-            )
-        else:
-            authoring = materialize_current_ticket_checkout(
-                tio._project_root,
-                basis,
-                Path(directory) / "checkout",
-            )
+        snapshot_sources = snapshot.participant_heads
+        sources = completion_basis_sources(
+            Path(tio._project_root),
+            slug,
+            basis,
+            expected_sources=snapshot_sources,
+        )
+        if sources is None:
+            current_sources = validate_current_basis_refs(tio._project_root, basis)
+            if current_sources != snapshot_sources:
+                raise AcceptanceLedgerError(
+                    "Ticket heads changed after the accepted snapshot was frozen"
+                )
+            sources = snapshot_sources
+        authoring = materialize_ticket_commits(
+            tio._project_root,
+            basis,
+            Path(directory) / "checkout",
+            sources,
+        )
         selector_errors = validate_ticket_view(authoring, basis)
+        assert_live_inputs_unchanged(basis, tio._project_root, authoring)
     if selector_errors:
         raise AcceptanceLedgerError(
             "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
         )
 
 
-def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
+def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | None:
     """Refuse destructive terminal actions when durable acceptance is broken."""
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
@@ -867,7 +902,7 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
-            return False
+            return None
         try:
             _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
         except (AcceptanceLedgerError, ValueError, OSError) as exc:
@@ -875,16 +910,16 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",
                 file=sys.stderr,
             )
-            return False
-        return True
+            return None
+        return accepted.snapshot
     if accepted.kind == "corrupt":
         print(
             f"Error: accepted snapshot for '{slug}' is corrupt: {accepted.reason}",
             file=sys.stderr,
         )
-        return False
+        return None
     print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
-    return False
+    return None
 
 
 def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
@@ -931,7 +966,8 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
             file=sys.stderr,
         )
         return False
-    if not _completion_acceptance_valid(tio, slug):
+    accepted_snapshot = _completion_acceptance_valid(tio, slug)
+    if accepted_snapshot is None:
         return False
 
     from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
@@ -946,7 +982,12 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         from .acceptance_journal import cleanup_finished
         from .completion import complete_review_ticket
 
-        if not complete_review_ticket(tio, slug, on_success):
+        if not complete_review_ticket(
+            tio,
+            slug,
+            on_success,
+            expected_sources=accepted_snapshot.participant_heads,
+        ):
             detail = _acceptance_failure_detail(tio, slug)
             print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
             return False

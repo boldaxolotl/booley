@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from booley.runtime.project_dir import reset_cache
+from booley.ticket_board import acceptance_basis as acceptance_basis_module
 from booley.ticket_board import readiness as readiness_module
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 
@@ -201,13 +203,10 @@ def test_worktree_discovery_failure_is_loud(
             stderr="fatal: worktree metadata is unreadable",
         )
 
-    monkeypatch.setattr(readiness_module.subprocess, "run", failed_worktree)
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", failed_worktree)
 
-    with pytest.raises(
-        readiness_module.ReadinessInspectionError,
-        match="worktree metadata is unreadable",
-    ):
-        readiness_module._worktree_for_ref(root, "refs/heads/main")
+    with pytest.raises(AcceptanceBasisError, match="worktree metadata is unreadable"):
+        acceptance_basis_module.worktree_for_ref(root, "refs/heads/main")
 
 
 def test_executable_readiness_uses_authoritative_basis_reader(

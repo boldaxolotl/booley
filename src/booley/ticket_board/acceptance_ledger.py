@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ class AcceptanceSnapshot:
     execution_id: str
     accepted_at: str
     acceptance_basis: dict[str, Any]
+    participant_heads: dict[str, str]
     criteria: dict[str, dict[str, Any]]
     evidence: tuple[dict[str, Any], ...]
 
@@ -81,11 +83,26 @@ def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> Acceptanc
             execution_id=str(payload["execution_id"]),
             accepted_at=str(payload["accepted_at"]),
             acceptance_basis=dict(payload.get("acceptance_basis") or {}),
+            participant_heads=_participant_heads(payload["participant_heads"]),
             criteria={key: dict(value) for key, value in dict(payload["criteria"]).items()},
             evidence=tuple(dict(value) for value in payload.get("evidence", [])),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AcceptanceLedgerError(f"invalid acceptance snapshot: {exc}") from exc
+
+
+def _participant_heads(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise AcceptanceLedgerError("participant_heads must be a mapping")
+    heads = dict(value)
+    if not set(heads) <= {"outer", "project"} or any(
+        not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None
+        for commit in heads.values()
+    ):
+        raise AcceptanceLedgerError("participant_heads contains an invalid commit identity")
+    if "outer" not in heads:
+        raise AcceptanceLedgerError("participant_heads requires an outer commit identity")
+    return heads
 
 
 def _reserve_sequence(root: Path) -> tuple[int, Path]:
@@ -202,6 +219,7 @@ def freeze_acceptance(
     *,
     execution_id: str,
     acceptance_basis: Mapping[str, Any] | None,
+    participant_heads: Mapping[str, str],
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
     """Freeze and select one accepted snapshot for the current Ticket epoch."""
@@ -213,6 +231,7 @@ def freeze_acceptance(
         "execution_id": execution_id,
         "accepted_at": accepted_at or utc_now_rfc3339(),
         "acceptance_basis": dict(acceptance_basis or {}),
+        "participant_heads": _participant_heads(participant_heads),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
         "evidence": _read_evidence_refs(log_dir),
     }

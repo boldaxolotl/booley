@@ -10,6 +10,7 @@ Adapted for the filesystem-based ticket system (no board.json).
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -1244,6 +1245,7 @@ class TestScanAllTickets:
             state,
             execution_id="generation-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
 
@@ -1500,7 +1502,8 @@ class TestOpHandoff:
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
         monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
         monkeypatch.setattr(
-            "booley.ticket_board.operations._validate_handoff_basis", lambda *_args: True
+            "booley.ticket_board.operations._handoff_basis_heads",
+            lambda *_args: {"outer": "a" * 40},
         )
         _write_ready_acceptance_state(tio)
 
@@ -1511,6 +1514,7 @@ class TestOpHandoff:
         assert accepted.snapshot is not None
         assert accepted.snapshot.criteria["sim_pass"]["met"] is True
         assert accepted.snapshot.acceptance_basis == receipt
+        assert accepted.snapshot.participant_heads == {"outer": "a" * 40}
         binding = json.loads(
             (tio.logs_dir / "t1" / "acceptance" / "review-package.json").read_text(
                 encoding="utf-8"
@@ -1531,12 +1535,41 @@ class TestOpHandoff:
                 "acceptance-input-change-required: destination ref was rewritten"
             )
 
-        monkeypatch.setattr(basis_module, "materialize_current_ticket_checkout", reject_drift)
+        monkeypatch.setattr(basis_module, "validate_current_basis_refs", reject_drift)
 
         assert op_handoff(tio, "t1") is False
         assert "destination ref was rewritten" in capsys.readouterr().err
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "running"
+
+    def test_rejects_existing_snapshot_after_ticket_ref_advances(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from booley.ticket_board import acceptance_basis as basis_module
+        from booley.ticket_board import operations
+
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        basis, receipt = _handoff_basis_receipt()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
+        monkeypatch.setattr(
+            operations,
+            "_handoff_basis_heads",
+            lambda *_args: {"outer": "a" * 40},
+        )
+        _write_ready_acceptance_state(tio)
+        assert op_handoff(tio, "t1") is True
+
+        assert (
+            operations._bind_existing_handoff_snapshot(
+                tio.logs_dir / "t1",
+                "t1",
+                {"outer": "f" * 40},
+            )
+            is False
+        )
+        assert "Ticket heads changed after acceptance freeze" in capsys.readouterr().err
 
     def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -4246,6 +4279,7 @@ class TestOpReturnValues:
             state,
             execution_id="run-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
         snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
@@ -4272,6 +4306,7 @@ class TestOpReturnValues:
             state,
             execution_id="run-1",
             acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
         prep_dir.mkdir(parents=True)
@@ -5623,7 +5658,8 @@ class TestBoardMoveTerminalActionOverrides:
     @pytest.fixture(autouse=True)
     def _accepted_snapshot(self, monkeypatch):
         monkeypatch.setattr(
-            "booley.ticket_board.operations._completion_acceptance_valid", lambda *_: True
+            "booley.ticket_board.operations._completion_acceptance_valid",
+            lambda *_: SimpleNamespace(participant_heads=None),
         )
 
     @staticmethod

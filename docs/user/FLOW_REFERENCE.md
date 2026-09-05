@@ -193,7 +193,7 @@ Nangate45 technology inputs.
 
 Useful controls:
 
-- `--baseline <git-ref>` compares the candidate with its sealed baseline Target
+- `--baseline <git-ref>` compares the candidate with its recorded baseline Target
   at another revision. Directed baseline/candidate Target pairs are supported.
 - `--default-clock <picoseconds>` supplies a clock only when the Target has no
   SDC.

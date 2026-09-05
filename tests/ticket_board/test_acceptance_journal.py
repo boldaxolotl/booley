@@ -85,6 +85,28 @@ def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: P
     assert "/finalized-" not in refs
 
 
+def test_advance_rejects_ticket_head_changed_after_acceptance_freeze(tmp_path: Path) -> None:
+    root, _tio, request, _base = _single_repository_acceptance(tmp_path)
+    frozen_head = request.basis.participant("outer").authoring_sha
+    _git(root, "switch", "change-target")
+    (root / "design.txt").write_text("changed after handoff\n", encoding="utf-8")
+    _git(root, "add", "design.txt")
+    _git(root, "commit", "-m", "late change")
+    _git(root, "switch", "main")
+    guarded = AcceptanceRequest(
+        root=request.root,
+        slug=request.slug,
+        basis=request.basis,
+        cleanup=request.cleanup,
+        ticket_status=request.ticket_status,
+        allowed_board_rename=request.allowed_board_rename,
+        expected_sources={"outer": frozen_head},
+    )
+
+    with pytest.raises(AcceptanceOperationError, match="changed after the accepted snapshot"):
+        advance_acceptance(guarded)
+
+
 def test_done_ticket_cannot_start_unpublished_acceptance(tmp_path: Path) -> None:
     root, _tio, request, base = _single_repository_acceptance(tmp_path)
     request = AcceptanceRequest(

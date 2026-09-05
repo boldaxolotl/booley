@@ -73,30 +73,25 @@ runs:
         "${GITHUB_WORKSPACE}"
 
     # Acceptance Basis publication runs the project's deterministic preparation
-    # hook. Ubuntu's multilib bare-metal package supplies the rv32 libraries;
-    # the prefix override matches its installed driver name.
+    # hook. Use the same reviewed multilib Newlib toolchain family as Booley's
+    # RISC-V image so PicoRV32 can compile both rv32im firmware programs.
     - name: Install host RISC-V preparation toolchain
       shell: bash
+      env:
+        TOOLCHAIN_URL: ${{ steps.contract.outputs.toolchain_url }}
+        TOOLCHAIN_SHA256: ${{ steps.contract.outputs.toolchain_sha256 }}
       run: |
-        sudo apt-get update
-        sudo apt-get install --no-install-recommends --yes \
-          gcc-riscv64-unknown-elf \
-          picolibc-riscv64-unknown-elf
-        tool_dir="${RUNNER_TEMP}/riscv32-toolchain"
-        mkdir -p "${tool_dir}"
-        for executable in /usr/bin/riscv64-unknown-elf-*; do
-          helper="${executable##*riscv64-unknown-elf-}"
-          if [[ "${helper}" == "gcc" ]]; then
-            printf '%s\n' \
-              '#!/bin/sh' \
-              'exec /usr/bin/riscv64-unknown-elf-gcc --specs=picolibc.specs "$@"' \
-              > "${tool_dir}/riscv32-unknown-elf-gcc"
-            chmod +x "${tool_dir}/riscv32-unknown-elf-gcc"
-            continue
-          fi
-          ln -sf "${executable}" "${tool_dir}/riscv32-unknown-elf-${helper}"
+        archive="${RUNNER_TEMP}/riscv-toolchain.tar.gz"
+        tool_root="${RUNNER_TEMP}/riscv-toolchain"
+        curl --proto '=https' --tlsv1.2 -fsSL "${TOOLCHAIN_URL}" -o "${archive}"
+        echo "${TOOLCHAIN_SHA256}  ${archive}" | sha256sum -c -
+        mkdir -p "${tool_root}"
+        tar -xzf "${archive}" -C "${tool_root}" --strip-components=1
+        for executable in "${tool_root}"/bin/riscv-none-elf-*; do
+          helper="${executable##*riscv-none-elf-}"
+          ln -sf "${executable}" "${tool_root}/bin/riscv32-unknown-elf-${helper}"
         done
-        echo "${tool_dir}" >> "${GITHUB_PATH}"
+        echo "${tool_root}/bin" >> "${GITHUB_PATH}"
 
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash

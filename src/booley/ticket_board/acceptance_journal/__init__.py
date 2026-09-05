@@ -8,6 +8,7 @@ actually requested.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +43,8 @@ def completion_basis_sources(
     root: Path,
     slug: str,
     basis: AcceptanceBasis,
+    *,
+    expected_sources: Mapping[str, str],
 ) -> dict[str, str] | None:
     """Return journal-pinned sources after validating recorded destinations."""
     from ..acceptance_basis import validate_destination_refs
@@ -54,6 +57,10 @@ def completion_basis_sources(
     journal = load_persisted_journal(path)
     if not journal.sources:
         return None
+    if dict(journal.sources) != expected_sources:
+        raise AcceptanceJournalError(
+            "Acceptance Journal sources differ from the accepted Ticket heads"
+        )
     destinations = {
         participant.role: participant.destination_sha for participant in basis.participants
     }
