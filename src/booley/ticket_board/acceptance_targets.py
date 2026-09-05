@@ -22,7 +22,12 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import flow_can_drive, inspect_target_selector, select_target
+from booley.targets.target import (
+    TargetInput,
+    flow_can_drive,
+    inspect_target_selector,
+    select_target,
+)
 
 _FLOW_BY_CRITERION = {
     "sim_pass": "sim",
@@ -33,6 +38,8 @@ _FLOW_BY_CRITERION = {
     "mutation_score": "sim",
     "coverage": "sim",
 }
+
+_RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 
 
 @dataclass(frozen=True, order=True)
@@ -400,19 +407,32 @@ def _new_scope_matches(scope: Any, path: str) -> bool:
     return False
 
 
-def _missing_target_sources(
+def _missing_target_inputs(
     root: Path,
     target: str,
-) -> list[str]:
-    selected = tuple(item.path for item in inspect_target_selector(root, target).inputs)
-    missing: list[str] = []
-    for path in selected:
-        candidate = Path(path)
+) -> tuple[TargetInput, ...]:
+    missing: list[TargetInput] = []
+    for item in inspect_target_selector(root, target).inputs:
+        candidate = Path(item.path)
         if not candidate.is_absolute():
             candidate = root / candidate
         if not candidate.exists():
-            missing.append(path)
-    return sorted(set(missing))
+            missing.append(item)
+    return tuple(sorted(missing, key=lambda item: (item.path, item.file_type)))
+
+
+def _missing_target_sources(root: Path, target: str) -> list[str]:
+    return sorted({item.path for item in _missing_target_inputs(root, target)})
+
+
+def _nondeferable_missing_inputs(inputs: Iterable[TargetInput]) -> list[str]:
+    return sorted(
+        {
+            f"{item.path} (file_type={item.file_type!r})"
+            for item in inputs
+            if "tb" not in item.tags and not item.file_type.startswith(_RTL_FILE_TYPE_PREFIXES)
+        }
+    )
 
 
 def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
@@ -504,7 +524,15 @@ def _validate_changed_targets(
         if target in seen:
             continue
         seen.add(target)
-        missing = _missing_target_sources(root, target)
+        missing_inputs = _missing_target_inputs(root, target)
+        missing = sorted({item.path for item in missing_inputs})
+        nondeferable = _nondeferable_missing_inputs(missing_inputs)
+        if nondeferable:
+            errors.append(
+                f"changed Target {target!r} has missing non-RTL/TB input(s), which "
+                f"cannot be deferred: {', '.join(nondeferable)}"
+            )
+            continue
         undeclared = [
             path for path in missing if not _new_scope_matches(fields.get("scope"), path)
         ]
@@ -626,13 +654,21 @@ def _validate_binding(
                 f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
             )
             continue
-        missing = _missing_target_sources(root, target)
+        missing_inputs = _missing_target_inputs(root, target)
+        missing = sorted({item.path for item in missing_inputs})
         if not missing:
             continue
         if role == "baseline" or (binding.relative and binding.baseline == binding.target):
             errors.append(
                 f"{binding.label}: relative-QoR baseline target {target!r} has missing "
                 f"source(s): {', '.join(missing)}"
+            )
+            continue
+        nondeferable = _nondeferable_missing_inputs(missing_inputs)
+        if nondeferable:
+            errors.append(
+                f"{binding.label}: {role} target {target!r} has missing non-RTL/TB "
+                f"input(s), which cannot be deferred: {', '.join(nondeferable)}"
             )
             continue
         undeclared = [

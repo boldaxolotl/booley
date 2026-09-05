@@ -35,6 +35,15 @@ def _participant(role: str = "outer") -> BasisParticipant:
     )
 
 
+def _target_input(
+    path: str,
+    *,
+    file_type: str = "systemVerilogSource",
+    tags: tuple[str, ...] = (),
+) -> SimpleNamespace:
+    return SimpleNamespace(path=path, file_type=file_type, tags=tags)
+
+
 def test_target_binding_rejects_incomplete_and_noncanonical_values() -> None:
     binding = acceptance_targets.AcceptanceTargetBinding(
         "sim",
@@ -200,10 +209,10 @@ def test_missing_target_sources_normalizes_relative_and_absolute_paths(
         "inspect_target_selector",
         lambda *_args: SimpleNamespace(
             inputs=(
-                SimpleNamespace(path="rtl/existing.sv"),
-                SimpleNamespace(path="rtl/missing.sv"),
-                SimpleNamespace(path=str(absolute)),
-                SimpleNamespace(path="rtl/missing.sv"),
+                _target_input("rtl/existing.sv"),
+                _target_input("rtl/missing.sv"),
+                _target_input(str(absolute)),
+                _target_input("rtl/missing.sv"),
             )
         ),
     )
@@ -280,8 +289,8 @@ def test_new_scope_matching(
     monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
     monkeypatch.setattr(
         acceptance_targets,
-        "_missing_target_sources",
-        lambda *_args: [path],
+        "_missing_target_inputs",
+        lambda *_args: (_target_input(path),),
     )
     errors = acceptance_targets.validate_criterion_targets(
         {"criteria": {"mandatory": {"sim_pass": ["sim"]}}, "scope": scope}, tmp_path
@@ -292,10 +301,14 @@ def test_new_scope_matching(
 def test_validate_changed_targets_handles_duplicate_missing_and_resolvable_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    missing = {"new": ["rtl/new.sv"], "undeclared": ["rtl/nope.sv"], "ready": []}
+    missing = {
+        "new": (_target_input("rtl/new.sv"),),
+        "undeclared": (_target_input("rtl/nope.sv"),),
+        "ready": (),
+    }
     monkeypatch.setattr(
         acceptance_targets,
-        "_missing_target_sources",
+        "_missing_target_inputs",
         lambda _root, target: missing[target],
     )
     monkeypatch.setattr(
@@ -313,6 +326,95 @@ def test_validate_changed_targets_handles_duplicate_missing_and_resolvable_targe
 
     assert errors[0].startswith("changed Target 'undeclared'")
     assert errors[1] == "resolved ready in ready"
+
+
+@pytest.mark.parametrize("file_type", ["SDC", "xdc", "user", "tclSource"])
+def test_scope_new_cannot_defer_missing_non_hdl_target_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_type: str,
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets,
+        "select_target",
+        lambda *_args: SimpleNamespace(flow="sim", eda_tool="iverilog"),
+    )
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_inputs",
+        lambda *_args: (_target_input("inputs/new", file_type=file_type),),
+    )
+
+    errors = acceptance_targets.validate_criterion_targets(
+        {
+            "criteria": {"mandatory": {"sim_pass": ["sim"]}},
+            "scope": ["inputs/new [new]"],
+        },
+        tmp_path,
+    )
+
+    assert len(errors) == 1
+    assert "missing non-RTL/TB input(s)" in errors[0]
+    assert f"file_type={file_type!r}" in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("file_type", "tags"),
+    [
+        ("verilogSource-2005", ()),
+        ("systemVerilogSource", ()),
+        ("vhdlSource-2008", ()),
+        ("user", ("tb",)),
+    ],
+)
+def test_scope_new_can_defer_missing_rtl_or_testbench_target_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_type: str,
+    tags: tuple[str, ...],
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets,
+        "select_target",
+        lambda *_args: SimpleNamespace(flow="sim", eda_tool="iverilog"),
+    )
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_inputs",
+        lambda *_args: (_target_input("sources/new", file_type=file_type, tags=tags),),
+    )
+
+    errors = acceptance_targets.validate_criterion_targets(
+        {
+            "criteria": {"mandatory": {"sim_pass": ["sim"]}},
+            "scope": ["sources/new [new]"],
+        },
+        tmp_path,
+    )
+
+    assert errors == []
+
+
+def test_changed_target_cannot_defer_missing_non_hdl_target_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_inputs",
+        lambda *_args: (_target_input("constraints/new.sdc", file_type="SDC"),),
+    )
+
+    errors = acceptance_targets.validate_acceptance_targets(
+        {"scope": ["constraints/new.sdc [new]"]},
+        tmp_path,
+        tmp_path / "build",
+        changed_targets=["future"],
+    )
+
+    assert len(errors) == 1
+    assert "changed Target 'future' has missing non-RTL/TB input(s)" in errors[0]
 
 
 def test_validate_acceptance_targets_stops_after_binding_errors(
@@ -534,8 +636,8 @@ def test_validate_binding_reports_resolution_flow_and_scope_errors(
     monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
     monkeypatch.setattr(
         acceptance_targets,
-        "_missing_target_sources",
-        lambda _root, target: [f"rtl/{target}.sv"],
+        "_missing_target_inputs",
+        lambda _root, target: (_target_input(f"rtl/{target}.sv"),),
     )
     errors = acceptance_targets.validate_criterion_targets({"scope": []}, tmp_path)
     assert "not declared Scope [new]" in errors[0]
