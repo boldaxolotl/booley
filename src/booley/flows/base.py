@@ -177,7 +177,12 @@ class BooleyFlow(McpTool):
             basis = TicketIO(
                 resolve_project_dir(project_root) / "tickets",
                 project_root=project_root,
-            ).load_basis(ticket_path.stem, runtime_ticket_path=ticket_path)
+            ).load_basis(
+                os.environ.get("BOOLEY_SLUG")
+                or os.environ.get("BOOLEY_TICKET_SLUG")
+                or ticket_path.stem,
+                runtime_ticket_path=ticket_path,
+            )
             self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
             assert_inputs_unchanged(basis, work_dir)

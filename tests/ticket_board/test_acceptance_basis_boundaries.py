@@ -7,6 +7,7 @@ public contract without performing unsafe or platform-dependent Git mutations.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -471,6 +472,8 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
     assert acceptance_basis._same_generated_path(left, right) is False
     left.unlink()
     right.unlink()
+    if os.name == "nt":
+        pytest.skip("Windows does not expose POSIX executable mode bits")
     left.write_text("same", encoding="utf-8")
     right.write_text("same", encoding="utf-8")
     left.chmod(0o755)

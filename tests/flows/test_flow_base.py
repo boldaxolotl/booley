@@ -181,19 +181,27 @@ class TestBooleyFlowExecution:
         )
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
+        loaded_slugs = []
+
+        def load_basis(_tio, slug, **_kwargs):
+            loaded_slugs.append(slug)
+            return basis
+
         monkeypatch.setattr(
             "booley.ticket_board.io.TicketIO.load_basis",
-            lambda *_args, **_kwargs: basis,
+            load_basis,
         )
         monkeypatch.setattr(
             "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
         flow = EchoFlow()
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         assert flow._pre_state_gate() is None
         assert flow._acceptance_basis == basis
+        assert loaded_slugs == ["actual-ticket"]
 
         def reject_change(*_args, **_kwargs):
             raise AcceptanceBasisError("protected path changed")

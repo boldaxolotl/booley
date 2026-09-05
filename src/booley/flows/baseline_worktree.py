@@ -230,7 +230,12 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
         basis = TicketIO(
             resolve_project_dir(project_root) / "tickets",
             project_root=project_root,
-        ).load_basis(ticket_path.stem, runtime_ticket_path=ticket_path)
+        ).load_basis(
+            os.environ.get("BOOLEY_SLUG")
+            or os.environ.get("BOOLEY_TICKET_SLUG")
+            or ticket_path.stem,
+            runtime_ticket_path=ticket_path,
+        )
         if basis is not None and basis.project_sha:
             try:
                 return resolve_commit(project_worktree, basis.project_sha)

@@ -12,11 +12,41 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows import baseline_worktree as baseline_module
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
     git_short_sha,
 )
+
+
+def test_paired_project_basis_uses_runtime_ticket_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("ticket\n", encoding="utf-8")
+    loaded_slugs = []
+
+    class FakeTicketIO:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def load_basis(self, slug, **_kwargs):
+            loaded_slugs.append(slug)
+            return type("Basis", (), {"project_sha": "a" * 40})()
+
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
+    monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
+    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_targets.resolve_commit",
+        lambda _worktree, commit: commit,
+    )
+
+    assert baseline_module._paired_project_base_sha(tmp_path) == "a" * 40
+    assert loaded_slugs == ["actual-ticket"]
 
 
 def _git(repo: Path, *a: str) -> None:
