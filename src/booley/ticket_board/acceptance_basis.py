@@ -1145,9 +1145,14 @@ def _repository_changed_paths(
     changed = _collect_repository_paths(repository, tracked_commands, git_owner)
     generated = _collect_repository_paths(repository, generated_commands, git_owner)
     if generated_reference is not None:
+        reference_generated = _collect_repository_paths(
+            generated_reference,
+            generated_commands,
+            None,
+        )
         generated = {
             path
-            for path in generated
+            for path in generated | reference_generated
             if not _same_generated_path(repository / path, generated_reference / path)
         }
     changed.update(generated)

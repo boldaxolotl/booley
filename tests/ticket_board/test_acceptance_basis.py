@@ -500,10 +500,10 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
         assert_live_inputs_unchanged(basis, root, reference)
 
 
-@pytest.mark.parametrize("matches_reference", [True, False])
+@pytest.mark.parametrize("live_state", ["matching", "different", "missing"])
 def test_live_generated_inputs_must_match_prepared_reference(
     tmp_path: Path,
-    matches_reference: bool,
+    live_state: str,
 ) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
     ticket = tio.create_ticket_file(
@@ -523,13 +523,16 @@ def test_live_generated_inputs_must_match_prepared_reference(
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
     content = "CAPI=2:\nname: ::generated:0\ntargets: {}\n"
     (reference / ".booley-projected-generated.core").write_text(content, encoding="utf-8")
-    live_content = content if matches_reference else content.replace("generated:0", "drift:0")
-    (workspace / ".booley-projected-generated.core").write_text(
-        live_content,
-        encoding="utf-8",
-    )
+    if live_state != "missing":
+        live_content = (
+            content if live_state == "matching" else content.replace("generated:0", "drift:0")
+        )
+        (workspace / ".booley-projected-generated.core").write_text(
+            live_content,
+            encoding="utf-8",
+        )
 
-    if matches_reference:
+    if live_state == "matching":
         assert_live_inputs_unchanged(basis, root, reference)
     else:
         with pytest.raises(AcceptanceBasisError, match="protected path"):
