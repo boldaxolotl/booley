@@ -447,7 +447,6 @@ def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
         assert_live_inputs_unchanged,
         materialize_ticket_commits,
         validate_current_basis_refs,
-        validate_ticket_view,
     )
 
     try:
@@ -460,7 +459,7 @@ def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
                 Path(directory) / "checkout",
                 heads,
             )
-            errors = validate_ticket_view(current, basis)
+            errors = _prepare_materialized_basis_view(tio, slug, current, basis)
             assert_live_inputs_unchanged(basis, tio._project_root, current)
         if errors:
             raise AcceptanceBasisError("Acceptance Basis selectors changed: " + "; ".join(errors))
@@ -468,6 +467,37 @@ def _handoff_basis_heads(tio: Any, slug: str) -> dict[str, str] | None:
         print(f"Error: cannot hand off '{slug}': {exc}", file=sys.stderr)
         return None
     return heads
+
+
+def _prepare_materialized_basis_view(
+    tio: Any,
+    slug: str,
+    checkout: Path,
+    basis: Any,
+) -> list[str]:
+    """Prepare and validate one exact composite through the runtime contract."""
+    from booley.flows.execution import flow_enabled
+    from booley.runtime.project_prepare import prepare_project
+
+    from .acceptance_basis import AcceptanceBasisError, validate_ticket_view
+    from .io import find_ticket_file
+
+    ticket, _status = find_ticket_file(tio.tickets_dir, slug)
+    if ticket is None:
+        raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during Basis validation")
+    try:
+        preparation = prepare_project(
+            tio._project_root,
+            checkout,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", checkout),
+        )
+    except FileNotFoundError:
+        return validate_ticket_view(checkout, basis)
+    if not preparation.ok:
+        raise AcceptanceBasisError(preparation.error)
+    return validate_ticket_view(checkout, basis, allow_generated=True)
 
 
 def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
@@ -825,7 +855,6 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
         load_basis_receipt,
         materialize_ticket_commits,
         validate_current_basis_refs,
-        validate_ticket_view,
     )
     from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
@@ -856,7 +885,7 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
             Path(directory) / "checkout",
             sources,
         )
-        selector_errors = validate_ticket_view(authoring, basis)
+        selector_errors = _prepare_materialized_basis_view(tio, slug, authoring, basis)
         assert_live_inputs_unchanged(basis, tio._project_root, authoring)
     if selector_errors:
         raise AcceptanceLedgerError(
