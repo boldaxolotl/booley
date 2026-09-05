@@ -19,7 +19,6 @@ from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
-    resolve_project_dir,
 )
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
@@ -316,12 +315,9 @@ def project_repository_scope(scope: list[str]) -> list[str]:
 
 
 def resolve_inner_project_repo(project_root: Path) -> Path | None:
-    """Return the resolved project dir only when it is its own Git repo."""
-    configured = os.environ.get("BOOLEY_PROJECT_DIR")
-    if configured and not Path(configured).is_dir():
-        return None
+    """Return this checkout's project dir only when it is its own Git repo."""
     try:
-        project_dir = resolve_project_dir(project_root).resolve()
+        project_dir = resolve_checkout_project_dir(project_root).resolve()
     except FileNotFoundError:
         return None
     if not (project_dir / ".git").is_dir():

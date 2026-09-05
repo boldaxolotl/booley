@@ -417,6 +417,34 @@ def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None
     assert fields["project_destination_ref"] == "refs/heads/main"
 
 
+def test_paired_record_load_ignores_authored_project_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _project_dir, tio = _paired_basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "control-record",
+        TicketFileSpec(
+            summary="Read the control-plane record",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("control-record")
+    basis = tio.load_basis("control-record")
+    authored = tmp_path / "authored-project"
+    authored.mkdir()
+    _git(authored, "init", "-b", "ticket")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(authored))
+    reset_cache()
+
+    record = load_basis_record(root, "control-record", basis)
+
+    assert record["ticket"]["frontmatter"]["summary"] == "Read the control-plane record"
+
+
 def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
     _root, project_dir, tio = _paired_basis_project(tmp_path)
 
