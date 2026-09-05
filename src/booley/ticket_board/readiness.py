@@ -120,7 +120,6 @@ def _validate_current_ticket_view(
 
     with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
         current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
-        assert_live_inputs_unchanged(basis, root, current)
         preparation = prepare_project(
             root,
             current,
@@ -130,6 +129,7 @@ def _validate_current_ticket_view(
         )
         if not preparation.ok:
             raise AcceptanceBasisError(preparation.error)
+        assert_live_inputs_unchanged(basis, root, current)
         errors = validate_ticket_fields(
             fields,
             body,
@@ -138,7 +138,7 @@ def _validate_current_ticket_view(
             project_root=current,
             check_tb_files=True,
         )
-        errors.extend(validate_ticket_view(current, basis))
+        errors.extend(validate_ticket_view(current, basis, allow_generated=True))
         return errors
 
 

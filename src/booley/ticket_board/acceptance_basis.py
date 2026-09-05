@@ -648,29 +648,41 @@ def _git_common_dir(repository: Path) -> Path | None:
         return None
 
 
-def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) -> None:
+def assert_inputs_unchanged(
+    basis: AcceptanceBasis,
+    project_root: Path | str,
+    *,
+    generated_reference: Path | str | None = None,
+) -> None:
     """Reject tracked, staged, or untracked changes to protected acceptance inputs."""
     root = Path(project_root).resolve()
+    reference = Path(generated_reference).resolve() if generated_reference is not None else None
     prefix, outer_protected, project_protected = _partition_protected_inputs(root, basis)
     project = next((row for row in basis.participants if row.role == "project"), None)
     _assert_repository_inputs_unchanged(
         root,
         basis.outer_sha,
         outer_protected,
+        generated_reference=reference,
         excluded_prefixes=(prefix,) if project is not None else (),
     )
     if project is None:
         return
-    paired = paired_project_repository(root)
-    project_repository = (
-        paired.worktree if paired is not None else resolve_inner_project_repo(root)
-    )
+    local_project = root / prefix
+    if (local_project / ".git").is_dir():
+        project_repository = local_project
+    else:
+        paired = paired_project_repository(root)
+        project_repository = (
+            paired.worktree if paired is not None else resolve_inner_project_repo(root)
+        )
     if project_repository is None:
         raise AcceptanceBasisError(f"{BLOCK_REASON}: paired project repository is unavailable")
     _assert_repository_inputs_unchanged(
         project_repository,
         project.authoring_sha,
         project_protected,
+        generated_reference=reference / prefix if reference is not None else None,
         ticket_prefix=prefix,
     )
 
@@ -692,6 +704,7 @@ def assert_live_inputs_unchanged(
             outer.authoring_sha,
             outer_protected,
             git_owner=root,
+            generated_reference=reference,
             excluded_prefixes=(prefix,) if len(basis.participants) > 1 else (),
         )
     project = next((item for item in basis.participants if item.role == "project"), None)
@@ -705,6 +718,7 @@ def assert_live_inputs_unchanged(
             project.authoring_sha,
             project_protected,
             git_owner=project_owner,
+            generated_reference=reference / prefix,
             ticket_prefix=prefix,
         )
 
@@ -851,10 +865,15 @@ def materialize_ticket_commits(
     return _materialize_participant_commits(root, basis, Path(destination), validated)
 
 
-def validate_ticket_view(checkout: Path | str, basis: AcceptanceBasis) -> list[str]:
+def validate_ticket_view(
+    checkout: Path | str,
+    basis: AcceptanceBasis,
+    *,
+    allow_generated: bool = False,
+) -> list[str]:
     """Validate protected inputs and selectors in one materialized Ticket view."""
     root = Path(checkout).resolve()
-    assert_inputs_unchanged(basis, root)
+    assert_inputs_unchanged(basis, root, generated_reference=root if allow_generated else None)
     return validate_binding_selectors(root, basis.bindings)
 
 
@@ -1075,60 +1094,17 @@ def _assert_repository_inputs_unchanged(
     protected: set[str],
     *,
     git_owner: Path | None = None,
+    generated_reference: Path | None = None,
     ticket_prefix: str = "",
     excluded_prefixes: tuple[str, ...] = (),
 ) -> None:
-    submodule_args = ("--ignore-submodules=all",) if excluded_prefixes else ()
-    changed = _git_paths(
+    changed = _repository_changed_paths(
         repository,
-        "diff",
-        "--name-only",
-        "-z",
-        *submodule_args,
         authoring_sha,
-        owner=git_owner,
+        git_owner=git_owner,
+        generated_reference=generated_reference,
+        excluded_prefixes=excluded_prefixes,
     )
-    changed.update(
-        _git_paths(
-            repository,
-            "diff",
-            "--cached",
-            "--name-only",
-            "-z",
-            *submodule_args,
-            authoring_sha,
-            owner=git_owner,
-        )
-    )
-    changed.update(
-        _git_paths(
-            repository,
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            owner=git_owner,
-        )
-    )
-    changed.update(
-        _git_paths(
-            repository,
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "-z",
-            owner=git_owner,
-        )
-    )
-    changed = {
-        path
-        for path in changed
-        if not any(
-            path.rstrip("/") == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")
-            for prefix in excluded_prefixes
-        )
-    }
     violations = sorted(
         path
         for path in changed
@@ -1143,3 +1119,71 @@ def _assert_repository_inputs_unchanged(
         raise AcceptanceBasisError(
             f"{BLOCK_REASON}: protected path(s) changed: {', '.join(violations)}"
         )
+
+
+def _repository_changed_paths(
+    repository: Path,
+    authoring_sha: str,
+    *,
+    git_owner: Path | None,
+    generated_reference: Path | None,
+    excluded_prefixes: tuple[str, ...],
+) -> set[str]:
+    pathspec = (
+        ("--", ".", *(f":(exclude,literal){prefix.rstrip('/')}" for prefix in excluded_prefixes))
+        if excluded_prefixes
+        else ()
+    )
+    tracked_commands = (
+        ("diff", "--name-only", "-z", authoring_sha, *pathspec),
+        ("diff", "--cached", "--name-only", "-z", authoring_sha, *pathspec),
+    )
+    generated_commands = (
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    )
+    changed = _collect_repository_paths(repository, tracked_commands, git_owner)
+    generated = _collect_repository_paths(repository, generated_commands, git_owner)
+    if generated_reference is not None:
+        generated = {
+            path
+            for path in generated
+            if not _same_generated_path(repository / path, generated_reference / path)
+        }
+    changed.update(generated)
+    return {
+        path
+        for path in changed
+        if not any(
+            path.rstrip("/") == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")
+            for prefix in excluded_prefixes
+        )
+    }
+
+
+def _collect_repository_paths(
+    repository: Path,
+    commands: tuple[tuple[str, ...], ...],
+    git_owner: Path | None,
+) -> set[str]:
+    paths: set[str] = set()
+    for command in commands:
+        paths.update(_git_paths(repository, *command, owner=git_owner))
+    return paths
+
+
+def _same_generated_path(live: Path, reference: Path) -> bool:
+    """Return whether a generated input exactly matches its prepared reference."""
+    if live.is_symlink() or reference.is_symlink():
+        return (
+            live.is_symlink()
+            and reference.is_symlink()
+            and live.readlink() == reference.readlink()
+        )
+    if not live.is_file() or not reference.is_file():
+        return False
+    try:
+        same_mode = (live.stat().st_mode & 0o111) == (reference.stat().st_mode & 0o111)
+        return same_mode and live.read_bytes() == reference.read_bytes()
+    except OSError:
+        return False

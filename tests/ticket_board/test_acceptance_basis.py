@@ -84,6 +84,43 @@ def _stub_worktree_git(
     monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
 
 
+def _simulate_host_mounted_project_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    project_dir: Path,
+    project_worktree: Path,
+    basis: AcceptanceBasis,
+) -> None:
+    dot_git = project_worktree / ".git"
+    admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    dot_git.write_text(
+        f"gitdir: /host/project/.git/worktrees/{admin_name}\n",
+        encoding="utf-8",
+    )
+    participant = basis.participant("project")
+    host_primary = Path("/host/project")
+    host_worktree = host_primary / project_worktree.relative_to(project_dir)
+    listing = (
+        f"worktree {host_primary}\nHEAD {_git(project_dir, 'rev-parse', 'main')}\n"
+        "branch refs/heads/main\n\n"
+        f"worktree {host_worktree}\nHEAD {participant.authoring_sha}\n"
+        f"branch {participant.ticket_ref}\n\n"
+    )
+    real_run = subprocess.run
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cwd = kwargs.get("cwd")
+        is_owner_listing = (
+            command[-3:] == ["worktree", "list", "--porcelain"]
+            and cwd is not None
+            and Path(str(cwd)).resolve() == project_dir
+        )
+        if is_owner_listing:
+            return subprocess.CompletedProcess(command, 0, listing, "")
+        return real_run(command, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+
+
 def test_minimal_basis_round_trips_through_ticket_frontmatter() -> None:
     basis = AcceptanceBasis((_participant(),))
     text = format_frontmatter(
@@ -463,6 +500,42 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
         assert_live_inputs_unchanged(basis, root, reference)
 
 
+@pytest.mark.parametrize("matches_reference", [True, False])
+def test_live_generated_inputs_must_match_prepared_reference(
+    tmp_path: Path,
+    matches_reference: bool,
+) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "generated-input",
+        TicketFileSpec(
+            summary="Compare generated input",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("generated-input") is True
+    basis = tio.load_basis("generated-input")
+    workspace = project_dir / "worktrees/generated-input"
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+    content = "CAPI=2:\nname: ::generated:0\ntargets: {}\n"
+    (reference / ".booley-projected-generated.core").write_text(content, encoding="utf-8")
+    live_content = content if matches_reference else content.replace("generated:0", "drift:0")
+    (workspace / ".booley-projected-generated.core").write_text(
+        live_content,
+        encoding="utf-8",
+    )
+
+    if matches_reference:
+        assert_live_inputs_unchanged(basis, root, reference)
+    else:
+        with pytest.raises(AcceptanceBasisError, match="protected path"):
+            assert_live_inputs_unchanged(basis, root, reference)
+
+
 def test_live_project_worktree_uses_canonical_admin_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -482,41 +555,12 @@ def test_live_project_worktree_uses_canonical_admin_mount(
     assert tio.enqueue_ticket("mounted-project-input-drift") is True
     basis = tio.load_basis("mounted-project-input-drift")
     project_worktree = project_dir / "worktrees/mounted-project-input-drift/.booley_project"
-    dot_git = project_worktree / ".git"
-    admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
-    dot_git.write_text(
-        f"gitdir: /host/project/.git/worktrees/{admin_name}\n",
-        encoding="utf-8",
-    )
+    _simulate_host_mounted_project_worktree(monkeypatch, project_dir, project_worktree, basis)
     (project_worktree / "booley.toml").write_text(
         "[flows]\ndrift = true\n",
         encoding="utf-8",
     )
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
-    project_participant = basis.participant("project")
-    host_primary = Path("/host/project")
-    host_worktree = host_primary / "worktrees/mounted-project-input-drift/.booley_project"
-    project_listing = (
-        f"worktree {host_primary}\n"
-        f"HEAD {_git(project_dir, 'rev-parse', 'main')}\n"
-        "branch refs/heads/main\n\n"
-        f"worktree {host_worktree}\n"
-        f"HEAD {project_participant.authoring_sha}\n"
-        f"branch {project_participant.ticket_ref}\n\n"
-    )
-    real_run = subprocess.run
-
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        cwd = kwargs.get("cwd")
-        if (
-            command[-3:] == ["worktree", "list", "--porcelain"]
-            and cwd is not None
-            and Path(str(cwd)).resolve() == project_dir
-        ):
-            return subprocess.CompletedProcess(command, 0, project_listing, "")
-        return real_run(command, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
 
     with pytest.raises(AcceptanceBasisError, match="protected path"):
         assert_live_inputs_unchanged(basis, root, reference)
