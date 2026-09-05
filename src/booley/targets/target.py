@@ -124,6 +124,29 @@ class TargetInspection:
         return tuple(item.path for item in self.inputs if "tb" in item.tags)
 
 
+class TargetSourceInspector:
+    """Inspect many Target source partitions through one Project library view."""
+
+    def __init__(self, project_root: Path | str) -> None:
+        self._root = Path(project_root).resolve()
+        self._session = None
+        self._startup_error: fusesoc_registry.FuseSocError | None = None
+
+    def inspect(self, ref: TargetRef) -> fusesoc_registry.CoreSources:
+        """Inspect one enumerated Target without rebuilding shared FuseSoC state."""
+        if self._startup_error is not None:
+            raise self._startup_error
+        if self._session is None:
+            from booley.fusesoc.target_inspection import _TargetInspectionSession
+
+            try:
+                self._session = _TargetInspectionSession(self._root)
+            except fusesoc_registry.FuseSocError as exc:
+                self._startup_error = exc
+                raise
+        return self._session.source_partition(ref)
+
+
 def _selection_bucket(project_root: Path, ref: TargetRef) -> list[TargetRef]:
     bucket = fusesoc_registry.target_declarations(project_root)[ref.name]
     if ref.doctor_selftest:
