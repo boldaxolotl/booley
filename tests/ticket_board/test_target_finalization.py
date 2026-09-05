@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -29,6 +30,24 @@ def _binding(*targets: str) -> tuple[AcceptanceTargetBinding, ...]:
         AcceptanceTargetBinding("synth", "criteria.mandatory.synthesis_ok", target, target)
         for target in targets
     )
+
+
+def _git(repository: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _init_repository(repository: Path) -> None:
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
 
 
 def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> None:
@@ -119,6 +138,42 @@ def test_enqueue_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> 
     assert errors == [
         "on_success.remove_targets target 'acme:lib:toy:1.0#unrelated' is not bound "
         "by this Ticket's criteria"
+    ]
+
+
+def test_enqueue_rejects_submodule_owned_target_removal(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repository(dependency)
+    _write_core(
+        dependency / "toy.core",
+        vlnv="acme:lib:toy:1.0",
+        targets="  obsolete: {flow: lint}\n",
+    )
+    _git(dependency, "add", "toy.core")
+    _git(dependency, "commit", "-qm", "dependency target")
+    root = tmp_path / "root"
+    _init_repository(root)
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(root, "commit", "-qm", "project")
+    canonical = "acme:lib:toy:1.0#obsolete"
+    fields = {
+        "on_success": {"remove_targets": [canonical]},
+        "criteria": {"mandatory": {"lint_clean": [canonical]}},
+    }
+
+    errors = validate_acceptance_removals(fields, root)
+
+    assert errors == [
+        f"on_success.remove_targets target {canonical!r} is declared in nested repository "
+        "'vendor/dependency'; only outer and paired project participants can be finalized"
     ]
 
 

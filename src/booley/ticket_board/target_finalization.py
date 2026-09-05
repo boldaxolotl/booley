@@ -95,6 +95,34 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
     return matching[0]
 
 
+def _require_participant_owned_target(
+    root: Path,
+    ref: fusesoc_registry.TargetRef,
+    canonical: str,
+) -> None:
+    from booley.runtime.ticket_repositories import (
+        TicketWorkspaceError,
+        ticket_repositories,
+    )
+
+    owner = ref.core_file.resolve().parent
+    while owner != root and owner.is_relative_to(root):
+        if (owner / ".git").exists():
+            break
+        owner = owner.parent
+    try:
+        participants = {row.worktree.resolve() for row in ticket_repositories(root)}
+    except TicketWorkspaceError as exc:
+        raise TargetFinalizationError(str(exc)) from exc
+    if owner in participants:
+        return
+    relative = owner.relative_to(root).as_posix()
+    raise TargetFinalizationError(
+        f"on_success.remove_targets target {canonical!r} is declared in nested "
+        f"repository {relative!r}; only outer and paired project participants can be finalized"
+    )
+
+
 def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
@@ -127,6 +155,7 @@ def plan_target_removals(
             raise TargetFinalizationError(
                 f"Target {canonical!r} is declared outside the project checkout"
             ) from exc
+        _require_participant_owned_target(root, ref, canonical)
         removals.append(
             PlannedTargetRemoval(canonical, ref.name, core_path, _tests_key(root, ref))
         )
