@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -483,25 +482,41 @@ def test_live_project_worktree_uses_canonical_admin_mount(
     assert tio.enqueue_ticket("mounted-project-input-drift") is True
     basis = tio.load_basis("mounted-project-input-drift")
     project_worktree = project_dir / "worktrees/mounted-project-input-drift/.booley_project"
-    mounted = tmp_path / "mounted-project-worktree"
-    shutil.copytree(project_worktree, mounted)
-    dot_git = mounted / ".git"
+    dot_git = project_worktree / ".git"
     admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
     dot_git.write_text(
         f"gitdir: /host/project/.git/worktrees/{admin_name}\n",
         encoding="utf-8",
     )
-    (mounted / "booley.toml").write_text("[flows]\ndrift = true\n", encoding="utf-8")
-    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-    reset_cache()
-    monkeypatch.setattr(
-        acceptance_basis_module,
-        "worktree_for_ref",
-        lambda repository, _ref: (
-            mounted if Path(repository).resolve() == project_dir.resolve() else None
-        ),
+    (project_worktree / "booley.toml").write_text(
+        "[flows]\ndrift = true\n",
+        encoding="utf-8",
     )
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+    project_participant = basis.participant("project")
+    host_primary = Path("/host/project")
+    host_worktree = host_primary / "worktrees/mounted-project-input-drift/.booley_project"
+    project_listing = (
+        f"worktree {host_primary}\n"
+        f"HEAD {_git(project_dir, 'rev-parse', 'main')}\n"
+        "branch refs/heads/main\n\n"
+        f"worktree {host_worktree}\n"
+        f"HEAD {project_participant.authoring_sha}\n"
+        f"branch {project_participant.ticket_ref}\n\n"
+    )
+    real_run = subprocess.run
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cwd = kwargs.get("cwd")
+        if (
+            command[-3:] == ["worktree", "list", "--porcelain"]
+            and cwd is not None
+            and Path(str(cwd)).resolve() == project_dir
+        ):
+            return subprocess.CompletedProcess(command, 0, project_listing, "")
+        return real_run(command, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
 
     with pytest.raises(AcceptanceBasisError, match="protected path"):
         assert_live_inputs_unchanged(basis, root, reference)

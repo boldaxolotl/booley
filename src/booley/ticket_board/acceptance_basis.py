@@ -24,7 +24,6 @@ from booley.core.boundary import (
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     resolve_checkout_project_dir,
-    resolve_project_dir,
     runtime_dir,
 )
 from booley.runtime.ticket_repositories import (
@@ -590,9 +589,9 @@ def _validate_receipt(
     return actual
 
 
-def _git_paths(repository: Path, *args: str) -> set[str]:
+def _git_paths(repository: Path, *args: str, owner: Path | None = None) -> set[str]:
     result = subprocess.run(
-        [*_worktree_git_command(repository), *args],
+        [*_worktree_git_command(repository, owner), *args],
         cwd=repository,
         capture_output=True,
         text=True,
@@ -606,7 +605,7 @@ def _git_paths(repository: Path, *args: str) -> set[str]:
     return {item for item in result.stdout.split("\0") if item}
 
 
-def _worktree_git_command(repository: Path) -> list[str]:
+def _worktree_git_command(repository: Path, owner: Path | None = None) -> list[str]:
     """Return Git arguments that survive host paths in bind-mounted worktrees."""
     dot_git = repository / ".git"
     if not dot_git.is_file():
@@ -623,14 +622,30 @@ def _worktree_git_command(repository: Path) -> list[str]:
     if recorded.is_dir():
         return ["git"]
     admin_name = recorded.name
-    admin_roots = [parent / ".git" for parent in (repository, *repository.parents)]
-    with contextlib.suppress(FileNotFoundError, ValueError):
-        admin_roots.append(resolve_project_dir() / ".git")
-    for admin_root in admin_roots:
-        mounted = admin_root / "worktrees" / admin_name
+    common_dir = _git_common_dir(owner or repository)
+    if common_dir is not None:
+        mounted = common_dir / "worktrees" / admin_name
         if mounted.is_dir():
             return ["git", f"--git-dir={mounted}", f"--work-tree={repository}"]
     return ["git"]
+
+
+def _git_common_dir(repository: Path) -> Path | None:
+    """Resolve the accessible common Git directory for a repository owner."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return Path(result.stdout.strip()).resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def assert_inputs_unchanged(basis: AcceptanceBasis, project_root: Path | str) -> None:
@@ -676,17 +691,20 @@ def assert_live_inputs_unchanged(
             outer_worktree,
             outer.authoring_sha,
             outer_protected,
+            git_owner=root,
             excluded_prefixes=(prefix,) if len(basis.participants) > 1 else (),
         )
     project = next((item for item in basis.participants if item.role == "project"), None)
     if project is None:
         return
-    project_worktree = worktree_for_ref(_project_repository(root), project.ticket_ref)
+    project_owner = _project_repository(root)
+    project_worktree = worktree_for_ref(project_owner, project.ticket_ref)
     if project_worktree is not None:
         _assert_repository_inputs_unchanged(
             project_worktree,
             project.authoring_sha,
             project_protected,
+            git_owner=project_owner,
             ticket_prefix=prefix,
         )
 
@@ -871,7 +889,7 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     if match is None:
         return match
     if match.exists():
-        if _worktree_has_identity(match, ref):
+        if _worktree_has_identity(match, ref, root):
             return match
         raise AcceptanceBasisError(
             f"registered worktree for {ref} at {match} could not prove its Git identity"
@@ -916,7 +934,7 @@ def _mounted_worktree_path(
     matches = {
         candidate.resolve()
         for candidate in candidates
-        if candidate.is_dir() and _worktree_has_identity(candidate, ref)
+        if candidate.is_dir() and _worktree_has_identity(candidate, ref, root)
     }
     if len(matches) > 1:
         rendered = ", ".join(str(candidate) for candidate in sorted(matches))
@@ -926,9 +944,9 @@ def _mounted_worktree_path(
     return next(iter(matches), None)
 
 
-def _worktree_has_identity(candidate: Path, ref: str) -> bool:
+def _worktree_has_identity(candidate: Path, ref: str, owner: Path) -> bool:
     """Return whether a remapped checkout proves its top-level and branch identity."""
-    command = _worktree_git_command(candidate)
+    command = _worktree_git_command(candidate, owner)
     top_level = subprocess.run(
         [*command, "rev-parse", "--show-toplevel"],
         cwd=candidate,
@@ -1056,12 +1074,42 @@ def _assert_repository_inputs_unchanged(
     authoring_sha: str,
     protected: set[str],
     *,
+    git_owner: Path | None = None,
     ticket_prefix: str = "",
     excluded_prefixes: tuple[str, ...] = (),
 ) -> None:
-    changed = _git_paths(repository, "diff", "--name-only", "-z", authoring_sha)
-    changed.update(_git_paths(repository, "diff", "--cached", "--name-only", "-z", authoring_sha))
-    changed.update(_git_paths(repository, "ls-files", "--others", "--exclude-standard", "-z"))
+    submodule_args = ("--ignore-submodules=all",) if excluded_prefixes else ()
+    changed = _git_paths(
+        repository,
+        "diff",
+        "--name-only",
+        "-z",
+        *submodule_args,
+        authoring_sha,
+        owner=git_owner,
+    )
+    changed.update(
+        _git_paths(
+            repository,
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            *submodule_args,
+            authoring_sha,
+            owner=git_owner,
+        )
+    )
+    changed.update(
+        _git_paths(
+            repository,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            owner=git_owner,
+        )
+    )
     changed.update(
         _git_paths(
             repository,
@@ -1070,6 +1118,7 @@ def _assert_repository_inputs_unchanged(
             "--ignored",
             "--exclude-standard",
             "-z",
+            owner=git_owner,
         )
     )
     changed = {
