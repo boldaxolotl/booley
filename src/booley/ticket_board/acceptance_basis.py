@@ -460,9 +460,11 @@ def load_acceptance_basis(
     project_root: Path | str, slug: str, fields: Mapping[str, Any], body: str | None = None
 ) -> AcceptanceBasis:
     """Load the only supported executable Ticket format and cross-check its record."""
-    if fields.get("target_contract") is not None:
+    retired = sorted(_RETIRED_FIELDS & set(fields))
+    if retired:
         raise AcceptanceBasisError(
-            "legacy Target Contract tickets are unsupported after the hard cutoff; recreate the Ticket"
+            "legacy Target Contract tickets are unsupported after the hard cutoff; "
+            f"remove or recreate fields: {', '.join(retired)}"
         )
     basis = AcceptanceBasis.from_mapping(fields.get("acceptance_basis"))
     record = load_basis_record(project_root, slug, basis)

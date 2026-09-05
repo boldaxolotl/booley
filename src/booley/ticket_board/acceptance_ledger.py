@@ -261,6 +261,7 @@ def bind_review_package(log_dir: Path, snapshot: AcceptanceSnapshot) -> bool:
         manifest = json.loads(manifest_bytes)
         if manifest.get("status") != "ready":
             raise ValueError("review package manifest is not ready")
+        _validate_manifest_identity(manifest, snapshot)
         briefing_path = Path(manifest["briefing_path"])
         briefing_bytes = briefing_path.read_bytes()
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -288,6 +289,7 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
         binding = json.loads(binding_path.read_text(encoding="utf-8"))
         manifest_bytes = manifest_path.read_bytes()
         manifest = json.loads(manifest_bytes)
+        _validate_manifest_identity(manifest, snapshot)
         briefing_bytes = Path(manifest["briefing_path"]).read_bytes()
         actual = {
             "snapshot_digest": snapshot.digest,
@@ -298,6 +300,18 @@ def validate_review_package_binding(log_dir: Path, snapshot: AcceptanceSnapshot)
             raise ValueError("bound review artifacts changed")
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise AcceptanceLedgerError(f"invalid review package binding: {exc}") from exc
+
+
+def _validate_manifest_identity(manifest: Mapping[str, Any], snapshot: AcceptanceSnapshot) -> None:
+    manifest_basis = manifest.get("acceptance_basis_id")
+    snapshot_basis = snapshot.acceptance_basis.get("basis_id")
+    if not isinstance(manifest_basis, str) or manifest_basis != snapshot_basis:
+        raise ValueError("review package names a different Acceptance Basis")
+    heads = {"outer": manifest.get("head_sha")}
+    if "project_head_sha" in manifest:
+        heads["project"] = manifest.get("project_head_sha")
+    if _participant_heads(heads) != snapshot.participant_heads:
+        raise ValueError("review package heads disagree with the accepted snapshot")
 
 
 def read_acceptance(log_dir: Path) -> AcceptanceReadResult:

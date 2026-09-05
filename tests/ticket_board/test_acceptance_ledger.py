@@ -262,3 +262,41 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
 
     with pytest.raises(AcceptanceLedgerError, match="manifest is not ready"):
         bind_review_package(log_dir, snapshot)
+
+
+def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_path):
+    log_dir = tmp_path / "logs" / "fix-uart"
+    basis_id = "f" * 64
+    snapshot = freeze_acceptance(
+        log_dir,
+        _accepted_state(),
+        execution_id="generation-1",
+        acceptance_basis={"basis_id": basis_id},
+        participant_heads={"outer": "a" * 40},
+    )
+    prep_dir = log_dir / ".runtime" / "triage-prep"
+    prep_dir.mkdir(parents=True)
+    briefing = prep_dir / "briefing.json"
+    briefing.write_text("{}\n", encoding="utf-8")
+    manifest_path = prep_dir / "manifest.json"
+    manifest = {
+        "status": "ready",
+        "briefing_path": str(briefing),
+        "acceptance_basis_id": basis_id,
+        "head_sha": "b" * 40,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(AcceptanceLedgerError, match="heads disagree"):
+        bind_review_package(log_dir, snapshot)
+
+    manifest["head_sha"] = "a" * 40
+    manifest["acceptance_basis_id"] = "e" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(AcceptanceLedgerError, match="different Acceptance Basis"):
+        bind_review_package(log_dir, snapshot)
+
+    manifest["acceptance_basis_id"] = basis_id
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert bind_review_package(log_dir, snapshot) is True
+    validate_review_package_binding(log_dir, snapshot)

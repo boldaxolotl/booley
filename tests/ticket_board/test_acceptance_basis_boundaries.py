@@ -478,12 +478,32 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
     assert acceptance_basis._same_generated_path(left, right) is False
 
 
-def test_load_acceptance_basis_rejects_legacy_and_authored_drift(
+@pytest.mark.parametrize(
+    ("retired_field", "value"),
+    [
+        ("target_contract", {}),
+        ("target_contract", None),
+        ("target_contract_history", []),
+        ("base_sha", None),
+    ],
+)
+def test_load_acceptance_basis_rejects_every_retired_field(
+    tmp_path: Path,
+    retired_field: str,
+    value: object,
+) -> None:
+    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
+        acceptance_basis.load_acceptance_basis(
+            tmp_path,
+            "ticket",
+            {retired_field: value},
+        )
+
+
+def test_load_acceptance_basis_rejects_authored_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     basis = AcceptanceBasis((_participant(),))
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
-        acceptance_basis.load_acceptance_basis(tmp_path, "ticket", {"target_contract": {}})
     record = _record()
     monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
     monkeypatch.setattr(acceptance_basis, "_validate_receipt", lambda *_args: {})

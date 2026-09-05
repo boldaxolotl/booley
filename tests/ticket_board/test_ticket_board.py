@@ -1474,6 +1474,7 @@ def _handoff_basis_receipt():
 def _write_ready_acceptance_state(tio: TicketIO) -> None:
     from booley.criteria.state import DevelopmentState
 
+    basis, _receipt = _handoff_basis_receipt()
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "t1", "booley_state.json"))
     state.slug = "t1"
     state.ticket_type = "feature"
@@ -1486,7 +1487,14 @@ def _write_ready_acceptance_state(tio: TicketIO) -> None:
     briefing = prep_dir / "briefing.json"
     briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
     (prep_dir / "manifest.json").write_text(
-        json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+        json.dumps(
+            {
+                "status": "ready",
+                "briefing_path": str(briefing),
+                "acceptance_basis_id": basis.basis_id,
+                "head_sha": "a" * 40,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -4305,7 +4313,7 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            acceptance_basis=None,
+            acceptance_basis={"basis_id": "f" * 64},
             participant_heads={"outer": "a" * 40},
         )
         prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
@@ -4313,7 +4321,14 @@ class TestOpReturnValues:
         briefing = prep_dir / "briefing.json"
         briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
         (prep_dir / "manifest.json").write_text(
-            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+            json.dumps(
+                {
+                    "status": "ready",
+                    "briefing_path": str(briefing),
+                    "acceptance_basis_id": "f" * 64,
+                    "head_sha": "a" * 40,
+                }
+            ),
             encoding="utf-8",
         )
         assert bind_review_package(tio.logs_dir / "t1", snapshot)
