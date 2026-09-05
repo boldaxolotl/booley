@@ -64,7 +64,7 @@ def _draft_journal(tmp_path: Path) -> draft_transition.DraftTransitionJournal:
     )
 
 
-def test_draft_journal_parser_and_validation_reject_noncanonical_state(
+def test_draft_journal_parser_rejects_unreadable_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     journal_path = tmp_path / "journal.json"
@@ -79,6 +79,13 @@ def test_draft_journal_parser_and_validation_reject_noncanonical_state(
             logs_dir=tmp_path / "logs",
             append_transition=lambda _message: None,
         )
+
+
+def test_draft_journal_validation_rejects_noncanonical_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(draft_transition, "_journal_path", lambda *_args: journal_path)
     journal = _draft_journal(tmp_path)
     monkeypatch.setattr(
         draft_transition,

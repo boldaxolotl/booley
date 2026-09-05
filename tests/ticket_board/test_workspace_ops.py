@@ -76,6 +76,37 @@ def _authoring_workspace(
     return root, ticket, outer
 
 
+def _reset_plan(
+    tmp_path: Path,
+    basis: AcceptanceBasis,
+    destination: Path,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        root=tmp_path.resolve(),
+        basis_id=basis.basis_id,
+        requested_branch="main",
+        project_source=None,
+        outer_worktree=destination,
+        paired_worktree=None,
+        participants=(),
+    )
+
+
+def _capture_reset_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[object, ...]]:
+    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(workspace_ops, "_remove_authoring_worktrees", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "validate_basis_refs", lambda *_args, **_kwargs: [])
+    commands: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda *args, **_kwargs: commands.append(args) or "",
+    )
+    return commands
+
+
 def test_registration_and_attachment_checkpoint_success_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,55 +249,41 @@ def test_ensure_workspace_rejects_moved_branch_and_existing_path(
         workspace_ops.ensure_ticket_workspace(root, ticket, "ticket")
 
 
-def test_reset_worktrees_reuses_matching_branch_or_creates_new_one(
+def test_reset_worktrees_reuses_matching_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     destination = tmp_path / "worktrees/ticket"
     basis = AcceptanceBasis((_participant(),))
-    plan = SimpleNamespace(
-        root=tmp_path.resolve(),
-        basis_id=basis.basis_id,
-        requested_branch="main",
-        project_source=None,
-        outer_worktree=destination,
-        paired_worktree=None,
-        participants=(),
-    )
-    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
-    monkeypatch.setattr(workspace_ops, "_remove_authoring_worktrees", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "validate_basis_refs", lambda *_args, **_kwargs: [])
-    commands: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        workspace_ops,
-        "_require_git",
-        lambda *args, **_kwargs: commands.append(args) or "",
-    )
+    plan = _reset_plan(tmp_path, basis, destination)
+    commands = _capture_reset_commands(monkeypatch)
     monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "a" * 40)
     workspace_ops.reset_basis_worktrees(tmp_path, "ticket", basis, "main", plan=plan)
     branch = basis.participant("outer").ticket_ref.removeprefix("refs/heads/")
     assert commands[-1][-4:] == ("worktree", "add", str(destination), branch)
 
-    commands.clear()
-    second = tmp_path / "worktrees/second"
-    second_participant = BasisParticipant(
+
+def test_reset_worktrees_creates_new_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "worktrees/second"
+    participant = BasisParticipant(
         "outer",
         "a" * 40,
         "refs/heads/booley-generation/0123456789abcdef/second",
         "refs/heads/main",
         "b" * 40,
     )
-    second_basis = AcceptanceBasis((second_participant,))
-    second_plan = SimpleNamespace(
-        **{**vars(plan), "outer_worktree": second, "basis_id": second_basis.basis_id}
-    )
+    basis = AcceptanceBasis((participant,))
+    plan = _reset_plan(tmp_path, basis, destination)
+    commands = _capture_reset_commands(monkeypatch)
     monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "")
-    workspace_ops.reset_basis_worktrees(tmp_path, "ticket", second_basis, "main", plan=second_plan)
+    workspace_ops.reset_basis_worktrees(tmp_path, "ticket", basis, "main", plan=plan)
     assert commands[-1][-6:] == (
         "worktree",
         "add",
         "-b",
-        second_participant.ticket_ref.removeprefix("refs/heads/"),
-        str(second),
+        participant.ticket_ref.removeprefix("refs/heads/"),
+        str(destination),
         "a" * 40,
     )
 
