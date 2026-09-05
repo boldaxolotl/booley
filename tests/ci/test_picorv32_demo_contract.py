@@ -172,6 +172,12 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert action.index("Install Booley runtime dependencies") < action.index(
         "Install CI-owned Ticket fixture"
     )
+    assert "Install host RISC-V preparation toolchain" in action
+    assert "gcc-riscv64-unknown-elf" in action
+    assert "TOOLCHAIN_PREFIX: riscv64-unknown-elf-" in action
+    assert action.index("Install host RISC-V preparation toolchain") < action.index(
+        "Install CI-owned Ticket fixture"
+    )
     assert "PYTHONPATH: ${{ github.workspace }}/src" in action
     assert "PROJECT_CONTRACT_REF" not in action
     assert "ci/agent-ticket-contract" not in action

@@ -72,12 +72,22 @@ runs:
         python -m pip install --disable-pip-version-check --quiet
         "${GITHUB_WORKSPACE}"
 
+    # Acceptance Basis publication runs the project's deterministic preparation
+    # hook. Ubuntu's multilib bare-metal package supplies the rv32 libraries;
+    # the prefix override matches its installed driver name.
+    - name: Install host RISC-V preparation toolchain
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends --yes gcc-riscv64-unknown-elf
+
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash
       env:
         PYTHONPATH: ${{ github.workspace }}/src
         TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
         TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
+        TOOLCHAIN_PREFIX: riscv64-unknown-elf-
       run: >-
         git -C demo config user.name booley-ci &&
         git -C demo config user.email booley-ci@users.noreply.github.com &&
