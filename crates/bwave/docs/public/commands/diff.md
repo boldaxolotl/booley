@@ -5,7 +5,6 @@
 ```bash
 bwave diff <FST_FILE> <T1> <T2> [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-           [--marker NAME CYCLE]
            [--format text|json] [--limit N]
 ```
 
@@ -31,7 +30,6 @@ run against raw VCD.
 - `-s PATTERN` optional. Without it, every signal in the
   store is compared, but only changed ones show in the
   output.
-- `--marker` applies.
 
 ## Output shape
 

@@ -5,7 +5,6 @@
 ```bash
 bwave signal <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--marker NAME CYCLE]
             [--format text|json] [--limit N]
 ```
 
@@ -34,7 +33,6 @@ VCD transition is its own row with the raw timestamp.
 - Time units: bare integers are cycles in sync mode;
   async mode requires a unit suffix (`100t`, `100ns`).
   See `reference/time-tokens`.
-- `--marker` applies.
 
 ## Output shape
 

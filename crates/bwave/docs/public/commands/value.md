@@ -5,7 +5,7 @@
 ```bash
 bwave value <FST_FILE> --at N [-s PATTERN[%RADIX] ...]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--virtual "name = expr"] [--marker NAME CYCLE]
+            [--virtual "name = expr"]
             [--format text|json] [--limit N]
 ```
 
