@@ -776,7 +776,9 @@ def _changed_targets(
                     f"changed .core has no valid name: {core_file}"
                 )
             selectors.update(
-                f"{vlnv}#{target}" for target in fusesoc_registry.core_target_names(doc)
+                f"{vlnv}#{target}"
+                for target in fusesoc_registry.core_target_names(doc)
+                if not fusesoc_registry.core_target_is_doctor_selftest(doc, target)
             )
     return selectors
 

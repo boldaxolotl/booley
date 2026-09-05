@@ -436,6 +436,24 @@ def test_live_ticket_worktree_rejects_uncommitted_protected_input(tmp_path: Path
         assert_live_inputs_unchanged(basis, root, reference)
 
 
+def test_changed_targets_ignore_non_public_doctor_selftests(tmp_path: Path) -> None:
+    (tmp_path / "doctor.core").write_text(
+        "CAPI=2:\n"
+        "name: ::doctor:0\n"
+        "targets:\n"
+        "  lint_public:\n"
+        "    flow: lint\n"
+        "  lint_selftest_bad:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
+        encoding="utf-8",
+    )
+
+    assert workspace_ops._changed_targets(tmp_path, ["doctor.core"], None, []) == {
+        "::doctor:0#lint_public"
+    }
+
+
 def test_validate_ticket_recreates_missing_authoring_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
