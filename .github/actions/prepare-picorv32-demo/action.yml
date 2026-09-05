@@ -80,6 +80,13 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install --no-install-recommends --yes gcc-riscv64-unknown-elf
+        tool_dir="${RUNNER_TEMP}/riscv32-toolchain"
+        mkdir -p "${tool_dir}"
+        for executable in /usr/bin/riscv64-unknown-elf-*; do
+          helper="${executable##*riscv64-unknown-elf-}"
+          ln -sf "${executable}" "${tool_dir}/riscv32-unknown-elf-${helper}"
+        done
+        echo "${tool_dir}" >> "${GITHUB_PATH}"
 
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash
@@ -87,7 +94,6 @@ runs:
         PYTHONPATH: ${{ github.workspace }}/src
         TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
         TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
-        TOOLCHAIN_PREFIX: riscv64-unknown-elf-
       run: >-
         git -C demo config user.name booley-ci &&
         git -C demo config user.email booley-ci@users.noreply.github.com &&

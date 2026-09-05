@@ -675,13 +675,89 @@ def materialize_current_ticket_checkout(
     basis: AcceptanceBasis,
     destination: Path | str,
 ) -> Path:
-    """Materialize current generation refs after verifying their recorded ancestry."""
+    """Materialize current generation refs after validating every Basis ref."""
     root = Path(project_root).resolve()
-    commits = {
-        participant.role: _current_ticket_commit(root, participant)
-        for participant in basis.participants
-    }
+    commits = validate_current_basis_refs(root, basis)
     return _materialize_participant_commits(root, basis, Path(destination), commits)
+
+
+def validate_current_basis_refs(
+    project_root: Path | str,
+    basis: AcceptanceBasis,
+) -> dict[str, str]:
+    """Validate source and destination refs, returning pinned Ticket commits."""
+    root = Path(project_root).resolve()
+    commits: dict[str, str] = {}
+    for participant in basis.participants:
+        repository = root if participant.role == "outer" else _project_repository(root)
+        commits[participant.role] = _descendant_ref_commit(
+            repository,
+            participant.ticket_ref,
+            participant.authoring_sha,
+            kind="Ticket",
+            role=participant.role,
+        )
+    validate_destination_refs(root, basis)
+    return commits
+
+
+def validate_destination_refs(
+    project_root: Path | str,
+    basis: AcceptanceBasis,
+    recorded_commits: Mapping[str, str] | None = None,
+) -> None:
+    """Require every destination ref to contain its recorded durable identity."""
+    root = Path(project_root).resolve()
+    expected = (
+        recorded_commits
+        if recorded_commits is not None
+        else {participant.role: participant.destination_sha for participant in basis.participants}
+    )
+    roles = {participant.role for participant in basis.participants}
+    if set(expected) != roles:
+        raise AcceptanceBasisError("recorded destination commits must cover every participant")
+    for participant in basis.participants:
+        recorded_sha = expected[participant.role]
+        if not isinstance(recorded_sha, str) or not _COMMIT_RE.fullmatch(recorded_sha):
+            raise AcceptanceBasisError(
+                f"recorded {participant.role} destination commit must be a full Git SHA"
+            )
+        repository = root if participant.role == "outer" else _project_repository(root)
+        _descendant_ref_commit(
+            repository,
+            participant.destination_ref,
+            recorded_sha,
+            kind="destination",
+            role=participant.role,
+        )
+
+
+def materialize_ticket_commits(
+    project_root: Path | str,
+    basis: AcceptanceBasis,
+    destination: Path | str,
+    commits: Mapping[str, str],
+) -> Path:
+    """Materialize durable Ticket commits after validating their Basis ancestry."""
+    root = Path(project_root).resolve()
+    expected_roles = {participant.role for participant in basis.participants}
+    if set(commits) != expected_roles:
+        raise AcceptanceBasisError("recorded Ticket commits must cover every Basis participant")
+    validated: dict[str, str] = {}
+    for participant in basis.participants:
+        commit = commits[participant.role]
+        if not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit):
+            raise AcceptanceBasisError(
+                f"recorded {participant.role} Ticket commit must be a full Git SHA"
+            )
+        repository = root if participant.role == "outer" else _project_repository(root)
+        validated[participant.role] = _descendant_commit(
+            repository,
+            commit,
+            participant.authoring_sha,
+            role=participant.role,
+        )
+    return _materialize_participant_commits(root, basis, Path(destination), validated)
 
 
 def _materialize_participant_commits(
@@ -699,10 +775,16 @@ def _materialize_participant_commits(
     return checkout
 
 
-def _current_ticket_commit(root: Path, participant: BasisParticipant) -> str:
-    repository = root if participant.role == "outer" else _project_repository(root)
+def _descendant_ref_commit(
+    repository: Path,
+    ref: str,
+    recorded_sha: str,
+    *,
+    kind: str,
+    role: str,
+) -> str:
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{participant.ticket_ref}^{{commit}}"],
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
         cwd=repository,
         capture_output=True,
         text=True,
@@ -710,12 +792,20 @@ def _current_ticket_commit(root: Path, participant: BasisParticipant) -> str:
         check=False,
     )
     if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
-        raise AcceptanceBasisError(
-            f"Acceptance Basis Ticket ref is unavailable: {participant.ticket_ref}"
-        )
-    current = result.stdout.strip()
+        raise AcceptanceBasisError(f"Acceptance Basis {kind} ref is unavailable: {ref}")
+    return _descendant_commit(repository, result.stdout.strip(), recorded_sha, role=role, ref=ref)
+
+
+def _descendant_commit(
+    repository: Path,
+    commit: str,
+    recorded_sha: str,
+    *,
+    role: str,
+    ref: str | None = None,
+) -> str:
     ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", participant.authoring_sha, current],
+        ["git", "merge-base", "--is-ancestor", recorded_sha, commit],
         cwd=repository,
         capture_output=True,
         text=True,
@@ -723,11 +813,12 @@ def _current_ticket_commit(root: Path, participant: BasisParticipant) -> str:
         check=False,
     )
     if ancestor.returncode != 0:
+        identity = ref or commit
         raise AcceptanceBasisError(
-            f"{BLOCK_REASON}: {participant.ticket_ref} no longer descends from recorded "
-            f"{participant.role} commit {participant.authoring_sha}"
+            f"{BLOCK_REASON}: {identity} no longer descends from recorded "
+            f"{role} commit {recorded_sha}"
         )
-    return current
+    return commit
 
 
 def _project_repository(root: Path) -> Path:

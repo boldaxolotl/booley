@@ -70,8 +70,9 @@ def _validate_checkout_basis(
     tickets_dir: Path,
     slug: str,
     fields: dict[str, object],
+    body: str,
 ) -> list[str]:
-    """Load the authoritative basis, then validate its clean authoring checkout."""
+    """Validate one executable Ticket in its current Basis composite."""
     if not (root / ".git").exists():
         return []
     if fields.get("target_contract") is not None:
@@ -96,10 +97,17 @@ def _validate_checkout_basis(
         ticket, _status = find_ticket_file(tickets_dir, slug)
         if ticket is None:
             raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
-        selector_errors = _validate_current_ticket_view(root, ticket, slug, basis)
+        validation_errors = _validate_current_ticket_view(
+            root,
+            ticket,
+            slug,
+            basis,
+            fields,
+            body,
+        )
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
-    return selector_errors
+    return validation_errors
 
 
 def _validate_current_ticket_view(
@@ -107,6 +115,8 @@ def _validate_current_ticket_view(
     ticket: Path,
     slug: str,
     basis: AcceptanceBasis,
+    fields: dict[str, object],
+    body: str,
 ) -> list[str]:
     from booley.flows.execution import flow_enabled
 
@@ -121,8 +131,17 @@ def _validate_current_ticket_view(
         )
         if not preparation.ok:
             raise AcceptanceBasisError(preparation.error)
+        errors = validate_ticket_fields(
+            fields,
+            body,
+            check_files=True,
+            check_git=False,
+            project_root=current,
+            check_tb_files=True,
+        )
         assert_inputs_unchanged(basis, current)
-        return validate_binding_selectors(current, basis.bindings)
+        errors.extend(validate_binding_selectors(current, basis.bindings))
+        return errors
 
 
 def _worktree_for_ref(repository: Path, ref: str) -> Path | None:
@@ -159,33 +178,34 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         return ReadinessResult(None, (f"ticket {slug!r} not found",))
 
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    from booley.flows.execution import flow_enabled
+    if (root / ".git").exists():
+        results = _validate_checkout_basis(root, tickets_dir, slug, fields, body)
+    else:
+        from booley.flows.execution import flow_enabled
 
-    status_before = _checkout_statuses(root)
-    preparation = prepare_project(
-        root,
-        root,
-        slug=slug,
-        ticket_path=ticket,
-        sim_flow_enabled=flow_enabled("sim", root),
-    )
-    if not preparation.ok:
-        return ReadinessResult(ticket, (preparation.error,))
-    if _checkout_statuses(root) != status_before:
-        return ReadinessResult(
-            ticket,
-            ("project preparation changed Git-visible checkout state",),
+        status_before = _checkout_statuses(root)
+        preparation = prepare_project(
+            root,
+            root,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", root),
         )
-
-    results = validate_ticket_fields(
-        fields,
-        body,
-        check_files=True,
-        check_git=False,
-        project_root=root,
-        check_tb_files=True,
-    )
+        if not preparation.ok:
+            return ReadinessResult(ticket, (preparation.error,))
+        if _checkout_statuses(root) != status_before:
+            return ReadinessResult(
+                ticket,
+                ("project preparation changed Git-visible checkout state",),
+            )
+        results = validate_ticket_fields(
+            fields,
+            body,
+            check_files=True,
+            check_git=False,
+            project_root=root,
+            check_tb_files=True,
+        )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
-    errors.extend(_validate_checkout_basis(root, tickets_dir, slug, fields))
     return ReadinessResult(ticket, tuple(errors), warnings)

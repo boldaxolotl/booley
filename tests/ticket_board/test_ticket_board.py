@@ -1499,6 +1499,9 @@ class TestOpHandoff:
         basis, receipt = _handoff_basis_receipt()
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
         monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._validate_handoff_basis", lambda *_args: True
+        )
         _write_ready_acceptance_state(tio)
 
         assert op_handoff(tio, "t1") is True
@@ -1514,6 +1517,26 @@ class TestOpHandoff:
             )
         )
         assert binding["snapshot_digest"] == accepted.snapshot.digest
+
+    def test_rejects_handoff_when_basis_validation_fails(self, tmp_path, monkeypatch, capsys):
+        from booley.ticket_board import acceptance_basis as basis_module
+
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        basis, _receipt = _handoff_basis_receipt()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+
+        def reject_drift(*_args, **_kwargs):
+            raise basis_module.AcceptanceBasisError(
+                "acceptance-input-change-required: destination ref was rewritten"
+            )
+
+        monkeypatch.setattr(basis_module, "materialize_current_ticket_checkout", reject_drift)
+
+        assert op_handoff(tio, "t1") is False
+        assert "destination ref was rewritten" in capsys.readouterr().err
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
 
     def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -2351,16 +2374,20 @@ class TestOpUnblock:
 
 
 class TestOpApprove:
-    def test_moves_to_done_complete(self, tmp_path):
+    def test_routes_through_validated_completion(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "my-ticket")
-        make_progress(tio, "my-ticket", {"step": "summary"})
-        op_approve(tio, "my-ticket")
+        calls = []
+        monkeypatch.setattr(
+            operations,
+            "op_complete",
+            lambda selected, slug: calls.append((selected, slug)) or True,
+        )
 
-        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "done"
-        progress = load_progress(tio.logs_dir, "my-ticket")
-        assert progress["step"] == "complete"
+        assert op_approve(tio, "my-ticket") is True
+        assert calls == [(tio, "my-ticket")]
 
 
 class TestOpPromoteWaiting:
@@ -3627,32 +3654,38 @@ class TestEnqueueOnSuccess:
 
 
 class TestOpApproveActorDetail:
-    """Test that op_approve logs custom actor and detail in transitions."""
+    """Legacy CLI metadata cannot bypass the terminal validation boundary."""
 
-    def test_default_actor_and_detail(self, tmp_path):
+    def test_default_actor_and_detail_are_not_a_direct_transition(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "my-ticket", extra_fields={"step": "summary"})
-        op_approve(tio, "my-ticket")
+        monkeypatch.setattr(operations, "op_complete", lambda *_args: False)
 
-        log = human_log_file(tio.logs_dir, "my-ticket", "transitions.log").read_text()
-        assert "ticket-triage" in log
-        assert "user approved merge" in log
+        assert op_approve(tio, "my-ticket") is False
+        assert not human_log_file(tio.logs_dir, "my-ticket", "transitions.log").exists()
 
-    def test_custom_actor_and_detail(self, tmp_path):
+    def test_custom_actor_and_detail_still_route_through_completion(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "auto-ticket")
-        make_progress(tio, "auto-ticket", {"step": "summary"})
+        calls = []
+        monkeypatch.setattr(
+            operations,
+            "op_complete",
+            lambda selected, slug: calls.append((selected, slug)) or True,
+        )
 
-        op_approve(tio, "auto-ticket", actor="ticket-execute", detail="auto-approved and merged")
+        assert op_approve(
+            tio,
+            "auto-ticket",
+            actor="ticket-execute",
+            detail="auto-approved and merged",
+        )
 
-        log = human_log_file(tio.logs_dir, "auto-ticket", "transitions.log").read_text()
-        assert "ticket-execute" in log
-        assert "auto-approved and merged" in log
-        # Verify ticket moved to done
-        _path, status = find_ticket_file(tio.tickets_dir, "auto-ticket")
-        assert status == "done"
-        progress = load_progress(tio.logs_dir, "auto-ticket")
-        assert progress["step"] == "complete"
+        assert calls == [(tio, "auto-ticket")]
 
 
 class TestCLIEnqueueOnSuccess:
@@ -3724,9 +3757,9 @@ class TestCLIEnqueueOnSuccess:
 
 
 class TestCLIApproveActorDetail:
-    """Test CLI approve --actor and --detail flags."""
+    """CLI approve metadata cannot bypass validated completion."""
 
-    def test_cli_approve_custom_actor(self, tmp_path, capsys):
+    def test_cli_approve_custom_actor_still_requires_acceptance(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
         for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
@@ -3746,10 +3779,9 @@ class TestCLIApproveActorDetail:
                     "auto-approved and merged",
                 ]
             )
-        assert rc == 0
-        log = human_log_file(tio.logs_dir, "t", "transitions.log").read_text()
-        assert "ticket-execute" in log
-        assert "auto-approved and merged" in log
+        assert rc == 2
+        assert "accepted snapshot" in capsys.readouterr().err
+        assert not human_log_file(tio.logs_dir, "t", "transitions.log").exists()
 
 
 class TestClassifyAutoApproved:
@@ -4207,9 +4239,12 @@ class TestOpReturnValues:
         make_ticket_in_dir(tio, "active", "t1")
         assert op_fail(tio, "t1", "boom", "sim-debug-loop") is True
 
-    def test_op_approve_success(self, tmp_path):
+    def test_op_approve_success(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "t1")
+        monkeypatch.setattr(operations, "op_complete", lambda *_args: True)
         assert op_approve(tio, "t1") is True
 
     def test_complete_rejects_corrupt_accepted_snapshot(self, tmp_path, capsys):

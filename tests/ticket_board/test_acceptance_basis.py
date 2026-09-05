@@ -32,6 +32,7 @@ from booley.ticket_board.acceptance_basis import (
     load_acceptance_basis,
     load_basis_receipt,
     load_basis_record,
+    validate_current_basis_refs,
 )
 from booley.ticket_board.acceptance_journal import JournalState
 from booley.ticket_board.acceptance_targets import (
@@ -374,6 +375,36 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
     assert evidence["record"]["sha256"]
     assert len(evidence["source_sha256"]) == 64
     assert len(evidence["operation_id"]) == 32
+
+
+def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Path) -> None:
+    root, _project_dir, tio = _basis_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "rewritten-destination",
+        TicketFileSpec(
+            summary="Reject rewritten destination",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("rewritten-destination") is True
+    basis = tio.load_basis("rewritten-destination")
+    tree = _git(root, "rev-parse", "HEAD^{tree}")
+    unrelated = subprocess.run(
+        ["git", "commit-tree", tree],
+        cwd=root,
+        input="unrelated destination\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    _git(root, "update-ref", "refs/heads/main", unrelated)
+
+    with pytest.raises(AcceptanceBasisError, match="no longer descends"):
+        validate_current_basis_refs(root, basis)
 
 
 def test_validate_ticket_recreates_missing_authoring_workspace(

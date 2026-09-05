@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -586,6 +587,44 @@ def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) ->
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     assert journal["state"] == "done"
     assert journal["cleaned"] == ["outer"]
+
+
+def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.ticket_board import acceptance_basis as basis_module
+    from booley.ticket_board import acceptance_ledger, operations
+
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    basis = _contract(
+        root,
+        (
+            ContractParticipant(
+                role="outer",
+                authoring_sha=ticket_sha,
+                ticket_ref="refs/heads/change-target",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
+            ),
+        ),
+    )
+    tio = _TicketIO(root, basis)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert acceptance_impl._ref_commit(root, "refs/heads/change-target") is None
+    receipt = {"basis_id": basis.basis_id}
+    monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
+    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
+
+    operations._validate_accepted_snapshot(
+        tio,
+        "change-target",
+        tmp_path / "logs",
+        SimpleNamespace(acceptance_basis=receipt),
+    )
 
 
 def test_retry_cannot_change_frozen_cleanup_policy(tmp_path: Path, capsys) -> None:

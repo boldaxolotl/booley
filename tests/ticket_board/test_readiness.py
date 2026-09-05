@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board.io import TicketFileSpec, TicketIO
@@ -125,8 +124,7 @@ targets:
     assert resolved_roots == [root.resolve()]
     assert ticket.read_bytes() == ticket_before
     assert not (project / "tickets" / "board" / "active" / "demo.md").exists()
-    assert (root / "generated.hex").is_file()
-    assert "generated.hex" in fusesoc_registry.target_referenced_files(root, "sim_toy")
+    assert not (root / "generated.hex").exists()
     assert _git(root, "status", "--porcelain") == ""
 
 
@@ -230,6 +228,7 @@ def test_executable_readiness_uses_authoritative_basis_reader(
         tickets,
         "demo",
         {"acceptance_basis": {"schema": 1}},
+        "",
     )
 
     assert errors == ["Acceptance Basis receipt mismatch"]
