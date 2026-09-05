@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,6 +28,9 @@ __all__ = [
 
 class DemoContractError(ValueError):
     """The demo contract is malformed or a checkout does not satisfy it."""
+
+
+_SAFE_TICKET_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,13 @@ def _safe_relative_path(document: Mapping[str, Any], key: str, *, field: str) ->
     candidate = PurePosixPath(value)
     if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts:
         raise BoundaryError(f"{field} must be a safe relative path")
+    return value
+
+
+def _require_ticket_slug(document: Mapping[str, Any]) -> str:
+    value = _require_trimmed_str(document, "ticket_slug")
+    if not _SAFE_TICKET_SLUG_RE.fullmatch(value):
+        raise BoundaryError("ticket_slug must be a safe Ticket slug")
     return value
 
 
@@ -187,7 +198,7 @@ def load_contract(path: Path | str) -> DemoContract:
             document.get("required_targets"), field="required_targets"
         )
         ticket_fixture = _safe_relative_path(document, "ticket_fixture", field="ticket_fixture")
-        ticket_slug = _require_trimmed_str(document, "ticket_slug")
+        ticket_slug = _require_ticket_slug(document)
         bindings = _parse_bindings(document, required_targets)
         generated_inputs = _parse_generated_inputs(document, required_targets)
     except BoundaryError as exc:

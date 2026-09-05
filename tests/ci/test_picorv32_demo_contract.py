@@ -58,6 +58,17 @@ def _yaml_strings(value: Any) -> tuple[str, ...]:
     return (value,) if isinstance(value, str) else ()
 
 
+def _contract_table_strings(contract: dict[str, Any]) -> set[str]:
+    bindings = contract["required_binding"]
+    generated_inputs = contract["generated_input"]
+    return {
+        *contract["required_targets"],
+        *(binding[key] for binding in bindings for key in ("criterion", "target")),
+        *(generated[key] for generated in generated_inputs for key in ("path", "producer")),
+        *(target for generated in generated_inputs for target in generated["targets"]),
+    }
+
+
 def _workflow_consumers() -> list[tuple[Path, str, list[dict[str, Any]], int]]:
     consumers: list[tuple[Path, str, list[dict[str, Any]], int]] = []
     for path in Path(".github/workflows").glob("*.yml"):
@@ -245,7 +256,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert references == set(OUTPUT_KEYS)
     assert all(contract[key] not in value for key in OUTPUT_KEYS for value in action_strings)
     assert all(
-        target not in value for target in contract["required_targets"] for value in action_strings
+        authority_value not in value
+        for authority_value in _contract_table_strings(contract)
+        for value in action_strings
     )
     assert "PROJECT_CONTRACT_REF" not in action_strings
     assert "ci/agent-ticket-contract" not in action_strings
@@ -271,8 +284,8 @@ def test_every_workflow_consumer_uses_shared_preparation_outputs() -> None:
         for key in (*OUTPUT_KEYS[:4], "ticket_slug"):
             assert all(contract[key] not in value for value in workflow_strings)
         assert all(
-            target not in value
-            for target in contract["required_targets"]
+            authority_value not in value
+            for authority_value in _contract_table_strings(contract)
             for value in workflow_strings
         )
         commands = _workflow_commands(path)
@@ -514,6 +527,11 @@ _INVALID_CONTRACT_CASES = [
         "project_ref must be a full lowercase Git commit SHA",
         id="project-revision",
     ),
+    pytest.param(
+        ('ticket_slug = "demo"', 'ticket_slug = "../evil"'),
+        "ticket_slug must be a safe Ticket slug",
+        id="unsafe-ticket-slug",
+    ),
     pytest.param((".github/contracts/ticket.md", "../ticket.md"), "ticket_fixture", id="path"),
     pytest.param(
         ('path = "firmware/image.hex"', 'path = "../image.hex"'),
@@ -657,7 +675,7 @@ def test_exporter_rejects_invalid_typed_contract_without_outputs(
 
 
 @pytest.mark.parametrize("escape", [r"\n", r"\r"])
-def test_exporter_buffers_outputs_before_rejecting_unsafe_last_field(
+def test_exporter_rejects_unsafe_last_field_without_partial_outputs(
     tmp_path: Path, escape: str
 ) -> None:
     contract = _write_contract(
@@ -668,7 +686,7 @@ def test_exporter_buffers_outputs_before_rejecting_unsafe_last_field(
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert "ticket_slug must be a single non-empty output line" in result.stderr
+    assert "ticket_slug must be a safe Ticket slug" in result.stderr
 
 
 @pytest.mark.parametrize("contents", ["not = [toml", None])
