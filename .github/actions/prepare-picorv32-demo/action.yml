@@ -65,6 +65,7 @@ runs:
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash
       env:
+        PYTHONPATH: ${{ github.workspace }}/src
         TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
         TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
       run: >-
