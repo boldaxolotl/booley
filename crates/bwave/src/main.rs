@@ -166,7 +166,7 @@ struct VirtualOpts {
 struct MarkerOpts {
     /// Named wave annotation: --marker NAME TIME (repeatable)
     #[arg(long = "marker", num_args = 2, action = clap::ArgAction::Append,
-          value_names = &["NAME", "TIME"], allow_hyphen_values = true)]
+          value_names = &["NAME", "TIME"])]
     markers: Vec<String>,
 }
 
@@ -537,19 +537,16 @@ fn normalize_value(val: &str) -> String {
 
 /// Parse repeatable `--marker NAME TIME` pairs before touching the store.
 fn parse_markers(raw: &[String], async_mode: bool) -> Result<Vec<(String, TimeToken)>, String> {
-    let mut chunks = raw.chunks_exact(2);
+    let (chunks, remainder) = raw.as_chunks::<2>();
     let markers = chunks
-        .by_ref()
+        .iter()
         .map(|chunk| {
             let token = TimeToken::parse(&chunk[1], async_mode)
                 .map_err(|error| format!("--marker {} {}: {error}", chunk[0], chunk[1]))?;
             Ok((chunk[0].clone(), token))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    debug_assert!(
-        chunks.remainder().is_empty(),
-        "clap groups markers in pairs"
-    );
+    debug_assert!(remainder.is_empty(), "clap groups markers in pairs");
     Ok(markers)
 }
 

@@ -725,8 +725,12 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
 
     cases = [
         (["-t", "start:done"], ["-t", "10c:20c"]),
-        (["--before", "done"], ["--before", "20"]),
-        (["--after", "start"], ["--after", "10"]),
+        (["--before", "done"], ["-t", ":20c", "--last"]),
+        (["--after", "start"], ["-t", "10c:", "--first"]),
+        (
+            ["find", "sig", "1", "--before", "done", "--async"],
+            ["find", "sig", "1", "-t", ":20c", "--last", "--async"],
+        ),
         (["--diff", "start", "done"], ["--diff", "10c", "20c"]),
         (["diff", "start", "done"], ["diff", "10c", "20c"]),
         (["value", "--at", "start"], ["value", "--at", "10c"]),

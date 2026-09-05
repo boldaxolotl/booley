@@ -28,6 +28,7 @@ The option is repeatable. TIME uses the same typed grammar as `-t`:
 - `Nps`, `Nns`, `Nus`, and `Nms` are physical times.
 - In async mode, the suffix is required; a bare integer is ambiguous and is
   rejected.
+- Marker times must be non-negative.
 
 Each in-window marker becomes a label above its column. In async mode, B-Wave
 adds a column at the marker tick even if no selected signal transitions there.
@@ -92,6 +93,5 @@ bwave wave sim.fst --async -s "*fsm*" -t 1us:2us \
 
 - Repeating a marker name updates it; the last occurrence wins.
 - Distinct names at the same time share a comma-separated label.
-- Negative sync-cycle markers are accepted. They render only if the selected
-  reset-inclusive range contains that cycle.
+- Negative marker times are rejected during argument parsing.
 - Markers annotate output; they do not alter signal values or query matching.

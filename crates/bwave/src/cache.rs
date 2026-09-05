@@ -3417,12 +3417,21 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     } else {
         // Async: need range-bounded decode, then collect tick set from results
-        // Async time tokens were already resolved to raw ticks in
-        // ExtractConfig::resolve_time_tokens(). Do not scale them a second time.
-        let range_start_tick = u64::try_from(range_start).unwrap_or(0);
-        let range_end_tick = range_end_opt
-            .and_then(|end| u64::try_from(end).ok())
-            .unwrap_or(cache.sim_end_tick);
+        let range_start_tick = if cache.ticks_to_ns > 0.0 {
+            (range_start as f64 / cache.ticks_to_ns) as u64
+        } else {
+            range_start as u64
+        };
+        let range_end_tick = match range_end_opt {
+            Some(e) => {
+                if cache.ticks_to_ns > 0.0 {
+                    (e as f64 / cache.ticks_to_ns) as u64
+                } else {
+                    e as u64
+                }
+            }
+            None => cache.sim_end_tick,
+        };
 
         cache.prefetch_window(&matched, range_end_tick);
         let range_results: Vec<(Option<String>, Vec<(u64, String)>)> = matched

@@ -143,64 +143,71 @@ from booley.bwave.sessions import (
 )
 
 
-def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
-    """Resolve marker names in time-related arguments, in-place.
+def _marker_cycle_token(token: str, markers: dict[str, int]) -> str:
+    """Replace a persisted marker name with an explicit cycle token."""
+    return f"{markers[token]}c" if token in markers else token
 
-    Replaces marker names with their cycle numbers in:
-    -t VALUE, --before VALUE, --after VALUE, --diff V1 V2
-    """
-    sessions = _load_sessions()
-    markers = _get_markers(sessions, alias)
+
+def _marker_bare_cycle(token: str, markers: dict[str, int]) -> str:
+    """Replace a marker where the native option accepts only a bare integer."""
+    return str(markers[token]) if token in markers else token
+
+
+def _resolve_marker_range(value: str, markers: dict[str, int]) -> str:
+    """Resolve persisted markers in a typed START:END time range."""
+    if ":" not in value:
+        return _marker_cycle_token(value, markers)
+    start, end = value.split(":", 1)
+    return f"{_marker_cycle_token(start, markers)}:{_marker_cycle_token(end, markers)}"
+
+
+def _rewrite_marker_bound(extra: list[str], markers: dict[str, int]) -> None:
+    """Express named --before/--after bounds as typed cycle ranges."""
+    for flag, range_template, direction in (
+        ("--before", ":{}c", "--last"),
+        ("--after", "{}c:", "--first"),
+    ):
+        if flag not in extra:
+            continue
+        index = extra.index(flag)
+        if index + 1 < len(extra) and extra[index + 1] in markers:
+            cycle = markers[extra[index + 1]]
+            extra[index : index + 2] = ["-t", range_template.format(cycle), direction]
+
+
+def _resolve_markers_in_args(extra: list[str], alias: str) -> None:
+    """Resolve persisted marker names in wrapper time arguments, in-place."""
+    markers = _get_markers(_load_sessions(), alias)
     if not markers:
         return
 
-    def resolve_token(tok: str, *, typed: bool = False) -> str:
-        """Replace a marker name with its stored cycle when it matches."""
-        if tok in markers:
-            cycle = str(markers[tok])
-            return f"{cycle}c" if typed else cycle
-        return tok
-
-    def resolve_time_range(val: str) -> str:
-        """Resolve markers in a -t style range (START:END)."""
-        if ":" in val:
-            parts = val.split(":", 1)
-            return (
-                f"{resolve_token(parts[0], typed=True)}:"
-                f"{resolve_token(parts[1], typed=True)}"
-            )
-        return resolve_token(val, typed=True)
+    _rewrite_marker_bound(extra, markers)
 
     if extra:
         sub = extra[0]
         if sub == "diff" and len(extra) >= 3:
-            extra[1] = resolve_token(extra[1], typed=True)
-            extra[2] = resolve_token(extra[2], typed=True)
+            extra[1] = _marker_cycle_token(extra[1], markers)
+            extra[2] = _marker_cycle_token(extra[2], markers)
         elif sub == "value":
             for j, tok in enumerate(extra):
                 if tok == "--at" and j + 1 < len(extra):
-                    extra[j + 1] = resolve_token(extra[j + 1], typed=True)
+                    extra[j + 1] = _marker_cycle_token(extra[j + 1], markers)
                     break
 
     i = 0
     while i < len(extra):
         if extra[i] in ("-t", "--time") and i + 1 < len(extra):
-            extra[i + 1] = resolve_time_range(extra[i + 1])
+            extra[i + 1] = _resolve_marker_range(extra[i + 1], markers)
             i += 2
-        elif extra[i] in (
-            "--at-time",
-            "--at-cycle",
-            "--before",
-            "--after",
-        ) and i + 1 < len(extra):
-            extra[i + 1] = resolve_token(extra[i + 1])
+        elif extra[i] in ("--at-time", "--at-cycle") and i + 1 < len(extra):
+            extra[i + 1] = _marker_bare_cycle(extra[i + 1], markers)
             i += 2
         elif extra[i] == "--at" and i + 1 < len(extra):
-            extra[i + 1] = resolve_token(extra[i + 1], typed=True)
+            extra[i + 1] = _marker_cycle_token(extra[i + 1], markers)
             i += 2
         elif extra[i] == "--diff" and i + 2 < len(extra):
-            extra[i + 1] = resolve_token(extra[i + 1], typed=True)
-            extra[i + 2] = resolve_token(extra[i + 2], typed=True)
+            extra[i + 1] = _marker_cycle_token(extra[i + 1], markers)
+            extra[i + 2] = _marker_cycle_token(extra[i + 2], markers)
             i += 3
         else:
             i += 1
