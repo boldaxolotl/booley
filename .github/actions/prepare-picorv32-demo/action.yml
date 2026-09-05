@@ -79,7 +79,9 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install --no-install-recommends --yes gcc-riscv64-unknown-elf
+        sudo apt-get install --no-install-recommends --yes \
+          gcc-riscv64-unknown-elf \
+          picolibc-riscv64-unknown-elf
         tool_dir="${RUNNER_TEMP}/riscv32-toolchain"
         mkdir -p "${tool_dir}"
         for executable in /usr/bin/riscv64-unknown-elf-*; do
