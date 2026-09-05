@@ -311,6 +311,7 @@ def _validate_source_surface(
             project_checkout = temporary / project_relative
             _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
+            _materialize_surface_submodules(root, temporary)
             assert_inputs_unchanged(basis, temporary)
             from ..acceptance_targets import validate_binding_selectors
 
@@ -321,6 +322,21 @@ def _validate_source_surface(
                 )
         except AcceptanceBasisError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
+
+
+def _materialize_surface_submodules(control_root: Path, surface: Path) -> None:
+    """Populate one exact acceptance surface from local control repositories."""
+    from booley.runtime.submodule_materialization import (
+        SubmoduleMaterializationError,
+        materialize_ticket_submodules,
+    )
+
+    try:
+        materialize_ticket_submodules(control_root, surface)
+    except SubmoduleMaterializationError as exc:
+        raise AcceptanceOperationError(
+            f"could not materialize acceptance surface submodules offline: {exc}"
+        ) from exc
 
 
 def _checked_out_at(repository: Path, destination_ref: str) -> Path | None:
@@ -572,6 +588,7 @@ def _validate_candidate_surface(
             _candidate_identity("project", transaction.journal, plans),
         )
     try:
+        _materialize_surface_submodules(transaction.root, outer)
         assert_inputs_unchanged(transaction.basis, outer)
     except AcceptanceBasisError as exc:
         raise AcceptanceOperationError(str(exc)) from exc

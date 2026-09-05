@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from booley.ticket_board.acceptance_basis import BasisParticipant
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_journal import (
     AcceptanceOperationError,
     AcceptanceOutcome,
@@ -58,6 +59,81 @@ def _single_repository_acceptance(
         allowed_board_rename=None,
     )
     return root, tio, request, base
+
+
+def _composite_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
+        (
+            BasisParticipant("outer", "a" * 40, "outer-src", "outer-dst", "b" * 40),
+            BasisParticipant("project", "c" * 40, "project-src", "project-dst", "d" * 40),
+        )
+    )
+
+
+def test_source_surface_materializes_submodules_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(acceptance_impl, "_clone_checkout", lambda *_args: events.append("clone"))
+    monkeypatch.setattr(
+        acceptance_impl, "checkout_project_dir_relative_to", lambda _root: Path("project")
+    )
+    monkeypatch.setattr(
+        acceptance_impl,
+        "_materialize_surface_submodules",
+        lambda *_args: events.append("materialize"),
+    )
+    monkeypatch.setattr(
+        acceptance_impl,
+        "assert_inputs_unchanged",
+        lambda *_args: events.append("validate"),
+    )
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_targets.validate_binding_selectors",
+        lambda *_args: (),
+    )
+
+    acceptance_impl._validate_source_surface(
+        tmp_path, tmp_path / "project", _composite_basis(), {"outer": "a", "project": "b"}
+    )
+
+    assert events == ["clone", "clone", "materialize", "validate"]
+
+
+def test_candidate_surface_materializes_submodules_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(acceptance_impl, "_clone_checkout", lambda *_args: events.append("clone"))
+    monkeypatch.setattr(
+        acceptance_impl, "checkout_project_dir_relative_to", lambda _root: Path("project")
+    )
+    monkeypatch.setattr(
+        acceptance_impl,
+        "_materialize_surface_submodules",
+        lambda *_args: events.append("materialize"),
+    )
+    monkeypatch.setattr(
+        acceptance_impl,
+        "assert_inputs_unchanged",
+        lambda *_args: events.append("validate"),
+    )
+    journal = SimpleNamespace(
+        candidates={
+            "outer": SimpleNamespace(prepared_sha="a" * 40),
+            "project": SimpleNamespace(prepared_sha="b" * 40),
+        }
+    )
+    transaction = SimpleNamespace(
+        root=tmp_path,
+        project_repository=tmp_path / "project",
+        basis=_composite_basis(),
+        journal=journal,
+    )
+
+    acceptance_impl._validate_candidate_surface(transaction, {}, tmp_path)
+
+    assert events == ["clone", "clone", "materialize", "validate"]
 
 
 def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: Path) -> None:

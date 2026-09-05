@@ -83,6 +83,28 @@ def _init_repo(repo: Path) -> None:
     _commit_all(repo, "two")
 
 
+def _add_private_project_submodule(project: Path, dependency: Path) -> None:
+    dependency.mkdir()
+    _init_repo(dependency)
+    _git(
+        project,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(
+        project,
+        "config",
+        "--file",
+        ".gitmodules",
+        "submodule.vendor/dependency.url",
+        "git@example.invalid:private/dependency.git",
+    )
+
+
 def test_yields_baseline_content_and_leaves_tree_untouched(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     # A dirty working-tree edit that an in-place checkout would clobber.
@@ -241,26 +263,7 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
     core = project / "cores" / "top.core"
     core.write_text("recipe: baseline\n", encoding="utf-8")
-    dependency = tmp_path / "dependency"
-    dependency.mkdir()
-    _init_repo(dependency)
-    _git(
-        project,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        str(dependency),
-        "vendor/dependency",
-    )
-    _git(
-        project,
-        "config",
-        "--file",
-        ".gitmodules",
-        "submodule.vendor/dependency.url",
-        "git@example.invalid:private/dependency.git",
-    )
+    _add_private_project_submodule(project, tmp_path / "dependency")
     _commit_all(project, "project baseline")
 
     ticket = project / "worktrees" / "ticket"
