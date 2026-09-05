@@ -31,6 +31,11 @@ from booley.runtime.ticket_repositories import (
     project_repository_expected,
 )
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    BasisParticipant,
+)
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
@@ -168,30 +173,25 @@ def _git(worktree: Path, *args: str, timeout: int = 60) -> str:
     return result.stdout
 
 
-def _resolve_base_sha(worktree: Path, entry: dict[str, Any], head_sha: str) -> str:
-    configured = entry.get("base_sha")
-    if isinstance(configured, str) and configured.strip():
-        _git(worktree, "rev-parse", "--verify", f"{configured.strip()}^{{commit}}")
-        return configured.strip()
-    branch = entry.get("branch")
-    if not isinstance(branch, str) or not branch:
-        raise ReviewPrepError("ticket has neither base_sha nor a base branch")
-    return _git(worktree, "merge-base", branch, head_sha).strip()
-
-
-def _find_checkout(project_root: Path, feature_branch: str) -> Path | None:
+def _find_checkout(project_root: Path, ticket_ref: str) -> Path | None:
     """Find a branch checkout without depending on the caller's current directory."""
     output = _git(project_root, "worktree", "list", "--porcelain")
     checkout: Path | None = None
-    wanted = f"refs/heads/{feature_branch}"
     for line in [*output.splitlines(), ""]:
         if line.startswith("worktree "):
             checkout = Path(line.removeprefix("worktree "))
-        elif line == f"branch {wanted}" and checkout is not None:
+        elif line == f"branch {ticket_ref}" and checkout is not None:
             return checkout.resolve()
         elif not line:
             checkout = None
     return None
+
+
+def _load_review_basis(tio: TicketIO, slug: str) -> AcceptanceBasis:
+    try:
+        return tio.load_basis(slug)
+    except AcceptanceBasisError as exc:
+        raise ReviewPrepError(f"ticket '{slug}' has no valid Acceptance Basis: {exc}") from exc
 
 
 def _resolve_context(
@@ -225,14 +225,24 @@ def _resolve_context(
     )
     if not report_enabled and not allow_report_disabled:
         raise ReviewPrepError(f"ticket '{slug}' has on_success.triage_report disabled")
-    feature_branch = str(entry.get("feature_branch") or slug)
-    checkout = _find_checkout(project_root, feature_branch)
+    basis = _load_review_basis(tio, slug)
+    outer = basis.participant("outer")
+    feature_branch = outer.ticket_ref.removeprefix("refs/heads/")
+    checkout = _find_checkout(project_root, outer.ticket_ref)
     if not checkout:
-        raise ReviewPrepError(f"no worktree has feature branch '{feature_branch}' checked out")
+        raise ReviewPrepError(
+            f"no worktree has Acceptance Basis ref '{outer.ticket_ref}' checked out"
+        )
     worktree = Path(checkout).resolve()
+    checked_out_ref = _git(worktree, "symbolic-ref", "HEAD").strip()
+    if checked_out_ref != outer.ticket_ref:
+        raise ReviewPrepError(
+            f"ticket checkout uses ref {checked_out_ref!r}, expected {outer.ticket_ref!r}"
+        )
     head_sha = _git(worktree, "rev-parse", "HEAD").strip()
-    base_sha = _resolve_base_sha(worktree, entry, head_sha)
-    project_repository = _resolve_project_review_repository(project_root, worktree, slug)
+    _git(worktree, "rev-parse", "--verify", f"{outer.authoring_sha}^{{commit}}")
+    project = next((row for row in basis.participants if row.role == "project"), None)
+    project_repository = _resolve_project_review_repository(project_root, worktree, project)
     return ReviewPrepContext(
         project_root=project_root,
         slug=slug,
@@ -240,7 +250,7 @@ def _resolve_context(
         runtime_dir=ticket_runtime_dir(tio.logs_dir / slug) / "triage-prep",
         worktree=worktree,
         ticket_path=tickets_dir / str(entry["file"]),
-        base_sha=base_sha,
+        base_sha=outer.authoring_sha,
         head_sha=head_sha,
         feature_branch=feature_branch,
         triage_report_enabled=report_enabled,
@@ -249,11 +259,13 @@ def _resolve_context(
 
 
 def _resolve_project_review_repository(
-    project_root: Path, worktree: Path, slug: str
+    project_root: Path,
+    worktree: Path,
+    participant: BasisParticipant | None,
 ) -> ProjectReviewRepository | None:
     repository = paired_project_repository(worktree)
     if repository is None:
-        if project_repository_expected(worktree):
+        if participant is not None or project_repository_expected(worktree):
             try:
                 configured_project_dir = resolve_project_dir(project_root)
             except FileNotFoundError:
@@ -263,16 +275,28 @@ def _resolve_project_review_repository(
                     "configured project repository has no paired ticket checkout"
                 )
         return None
-    feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
-    expected = f"booley-ticket/{slug}"
-    if feature_branch != expected:
+    if participant is None:
         raise ReviewPrepError(
-            f"paired project checkout uses branch {feature_branch!r}, expected {expected!r}"
+            "paired project checkout exists without a project Acceptance Basis participant"
+        )
+    ticket_ref = _git(repository.worktree, "symbolic-ref", "HEAD").strip()
+    if ticket_ref != participant.ticket_ref:
+        raise ReviewPrepError(
+            f"paired project checkout uses ref {ticket_ref!r}, expected {participant.ticket_ref!r}"
         )
     head_sha = _git(repository.worktree, "rev-parse", "HEAD").strip()
-    upstream = _git(repository.worktree, "rev-parse", "@{upstream}").strip()
-    base_sha = _git(repository.worktree, "merge-base", upstream, head_sha).strip()
-    return ProjectReviewRepository(repository.worktree, base_sha, head_sha, feature_branch)
+    _git(
+        repository.worktree,
+        "rev-parse",
+        "--verify",
+        f"{participant.authoring_sha}^{{commit}}",
+    )
+    return ProjectReviewRepository(
+        repository.worktree,
+        participant.authoring_sha,
+        head_sha,
+        participant.ticket_ref.removeprefix("refs/heads/"),
+    )
 
 
 def _prompt_text() -> str:

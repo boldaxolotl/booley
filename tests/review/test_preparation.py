@@ -14,6 +14,7 @@ import pytest
 
 from booley.core.models import AgentResult
 from booley.review import preparation as rp
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 
 
 def _explanation() -> dict:
@@ -55,6 +56,35 @@ def _ctx(tmp_path: Path) -> rp.ReviewPrepContext:
         head_sha="b" * 40,
         feature_branch="demo",
     )
+
+
+def _basis(
+    *,
+    outer_sha: str = "a" * 40,
+    outer_ref: str = "refs/heads/booley-generation/0123456789abcdef/outer",
+    project_sha: str | None = None,
+    project_ref: str = "refs/heads/booley-generation/0123456789abcdef/project",
+) -> AcceptanceBasis:
+    participants = [
+        BasisParticipant(
+            role="outer",
+            authoring_sha=outer_sha,
+            ticket_ref=outer_ref,
+            destination_ref="refs/heads/main",
+            destination_sha="c" * 40,
+        )
+    ]
+    if project_sha is not None:
+        participants.append(
+            BasisParticipant(
+                role="project",
+                authoring_sha=project_sha,
+                ticket_ref=project_ref,
+                destination_ref="refs/heads/main",
+                destination_sha="d" * 40,
+            )
+        )
+    return AcceptanceBasis(tuple(participants))
 
 
 def _git_evidence(path: Path) -> dict[str, Path]:
@@ -137,20 +167,29 @@ def test_resolve_context_accepts_blocked_ticket(tmp_path: Path, monkeypatch):
                 "base_sha": "a" * 40,
             }
 
+        def load_basis(self, _slug):
+            return _basis(outer_sha="c" * 40)
+
     monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: tmp_path / "tickets")
     monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
     monkeypatch.setattr(rp, "_find_checkout", lambda *_args: checkout)
-    monkeypatch.setattr(
-        rp,
-        "_git",
-        lambda _worktree, *args: "b" * 40 if args[:2] == ("rev-parse", "HEAD") else "",
-    )
+
+    def fake_git(_worktree, *args):
+        if args == ("symbolic-ref", "HEAD"):
+            return _basis().participant("outer").ticket_ref
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "b" * 40
+        return ""
+
+    monkeypatch.setattr(rp, "_git", fake_git)
 
     ctx = rp._resolve_context(tmp_path, "demo", require_review=True)
 
     assert ctx.slug == "demo"
     assert ctx.worktree == checkout.resolve()
     assert ctx.ticket_path == tmp_path / "tickets" / "board/blocked/demo.md"
+    assert ctx.base_sha == "c" * 40
+    assert ctx.feature_branch == "booley-generation/0123456789abcdef/outer"
 
 
 def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
@@ -164,6 +203,7 @@ def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
 
     checkout = tmp_path / "worktree"
     head_sha = _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    _git(checkout, "branch", "-m", "booley-generation/0123456789abcdef/outer")
     (checkout / rp.PROJECT_DIR_NAME).mkdir()
     exclude = checkout / ".git" / "info" / "exclude"
     with exclude.open("a", encoding="utf-8") as stream:
@@ -180,6 +220,9 @@ def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
                 "base_sha": head_sha,
                 "on_success": {"triage_report": False},
             }
+
+        def load_basis(self, _slug):
+            return _basis(outer_sha=head_sha)
 
     monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: project_dir / "tickets")
     monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
@@ -208,7 +251,44 @@ def test_project_review_repository_rejects_missing_pair_for_standalone_project_r
         stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
 
     with pytest.raises(rp.ReviewPrepError, match="has no paired ticket checkout"):
-        rp._resolve_project_review_repository(project_root, checkout, "demo")
+        rp._resolve_project_review_repository(
+            project_root,
+            checkout,
+            _basis(project_sha="b" * 40).participant("project"),
+        )
+
+
+def test_project_review_repository_uses_project_acceptance_basis(tmp_path: Path, monkeypatch):
+    project_checkout = tmp_path / "project-worktree"
+    project_checkout.mkdir()
+    participant = _basis(project_sha="b" * 40).participant("project")
+    monkeypatch.setattr(
+        rp,
+        "paired_project_repository",
+        lambda _worktree: SimpleNamespace(worktree=project_checkout),
+    )
+
+    def fake_git(_worktree, *args):
+        if args == ("symbolic-ref", "HEAD"):
+            return participant.ticket_ref
+        if args == ("rev-parse", "HEAD"):
+            return "e" * 40
+        if args == (
+            "rev-parse",
+            "--verify",
+            f"{participant.authoring_sha}^{{commit}}",
+        ):
+            return participant.authoring_sha
+        raise AssertionError(args)
+
+    monkeypatch.setattr(rp, "_git", fake_git)
+
+    repository = rp._resolve_project_review_repository(tmp_path, tmp_path, participant)
+
+    assert repository is not None
+    assert repository.base_sha == participant.authoring_sha
+    assert repository.head_sha == "e" * 40
+    assert repository.feature_branch == participant.ticket_ref.removeprefix("refs/heads/")
 
 
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):
@@ -410,7 +490,7 @@ def test_find_checkout_uses_supplied_project_root(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(rp, "_git", git)
 
-    assert rp._find_checkout(tmp_path, "demo") == checkout.resolve()
+    assert rp._find_checkout(tmp_path, "refs/heads/demo") == checkout.resolve()
     assert calls == [(tmp_path, ("worktree", "list", "--porcelain"))]
 
 
