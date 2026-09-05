@@ -13,6 +13,10 @@ from typing import Any
 import pytest
 import yaml
 
+sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
+
+from picorv32_ci_inputs import PICORV32_PULL_REQUEST_PATHS
+
 from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
 from booley.dev_support.demo_contract import (
@@ -35,19 +39,6 @@ EXPORT_SCRIPT = Path(".github/scripts/export_demo_contract.py")
 INSTALL_SCRIPT = Path(".github/scripts/install_demo_ticket.py")
 VERIFY_SCRIPT = Path(".github/scripts/verify_picorv32_demo.sh")
 
-_PULL_REQUEST_PATHS = {
-    ".github/actions/prepare-picorv32-demo/**",
-    ".github/contracts/picorv32-demo.toml",
-    ".github/contracts/picorv32-demo-ticket.md",
-    ".github/scripts/export_demo_contract.py",
-    ".github/scripts/install_demo_ticket.py",
-    ".github/scripts/picorv32_demo_contract.py",
-    ".github/scripts/verify_picorv32_demo.sh",
-    ".github/workflows/picorv32-demo.yml",
-    "pyproject.toml",
-    "src/booley/**",
-}
-
 
 def _workflow_events() -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -68,11 +59,43 @@ def _workflow_commands(path: Path) -> str:
 def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
     events = _workflow_events()
 
-    assert set(events["pull_request"]["paths"]) == _PULL_REQUEST_PATHS
+    assert set(events["pull_request"]["paths"]) == PICORV32_PULL_REQUEST_PATHS
     assert events["push"] == {"branches": ["main"]}
     assert events["merge_group"] is None
     assert events["schedule"] == [{"cron": "23 3 * * *"}]
     assert events["workflow_dispatch"] is None
+
+
+def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["demo-contract"]["steps"]
+    resolver = next(
+        step for step in steps if step.get("name") == "Pull and resolve RISC-V Session Runtime"
+    )
+    upload = next(
+        step for step in steps if step.get("name") == "Retain RISC-V Session Runtime identity"
+    )
+    verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify public demo contract with current Booley source"
+    )
+
+    assert resolver["id"] == "runtime-image"
+    assert ".github/scripts/pull_image_identity.py" in resolver["run"]
+    assert '--image "${IMAGE}"' in resolver["run"]
+    assert '--github-output "${GITHUB_OUTPUT}"' in resolver["run"]
+    assert '--evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json"' in resolver["run"]
+    assert upload["if"] == "always()"
+    assert str(upload["uses"]).startswith("actions/upload-artifact@")
+    assert upload["with"] == {
+        "name": "picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": "${{ runner.temp }}/picorv32-demo/image-identity.json",
+        "if-no-files-found": "error",
+        "retention-days": 14,
+    }
+    assert '"${{ steps.runtime-image.outputs.image }}"' in verify["run"]
+    assert '"${IMAGE}" bash' not in verify["run"]
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:

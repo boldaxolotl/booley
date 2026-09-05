@@ -11,7 +11,9 @@ on:
       - ".github/contracts/picorv32-demo-ticket.md"
       - ".github/scripts/export_demo_contract.py"
       - ".github/scripts/install_demo_ticket.py"
+      - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
+      - ".github/scripts/pull_image_identity.py"
       - ".github/scripts/verify_picorv32_demo.sh"
       - ".github/workflows/picorv32-demo.yml"
       - "pyproject.toml"
@@ -57,8 +59,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull RISC-V Session Runtime
-        run: docker pull "${IMAGE}"
+      - name: Pull and resolve RISC-V Session Runtime
+        id: runtime-image
+        run: |
+          python .github/scripts/pull_image_identity.py \
+            --image "${IMAGE}" \
+            --evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Retain RISC-V Session Runtime identity
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/picorv32-demo/image-identity.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Prepare bind-mount ownership
         run: sudo chown -R 1000:1000 demo
@@ -76,7 +92,7 @@ jobs:
             -e BOOLEY_IN_SANDBOX=1 \
             -e PYTHONPATH=/booley-source/src \
             -e TICKET_SLUG \
-            "${IMAGE}" bash -euo pipefail -c '
+            "${{ steps.runtime-image.outputs.image }}" bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '
 
