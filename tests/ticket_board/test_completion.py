@@ -77,6 +77,15 @@ def _repository(path: Path) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
+def _install_project_contract(repo: Path) -> str:
+    project_dir = repo / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    _git(repo, "add", "-f", ".booley_project/booley.toml")
+    _git(repo, "commit", "-m", "add project contract")
+    return _git(repo, "rev-parse", "HEAD")
+
+
 def _ticket_commit(repo: Path, branch: str, content: str) -> str:
     _git(repo, "switch", "-c", branch)
     (repo / "design.txt").write_text(content, encoding="utf-8")
@@ -597,9 +606,9 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
     from booley.ticket_board import acceptance_ledger, operations
 
     root = tmp_path / "rtl"
-    base = _repository(root)
+    _repository(root)
+    base = _install_project_contract(root)
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
-    (root / ".booley_project").mkdir()
     basis = _contract(
         root,
         (
@@ -628,6 +637,25 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
             participant_heads={"outer": ticket_sha},
         ),
     )
+
+
+def test_materialized_basis_requires_project_owned_by_checkout(tmp_path: Path) -> None:
+    from booley.ticket_board import operations
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+    root = tmp_path / "rtl"
+    _repository(root)
+    (root / ".booley_project").mkdir()
+    basis = _boundary_contract()
+    tio = _TicketIO(root, basis)
+    checkout = tmp_path / "materialized"
+    checkout.mkdir()
+
+    with pytest.raises(
+        AcceptanceBasisError,
+        match="cannot prepare materialized Acceptance Basis",
+    ):
+        operations._prepare_materialized_basis_view(tio, "change-target", checkout, basis)
 
 
 def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
