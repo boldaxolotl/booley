@@ -129,7 +129,6 @@ def _validate_current_ticket_view(
         )
         if not preparation.ok:
             raise AcceptanceBasisError(preparation.error)
-        assert_live_inputs_unchanged(basis, root, current)
         errors = validate_ticket_fields(
             fields,
             body,
@@ -139,6 +138,7 @@ def _validate_current_ticket_view(
             check_tb_files=True,
         )
         errors.extend(validate_ticket_view(current, basis, allow_generated=True))
+        assert_live_inputs_unchanged(basis, root, current)
         return errors
 
 

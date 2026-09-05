@@ -121,6 +121,13 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
 
 
+def isolated_core_contents_equivalent(left: Path, right: Path) -> bool:
+    """Compare generated isolated cores independent of their checkout roots."""
+    left_content = _normalized_isolated_core(left)
+    right_content = _normalized_isolated_core(right)
+    return left_content is not None and left_content == right_content
+
+
 def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
     """Materialize only stealth-authored cores in a private FuseSoC registry."""
     root = Path(project_root)
@@ -280,6 +287,47 @@ def _is_owned_projection(path: Path) -> bool:
             return stream.readline().startswith(_MARKER_PREFIX)
     except OSError:
         return False
+
+
+def _normalized_isolated_core(path: Path) -> tuple[str, object] | None:
+    registry = path.parent
+    suffix = ISOLATED_REGISTRY_SUBDIR.parts
+    if tuple(registry.parts[-len(suffix) :]) != suffix:
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    lines = content.splitlines()
+    if len(lines) < 2 or not lines[1].startswith(_MARKER_PREFIX):
+        return None
+    try:
+        document = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(document, Mapping) or "CAPI=2" not in document:
+        return None
+    checkout_root = registry.parents[len(suffix) - 1].resolve()
+    return lines[1], _normalize_checkout_paths(document, str(checkout_root))
+
+
+def _normalize_checkout_paths(value: object, checkout_root: str) -> object:
+    if isinstance(value, str):
+        if value == checkout_root:
+            return "${BOOLEY_WORKTREE}"
+        if value.startswith(checkout_root + os.sep):
+            return "${BOOLEY_WORKTREE}" + value[len(checkout_root) :]
+        return value
+    if isinstance(value, Mapping):
+        return {
+            _normalize_checkout_paths(key, checkout_root): _normalize_checkout_paths(
+                item, checkout_root
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_checkout_paths(item, checkout_root) for item in value]
+    return value
 
 
 def _under_ignore(path: Path, core_root: Path) -> bool:

@@ -35,6 +35,7 @@ from booley.ticket_board.acceptance_basis import (
     load_basis_record,
     materialize_current_ticket_checkout,
     validate_current_basis_refs,
+    validate_ticket_view,
     worktree_for_ref,
 )
 from booley.ticket_board.acceptance_journal import JournalState
@@ -537,6 +538,40 @@ def test_live_generated_inputs_must_match_prepared_reference(
     else:
         with pytest.raises(AcceptanceBasisError, match="protected path"):
             assert_live_inputs_unchanged(basis, root, reference)
+
+
+def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None:
+    from booley.fusesoc.core_projection import isolated_registry_root
+
+    root, project_dir, _tio = _basis_project(tmp_path)
+    (project_dir / "booley.toml").write_text(
+        "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    cores = project_dir / "cores"
+    cores.mkdir()
+    (cores / "demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "enable projected core")
+    commit = _git(root, "rev-parse", "HEAD")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                commit,
+                "refs/heads/main",
+                "refs/heads/main",
+                commit,
+            ),
+        )
+    )
+
+    assert validate_ticket_view(root, basis, allow_generated=True) == []
+    assert (root / ".booley-projected-demo.core").is_file()
+    assert tuple(isolated_registry_root(root).glob("*.core"))
 
 
 def test_live_project_worktree_uses_canonical_admin_mount(

@@ -873,6 +873,22 @@ def validate_ticket_view(
 ) -> list[str]:
     """Validate protected inputs and selectors in one materialized Ticket view."""
     root = Path(checkout).resolve()
+    if allow_generated:
+        from booley.fusesoc.core_projection import (
+            CoreProjectionError,
+            native_cores_ignored,
+            reconcile_isolated_registry,
+            reconcile_projected_cores,
+        )
+
+        try:
+            reconcile_projected_cores(root)
+            if native_cores_ignored(root):
+                reconcile_isolated_registry(root)
+        except (CoreProjectionError, OSError) as exc:
+            raise AcceptanceBasisError(
+                f"could not prepare generated Acceptance Basis inputs in {root}: {exc}"
+            ) from exc
     assert_inputs_unchanged(basis, root, generated_reference=root if allow_generated else None)
     return validate_binding_selectors(root, basis.bindings)
 
@@ -1189,6 +1205,12 @@ def _same_generated_path(live: Path, reference: Path) -> bool:
         return False
     try:
         same_mode = (live.stat().st_mode & 0o111) == (reference.stat().st_mode & 0o111)
-        return same_mode and live.read_bytes() == reference.read_bytes()
+        if not same_mode:
+            return False
+        if live.read_bytes() == reference.read_bytes():
+            return True
+        from booley.fusesoc.core_projection import isolated_core_contents_equivalent
+
+        return isolated_core_contents_equivalent(live, reference)
     except OSError:
         return False
