@@ -858,23 +858,24 @@ def _add_finalization_worktrees(
         str(temporary),
         journal.candidates["outer"].staging_ref,
     )
-    if not has_project:
-        return None
-    if project_repository is None:
-        raise AcceptanceOperationError("recorded project repository is unavailable")
-    try:
-        project_relative = checkout_project_dir_relative_to(root)
-    except (FileNotFoundError, ValueError) as exc:
-        raise AcceptanceOperationError(str(exc)) from exc
-    project_checkout = temporary / project_relative
-    _require_git(
-        project_repository,
-        "worktree",
-        "add",
-        "--detach",
-        str(project_checkout),
-        journal.candidates["project"].staging_ref,
-    )
+    project_checkout: Path | None = None
+    if has_project:
+        if project_repository is None:
+            raise AcceptanceOperationError("recorded project repository is unavailable")
+        try:
+            project_relative = checkout_project_dir_relative_to(root)
+        except (FileNotFoundError, ValueError) as exc:
+            raise AcceptanceOperationError(str(exc)) from exc
+        project_checkout = temporary / project_relative
+        _require_git(
+            project_repository,
+            "worktree",
+            "add",
+            "--detach",
+            str(project_checkout),
+            journal.candidates["project"].staging_ref,
+        )
+    _materialize_surface_submodules(root, temporary)
     return project_checkout
 
 

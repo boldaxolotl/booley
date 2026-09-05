@@ -1012,7 +1012,46 @@ def test_retry_rejects_recreated_artifact_for_cleaned_participant(
     assert _acceptance_journal(root)["state"] == "cleanup-project"
 
 
-def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, str]:
+def _add_retained_submodule_target(root: Path, tmp_path: Path) -> None:
+    dependency = tmp_path / "retained-dependency"
+    _repository(dependency)
+    (dependency / "retained.core").write_text(
+        "CAPI=2:\nname: acme:lib:retained:1.0\ntargets:\n  retained: {flow: lint}\n",
+        encoding="utf-8",
+    )
+    _git(dependency, "add", "retained.core")
+    _git(dependency, "commit", "-m", "add retained target")
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/retained",
+    )
+    _git(
+        root,
+        "config",
+        "--file",
+        ".gitmodules",
+        "submodule.vendor/retained.url",
+        "git@example.invalid:private/retained.git",
+    )
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    (project / "tests.toml").write_text(
+        '["acme:lib:retained:1.0#retained"]\ntests = ["retained"]\n',
+        encoding="utf-8",
+    )
+    _git(root, "add", ".gitmodules", "vendor/retained")
+    _git(root, "add", "-f", ".booley_project/tests.toml")
+    _git(root, "commit", "-m", "add retained submodule target")
+
+
+def _single_target_removal_completion(
+    tmp_path: Path, *, retained_submodule: bool = False
+) -> tuple[Path, _TicketIO, str]:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -1025,9 +1064,11 @@ def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, 
     )
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "add target pair")
+    if retained_submodule:
+        _add_retained_submodule_target(root, tmp_path)
     base = _git(root, "rev-parse", "HEAD")
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
-    (root / ".booley_project").mkdir()
+    (root / ".booley_project").mkdir(exist_ok=True)
     participant = ContractParticipant(
         "outer", ticket_sha, "refs/heads/change-target", "refs/heads/main", base
     )
@@ -1066,6 +1107,17 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
     assert journal["removal_targets"] == [canonical]
     candidate = journal["candidates"]["outer"]
     assert candidate["finalized_sha"] != candidate["prepared_sha"]
+
+
+def test_finalization_retains_submodule_target_and_test_registration(tmp_path: Path) -> None:
+    root, tio, canonical = _single_target_removal_completion(tmp_path, retained_submodule=True)
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+    retained = _git(root, "show", "main:.booley_project/tests.toml")
+    assert '"acme:lib:retained:1.0#retained"' in retained
 
 
 def test_complete_finalizes_target_in_project_repository_before_outer(
