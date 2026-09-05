@@ -1,7 +1,12 @@
-"""Focused boundary tests for Acceptance Basis helper modules."""
+"""Public enqueue contracts plus deterministic crash-checkpoint fault injection.
+
+The direct private-helper tests are limited to filesystem cutover checkpoints whose
+partial states cannot be produced reliably through the complete public transaction.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -67,8 +72,11 @@ def _enqueue_journal(tmp_path: Path) -> enqueue_publication.EnqueueJournal:
 def test_enqueue_journal_parser_and_identity_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(enqueue_publication.BoundaryError, match="invalid fields"):
-        enqueue_publication._parse_enqueue_journal({})
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(enqueue_publication, "_journal_path", lambda *_args: journal_path)
+    journal_path.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(enqueue_publication.EnqueuePublicationError, match="invalid fields"):
+        enqueue_publication.load_enqueue_journal(tmp_path, "ticket")
     journal = _enqueue_journal(tmp_path)
     monkeypatch.setattr(
         enqueue_publication,
@@ -80,7 +88,8 @@ def test_enqueue_journal_parser_and_identity_validation(
         "resolve_checkout_project_dir",
         lambda _root: tmp_path,
     )
-    enqueue_publication._validate_journal(tmp_path, "ticket", journal)
+    enqueue_publication.write_enqueue_journal(tmp_path, journal)
+    assert enqueue_publication.load_enqueue_journal(tmp_path, "ticket") == journal
     for changed in (
         replace(journal, schema=2),
         replace(journal, operation_id="bad"),
@@ -89,12 +98,23 @@ def test_enqueue_journal_parser_and_identity_validation(
         replace(journal, source="wrong"),
         replace(journal, destination="wrong"),
     ):
+        enqueue_publication.write_enqueue_journal(tmp_path, changed)
         with pytest.raises(enqueue_publication.EnqueuePublicationError):
-            enqueue_publication._validate_journal(tmp_path, "ticket", changed)
+            enqueue_publication.load_enqueue_journal(tmp_path, "ticket")
 
 
-def test_enqueue_payload_validation_rejects_each_bound_identity(tmp_path: Path) -> None:
+def test_enqueue_payload_validation_rejects_each_bound_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     journal = _enqueue_journal(tmp_path)
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(enqueue_publication, "_journal_path", lambda *_args: journal_path)
+    monkeypatch.setattr(
+        enqueue_publication, "_operation_directory", lambda *_args: tmp_path / "operation"
+    )
+    monkeypatch.setattr(
+        enqueue_publication, "resolve_checkout_project_dir", lambda _root: tmp_path
+    )
     for changed in (
         replace(journal, source_sha256="bad"),
         replace(journal, basis={}),
@@ -103,8 +123,9 @@ def test_enqueue_payload_validation_rejects_each_bound_identity(tmp_path: Path) 
         replace(journal, receipt={**journal.receipt, "basis_id": "f" * 64}),
         replace(journal, receipt={**journal.receipt, "participants": []}),
     ):
+        enqueue_publication.write_enqueue_journal(tmp_path, changed)
         with pytest.raises(enqueue_publication.EnqueuePublicationError):
-            enqueue_publication._validate_journal_payload(changed)
+            enqueue_publication.load_enqueue_journal(tmp_path, "ticket")
 
 
 def test_enqueue_cutover_helpers_are_idempotent_and_fail_closed(tmp_path: Path) -> None:
@@ -115,7 +136,7 @@ def test_enqueue_cutover_helpers_are_idempotent_and_fail_closed(tmp_path: Path) 
     candidate = Path(journal.candidate)
     backup.parent.mkdir(parents=True)
     backup.write_bytes(b"source")
-    journal = replace(journal, source_sha256=enqueue_publication._digest(b"source"))
+    journal = replace(journal, source_sha256=hashlib.sha256(b"source").hexdigest())
     enqueue_publication._preserve_source(source, backup, destination, journal)
     source.parent.mkdir(parents=True)
     source.write_bytes(b"source")
@@ -128,7 +149,7 @@ def test_enqueue_cutover_helpers_are_idempotent_and_fail_closed(tmp_path: Path) 
 
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_bytes(b"candidate")
-    expected = enqueue_publication._digest(b"candidate")
+    expected = hashlib.sha256(b"candidate").hexdigest()
     enqueue_publication._publish_candidate(candidate, destination, expected)
     enqueue_publication._publish_candidate(candidate, destination, expected)
     destination.write_bytes(b"changed")

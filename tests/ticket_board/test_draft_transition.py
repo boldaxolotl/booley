@@ -1,9 +1,15 @@
-"""Focused boundary tests for Acceptance Basis helper modules."""
+"""Public draft-transition contracts plus crash-checkpoint fault injection.
+
+Direct private-helper tests are limited to deterministic filesystem and Git recovery
+states that cannot be safely produced through the complete public transaction.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -61,8 +67,18 @@ def _draft_journal(tmp_path: Path) -> draft_transition.DraftTransitionJournal:
 def test_draft_journal_parser_and_validation_reject_noncanonical_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(draft_transition.BoundaryError, match="invalid fields"):
-        draft_transition._parse_journal({})
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(draft_transition, "_journal_path", lambda *_args: journal_path)
+    journal_path.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(draft_transition.DraftTransitionError, match="journal is unreadable"):
+        draft_transition.return_to_draft(
+            tmp_path,
+            tmp_path / "ticket.md",
+            "ticket",
+            status="blocked",
+            logs_dir=tmp_path / "logs",
+            append_transition=lambda _message: None,
+        )
     journal = _draft_journal(tmp_path)
     monkeypatch.setattr(
         draft_transition,
@@ -79,7 +95,6 @@ def test_draft_journal_parser_and_validation_reject_noncanonical_state(
         "_transition_root",
         lambda _root: tmp_path / "operations",
     )
-    draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", journal)
     for changed in (
         replace(journal, schema=2),
         replace(journal, operation_id="bad"),
@@ -91,8 +106,16 @@ def test_draft_journal_parser_and_validation_reject_noncanonical_state(
         replace(journal, blocked_ticket="wrong"),
         replace(journal, archive_dir=str(tmp_path / "wrong")),
     ):
+        journal_path.write_text(json.dumps(asdict(changed)) + "\n", encoding="utf-8")
         with pytest.raises(draft_transition.DraftTransitionError):
-            draft_transition._validate_journal(tmp_path, tmp_path / "logs", "ticket", changed)
+            draft_transition.return_to_draft(
+                tmp_path,
+                tmp_path / "ticket.md",
+                "ticket",
+                status="blocked",
+                logs_dir=tmp_path / "logs",
+                append_transition=lambda _message: None,
+            )
 
 
 def test_draft_cutover_file_helpers_reject_conflicts_and_preserve_idempotence(
@@ -104,7 +127,7 @@ def test_draft_cutover_file_helpers_reject_conflicts_and_preserve_idempotence(
     blocked = Path(journal.blocked_ticket)
     blocked.parent.mkdir(parents=True)
     blocked.write_bytes(b"blocked")
-    journal = replace(journal, blocked_sha256=draft_transition._digest(b"blocked"))
+    journal = replace(journal, blocked_sha256=hashlib.sha256(b"blocked").hexdigest())
     backup = operation / "blocked.md"
     backup.parent.mkdir(parents=True)
     backup.write_bytes(b"blocked")
@@ -129,8 +152,13 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(draft_transition.DraftTransitionError, match="requires a blocked"):
-        draft_transition._new_journal(
-            tmp_path, tmp_path / "ticket.md", "ticket", "queue", tmp_path
+        draft_transition.return_to_draft(
+            tmp_path,
+            tmp_path / "ticket.md",
+            "ticket",
+            status="queue",
+            logs_dir=tmp_path,
+            append_transition=lambda _message: None,
         )
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
@@ -140,7 +168,14 @@ def test_draft_transition_requires_blocked_basis_and_exact_files(
         lambda *_args: (_ for _ in ()).throw(AcceptanceBasisError("invalid basis")),
     )
     with pytest.raises(draft_transition.DraftTransitionError, match="invalid basis"):
-        draft_transition._new_journal(tmp_path, ticket, "ticket", "blocked", tmp_path)
+        draft_transition.return_to_draft(
+            tmp_path,
+            ticket,
+            "ticket",
+            status="blocked",
+            logs_dir=tmp_path,
+            append_transition=lambda _message: None,
+        )
     with pytest.raises(draft_transition.DraftTransitionError, match="unavailable"):
         draft_transition._require_file(tmp_path / "missing", "0" * 64, "draft")
     ticket.write_text("changed", encoding="utf-8")

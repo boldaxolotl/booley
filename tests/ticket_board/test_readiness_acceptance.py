@@ -1,4 +1,4 @@
-"""Focused boundary tests for Acceptance Basis helper modules."""
+"""Public readiness checks at the executable-ticket boundary."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from booley.ticket_board import (
 )
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
-    AcceptanceBasisError,
     BasisParticipant,
 )
 
@@ -32,17 +31,23 @@ def test_readiness_checkout_boundary_and_preparation_failures(
 ) -> None:
     root = tmp_path / "project"
     tickets = root / ".booley_project/tickets"
-    assert readiness._validate_checkout_basis(root, tickets, "ticket", {}, "body") == []
+    ticket = tickets / "board/queue/ticket.md"
+    ticket.parent.mkdir(parents=True)
     (root / ".git").mkdir(parents=True)
-    assert (
-        "legacy Target Contract"
-        in readiness._validate_checkout_basis(
-            root, tickets, "ticket", {"target_contract": {}}, "body"
-        )[0]
+    monkeypatch.setattr(
+        readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
-    assert readiness._validate_checkout_basis(root, tickets, "ticket", {}, "body") == [
-        "executable Ticket has no Acceptance Basis"
-    ]
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    ticket.write_text("---\ntarget_contract: {}\n---\nbody\n", encoding="utf-8")
+    assert "legacy Target Contract" in readiness.check_ticket_ready(root, "ticket").errors[0]
+    ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
+    assert readiness.check_ticket_ready(root, "ticket").errors == (
+        "executable Ticket has no Acceptance Basis",
+    )
+    basis = AcceptanceBasis((_participant(),))
+    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: basis)
+    monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(
         readiness,
         "materialize_current_ticket_checkout",
@@ -54,15 +59,7 @@ def test_readiness_checkout_boundary_and_preparation_failures(
         lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="prepare failed"),
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
-    with pytest.raises(AcceptanceBasisError, match="prepare failed"):
-        readiness._validate_current_ticket_view(
-            root,
-            tickets / "ticket.md",
-            "ticket",
-            AcceptanceBasis((_participant(),)),
-            {},
-            "body",
-        )
+    assert readiness.check_ticket_ready(root, "ticket").errors == ("prepare failed",)
 
 
 def test_non_git_readiness_reports_preparation_failure_and_checkout_mutation(
@@ -103,18 +100,20 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: paired)
     monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(readiness, "resolve_inner_project_repo", lambda _root: None)
-    fields = {"acceptance_basis": paired.as_dict()}
+    ticket = tickets / "board/queue/ticket.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(
+        readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
+    )
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
     assert (
         "project participant repository is missing"
-        in readiness._validate_checkout_basis(root, tickets, "ticket", fields, "body")[0]
+        in readiness.check_ticket_ready(root, "ticket").errors[0]
     )
 
     native = AcceptanceBasis((_participant(),))
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: native)
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (None, None))
-    assert (
-        "unavailable during readiness"
-        in readiness._validate_checkout_basis(
-            root, tickets, "ticket", {"acceptance_basis": native.as_dict()}, "body"
-        )[0]
-    )
+    found = iter(((ticket, "queue"), (None, None)))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: next(found))
+    assert "unavailable during readiness" in readiness.check_ticket_ready(root, "ticket").errors[0]

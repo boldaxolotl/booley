@@ -1,4 +1,9 @@
-"""Focused boundary tests for Acceptance Basis helper modules."""
+"""Public Acceptance Basis contracts plus deterministic Git fault injection.
+
+Direct private-helper tests are limited to worktree identity, materialization, and
+generated-file comparisons whose failure states cannot be injected through a stable
+public contract without performing unsafe or platform-dependent Git mutations.
+"""
 
 from __future__ import annotations
 
@@ -66,12 +71,16 @@ def test_basis_participant_lookup_and_record_routing_fail_loudly() -> None:
         basis.participant("project")
     with pytest.raises(AcceptanceBasisError, match="frontmatter is invalid"):
         basis.with_record({"bindings": [], "ticket": {"frontmatter": []}})
+    record = _record()
+    record["ticket"]["frontmatter"]["branch"] = "release"  # type: ignore[index]
     with pytest.raises(AcceptanceBasisError, match="outer destination disagrees"):
-        acceptance_basis._validate_record_routing(basis, {"branch": "release"})
+        basis.with_record(record)
+    record = _record()
+    record["ticket"]["frontmatter"]["project_destination_ref"] = (  # type: ignore[index]
+        "refs/heads/main"
+    )
     with pytest.raises(AcceptanceBasisError, match="without a participant"):
-        acceptance_basis._validate_record_routing(
-            basis, {"branch": "main", "project_destination_ref": "refs/heads/main"}
-        )
+        basis.with_record(record)
 
 
 @pytest.mark.parametrize(
@@ -97,7 +106,7 @@ def test_basis_participant_lookup_and_record_routing_fail_loudly() -> None:
 )
 def test_participant_parser_rejects_malformed_rows(row: object, message: str) -> None:
     with pytest.raises(AcceptanceBasisError, match=message):
-        acceptance_basis._parse_participant(row, 0)
+        AcceptanceBasis.from_mapping({"schema": 1, "participants": [row]})
 
 
 def test_authored_record_rejects_unknown_field_and_invalid_on_success() -> None:
@@ -109,8 +118,10 @@ def test_authored_record_rejects_unknown_field_and_invalid_on_success() -> None:
 
 
 def test_binding_record_parser_rejects_invalid_schema() -> None:
+    record = _record()
+    record["bindings"] = [{"flow": "sim"}]
     with pytest.raises(AcceptanceBasisError, match="invalid schema"):
-        acceptance_basis._binding_from_record({"flow": "sim"})
+        AcceptanceBasis((_participant(),)).with_record(record)
 
 
 @pytest.mark.parametrize(
@@ -133,11 +144,29 @@ def test_binding_record_parser_rejects_invalid_schema() -> None:
         ),
     ],
 )
-def test_record_validation_rejects_noncanonical_shapes(mutate: object, message: str) -> None:
+def test_record_validation_rejects_noncanonical_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: object,
+    message: str,
+) -> None:
     record = _record()
     mutate(record)  # type: ignore[operator]
+    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(
+        acceptance_basis,
+        "record_relative_path",
+        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
+    )
+    monkeypatch.setattr(
+        acceptance_basis.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], 0, acceptance_basis.canonical_json(record), b""
+        ),
+    )
     with pytest.raises(AcceptanceBasisError, match=message):
-        acceptance_basis._validate_record(record)
+        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
 
 
 @pytest.mark.parametrize(
@@ -185,7 +214,9 @@ def test_load_basis_record_rejects_noncanonical_json(
         acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
 
 
-def test_record_validation_rejects_invalid_on_success_policy() -> None:
+def test_record_validation_rejects_invalid_on_success_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     record = _record()
     record["ticket"]["frontmatter"]["on_success"] = {  # type: ignore[index]
         "destination": "invalid",
@@ -194,8 +225,21 @@ def test_record_validation_rejects_invalid_on_success_policy() -> None:
         "triage_report": True,
         "remove_targets": [],
     }
+    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(
+        acceptance_basis,
+        "record_relative_path",
+        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
+    )
+    monkeypatch.setattr(
+        acceptance_basis.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], 0, acceptance_basis.canonical_json(record), b""
+        ),
+    )
     with pytest.raises(AcceptanceBasisError, match="destination"):
-        acceptance_basis._validate_record(record)
+        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
 
 
 def test_receipt_validation_reports_missing_and_mismatched_receipts(
@@ -213,20 +257,20 @@ def test_receipt_validation_reports_missing_and_mismatched_receipts(
         "record_relative_path",
         lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
     )
+    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
     with pytest.raises(AcceptanceBasisError, match="receipt is unavailable"):
-        acceptance_basis._validate_receipt(tmp_path, "ticket", basis, record)
-    receipt = acceptance_basis._receipt_payload(
+        acceptance_basis.load_basis_receipt(tmp_path, "ticket", basis.as_dict())
+    receipt = acceptance_basis.write_basis_receipt(
         tmp_path,
         "ticket",
         basis,
-        record,
         source_sha256="1" * 64,
         operation_id="2" * 32,
     )
     path = tmp_path / "receipt.json"
     path.write_bytes(acceptance_basis.canonical_json({**receipt, "schema": 2}))
     with pytest.raises(AcceptanceBasisError, match="receipt mismatch"):
-        acceptance_basis._validate_receipt(tmp_path, "ticket", basis, record)
+        acceptance_basis.load_basis_receipt(tmp_path, "ticket", basis.as_dict())
 
 
 def test_write_basis_receipt_rejects_source_drift_and_write_once_conflict(
@@ -385,17 +429,17 @@ def test_descendant_and_project_repository_failures_are_explicit(
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
     with pytest.raises(AcceptanceBasisError, match="ref is unavailable"):
-        acceptance_basis._descendant_ref_commit(
-            tmp_path,
-            "refs/heads/ticket",
-            "a" * 40,
-            kind="ticket",
-            role="outer",
-        )
+        acceptance_basis.validate_current_basis_refs(tmp_path, AcceptanceBasis((_participant(),)))
+    paired = AcceptanceBasis((_participant(), _participant("project")))
     monkeypatch.setattr(acceptance_basis, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(
+        acceptance_basis,
+        "_descendant_ref_commit",
+        lambda *_args, **_kwargs: "a" * 40,
+    )
     with pytest.raises(AcceptanceBasisError, match="paired project repository"):
-        acceptance_basis._project_repository(tmp_path)
+        acceptance_basis.validate_current_basis_refs(tmp_path, paired)
 
 
 def test_clone_commit_reports_clone_and_checkout_failures(

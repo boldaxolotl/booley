@@ -1,9 +1,14 @@
-"""Focused boundary tests for Acceptance Basis helper modules."""
+"""Public basis-publication contracts plus crash-checkpoint fault injection.
+
+Direct private-helper tests are limited to deterministic Git publication checkpoints
+whose interrupted states cannot be produced safely through the complete transaction.
+"""
 
 from __future__ import annotations
 
+import json
 import subprocess
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -64,7 +69,9 @@ def _publication_journal() -> basis_publication.BasisPublicationJournal:
     )
 
 
-def test_basis_publication_parsers_reject_invalid_rows() -> None:
+def test_basis_publication_parsers_reject_invalid_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     journal = _publication_journal()
     payload = {
         "schema": journal.schema,
@@ -78,7 +85,10 @@ def test_basis_publication_parsers_reject_invalid_rows() -> None:
         "prepared": {},
         "published": [],
     }
-    assert basis_publication._parse_journal(payload) == journal
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(basis_publication, "_journal_path", lambda *_args: journal_path)
+    journal_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    assert basis_publication.load_basis_publication(tmp_path, "ticket") == journal
     for mutate in (
         lambda value: value.update(extra=True),
         lambda value: value.update(schema=2),
@@ -89,18 +99,28 @@ def test_basis_publication_parsers_reject_invalid_rows() -> None:
     ):
         changed = dict(payload)
         mutate(changed)
-        with pytest.raises(basis_publication.BoundaryError):
-            basis_publication._parse_journal(changed)
+        journal_path.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+        with pytest.raises(basis_publication.BasisPublicationError):
+            basis_publication.load_basis_publication(tmp_path, "ticket")
 
 
-def test_basis_publication_checkpoint_validation_rejects_bad_roles_and_order() -> None:
+def test_basis_publication_checkpoint_validation_rejects_bad_roles_and_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     journal = _publication_journal()
+    journal_path = tmp_path / "journal.json"
+    monkeypatch.setattr(basis_publication, "_journal_path", lambda *_args: journal_path)
+
+    def load(changed: basis_publication.BasisPublicationJournal, slug: str = "ticket") -> None:
+        journal_path.write_text(json.dumps(asdict(changed)) + "\n", encoding="utf-8")
+        basis_publication.load_basis_publication(tmp_path, slug)
+
     with pytest.raises(basis_publication.BasisPublicationError, match="another Ticket"):
-        basis_publication._validate_journal(journal, "other")
+        load(journal, "other")
     with pytest.raises(basis_publication.BasisPublicationError, match="participants"):
-        basis_publication._validate_journal(replace(journal, participants=()), "ticket")
+        load(replace(journal, participants=()))
     with pytest.raises(basis_publication.BasisPublicationError, match="checkpoints"):
-        basis_publication._validate_journal(replace(journal, published=("outer",)), "ticket")
+        load(replace(journal, published=("outer",)))
     paired = replace(
         journal,
         participants=(_publication_participant("outer"), _publication_participant("project")),
@@ -108,19 +128,44 @@ def test_basis_publication_checkpoint_validation_rejects_bad_roles_and_order() -
         published=("outer",),
     )
     with pytest.raises(basis_publication.BasisPublicationError, match="order"):
-        basis_publication._validate_journal(paired, "ticket")
+        load(paired)
 
 
-def test_new_basis_publication_requires_complete_inputs() -> None:
+def test_new_basis_publication_requires_complete_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     participant = _publication_participant()
+    monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: None)
     with pytest.raises(basis_publication.BasisPublicationError, match="operation ID"):
-        basis_publication._new_journal("ticket", "1" * 64, "2" * 64, None, (participant,), (), ())
+        basis_publication.publish_basis_commits(
+            tmp_path,
+            "ticket",
+            "1" * 64,
+            "2" * 64,
+            {},
+            participants=(participant,),
+            bindings=(),
+            removal_targets=(),
+        )
     with pytest.raises(basis_publication.BasisPublicationError, match="missing prepared"):
-        basis_publication._new_journal("ticket", "1" * 64, "2" * 64, "0" * 32, None, (), ())
+        basis_publication.publish_basis_commits(
+            tmp_path,
+            "ticket",
+            "1" * 64,
+            "2" * 64,
+            {},
+            operation_id="0" * 32,
+            participants=None,
+            bindings=(),
+            removal_targets=(),
+        )
 
 
-def test_basis_publication_resume_and_repository_inputs_are_immutable() -> None:
+def test_basis_publication_resume_and_repository_inputs_are_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     journal = _publication_journal()
+    monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: journal)
     for kwargs in (
         {"source_sha256": "changed"},
         {"effective_sha256": "changed"},
@@ -143,9 +188,27 @@ def test_basis_publication_resume_and_repository_inputs_are_immutable() -> None:
         }
         values.update(kwargs)
         with pytest.raises(basis_publication.BasisPublicationError):
-            basis_publication._validate_resume(journal, **values)
+            basis_publication.publish_basis_commits(
+                tmp_path,
+                "ticket",
+                values["source_sha256"],
+                values["effective_sha256"],
+                {"outer": tmp_path},
+                participants=values["participants"],
+                bindings=values["bindings"],
+                removal_targets=values["removal_targets"],
+            )
     with pytest.raises(basis_publication.BasisPublicationError, match="repositories"):
-        basis_publication._validate_repositories(journal, {})
+        basis_publication.publish_basis_commits(
+            tmp_path,
+            "ticket",
+            journal.source_sha256,
+            journal.effective_sha256,
+            {},
+            participants=journal.participants,
+            bindings=(),
+            removal_targets=(),
+        )
 
 
 def test_basis_publication_recovers_existing_commit_and_rejects_inspection_failure(
