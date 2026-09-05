@@ -99,11 +99,12 @@ class TestBuildParser:
         assert args.summary == "Add widget"
         assert args.ticket_type == "feature"
 
-    def test_approve_defaults(self):
+    def test_approve_accepts_only_ticket_slug(self):
         parser = build_parser()
         args = parser.parse_args(["approve", "fix-thing"])
-        assert args.actor == "ticket-triage"
-        assert args.detail == "user approved merge"
+        assert args.slug == "fix-thing"
+        assert not hasattr(args, "actor")
+        assert not hasattr(args, "detail")
 
     def test_no_command_defaults_to_none(self):
         parser = build_parser()

@@ -440,10 +440,9 @@ def _validate_handoff_basis(tio: Any, slug: str) -> bool:
     """Validate current Basis refs and selectors before freezing acceptance."""
     from .acceptance_basis import (
         AcceptanceBasisError,
-        assert_inputs_unchanged,
         materialize_current_ticket_checkout,
+        validate_ticket_view,
     )
-    from .acceptance_targets import validate_binding_selectors
 
     try:
         basis = _load_handoff_basis(tio, slug)
@@ -453,8 +452,7 @@ def _validate_handoff_basis(tio: Any, slug: str) -> bool:
                 basis,
                 Path(directory) / "checkout",
             )
-            assert_inputs_unchanged(basis, current)
-            errors = validate_binding_selectors(current, basis.bindings)
+            errors = validate_ticket_view(current, basis)
         if errors:
             raise AcceptanceBasisError("Acceptance Basis selectors changed: " + "; ".join(errors))
     except (AcceptanceBasisError, OSError, ValueError) as exc:
@@ -726,11 +724,8 @@ def _approve_transition(
     )
 
 
-def op_approve(
-    tio: Any, slug: str, actor: str = "ticket-triage", detail: str = "user approved merge"
-) -> bool:
+def op_approve(tio: Any, slug: str) -> bool:
     """Complete a review Ticket through the validated terminal boundary."""
-    del actor, detail
     return op_complete(tio, slug)
 
 
@@ -828,16 +823,13 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
 
 def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
     from .acceptance_basis import (
-        assert_inputs_unchanged,
         load_basis_receipt,
         materialize_current_ticket_checkout,
         materialize_ticket_commits,
-        validate_destination_refs,
+        validate_ticket_view,
     )
-    from .acceptance_journal._model import load_persisted_journal
-    from .acceptance_journal._store import journal_path
+    from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
-    from .acceptance_targets import validate_binding_selectors
 
     validate_review_package_binding(log_dir, snapshot)
     basis = tio.load_basis(slug)
@@ -845,25 +837,13 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
     if snapshot.acceptance_basis != current_receipt:
         raise AcceptanceLedgerError("Acceptance Snapshot names a different Board Acceptance Basis")
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
-        path = journal_path(Path(tio._project_root).resolve(), slug)
-        journal = load_persisted_journal(path) if path.exists() else None
-        if journal is not None and journal.sources:
-            destinations = {
-                participant.role: participant.destination_sha for participant in basis.participants
-            }
-            for role in journal.published:
-                finalized = journal.candidates[role].finalized_sha
-                if finalized is None:
-                    raise AcceptanceLedgerError(
-                        f"Acceptance Journal has no finalized {role} destination"
-                    )
-                destinations[role] = finalized
-            validate_destination_refs(tio._project_root, basis, destinations)
+        sources = completion_basis_sources(Path(tio._project_root), slug, basis)
+        if sources is not None:
             authoring = materialize_ticket_commits(
                 tio._project_root,
                 basis,
                 Path(directory) / "checkout",
-                journal.sources,
+                sources,
             )
         else:
             authoring = materialize_current_ticket_checkout(
@@ -871,8 +851,7 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
                 basis,
                 Path(directory) / "checkout",
             )
-        assert_inputs_unchanged(basis, authoring)
-        selector_errors = validate_binding_selectors(authoring, basis.bindings)
+        selector_errors = validate_ticket_view(authoring, basis)
     if selector_errors:
         raise AcceptanceLedgerError(
             "Acceptance Basis selectors changed: " + "; ".join(selector_errors)

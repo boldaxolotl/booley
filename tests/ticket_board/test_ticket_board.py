@@ -3653,8 +3653,8 @@ class TestEnqueueOnSuccess:
         assert "integration_base" not in fields
 
 
-class TestOpApproveActorDetail:
-    """Legacy CLI metadata cannot bypass the terminal validation boundary."""
+class TestOpApproveBoundary:
+    """Approval cannot bypass the terminal validation boundary."""
 
     def test_default_actor_and_detail_are_not_a_direct_transition(self, tmp_path, monkeypatch):
         from booley.ticket_board import operations
@@ -3665,27 +3665,6 @@ class TestOpApproveActorDetail:
 
         assert op_approve(tio, "my-ticket") is False
         assert not human_log_file(tio.logs_dir, "my-ticket", "transitions.log").exists()
-
-    def test_custom_actor_and_detail_still_route_through_completion(self, tmp_path, monkeypatch):
-        from booley.ticket_board import operations
-
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "review", "auto-ticket")
-        calls = []
-        monkeypatch.setattr(
-            operations,
-            "op_complete",
-            lambda selected, slug: calls.append((selected, slug)) or True,
-        )
-
-        assert op_approve(
-            tio,
-            "auto-ticket",
-            actor="ticket-execute",
-            detail="auto-approved and merged",
-        )
-
-        assert calls == [(tio, "auto-ticket")]
 
 
 class TestCLIEnqueueOnSuccess:
@@ -3756,8 +3735,8 @@ class TestCLIEnqueueOnSuccess:
         assert rc == 2
 
 
-class TestCLIApproveActorDetail:
-    """CLI approve metadata cannot bypass validated completion."""
+class TestCLIApproveBoundary:
+    """Retired direct-transition metadata is rejected."""
 
     def test_cli_approve_custom_actor_still_requires_acceptance(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
@@ -3768,8 +3747,11 @@ class TestCLIApproveActorDetail:
         tio = TicketIO(tickets_dir)
         make_ticket_in_dir(tio, "review", "t", extra_fields={"step": "summary"})
 
-        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
-            rc = main(
+        with (
+            patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir),
+            pytest.raises(SystemExit, match="2"),
+        ):
+            main(
                 argv=[
                     "approve",
                     "t",
@@ -3779,8 +3761,7 @@ class TestCLIApproveActorDetail:
                     "auto-approved and merged",
                 ]
             )
-        assert rc == 2
-        assert "accepted snapshot" in capsys.readouterr().err
+        assert "unrecognized arguments" in capsys.readouterr().err
         assert not human_log_file(tio.logs_dir, "t", "transitions.log").exists()
 
 

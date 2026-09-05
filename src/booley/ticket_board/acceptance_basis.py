@@ -27,7 +27,7 @@ from booley.runtime.ticket_repositories import (
 )
 
 from .acceptance_path_policy import is_static_acceptance_path
-from .acceptance_targets import AcceptanceTargetBinding
+from .acceptance_targets import AcceptanceTargetBinding, validate_binding_selectors
 from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
@@ -758,6 +758,13 @@ def materialize_ticket_commits(
             role=participant.role,
         )
     return _materialize_participant_commits(root, basis, Path(destination), validated)
+
+
+def validate_ticket_view(checkout: Path | str, basis: AcceptanceBasis) -> list[str]:
+    """Validate protected inputs and selectors in one materialized Ticket view."""
+    root = Path(checkout).resolve()
+    assert_inputs_unchanged(basis, root)
+    return validate_binding_selectors(root, basis.bindings)
 
 
 def _materialize_participant_commits(

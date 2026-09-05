@@ -399,6 +399,7 @@ def test_current_basis_validation_rejects_rewritten_destination_ref(tmp_path: Pa
         input="unrelated destination\n",
         capture_output=True,
         text=True,
+        timeout=30,
         check=True,
     ).stdout.strip()
     _git(root, "update-ref", "refs/heads/main", unrelated)

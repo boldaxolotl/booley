@@ -16,8 +16,9 @@ from .acceptance_basis import (
     AcceptanceBasisError,
     assert_inputs_unchanged,
     materialize_current_ticket_checkout,
+    validate_ticket_view,
 )
-from .acceptance_targets import resolve_commit, validate_binding_selectors
+from .acceptance_targets import resolve_commit
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
 from .validation import validate_ticket_fields
@@ -139,8 +140,7 @@ def _validate_current_ticket_view(
             project_root=current,
             check_tb_files=True,
         )
-        assert_inputs_unchanged(basis, current)
-        errors.extend(validate_binding_selectors(current, basis.bindings))
+        errors.extend(validate_ticket_view(current, basis))
         return errors
 
 

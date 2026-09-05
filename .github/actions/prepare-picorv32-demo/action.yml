@@ -86,6 +86,14 @@ runs:
         mkdir -p "${tool_dir}"
         for executable in /usr/bin/riscv64-unknown-elf-*; do
           helper="${executable##*riscv64-unknown-elf-}"
+          if [[ "${helper}" == "gcc" ]]; then
+            printf '%s\n' \
+              '#!/bin/sh' \
+              'exec /usr/bin/riscv64-unknown-elf-gcc --specs=picolibc.specs "$@"' \
+              > "${tool_dir}/riscv32-unknown-elf-gcc"
+            chmod +x "${tool_dir}/riscv32-unknown-elf-gcc"
+            continue
+          fi
           ln -sf "${executable}" "${tool_dir}/riscv32-unknown-elf-${helper}"
         done
         echo "${tool_dir}" >> "${GITHUB_PATH}"

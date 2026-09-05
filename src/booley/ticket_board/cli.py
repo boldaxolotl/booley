@@ -349,14 +349,8 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("stage", nargs="?", help="(ignored)")
 
     # approve
-    p = sub.add_parser("approve", help="Approve a review ticket (move review->done)")
+    p = sub.add_parser("approve", help="Validate and complete a review ticket")
     p.add_argument("slug", help="Ticket slug")
-    p.add_argument(
-        "--actor",
-        default="ticket-triage",
-        help="Actor performing the approval (default: ticket-triage)",
-    )
-    p.add_argument("--detail", default="user approved merge", help="Transition detail message")
 
     # complete
     p = sub.add_parser(

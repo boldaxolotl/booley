@@ -507,7 +507,7 @@ def _cmd_reset_to_deprecated(tio, args):
 
 
 def _cmd_approve(tio, args):
-    ok = op_approve(tio, args.slug, actor=args.actor, detail=args.detail)
+    ok = op_approve(tio, args.slug)
     if ok:
         # Check if any waiting tickets are now executable
         promoted = op_promote_waiting(tio)
