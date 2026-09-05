@@ -3239,14 +3239,22 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let range_start = cfg.time_min;
     let range_end_opt = cfg.time_max;
 
-    let matched = cache.match_signals(&cfg.patterns);
-    // Virtuals count as matches (wave renders them as rows), same as
-    // stats/find: `-s missing --virtual ok=...` is a partial miss, not a
-    // total one. Built once here; the row-append below reuses it.
-    let virtuals = build_virtuals(cache, cfg);
-    if matched.is_empty() && virtuals.is_empty() {
+    // Resolve every virtual so later definitions can depend on unselected
+    // helpers, then apply the same row-selection rule as value and sample.
+    let all_virtuals = build_virtuals(cache, cfg);
+    let virtual_names: Vec<String> = all_virtuals
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    let (matched, selected_virtual_indices) =
+        cache.match_signals_with_names(&cfg.patterns, &virtual_names);
+    if matched.is_empty() && selected_virtual_indices.is_empty() {
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
+    let selected_virtuals: Vec<&VirtualEntry> = selected_virtual_indices
+        .iter()
+        .map(|&idx| &all_virtuals[idx])
+        .collect();
     let radix_map = build_radix_map(cache, &matched, cfg);
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
@@ -3365,8 +3373,8 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             grid.push(row);
         }
 
-        // Append virtual signal rows (built above, before the empty-match gate)
-        for ve in &virtuals {
+        // Append selected virtual rows in definition order.
+        for ve in &selected_virtuals {
             display_names.push(ve.name.clone());
             let row: Vec<String> = col_ticks
                 .iter()
@@ -3431,11 +3439,9 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 tick_set.insert(*tick);
             }
         }
-        // Virtual signals contribute columns too — without this, a
-        // virtual-only match (every -s pattern missed but a --virtual def
-        // resolved) rendered zero columns: "# No data in range" despite
-        // having rows to show.
-        for ve in &virtuals {
+        // Selected virtual signals contribute columns too. Unselected helpers
+        // remain available to composition without changing the rendered grid.
+        for ve in &selected_virtuals {
             for (tick, _) in &ve.transitions {
                 if *tick >= range_start_tick && *tick <= range_end_tick {
                     tick_set.insert(*tick);
@@ -3495,8 +3501,8 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             grid.push(row);
         }
 
-        // Append virtual signal rows (built above, before the empty-match gate)
-        for ve in &virtuals {
+        // Append selected virtual rows in definition order.
+        for ve in &selected_virtuals {
             display_names.push(ve.name.clone());
             let row: Vec<String> = col_ticks
                 .iter()

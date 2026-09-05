@@ -156,7 +156,7 @@ impl Default for GlobalOpts {
 /// `wave`, `find`, `sample`, `distance`, `value`.
 #[derive(Args, Debug, Clone, Default)]
 struct VirtualOpts {
-    /// Virtual signal: boolean predicate over existing signals (repeatable).
+    /// Uniquely named virtual signal: boolean predicate over existing signals (repeatable).
     /// Format: "name = expr". Verilog-subset syntax: &, |, ^, ~, ==, !=, >, etc.
     #[arg(long = "virtual", action = clap::ArgAction::Append, value_name = "DEF")]
     virtual_defs: Vec<String>,
@@ -275,6 +275,7 @@ struct WaveArgs {
     #[arg(value_name = "STORE_FILE")]
     bwave: String,
 
+    /// Stored or virtual signal row pattern (repeatable). Append %d/%b/%h for radix display.
     #[arg(short = 's', long = "signals", action = clap::ArgAction::Append,
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
@@ -313,6 +314,7 @@ struct ValueArgs {
     #[arg(long, value_name = "T", required = true, allow_hyphen_values = true)]
     at: String,
 
+    /// Stored or virtual signal row pattern (repeatable). Append %d/%b/%h for radix display.
     #[arg(short = 's', long = "signals", action = clap::ArgAction::Append,
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
@@ -394,7 +396,7 @@ struct SampleArgs {
     #[arg(value_name = "TRIGGER_VAL")]
     value: String,
 
-    /// Signal glob pattern to snapshot (repeatable)
+    /// Stored or virtual signal row pattern to snapshot (repeatable)
     #[arg(short = 's', long = "signals", action = clap::ArgAction::Append,
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
