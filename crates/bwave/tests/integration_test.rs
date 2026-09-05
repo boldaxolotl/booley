@@ -461,6 +461,164 @@ fn test_sample_at_basic() {
     );
 }
 
+#[test]
+fn test_sample_first_returns_only_first_trigger_event() {
+    let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
+    let (stdout, stderr, code) = run_query(&[
+        "sample",
+        &vcd,
+        "*flag*",
+        "rising",
+        "-s",
+        "*counter*",
+        "--first",
+    ]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "6 counter[15:0] 5\n");
+    assert!(stderr.contains("# 1 trigger events"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_sample_last_selects_global_last_event_before_applying_limit() {
+    let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
+    // Stored flag rises at cycles 8, 22, 36, and 50 with --with-reset;
+    // the Virtual Signal rises at cycle 46. Selection must use the global
+    // timestamp union rather than whichever trigger source is visited last.
+    let (stdout, stderr, code) = run_query(&[
+        "sample",
+        &vcd,
+        "*flag*",
+        "rising",
+        "-s",
+        "*counter*",
+        "--with-reset",
+        "--virtual",
+        "flag_from_done = *done",
+        "--last",
+        "--limit",
+        "1",
+    ]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "50 counter[15:0] 2F\n");
+    assert!(stderr.contains("# 1 trigger events"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_sample_before_returns_last_event_at_inclusive_cycle_bound() {
+    let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
+    let (stdout, stderr, code) = run_query(&[
+        "sample",
+        &vcd,
+        "*flag*",
+        "rising",
+        "-s",
+        "*counter*",
+        "--before",
+        "34",
+    ]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "34 counter[15:0] 21\n");
+    assert!(stderr.contains("# 1 trigger events"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_sample_last_selects_last_event_inside_time_window() {
+    let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
+    let (stdout, stderr, code) = run_query(&[
+        "sample",
+        &vcd,
+        "*flag*",
+        "rising",
+        "-s",
+        "*counter*",
+        "-t",
+        "6:34",
+        "--last",
+    ]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "34 counter[15:0] 21\n");
+    assert!(stderr.contains("# 1 trigger events"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_sample_after_returns_first_event_at_inclusive_async_tick_bound() {
+    let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
+    let (stdout, stderr, code) = run_query(&[
+        "sample",
+        &vcd,
+        "*flag*",
+        "rising",
+        "-s",
+        "*counter*",
+        "--async",
+        "--with-reset",
+        "--after",
+        "215",
+    ]);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "215 counter[15:0] 13\n");
+    assert!(stderr.contains("# 1 trigger events"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_sample_count_honors_first_without_changing_plain_count() {
+    let bwave = build_bwave("small_clocked.vcd", "sample_first_count");
+    let store = bwave.to_string_lossy().to_string();
+    let base_args = ["sample", &store, "*flag*", "rising", "-s", "*counter*"];
+
+    let (all_stdout, all_stderr, all_code) = run_bwave(&[&base_args[..], &["--count"]].concat());
+    let (first_stdout, first_stderr, first_code) =
+        run_bwave(&[&base_args[..], &["--first", "--count"]].concat());
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(all_code, 0, "stderr: {all_stderr}");
+    assert_eq!(all_stdout, "4\n");
+    assert_eq!(first_code, 0, "stderr: {first_stderr}");
+    assert_eq!(first_stdout, "1\n");
+}
+
+#[test]
+fn test_sample_modifier_conflicts_exit_2() {
+    let bwave = build_bwave("small_clocked.vcd", "sample_modifier_conflicts");
+    let store = bwave.to_string_lossy().to_string();
+    let base_args = ["sample", &store, "*flag*", "rising"];
+    let conflicts: &[&[&str]] = &[
+        &["--first", "--last"],
+        &["--last", "--count"],
+        &["--before", "34", "--after", "20"],
+        &["--before", "34", "-t", "1:20"],
+        &["--before", "34", "--first"],
+    ];
+
+    for conflict in conflicts {
+        let (_stdout, stderr, code) = run_bwave(&[&base_args[..], conflict].concat());
+        assert_eq!(code, 2, "args: {conflict:?}; stderr: {stderr}");
+    }
+    let _ = std::fs::remove_file(&bwave);
+}
+
+#[test]
+fn test_before_remains_compatible_with_count() {
+    let bwave = build_bwave("small_clocked.vcd", "before_count_compatibility");
+    let store = bwave.to_string_lossy().to_string();
+
+    let (_find_stdout, find_stderr, find_code) =
+        run_bwave(&["find", &store, "*state*", "0", "--before", "5", "--count"]);
+    let (sample_stdout, sample_stderr, sample_code) = run_bwave(&[
+        "sample", &store, "*flag*", "rising", "--before", "34", "--count",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(find_code, 0, "stderr: {find_stderr}");
+    assert_eq!(sample_code, 0, "stderr: {sample_stderr}");
+    assert_eq!(sample_stdout, "1\n");
+}
+
 // -- Async timescale unit tests -------------------------------------------
 
 #[test]
