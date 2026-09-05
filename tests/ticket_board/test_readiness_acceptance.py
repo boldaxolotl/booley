@@ -34,6 +34,7 @@ def _git(repository: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     ).stdout.strip()
 
 
