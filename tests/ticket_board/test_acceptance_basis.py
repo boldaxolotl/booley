@@ -529,6 +529,7 @@ def test_enqueue_force_stages_ignored_manifest_input(tmp_path: Path) -> None:
         cwd=root,
         capture_output=True,
         text=True,
+        timeout=30,
         check=False,
     )
     assert result.returncode == 0

@@ -785,13 +785,35 @@ def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     return "inspect the Ticket and Acceptance Journal before retrying"
 
 
+def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: Any) -> None:
+    from .acceptance_basis import (
+        assert_inputs_unchanged,
+        load_basis_receipt,
+        materialize_current_ticket_checkout,
+    )
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+    from .acceptance_targets import validate_binding_selectors
+
+    validate_review_package_binding(log_dir, snapshot)
+    basis = tio.load_basis(slug)
+    current_receipt = load_basis_receipt(tio._project_root, slug, basis.as_dict())
+    if snapshot.acceptance_basis != current_receipt:
+        raise AcceptanceLedgerError("Acceptance Snapshot names a different Board Acceptance Basis")
+    with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
+        authoring = materialize_current_ticket_checkout(
+            tio._project_root, basis, Path(directory) / "checkout"
+        )
+        assert_inputs_unchanged(basis, authoring)
+        selector_errors = validate_binding_selectors(authoring, basis.bindings)
+    if selector_errors:
+        raise AcceptanceLedgerError(
+            "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
+        )
+
+
 def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     """Refuse destructive terminal actions when durable acceptance is broken."""
-    from .acceptance_ledger import (
-        AcceptanceLedgerError,
-        read_acceptance,
-        validate_review_package_binding,
-    )
+    from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     accepted = read_acceptance(log_dir)
@@ -800,30 +822,7 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
             return False
         try:
-            from .acceptance_basis import (
-                assert_inputs_unchanged,
-                load_basis_receipt,
-                materialize_current_ticket_checkout,
-            )
-            from .acceptance_targets import validate_binding_selectors
-
-            validate_review_package_binding(log_dir, accepted.snapshot)
-            basis = tio.load_basis(slug)
-            current_receipt = load_basis_receipt(tio._project_root, slug, basis.as_dict())
-            if accepted.snapshot.acceptance_basis != current_receipt:
-                raise AcceptanceLedgerError(
-                    "Acceptance Snapshot names a different Board Acceptance Basis"
-                )
-            with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
-                authoring = materialize_current_ticket_checkout(
-                    tio._project_root, basis, Path(directory) / "checkout"
-                )
-                assert_inputs_unchanged(basis, authoring)
-                selector_errors = validate_binding_selectors(authoring, basis.bindings)
-            if selector_errors:
-                raise AcceptanceLedgerError(
-                    "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
-                )
+            _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
         except (AcceptanceLedgerError, ValueError, OSError) as exc:
             print(
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",

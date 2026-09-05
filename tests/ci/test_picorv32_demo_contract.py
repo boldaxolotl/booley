@@ -141,7 +141,6 @@ required_targets = "sim"
 def test_shared_action_reads_repository_and_revision_pins_from_contract() -> None:
     contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
     action = PREPARE_ACTION.read_text(encoding="utf-8")
-    workflow_paths = (WORKFLOW, PUBLISH_WORKFLOW)
 
     for key in (
         "upstream_repository",
@@ -182,9 +181,11 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert "PROJECT_CONTRACT_REF" not in action
     assert "ci/agent-ticket-contract" not in action
 
+
+def test_demo_workflows_consume_shared_preparation_action() -> None:
     action_reference = "uses: ./.github/actions/prepare-picorv32-demo"
     verifier = f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}"
-    for workflow_path in workflow_paths:
+    for workflow_path in (WORKFLOW, PUBLISH_WORKFLOW):
         workflow = workflow_path.read_text(encoding="utf-8")
         assert action_reference in workflow
         assert verifier in workflow
