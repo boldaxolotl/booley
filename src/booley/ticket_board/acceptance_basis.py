@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -20,7 +21,11 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
+from booley.runtime.project_dir import (
+    checkout_project_dir_relative_to,
+    resolve_checkout_project_dir,
+    runtime_dir,
+)
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
     resolve_inner_project_repo,
@@ -837,16 +842,28 @@ def worktree_for_ref(repository: Path | str, ref: str) -> Path | None:
     match = next((path for path, item_ref in records if item_ref == ref), None)
     if match is None or match.exists():
         return match
-    primary = records[0][0] if records else None
+    return _mounted_worktree_path(root, match, records[0][0] if records else None) or match
+
+
+def _mounted_worktree_path(root: Path, recorded: Path, primary: Path | None) -> Path | None:
+    """Translate host-recorded worktree paths into the current bind mount."""
+    candidates: list[Path] = []
     if primary is not None:
-        try:
-            mounted = root / match.relative_to(primary)
-        except ValueError:
-            pass
-        else:
-            if mounted.exists():
-                return mounted
-    return match
+        with contextlib.suppress(ValueError):
+            candidates.append(root / recorded.relative_to(primary))
+    try:
+        worktrees_index = recorded.parts.index("worktrees")
+    except ValueError:
+        return next((candidate for candidate in candidates if candidate.exists()), None)
+    suffix = Path(*recorded.parts[worktrees_index:])
+    candidates.append(root / suffix)
+    try:
+        project_dir = resolve_checkout_project_dir(root)
+    except (FileNotFoundError, ValueError):
+        pass
+    else:
+        candidates.append(project_dir / suffix)
+    return next((candidate for candidate in candidates if candidate.exists()), None)
 
 
 def _materialize_participant_commits(

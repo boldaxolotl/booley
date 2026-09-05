@@ -446,7 +446,7 @@ def test_worktree_discovery_remaps_host_paths_inside_bind_mount(
     mounted_ticket.mkdir(parents=True)
     host_root = Path("/host/checkout")
     output = (
-        f"worktree {host_root}\nHEAD {'a' * 40}\ndetached\n\n"
+        f"worktree {mounted_root}\nHEAD {'a' * 40}\ndetached\n\n"
         f"worktree {host_root}/.booley_project/worktrees/demo\n"
         f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
     )
