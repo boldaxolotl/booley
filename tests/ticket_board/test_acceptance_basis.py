@@ -64,6 +64,24 @@ def _participant(role: str = "outer") -> BasisParticipant:
     )
 
 
+def _stub_worktree_git(
+    monkeypatch: pytest.MonkeyPatch,
+    porcelain: str,
+    *,
+    ref: str = "refs/heads/demo",
+) -> None:
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["worktree", "list", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, porcelain, "")
+        if command[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
+        if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, f"{ref}\n", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+
+
 def test_minimal_basis_round_trips_through_ticket_frontmatter() -> None:
     basis = AcceptanceBasis((_participant(),))
     text = format_frontmatter(
@@ -457,16 +475,7 @@ def test_worktree_discovery_remaps_host_paths_inside_bind_mount(
         f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
     )
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[-3:] == ["worktree", "list", "--porcelain"]:
-            return subprocess.CompletedProcess(command, 0, output, "")
-        if command[-2:] == ["rev-parse", "--show-toplevel"]:
-            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
-        if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
-            return subprocess.CompletedProcess(command, 0, "refs/heads/demo\n", "")
-        raise AssertionError(command)
-
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    _stub_worktree_git(monkeypatch, output)
 
     assert worktree_for_ref(mounted_root, "refs/heads/demo") == mounted_ticket
 
@@ -484,16 +493,7 @@ def test_worktree_discovery_rejects_ambiguous_bind_mount_paths(
         f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
     )
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[-3:] == ["worktree", "list", "--porcelain"]:
-            return subprocess.CompletedProcess(command, 0, output, "")
-        if command[-2:] == ["rev-parse", "--show-toplevel"]:
-            return subprocess.CompletedProcess(command, 0, f"{kwargs['cwd']}\n", "")
-        if command[-3:] == ["symbolic-ref", "--quiet", "HEAD"]:
-            return subprocess.CompletedProcess(command, 0, "refs/heads/demo\n", "")
-        raise AssertionError(command)
-
-    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    _stub_worktree_git(monkeypatch, output)
 
     with pytest.raises(AcceptanceBasisError, match="ambiguous"):
         worktree_for_ref(mounted_root, "refs/heads/demo")
