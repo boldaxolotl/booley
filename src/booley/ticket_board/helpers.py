@@ -140,10 +140,20 @@ def tickets_dir_from_project_root(project_root: str | Path) -> Path:
 def detect_project_root() -> Path:
     """Auto-detect project root (parent of the project data directory).
 
-    Honors the Ticket Mode control-plane root, then PROJECT_ROOT for test isolation.
+    Honors the Ticket Mode control-plane root, then its durable runtime Ticket
+    path, then PROJECT_ROOT for test isolation.
     """
     if "BOOLEY_CONTROL_PROJECT_ROOT" in os.environ:
         return Path(os.environ["BOOLEY_CONTROL_PROJECT_ROOT"])
+    runtime_ticket = os.environ.get("BOOLEY_TICKET_FILE")
+    if runtime_ticket:
+        ticket_path = Path(runtime_ticket).resolve()
+        for parent in ticket_path.parents:
+            if parent.name != "tickets":
+                continue
+            control_root = parent.parent.parent
+            if control_root != control_root.parent:
+                return control_root
     if "PROJECT_ROOT" in os.environ:
         return Path(os.environ["PROJECT_ROOT"])
     try:

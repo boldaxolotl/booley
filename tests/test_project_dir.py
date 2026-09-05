@@ -98,6 +98,21 @@ class TestEnvVarOverride:
 
         assert detect_project_root() == control_root
 
+    def test_detect_project_root_recovers_control_plane_from_runtime_ticket(
+        self, tmp_path, monkeypatch
+    ):
+        control_root = tmp_path / "control"
+        runtime_ticket = (
+            control_root / ".booley_project" / "tickets" / "logs" / "ticket-a" / "ticket.md"
+        )
+        misleading_worktree = control_root / ".booley_project" / "worktrees" / "ticket-a"
+        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(runtime_ticket))
+        monkeypatch.setenv("PROJECT_ROOT", str(misleading_worktree))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(misleading_worktree / ".booley_project"))
+
+        assert detect_project_root() == control_root
+
     def test_checkout_local_snapshot_overrides_session_global_dir(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"
         session_dir.mkdir()
