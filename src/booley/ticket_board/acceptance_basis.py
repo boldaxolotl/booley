@@ -666,13 +666,68 @@ def materialize_basis_checkout(
     """Materialize the immutable outer and paired-project commits for inspection."""
     root = Path(project_root).resolve()
     checkout = Path(destination)
-    _clone_commit(root, checkout, basis.outer_sha)
+    commits = {participant.role: participant.authoring_sha for participant in basis.participants}
+    return _materialize_participant_commits(root, basis, checkout, commits)
+
+
+def materialize_current_ticket_checkout(
+    project_root: Path | str,
+    basis: AcceptanceBasis,
+    destination: Path | str,
+) -> Path:
+    """Materialize current generation refs after verifying their recorded ancestry."""
+    root = Path(project_root).resolve()
+    commits = {
+        participant.role: _current_ticket_commit(root, participant)
+        for participant in basis.participants
+    }
+    return _materialize_participant_commits(root, basis, Path(destination), commits)
+
+
+def _materialize_participant_commits(
+    root: Path,
+    basis: AcceptanceBasis,
+    checkout: Path,
+    commits: Mapping[str, str],
+) -> Path:
+    _clone_commit(root, checkout, commits["outer"])
     project = next((row for row in basis.participants if row.role == "project"), None)
     if project is not None:
         source = _project_repository(root)
         project_relative = checkout_project_dir_relative_to(root)
-        _clone_commit(source, checkout / project_relative, project.authoring_sha)
+        _clone_commit(source, checkout / project_relative, commits["project"])
     return checkout
+
+
+def _current_ticket_commit(root: Path, participant: BasisParticipant) -> str:
+    repository = root if participant.role == "outer" else _project_repository(root)
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{participant.ticket_ref}^{{commit}}"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
+        raise AcceptanceBasisError(
+            f"Acceptance Basis Ticket ref is unavailable: {participant.ticket_ref}"
+        )
+    current = result.stdout.strip()
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", participant.authoring_sha, current],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: {participant.ticket_ref} no longer descends from recorded "
+            f"{participant.role} commit {participant.authoring_sha}"
+        )
+    return current
 
 
 def _project_repository(root: Path) -> Path:

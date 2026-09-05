@@ -14,11 +14,7 @@ from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_dir import (
-    checkout_project_dir_relative_to,
-    resolve_project_dir,
-    runtime_dir,
-)
+from booley.runtime.project_dir import resolve_project_dir, runtime_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import (
     TicketRepository,
@@ -668,13 +664,13 @@ def _status_paths(repository: Path) -> list[str]:
 
 def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[str]:
     paths = set(acceptance_control_paths(surface_root))
-    if not project_repository:
-        return paths
-    try:
-        prefix = checkout_project_dir_relative_to(surface_root).as_posix().rstrip("/") + "/"
-    except (FileNotFoundError, ValueError) as exc:
-        raise AcceptanceBasisOperationError(str(exc)) from exc
-    return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
+    paired = paired_project_repository(surface_root)
+    if paired is None:
+        return set() if project_repository else paths
+    prefix = paired.path_prefix.rstrip("/") + "/"
+    if project_repository:
+        return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
+    return {path for path in paths if not path.startswith(prefix)}
 
 
 def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:
@@ -700,7 +696,7 @@ def _validate_authoring_changes(
         raise AcceptanceBasisOperationError(
             "Ticket Workspace contains non-authoring changes: " + ", ".join(invalid)
         )
-    return changed
+    return sorted(set(changed) | manifest)
 
 
 def _staged_tree(repository: Path, paths: list[str]) -> tuple[str, str]:

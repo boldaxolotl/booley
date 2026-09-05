@@ -8,9 +8,18 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import fusesoc_registry
+from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
+
+
+@pytest.fixture(autouse=True)
+def _clear_project_dir_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    yield
+    reset_cache()
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -137,6 +146,47 @@ def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.Mon
 
     with pytest.raises(RuntimeError, match="not a repository"):
         readiness_module._checkout_statuses(root)
+
+
+def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    project = root / ".booley_project"
+    (project / "tickets/board/drafts").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "initial")
+    tio = TicketIO(project / "tickets", project_root=root)
+    ticket = tio.create_ticket_file(
+        "changed-controls",
+        TicketFileSpec(
+            summary="Changed controls",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("changed-controls") is True
+    workspace = project / "worktrees/changed-controls"
+    (workspace / ".booley_project/booley.toml").write_text(
+        "[flows]\nchanged = true\n", encoding="utf-8"
+    )
+    _git(workspace, "add", "-f", ".booley_project/booley.toml")
+    _git(workspace, "commit", "-m", "change protected input")
+    _remove_ticket_worktree(root)
+
+    result = check_ticket_ready(root, "changed-controls")
+
+    assert result.ready is False
+    assert any("protected path" in error for error in result.errors)
 
 
 def test_worktree_discovery_failure_is_loud(

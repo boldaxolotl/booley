@@ -147,8 +147,8 @@ sources declared Scope `[new]`.
 
 `return-to-draft` preserves the old identity and evidence, then starts a new
 Authoring Generation from committed destination refs.
-Legacy running/review tickets may finish, but a new or reset execution requires
-a valid seal.
+Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
+Authoring Generation so enqueue can publish an Acceptance Basis before execution.
 
 ### Shared run logs and artifacts
 

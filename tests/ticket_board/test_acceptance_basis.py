@@ -458,7 +458,7 @@ def _prepared_ticket(tmp_path: Path, slug: str = "transaction") -> tuple[Path, P
     _git(root, "config", "user.email", "test@example.invalid")
     project_dir = root / ".booley_project"
     (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
-    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/hooks/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
     _git(root, "add", "-A")
@@ -501,6 +501,37 @@ def test_invalid_enqueue_does_not_publish_basis_artifacts(tmp_path: Path) -> Non
     assert not (project_dir / ".runtime/acceptance/bases/transaction").exists()
     assert "refs/booley/bases/" not in _git(root, "for-each-ref", "--format=%(refname)")
     assert (project_dir / "tickets/board/drafts/transaction.md").exists()
+
+
+def test_enqueue_force_stages_ignored_manifest_input(tmp_path: Path) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path)
+    workspace = project_dir / "worktrees/transaction"
+    config = workspace / ".booley_project/booley.toml"
+    hook = workspace / ".booley_project/hooks/run.py"
+    config.write_text(
+        '[flows]\n\n[targets.repro]\npre_run = "hooks/run.py"\n',
+        encoding="utf-8",
+    )
+    hook.parent.mkdir(parents=True)
+    hook.write_text('print("run")\n', encoding="utf-8")
+    assert _git(workspace, "check-ignore", ".booley_project/hooks/run.py")
+
+    assert tio.enqueue_ticket("transaction") is True
+
+    basis = tio.load_basis("transaction")
+    result = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "-e",
+            f"{basis.outer_sha}:.booley_project/hooks/run.py",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
 
 
 def test_enqueue_retry_finishes_interrupted_board_publication(

@@ -12,9 +12,10 @@ from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_basis import (
+    AcceptanceBasis,
     AcceptanceBasisError,
     assert_inputs_unchanged,
-    materialize_basis_checkout,
+    materialize_current_ticket_checkout,
 )
 from .acceptance_targets import resolve_commit, validate_binding_selectors
 from .frontmatter import parse_frontmatter
@@ -92,17 +93,36 @@ def _validate_checkout_basis(
         inspection_root = _worktree_for_ref(root, basis.participant("outer").ticket_ref)
         if inspection_root is not None:
             assert_inputs_unchanged(basis, inspection_root)
-            selector_errors = validate_binding_selectors(inspection_root, basis.bindings)
-        else:
-            with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
-                authoring_root = materialize_basis_checkout(
-                    root, basis, Path(directory) / "checkout"
-                )
-                assert_inputs_unchanged(basis, authoring_root)
-                selector_errors = validate_binding_selectors(authoring_root, basis.bindings)
+        ticket, _status = find_ticket_file(tickets_dir, slug)
+        if ticket is None:
+            raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
+        selector_errors = _validate_current_ticket_view(root, ticket, slug, basis)
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
     return selector_errors
+
+
+def _validate_current_ticket_view(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    basis: AcceptanceBasis,
+) -> list[str]:
+    from booley.flows.execution import flow_enabled
+
+    with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
+        current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
+        preparation = prepare_project(
+            root,
+            current,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", current),
+        )
+        if not preparation.ok:
+            raise AcceptanceBasisError(preparation.error)
+        assert_inputs_unchanged(basis, current)
+        return validate_binding_selectors(current, basis.bindings)
 
 
 def _worktree_for_ref(repository: Path, ref: str) -> Path | None:

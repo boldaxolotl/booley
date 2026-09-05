@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -799,9 +800,11 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
             print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
             return False
         try:
-            from booley.runtime.project_dir import resolve_checkout_project_dir
-
-            from .acceptance_basis import load_basis_receipt
+            from .acceptance_basis import (
+                assert_inputs_unchanged,
+                load_basis_receipt,
+                materialize_current_ticket_checkout,
+            )
             from .acceptance_targets import validate_binding_selectors
 
             validate_review_package_binding(log_dir, accepted.snapshot)
@@ -811,8 +814,12 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
                 raise AcceptanceLedgerError(
                     "Acceptance Snapshot names a different Board Acceptance Basis"
                 )
-            authoring = resolve_checkout_project_dir(tio._project_root) / "worktrees" / slug
-            selector_errors = validate_binding_selectors(authoring, basis.bindings)
+            with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
+                authoring = materialize_current_ticket_checkout(
+                    tio._project_root, basis, Path(directory) / "checkout"
+                )
+                assert_inputs_unchanged(basis, authoring)
+                selector_errors = validate_binding_selectors(authoring, basis.bindings)
             if selector_errors:
                 raise AcceptanceLedgerError(
                     "Acceptance Basis selectors changed: " + "; ".join(selector_errors)

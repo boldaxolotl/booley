@@ -56,11 +56,13 @@ runs:
           '/.booley-projected-*.core' \
           >> demo/.git/info/exclude
 
-    - name: Require reviewed revisions on public refs
+    - name: Require reviewed revisions and materialize destination refs
       shell: bash
       run: |
         git -C demo merge-base --is-ancestor HEAD origin/main
         git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main
+        git -C demo branch --force main HEAD
+        git -C demo/.booley_project branch --force main HEAD
 
     # Publishing the Acceptance Basis performs real Target discovery, so the
     # host-side installer needs Booley's production Python dependencies.

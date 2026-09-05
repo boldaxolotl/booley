@@ -162,9 +162,11 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "Apply documented local checkout excludes"
     )
     assert action.index("Apply documented local checkout excludes") < action.index(
-        "Require reviewed revisions on public refs"
+        "Require reviewed revisions and materialize destination refs"
     )
     assert "git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main" in action
+    assert "git -C demo branch --force main HEAD" in action
+    assert "git -C demo/.booley_project branch --force main HEAD" in action
     assert "Install Booley runtime dependencies" in action
     assert "python -m pip install --disable-pip-version-check --quiet" in action
     assert action.index("Install Booley runtime dependencies") < action.index(

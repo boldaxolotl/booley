@@ -417,9 +417,10 @@ unstructured, and let the skill turn it into a precise contract:
    contract: they are what the harness gates on, and prose in the ticket body gates
    nothing. Ask to edit criteria, fields, plan, or scope in place; `scope` is what keeps
    the agent out of unrelated files.
-5. **Creation completes automatically.** After ticket approval, the skill authors and seals
-   any required Target recipe, then enqueues the ticket. Target-contract worktrees, diffs,
-   and seal metadata are internal mechanics rather than additional user approval gates.
+5. **Creation completes automatically.** After ticket approval, the skill authors any
+   required Target recipe in the Ticket Workspace, then enqueues the ticket. Enqueue
+   publishes the immutable Acceptance Basis; its worktrees, commits, and receipt are
+   internal mechanics rather than additional user approval gates.
 
 #### Project Ticket Creation Guidance
 
@@ -514,8 +515,9 @@ inspect state, and `booley cheat --board` for the compact transition reference.
 
 A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
 
-Ticket Mode seals that criterion set at intake. A Flow/Target call that cannot
-bind one of the sealed criteria is rejected before job admission and shows the
+Ticket Mode binds that criterion set when enqueue publishes the Acceptance Basis. A
+Flow/Target call that cannot bind one of the basis-bound criteria is rejected before
+job admission and shows the
 copyable pending invocation; use `--diagnostic` to run it deliberately without
 acceptance effects. Simulation acceptance compares the selected and passing
 test names with the Target registry instead of trusting an aggregate count,
