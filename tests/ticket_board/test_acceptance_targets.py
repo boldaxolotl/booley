@@ -1,0 +1,497 @@
+"""Focused boundary tests for Acceptance Basis helper modules."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from booley.ticket_board import (
+    acceptance_targets,
+)
+from booley.ticket_board.acceptance_basis import (
+    BasisParticipant,
+)
+
+
+def _completed(
+    *args: str,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(list(args), returncode, stdout, stderr)
+
+
+def _participant(role: str = "outer") -> BasisParticipant:
+    return BasisParticipant(
+        role,
+        "a" * 40,
+        f"refs/heads/booley-generation/0123456789abcdef/{role}",
+        "refs/heads/main",
+        "b" * 40,
+    )
+
+
+def test_target_binding_rejects_incomplete_and_noncanonical_values() -> None:
+    binding = acceptance_targets.AcceptanceTargetBinding(
+        "sim",
+        "criteria.mandatory.sim_pass",
+        "acme:lib:toy:1#sim",
+        "acme:lib:toy:1#sim",
+        "sim",
+        " sim",
+    )
+
+    with pytest.raises(ValueError, match="candidate_selector"):
+        binding.validate_persisted()
+    with pytest.raises(ValueError, match="full"):
+        acceptance_targets.AcceptanceTargetBinding(
+            "sim", "sim_pass", "base", "candidate", "base", "candidate"
+        ).validate_persisted()
+
+
+def test_target_binding_accepts_optional_criterion_path() -> None:
+    binding = acceptance_targets.AcceptanceTargetBinding(
+        "lint",
+        "criteria.optional.lint_clean",
+        "acme:lib:toy:1#lint",
+        "acme:lib:toy:1#lint",
+        "lint",
+        "lint",
+    )
+
+    assert binding.validate_persisted() is binding
+    assert binding.criterion_key == "lint_clean"
+    assert binding.as_dict()["criterion"] == "criteria.optional.lint_clean"
+
+
+def test_target_control_helpers_handle_external_and_missing_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path.parent / "outside.core"
+    assert acceptance_targets._identity(tmp_path, outside) == outside.as_posix()
+    monkeypatch.setattr(
+        acceptance_targets,
+        "resolve_checkout_project_dir",
+        lambda _root: (_ for _ in ()).throw(FileNotFoundError("missing")),
+    )
+    assert tuple(acceptance_targets._project_control_files(tmp_path)) == ()
+
+
+def test_core_referenced_files_ignore_invalid_entries(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    document = {
+        "filesets": {
+            "not-a-map": [],
+            "no-files": {},
+            "mixed": {
+                "files": [
+                    "rtl/toy.sv",
+                    {"constraints/toy.sdc": {"file_type": "SDC"}},
+                    {},
+                    7,
+                ]
+            },
+        }
+    }
+
+    assert [
+        path.relative_to(tmp_path).as_posix()
+        for path in acceptance_targets._core_referenced_files(tmp_path, core, document)
+    ] == [
+        "rtl/toy.sv",
+        "constraints/toy.sdc",
+    ]
+    assert tuple(acceptance_targets._core_referenced_files(tmp_path, core, {})) == ()
+
+
+def test_tracked_gitlinks_reports_git_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="bad index"),
+    )
+
+    with pytest.raises(acceptance_targets.BoundaryError, match="bad index"):
+        acceptance_targets._tracked_gitlinks(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ({"target": "lint_a"}, [("lint_a", "lint_a", False)]),
+        (
+            {
+                "targets": [{"baseline": "synth_a", "candidate": "synth_b"}],
+                "area_reduce_at_least": "5%",
+            },
+            [("synth_b", "synth_a", True)],
+        ),
+        ({"targets": [7]}, []),
+        ("invalid", []),
+    ],
+)
+def test_target_value_parser_handles_supported_and_invalid_shapes(
+    value: object, expected: list[tuple[str, str, bool]]
+) -> None:
+    assert acceptance_targets._targets_from_value("synthesis_ok", value) == expected
+
+
+def test_target_list_parser_handles_coverage_sim_and_invalid_items() -> None:
+    value = [
+        {"targets": ["cov_a", "cov_b"]},
+        {"target": "sim_map"},
+        "tb/test.sv @ sim_text @ all @ none -> pass",
+        "lint_plain",
+        "invalid @ text",
+        3,
+    ]
+    assert acceptance_targets._targets_from_list("coverage", value) == [
+        ("cov_a", "cov_a", False),
+        ("cov_b", "cov_b", False),
+        ("sim_map", "sim_map", False),
+        ("sim_text", "sim_text", False),
+        ("lint_plain", "lint_plain", False),
+    ]
+
+
+def test_target_list_parser_ignores_invalid_sim_expression() -> None:
+    assert acceptance_targets._targets_from_list("sim_pass", ["broken -> expression"]) == []
+    assert acceptance_targets._criterion_flow("unknown") is None
+
+
+def test_missing_target_sources_normalizes_relative_and_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = tmp_path / "rtl/existing.sv"
+    existing.parent.mkdir()
+    existing.write_text("module existing; endmodule\n", encoding="utf-8")
+    absolute = tmp_path / "absolute.sv"
+    monkeypatch.setattr(
+        acceptance_targets,
+        "inspect_target_selector",
+        lambda *_args: SimpleNamespace(
+            inputs=(
+                SimpleNamespace(path="rtl/existing.sv"),
+                SimpleNamespace(path="rtl/missing.sv"),
+                SimpleNamespace(path=str(absolute)),
+                SimpleNamespace(path="rtl/missing.sv"),
+            )
+        ),
+    )
+
+    assert acceptance_targets._missing_target_sources(tmp_path, "sim") == [
+        str(absolute),
+        "rtl/missing.sv",
+    ]
+
+
+def test_criterion_targets_ignore_unknown_sections_and_keys() -> None:
+    criteria = {
+        "mandatory": {"review_rtl_bugs": True, "lint_clean": ["lint"]},
+        "optional": "invalid",
+    }
+
+    assert acceptance_targets.criterion_targets(None) == ()
+    (binding,) = acceptance_targets.criterion_targets(criteria)
+    assert binding.target == "lint"
+    assert binding.flow == "lint"
+
+
+def test_coverage_suite_validation_reports_registry_and_selection_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    criteria = {"mandatory": {"coverage": [{"targets": ["sim"], "tests": ["missing"]}]}}
+    monkeypatch.setattr(
+        acceptance_targets,
+        "resolve_checkout_project_dir",
+        lambda _root: tmp_path / ".booley_project",
+    )
+    assert (
+        "cannot validate registered tests"
+        in acceptance_targets._validate_coverage_suites(criteria, tmp_path)[0]
+    )
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "tests.toml").write_text("[targets.sim]\ntests = ['known']\n", encoding="utf-8")
+    assert acceptance_targets._validate_coverage_suites(criteria, tmp_path) == [
+        "criteria.mandatory.coverage: target 'sim' has unregistered tests: missing"
+    ]
+    assert acceptance_targets._validate_coverage_suites({}, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("scope", "path", "expected"),
+    [
+        (None, "rtl/new.sv", False),
+        ([7, "rtl/new.sv"], "rtl/new.sv", False),
+        (["rtl/new.sv [new]"], "./rtl/new.sv", True),
+        (["rtl/new [new]"], "rtl/new/child.sv", True),
+        (["rtl/*.sv [new]"], "rtl/new.sv", True),
+    ],
+)
+def test_new_scope_matching(scope: object, path: str, expected: bool) -> None:
+    assert acceptance_targets._new_scope_matches(scope, path) is expected
+
+
+def test_validate_changed_targets_handles_duplicate_missing_and_resolvable_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = {"new": ["rtl/new.sv"], "undeclared": ["rtl/nope.sv"], "ready": []}
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_sources",
+        lambda _root, target: missing[target],
+    )
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_dry_resolve_binding",
+        lambda binding, _root, build: [f"resolved {binding.target} in {build.name}"],
+    )
+
+    errors = acceptance_targets._validate_changed_targets(
+        {"scope": ["rtl/new.sv [new]"]},
+        tmp_path,
+        tmp_path / "build",
+        ["seen", "new", "undeclared", "ready", "ready"],
+        seen={"seen"},
+    )
+
+    assert errors[0].startswith("changed Target 'undeclared'")
+    assert errors[1] == "resolved ready in ready"
+
+
+def test_validate_acceptance_targets_stops_after_binding_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets, "validate_criterion_targets", lambda *_args: ["bad binding"]
+    )
+    assert acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build") == [
+        "bad binding"
+    ]
+
+
+def test_required_targets_promote_baselines_and_resolvable_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = acceptance_targets.CriterionTarget(
+        "mandatory", "synthesis_ok", "candidate", "synth", True, "baseline"
+    )
+    second = acceptance_targets.CriterionTarget(
+        "optional", "synthesis_ok", "candidate", "synth", False
+    )
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_sources",
+        lambda _root, target: ["new.sv"] if target == "candidate" else [],
+    )
+    required = acceptance_targets._required_targets(tmp_path, (first, second))
+    assert required["candidate"][1] is False
+    assert required["baseline"] == (first, True)
+
+
+def test_validate_required_targets_skips_deferred_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = acceptance_targets.CriterionTarget(
+        "mandatory", "sim_pass", "candidate", "sim", False
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_dry_resolve_binding",
+        lambda _binding, _root, _build, *, target=None: calls.append(target or "") or ["bad"],
+    )
+    errors = acceptance_targets._validate_required_targets(
+        tmp_path,
+        tmp_path / "build",
+        {"deferred": (binding, False), "required": (binding, True)},
+    )
+    assert errors == ["bad"]
+    assert calls == ["required"]
+
+
+def test_comparison_basis_reports_resolution_and_recipe_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = acceptance_targets.CriterionTarget(
+        "mandatory", "synthesis_ok", "candidate", "synth", True, "baseline"
+    )
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_comparison_snapshots",
+        lambda *_args: (_ for _ in ()).throw(acceptance_targets.BoundaryError("broken")),
+    )
+    assert (
+        "cannot compare"
+        in acceptance_targets._validate_comparison_basis(binding, tmp_path, tmp_path / "build")[0]
+    )
+    monkeypatch.setattr(acceptance_targets, "_comparison_snapshots", lambda *_args: None)
+    assert (
+        acceptance_targets._validate_comparison_basis(binding, tmp_path, tmp_path / "build") == []
+    )
+
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_comparison_snapshots",
+        lambda *_args: ({"tool": "a"}, {"tool": "b"}),
+    )
+    monkeypatch.setattr(
+        "booley.flows.recipe_evidence.implementation_comparison_basis", lambda value: value
+    )
+    monkeypatch.setattr(
+        "booley.flows.recipe_evidence.recipe_changes",
+        lambda _left, _right: [{"path": "tool"}],
+    )
+    assert (
+        "incompatible measurement bases (tool)"
+        in acceptance_targets._validate_comparison_basis(binding, tmp_path, tmp_path / "build")[0]
+    )
+
+
+def test_comparison_snapshots_dispatch_by_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry,
+        "resolve_target",
+        lambda target, **_kwargs: SimpleNamespace(name=target),
+    )
+    monkeypatch.setattr("booley.flows.synth.recipe.default_recipe_args", SimpleNamespace)
+    monkeypatch.setattr(
+        "booley.flows.synth.recipe.synthesis_recipe_snapshot",
+        lambda resolved, _args, *, target: {"target": target, "resolved": resolved.name},
+    )
+    synth = acceptance_targets.CriterionTarget(
+        "mandatory", "synthesis_ok", "candidate", "synth", True, "baseline"
+    )
+    assert acceptance_targets._comparison_snapshots(synth, tmp_path, tmp_path / "build") == (
+        {"target": "baseline", "resolved": "baseline"},
+        {"target": "candidate", "resolved": "candidate"},
+    )
+    other = acceptance_targets.CriterionTarget(
+        "mandatory", "sim_pass", "candidate", "sim", False, "baseline"
+    )
+    assert acceptance_targets._comparison_snapshots(other, tmp_path, tmp_path / "build") is None
+
+
+def test_comparison_snapshots_dispatch_fpga(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry,
+        "resolve_target",
+        lambda target, **_kwargs: SimpleNamespace(name=target),
+    )
+    monkeypatch.setattr(
+        "booley.flows.fpga.recipe.fpga_recipe_snapshot",
+        lambda resolved, *, target: {"target": target, "resolved": resolved.name},
+    )
+    binding = acceptance_targets.CriterionTarget(
+        "mandatory", "fpga_impl_ok", "candidate", "fpga", True, "baseline"
+    )
+    assert acceptance_targets._comparison_snapshots(binding, tmp_path, tmp_path / "build") == (
+        {"target": "baseline", "resolved": "baseline"},
+        {"target": "candidate", "resolved": "candidate"},
+    )
+
+
+def test_dry_resolve_binding_reports_failure_and_missing_toplevel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = acceptance_targets.CriterionTarget("mandatory", "lint_clean", "lint", "lint", False)
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry,
+        "resolve_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert (
+        "dry-run failed"
+        in acceptance_targets._dry_resolve_binding(binding, tmp_path, tmp_path / "build")[0]
+    )
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry,
+        "resolve_target",
+        lambda *_args, **_kwargs: SimpleNamespace(toplevel=""),
+    )
+    assert (
+        "without a toplevel"
+        in acceptance_targets._dry_resolve_binding(
+            binding, tmp_path, tmp_path / "build", target="other"
+        )[0]
+    )
+
+
+def test_validate_binding_reports_resolution_flow_and_scope_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = acceptance_targets.CriterionTarget(
+        "mandatory", "synthesis_ok", "candidate", "synth", True, "baseline"
+    )
+
+    def select(_root: Path, target: str) -> SimpleNamespace:
+        if target == "candidate":
+            raise acceptance_targets.fusesoc_registry.FuseSocError("unknown")
+        return SimpleNamespace(flow="sim", eda_tool="iverilog")
+
+    monkeypatch.setattr(acceptance_targets, "select_target", select)
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: False)
+    errors = acceptance_targets._validate_binding(binding, {}, tmp_path)
+    assert "candidate target 'candidate': unknown" in errors[0]
+    assert "cannot satisfy synthesis_ok" in errors[1]
+
+    monkeypatch.setattr(
+        acceptance_targets,
+        "select_target",
+        lambda *_args: SimpleNamespace(flow="synth", eda_tool="yosys"),
+    )
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_sources",
+        lambda _root, target: [f"rtl/{target}.sv"],
+    )
+    errors = acceptance_targets._validate_binding(binding, {"scope": []}, tmp_path)
+    assert "not declared Scope [new]" in errors[0]
+    assert "relative-QoR baseline" in errors[1]
+
+
+def test_validate_binding_selectors_reports_failure_and_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = acceptance_targets.AcceptanceTargetBinding(
+        "sim",
+        "criteria.mandatory.sim_pass",
+        "expected-base",
+        "expected-candidate",
+        "base",
+        "candidate",
+    )
+
+    def select(_root: Path, selector: str) -> SimpleNamespace:
+        if selector == "base":
+            raise ValueError("missing")
+        return SimpleNamespace(identity="actual")
+
+    monkeypatch.setattr(acceptance_targets, "select_target", select)
+    errors = acceptance_targets.validate_binding_selectors(tmp_path, [binding])
+    assert "cannot be resolved" in errors[0]
+    assert "resolves to 'actual'" in errors[1]
+
+
+def test_resolve_commit_rejects_nonexact_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed("git", stdout="b" * 40 + "\n"),
+    )
+    with pytest.raises(ValueError, match="does not resolve exactly"):
+        acceptance_targets.resolve_commit(tmp_path, "a" * 40)
