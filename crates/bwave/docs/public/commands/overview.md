@@ -67,7 +67,10 @@ Available on every query/introspect subcommand:
 `distance`, and `value` only:
 
 - `--virtual "name = expr"`: define a boolean predicate
-  over existing signals; usable like any other signal.
+  over existing signals; usable like any other signal. On
+  `wave`, `value`, and `sample`, `-s` selects stored and
+  Virtual Signal rows from one combined name set. Definitions
+  that serve only as helpers are evaluated but not displayed.
 
 Marker availability is documented separately in
 `reference/markers`:

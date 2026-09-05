@@ -30,9 +30,11 @@ literals, width-prefixed literals, and edge keywords
 
 - `<FST_FILE>`, `<TRIGGER_PAT>`, `<TRIGGER_VAL>` are
   required positional args.
-- `-s PATTERN` is optional but expected: without it
-  you'll snapshot every signal in the store on every
-  trigger fire, which is rarely what you want.
+- `-s PATTERN` optionally selects stored and Virtual Signal
+  capture rows. Without it, every stored and virtual row is
+  captured on every trigger fire, which is rarely what you
+  want. Unselected virtual helpers remain available to the
+  trigger and to selected virtual rows.
 - Modifier flags (`--first`, `--last`, `--before`,
   `--after`, `--count`) mirror `find`.
 - `--virtual` and `--marker` apply.
@@ -98,6 +100,15 @@ Sample on a virtual handshake signal:
 bwave sample sim.fst \
     --virtual "hsk = *valid & *ready" \
     hsk 'h1 -s "*data*"
+```
+
+Capture a composed Virtual Signal without printing its helper:
+
+```bash
+bwave sample sim.fst "*clk" rising \
+    --virtual "valid = *req & *ready" \
+    --virtual "stalled = valid & *busy" \
+    -s "stalled"
 ```
 
 Sample on rising edge of an error signal, only counting

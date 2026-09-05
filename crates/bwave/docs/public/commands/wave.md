@@ -28,8 +28,9 @@ the row reads like an ASCII waveform.
 - `-t START:END` is effectively required: without a time
   window the output would be unbounded. Open-ended ranges
   work but you'll quickly hit `--limit`.
-- `-s PATTERN` optional but recommended. Wide tables
-  truncate at terminal width.
+- `-s PATTERN` optionally selects stored and Virtual Signal
+  rows. Without it, every stored and virtual row is selected.
+  Wide tables truncate at terminal width.
 - `--marker NAME CYCLE` is most useful here: markers
   appear as labels above the cycle header so you can
   annotate a region.
@@ -70,8 +71,9 @@ only.
   auto-detection failed. Pass `--clock PATTERN` or check
   `troubleshooting/clock-detection`.
 - **Rows missing**: pattern matched fewer signals than
-  expected. Re-check with `bwave list` using the same
-  pattern.
+  expected. The pattern is applied to both stored and Virtual
+  Signal names; re-check stored names with `bwave list` and
+  virtual names in the command's `--virtual` definitions.
 - **Markers don't appear**: verify the cycle is inside
   the `-t` window. Markers outside the visible range are
   silently dropped.
@@ -101,3 +103,14 @@ bwave wave sim.fst \
     -s "hsk" -s "*state%d" \
     -t 0:200
 ```
+
+Use an unselected helper to compose the displayed row:
+
+```bash
+bwave wave sim.fst \
+    --virtual "valid = *req & *ready" \
+    --virtual "stalled = valid & *busy" \
+    -s "stalled" -t 0:200
+```
+
+Both definitions are evaluated, but only `stalled` is printed.

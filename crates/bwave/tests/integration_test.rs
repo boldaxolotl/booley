@@ -1888,6 +1888,8 @@ fn test_virtual_wave_with_gt() {
         &bp,
         "-s",
         "*counter*",
+        "-s",
+        "virt_hi",
         "-t",
         "50:60",
         "--virtual",
