@@ -54,6 +54,42 @@ def materialize_submodules(
         raise
 
 
+def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> None:
+    """Populate every repository in a composite Ticket checkout offline."""
+    from booley.runtime.project_dir import checkout_project_dir_relative_to
+    from booley.runtime.ticket_repositories import (
+        paired_project_repository,
+        resolve_inner_project_repo,
+    )
+
+    source_root = source_root.resolve()
+    destination_root = destination_root.resolve()
+    paired_source = paired_project_repository(source_root)
+    project_source = (
+        paired_source.worktree
+        if paired_source is not None
+        else resolve_inner_project_repo(source_root)
+    )
+    if project_source is None:
+        materialize_submodules(source_root, destination_root)
+        return
+    try:
+        project_relative = checkout_project_dir_relative_to(source_root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SubmoduleMaterializationError(f"paired project path is unavailable: {exc}") from exc
+    project_destination = destination_root / project_relative
+    if not (project_destination / ".git").exists():
+        raise SubmoduleMaterializationError(
+            f"paired project checkout is unavailable: {project_destination}"
+        )
+    materialize_submodules(
+        source_root,
+        destination_root,
+        excluded_top_level=frozenset({project_relative.as_posix()}),
+    )
+    materialize_submodules(project_source, project_destination)
+
+
 def _materialize_tree(
     source_root: Path,
     destination_repo: Path,

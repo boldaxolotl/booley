@@ -635,7 +635,15 @@ def _resume_project_attachment(
 def _prepare_workspace_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
     """Run the same deterministic preparation used by ticket execution."""
     from booley.flows.execution import flow_enabled
+    from booley.runtime.submodule_materialization import (
+        SubmoduleMaterializationError,
+        materialize_ticket_submodules,
+    )
 
+    try:
+        materialize_ticket_submodules(root, outer)
+    except SubmoduleMaterializationError as exc:
+        raise AcceptanceBasisOperationError(f"Submodule setup failed offline: {exc}") from exc
     result = prepare_project(
         root,
         outer,

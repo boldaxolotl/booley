@@ -817,6 +817,33 @@ def test_worktree_discovery_rejects_ambiguous_bind_mount_paths(
         worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
+def test_worktree_discovery_collapses_bind_mount_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mounted_root = tmp_path / "work"
+    first = mounted_root / "worktrees/demo"
+    second = mounted_root / ".booley_project/worktrees/demo"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    output = (
+        f"worktree {mounted_root}\nHEAD {'a' * 40}\ndetached\n\n"
+        f"worktree /host/checkout/.booley_project/worktrees/demo\n"
+        f"HEAD {'b' * 40}\nbranch refs/heads/demo\n\n"
+    )
+    _stub_worktree_git(monkeypatch, output)
+    real_samefile = Path.samefile
+
+    def samefile(left: Path, right: Path) -> bool:
+        if {left.resolve(), right.resolve()} == {first.resolve(), second.resolve()}:
+            return True
+        return real_samefile(left, right)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+    assert worktree_for_ref(mounted_root, "refs/heads/demo") == first
+
+
 def test_worktree_discovery_rejects_existing_path_with_wrong_git_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

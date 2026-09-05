@@ -18,6 +18,7 @@ from booley.flows.baseline_worktree import (
     baseline_worktree,
     git_short_sha,
 )
+from booley.runtime.submodule_materialization import materialize_submodules
 
 
 def test_paired_project_basis_uses_runtime_ticket_slug(
@@ -240,6 +241,26 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
     core = project / "cores" / "top.core"
     core.write_text("recipe: baseline\n", encoding="utf-8")
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    _init_repo(dependency)
+    _git(
+        project,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(
+        project,
+        "config",
+        "--file",
+        ".gitmodules",
+        "submodule.vendor/dependency.url",
+        "git@example.invalid:private/dependency.git",
+    )
     _commit_all(project, "project baseline")
 
     ticket = project / "worktrees" / "ticket"
@@ -247,6 +268,7 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     paired = ticket / ".booley_project"
     _git(project, "worktree", "add", "-b", "booley-ticket/ticket", str(paired), "master")
     _git(paired, "branch", "--set-upstream-to=master")
+    materialize_submodules(project, paired)
     (paired / "cores" / "top.core").write_text("recipe: current\n", encoding="utf-8")
     _commit_all(paired, "change target recipe")
 
@@ -254,6 +276,8 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
         frozen = baseline / ".booley_project" / "cores" / "top.core"
         assert frozen.read_text(encoding="utf-8") == "recipe: baseline\n"
         assert (baseline / ".booley_project" / ".git").is_file()
+        dependency_file = baseline / ".booley_project/vendor/dependency/f.txt"
+        assert dependency_file.read_text(encoding="utf-8") == "v2\n"
 
     assert (paired / "cores" / "top.core").read_text(encoding="utf-8") == "recipe: current\n"
 

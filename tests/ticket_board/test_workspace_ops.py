@@ -67,6 +67,10 @@ def _authoring_workspace(
         "prepare_project",
         lambda *_args, **_kwargs: SimpleNamespace(ok=True, error=""),
     )
+    monkeypatch.setattr(
+        "booley.runtime.submodule_materialization.materialize_ticket_submodules",
+        lambda *_args: None,
+    )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
     monkeypatch.setattr(
         workspace_ops,
@@ -133,6 +137,30 @@ def test_authoring_change_validation_rejects_non_acceptance_paths(
     )
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring changes"):
         workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+
+
+def test_authoring_preparation_materializes_submodules_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    outer = tmp_path / "outer"
+    ticket = tmp_path / "ticket.md"
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "booley.runtime.submodule_materialization.materialize_ticket_submodules",
+        lambda source, destination: calls.append(f"materialize:{source}:{destination}"),
+    )
+
+    def prepare(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        calls.append("prepare")
+        return SimpleNamespace(ok=True, error="")
+
+    monkeypatch.setattr(workspace_ops, "prepare_project", prepare)
+    monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
+
+    workspace_ops._prepare_workspace_project(root, outer, ticket, "ticket")
+
+    assert calls == [f"materialize:{root}:{outer}", "prepare"]
 
 
 def test_changed_core_targets_report_parse_and_identity_errors(

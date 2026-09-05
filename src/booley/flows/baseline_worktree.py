@@ -35,7 +35,7 @@ from booley.core.boundary import as_dict, as_str
 from booley.fusesoc.fusesoc_registry import state_cores_dir
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
-    materialize_submodules,
+    materialize_ticket_submodules,
 )
 from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.target import TargetHandle
@@ -129,8 +129,8 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
     wt_dir = _create_baseline_worktree(project_root, ref)
     paired_baseline: Path | None = None
     try:
-        _materialize_baseline_submodules(project_root, wt_dir, ref)
         paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
+        _materialize_baseline_submodules(project_root, wt_dir, ref)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
         _copy_root_quarantine_marker(project_root, wt_dir)
@@ -166,7 +166,7 @@ def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
 
 def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: str) -> None:
     try:
-        materialize_submodules(project_root, worktree)
+        materialize_ticket_submodules(project_root, worktree)
     except SubmoduleMaterializationError as exc:
         raise BaselineWorktreeError(
             f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"

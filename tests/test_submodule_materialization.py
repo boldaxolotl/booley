@@ -10,6 +10,7 @@ import pytest
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_submodules,
+    materialize_ticket_submodules,
 )
 
 
@@ -154,6 +155,40 @@ def test_materializes_historical_pin_without_using_ssh(
     assert (materialized / ".git").is_dir()
     assert _git(materialized, "remote").stdout == ""
     assert not (materialized / ".git/objects/info/alternates").exists()
+
+
+def test_materializes_paired_project_submodules_in_composite_ticket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    dependency_sha = _commit_file(dependency, "paired dependency\n", "dependency")
+
+    source = tmp_path / "source"
+    _init_repo(source)
+    (source / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    _git(source, "add", ".gitignore")
+    _git(source, "commit", "-qm", "outer")
+    project = source / ".booley_project"
+    _init_repo(project)
+    _add_submodule(project, dependency, "vendor/dependency")
+    _set_submodule_url(project, "vendor/dependency")
+    _git(project, "add", ".gitmodules", "vendor/dependency")
+    _git(project, "commit", "-qm", "project")
+
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination, "HEAD")
+    project_destination = destination / ".booley_project"
+    _git(tmp_path, "clone", "-q", "--no-checkout", str(project), str(project_destination))
+    _git(project_destination, "checkout", "-q", "--detach", "HEAD")
+    monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
+
+    materialize_ticket_submodules(source, destination)
+
+    materialized = project_destination / "vendor/dependency"
+    assert (materialized / "source.sv").read_text(encoding="utf-8") == ("paired dependency\n")
+    assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
 
 
 def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> None:

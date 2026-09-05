@@ -992,17 +992,27 @@ def _mounted_worktree_path(
         pass
     else:
         candidates.append(project_dir / suffix)
-    matches = {
-        candidate.resolve()
-        for candidate in candidates
-        if candidate.is_dir() and _worktree_has_identity(candidate, ref, root)
-    }
+    matches: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_dir() or not _worktree_has_identity(candidate, ref, root):
+            continue
+        resolved = candidate.resolve()
+        if not any(_same_worktree_directory(resolved, match) for match in matches):
+            matches.append(resolved)
     if len(matches) > 1:
         rendered = ", ".join(str(candidate) for candidate in sorted(matches))
         raise AcceptanceBasisError(
             f"registered worktree for {ref} is ambiguous in the current mount: {rendered}"
         )
-    return next(iter(matches), None)
+    return matches[0] if matches else None
+
+
+def _same_worktree_directory(left: Path, right: Path) -> bool:
+    """Recognize multiple bind-mounted names for one worktree directory."""
+    try:
+        return left.samefile(right)
+    except OSError:
+        return left == right
 
 
 def _worktree_has_identity(candidate: Path, ref: str, owner: Path) -> bool:

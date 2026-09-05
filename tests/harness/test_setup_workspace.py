@@ -519,7 +519,7 @@ class TestWorkspaceRun:
         mock_sub.return_value = _mock_success()
 
         with patch(
-            "booley.harness.setup.workspace.materialize_submodules",
+            "booley.harness.setup.workspace.materialize_ticket_submodules",
             side_effect=SubmoduleMaterializationError("local objects missing"),
         ) as materialize:
             from booley.harness.setup.workspace import run
