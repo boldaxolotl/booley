@@ -58,14 +58,8 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
-    tmp_path: Path,
-) -> None:
-    from booley.criteria.actions import planned_invocation
-    from booley.criteria.state import CriterionEntry
-    from booley.harness.setup.intake import _apply_basis_selectors
-
-    basis = AcceptanceBasis(
+def _qualified_target_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
         bindings=(
             AcceptanceTargetBinding(
                 flow="lint",
@@ -94,6 +88,15 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
             ),
         ),
     )
+
+
+def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
+    tmp_path: Path,
+) -> None:
+    from booley.criteria.actions import planned_invocation
+    from booley.criteria.state import CriterionEntry
+    from booley.harness.setup.intake import _apply_basis_selectors
+
     ctx = TicketContext(
         slug="qualified-target",
         ticket_path=tmp_path / "ticket.md",
@@ -101,7 +104,7 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         branch="main",
         summary="Qualified target",
         project_root=tmp_path,
-        acceptance_basis=basis,
+        acceptance_basis=_qualified_target_basis(),
     )
     template = CriteriaTemplate.from_yaml(
         {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
