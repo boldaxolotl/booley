@@ -27,8 +27,8 @@ as a tick and the output reports `at_unit: "tick"`.
 - `<FST_FILE>` required.
 - `--at N` required. Integer, signed (negative cycles are
   valid before reset deasserts when `--with-reset`).
-- `-s PATTERN` optional but typical: without it you get
-  every signal in the store.
+- `-s PATTERN` optionally selects stored and Virtual Signal
+  rows. Without it, every stored and virtual row is selected.
 - Standard global options apply.
 
 ## Output shape
@@ -116,4 +116,14 @@ Snapshot driven by a virtual predicate as well:
 bwave value sim.fst --at 1000 \
     --virtual "hsk = *valid & *ready" \
     -s "hsk" -s "*state*"
+```
+
+Virtual definitions may be unselected helpers for later
+definitions. They are evaluated but omitted from the snapshot:
+
+```bash
+bwave value sim.fst --at 1000 \
+    --virtual "valid = *req & *ready" \
+    --virtual "stalled = valid & *busy" \
+    -s "stalled"
 ```

@@ -1717,9 +1717,6 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 }
             }
         }
-        trigger_ticks.sort();
-        trigger_ticks.dedup();
-
         // Extractor quirk: sample_at_triggered is not cleared on reset rebase.
         // If any trigger signal changed during reset (from initial "x"), the
         // flag carries over to the first post-reset cycle. Simulate this by
@@ -1731,6 +1728,31 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             if has_pre_reset && (trigger_ticks.is_empty() || trigger_ticks[0] > cb) {
                 trigger_ticks.insert(0, cb);
             }
+        }
+    }
+
+    // Every discovery path feeds the same ordered event stream. Apply the
+    // query window before directional selection so --first means the first
+    // trigger in the requested range, not the first trigger in the store.
+    trigger_ticks.sort_unstable();
+    trigger_ticks.dedup();
+    let query_time = |tick| {
+        if sync_mode && cache.clock_period_ticks > 0 {
+            tick_to_cycle(tick, cb, cache.clock_period_ticks)
+        } else {
+            tick
+        }
+    };
+    trigger_ticks.retain(|&tick| {
+        let time = query_time(tick) as i64;
+        time >= cfg.time_min && cfg.time_max.is_none_or(|max| time <= max)
+    });
+    if cfg.first_match {
+        trigger_ticks.truncate(1);
+    } else if cfg.last_match {
+        if let Some(last) = trigger_ticks.last().copied() {
+            trigger_ticks.clear();
+            trigger_ticks.push(last);
         }
     }
 
@@ -1770,47 +1792,12 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut line_count: usize = 0;
 
     for &trigger_tick in &trigger_ticks {
-        // Time range filtering
-        if sync_mode && cache.clock_period_ticks > 0 {
-            let cycle = tick_to_cycle(
-                trigger_tick,
-                cycle_base(cache, effective_start),
-                cache.clock_period_ticks,
-            );
-            if (cycle as i64) < cfg.time_min {
-                continue;
-            }
-            if let Some(max) = cfg.time_max {
-                if (cycle as i64) > max {
-                    break;
-                }
-            }
-        } else {
-            if (trigger_tick as i64) < cfg.time_min {
-                continue;
-            }
-            if let Some(max) = cfg.time_max {
-                if (trigger_tick as i64) > max {
-                    break;
-                }
-            }
-        }
-
         sample_count += 1;
         if cfg.count_only {
             continue;
         }
 
-        let time_label = if sync_mode && cache.clock_period_ticks > 0 {
-            let cycle = tick_to_cycle(
-                trigger_tick,
-                cycle_base(cache, effective_start),
-                cache.clock_period_ticks,
-            );
-            cycle.to_string()
-        } else {
-            trigger_tick.to_string()
-        };
+        let time_label = query_time(trigger_tick).to_string();
 
         let stored_rows = watched_indices.iter().enumerate().map(|(wi, &w_idx)| {
             let sig = &cache.signals[w_idx];
@@ -3252,14 +3239,22 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let range_start = cfg.time_min;
     let range_end_opt = cfg.time_max;
 
-    let matched = cache.match_signals(&cfg.patterns);
-    // Virtuals count as matches (wave renders them as rows), same as
-    // stats/find: `-s missing --virtual ok=...` is a partial miss, not a
-    // total one. Built once here; the row-append below reuses it.
-    let virtuals = build_virtuals(cache, cfg);
-    if matched.is_empty() && virtuals.is_empty() {
+    // Resolve every virtual so later definitions can depend on unselected
+    // helpers, then apply the same row-selection rule as value and sample.
+    let all_virtuals = build_virtuals(cache, cfg);
+    let virtual_names: Vec<String> = all_virtuals
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    let (matched, selected_virtual_indices) =
+        cache.match_signals_with_names(&cfg.patterns, &virtual_names);
+    if matched.is_empty() && selected_virtual_indices.is_empty() {
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
+    let selected_virtuals: Vec<&VirtualEntry> = selected_virtual_indices
+        .iter()
+        .map(|&idx| &all_virtuals[idx])
+        .collect();
     let radix_map = build_radix_map(cache, &matched, cfg);
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
@@ -3378,8 +3373,8 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             grid.push(row);
         }
 
-        // Append virtual signal rows (built above, before the empty-match gate)
-        for ve in &virtuals {
+        // Append selected virtual rows in definition order.
+        for ve in &selected_virtuals {
             display_names.push(ve.name.clone());
             let row: Vec<String> = col_ticks
                 .iter()
@@ -3444,11 +3439,9 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 tick_set.insert(*tick);
             }
         }
-        // Virtual signals contribute columns too — without this, a
-        // virtual-only match (every -s pattern missed but a --virtual def
-        // resolved) rendered zero columns: "# No data in range" despite
-        // having rows to show.
-        for ve in &virtuals {
+        // Selected virtual signals contribute columns too. Unselected helpers
+        // remain available to composition without changing the rendered grid.
+        for ve in &selected_virtuals {
             for (tick, _) in &ve.transitions {
                 if *tick >= range_start_tick && *tick <= range_end_tick {
                     tick_set.insert(*tick);
@@ -3508,8 +3501,8 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             grid.push(row);
         }
 
-        // Append virtual signal rows (built above, before the empty-match gate)
-        for ve in &virtuals {
+        // Append selected virtual rows in definition order.
+        for ve in &selected_virtuals {
             display_names.push(ve.name.clone());
             let row: Vec<String> = col_ticks
                 .iter()

@@ -11,6 +11,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- B-Wave now applies `-s` consistently to stored and Virtual Signal rows in
+  `wave`, `value`, and `sample`: composed helpers remain available without
+  leaking into output, mixed-name diagnostics count real matches correctly,
+  and Virtual Signal names that exactly collide with stored or earlier virtual
+  names are rejected before query results are emitted.
+  ([#318](https://github.com/boldaxolotl/booley/issues/318))
 - The Stealth pre-push guard now rejects tracked `.booley_project/` paths and
   committed links into that state even when the Session Runtime exposes it at
   a different absolute path.

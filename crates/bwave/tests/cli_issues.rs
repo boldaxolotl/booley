@@ -517,13 +517,19 @@ fn value_emits_a_selected_virtual_only_snapshot() {
         "-s",
         "hi",
         "--virtual",
-        "hi = *data > 'd5",
+        "helper = *data > 'd5",
+        "--virtual",
+        "hi = helper & *rstn",
     ]);
     let _ = std::fs::remove_file(&bwave);
 
     assert_eq!(code, 0, "virtual-only value failed: {stderr}");
     assert!(stdout.contains("hi"), "virtual row is absent: {stdout}");
     assert!(stdout.contains("= 1"), "virtual value is wrong: {stdout}");
+    assert!(
+        !stdout.contains("helper"),
+        "unselected helper leaked into value output: {stdout}"
+    );
     assert!(
         !stderr.contains("no signals match"),
         "selected virtual was reported missing: {stderr}"
@@ -572,7 +578,9 @@ fn sample_emits_a_selected_virtual_capture_row() {
         "-s",
         "hi",
         "--virtual",
-        "hi = *data > 'd5",
+        "helper = *data > 'd5",
+        "--virtual",
+        "hi = helper & *rstn",
     ]);
     let _ = std::fs::remove_file(&bwave);
 
@@ -584,6 +592,10 @@ fn sample_emits_a_selected_virtual_capture_row() {
     assert!(
         stdout.contains("hi 1"),
         "true virtual rows are absent: {stdout}"
+    );
+    assert!(
+        !stdout.contains("helper"),
+        "unselected helper leaked into sample output: {stdout}"
     );
     assert!(
         !stderr.contains("filter dropped"),
@@ -664,35 +676,119 @@ fn async_level_sample_uses_selected_virtual_row_change_ticks() {
 }
 
 #[test]
-fn sample_unions_same_named_stored_and_virtual_triggers() {
+fn every_virtual_capable_command_rejects_a_stored_signal_name_collision() {
     let bwave = build_bwave("test_basic.vcd", "sample_virtual_collision");
     let store_path = bwave.to_string_lossy().to_string();
+    let cases: Vec<Vec<&str>> = vec![
+        vec![
+            "wave",
+            &store_path,
+            "-s",
+            "tb.rstn",
+            "--virtual",
+            "tb.rstn = *rstn",
+        ],
+        vec![
+            "find",
+            &store_path,
+            "tb.rstn",
+            "'h1",
+            "--virtual",
+            "tb.rstn = *rstn",
+        ],
+        vec![
+            "sample",
+            &store_path,
+            "tb.rstn",
+            "rising",
+            "-s",
+            "data",
+            "--virtual",
+            "tb.rstn = *rstn",
+        ],
+        vec![
+            "distance",
+            &store_path,
+            "tb.rstn",
+            "rising",
+            "--virtual",
+            "tb.rstn = *rstn",
+        ],
+        vec![
+            "value",
+            &store_path,
+            "--at",
+            "1",
+            "-s",
+            "tb.rstn",
+            "--virtual",
+            "tb.rstn = *rstn",
+        ],
+    ];
+
+    for args in cases {
+        let subcommand = args[0];
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(code, 2, "{subcommand} accepted a collision: {stderr}");
+        assert!(
+            stdout.is_empty(),
+            "{subcommand} emitted output before rejecting the collision: {stdout}"
+        );
+        assert!(
+            stderr.contains("virtual signal name 'tb.rstn' conflicts with stored signal 'tb.rstn'"),
+            "{subcommand} collision diagnostic is unclear: {stderr}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&bwave);
+}
+
+#[test]
+fn duplicate_virtual_signal_names_are_rejected_before_output() {
+    let bwave = build_bwave("test_basic.vcd", "duplicate_virtual_name");
+    let store_path = bwave.to_string_lossy().to_string();
     let (stdout, stderr, code) = run(&[
-        "sample",
+        "value",
         &store_path,
-        "rstn",
-        "rising",
-        "--async",
-        "--with-reset",
+        "--at",
+        "1",
         "-s",
-        "data",
+        "helper",
+        "--virtual",
+        "helper = *rstn",
+        "--virtual",
+        "helper = *data > 'd0",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 2, "duplicate virtual name was accepted: {stderr}");
+    assert!(stdout.is_empty(), "duplicate name wrote output: {stdout}");
+    assert!(
+        stderr.contains("virtual signal name 'helper' is defined more than once"),
+        "duplicate-name diagnostic is unclear: {stderr}"
+    );
+}
+
+#[test]
+fn virtual_signal_name_collision_check_uses_full_stored_names() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_full_name_boundary");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "value",
+        &store_path,
+        "--at",
+        "1",
+        "-s",
+        "rstn",
         "--virtual",
         "rstn = *rstn",
     ]);
     let _ = std::fs::remove_file(&bwave);
 
-    assert_eq!(code, 0, "stored/virtual trigger union failed: {stderr}");
+    assert_eq!(code, 0, "suffix-only name overlap was rejected: {stderr}");
     assert!(
-        stdout.contains("15 data"),
-        "deduplicated trigger is absent: {stdout}"
-    );
-    assert!(
-        stderr.contains("# sample: 2 trigger signal(s)"),
-        "both trigger candidates were not counted: {stderr}"
-    );
-    assert!(
-        stderr.contains("# 1 trigger events"),
-        "equal trigger timestamps were not deduplicated: {stderr}"
+        stdout.lines().filter(|line| line.contains("rstn")).count() == 2,
+        "stored and virtual rows were not both selected: {stdout}"
     );
 }
 
@@ -1489,11 +1585,38 @@ fn empty_store_list_json_is_loud_on_stderr_too() {
 }
 
 #[test]
-fn wave_with_virtual_only_match_is_not_a_total_miss() {
-    // wave/trace used to exit 2 on `matched.is_empty()` alone, even when a
-    // --virtual def resolved and would have rendered rows — while stats/find
-    // counted virtuals before exiting. Same query, same store, same exit now.
-    let bwave = build_bwave("test_wide_signals.vcd", "virt_only_wave");
+fn wave_selects_a_composed_virtual_without_rendering_its_helper() {
+    let bwave = build_bwave("test_basic.vcd", "virt_only_wave");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &bp,
+        "-s",
+        "result",
+        "--virtual",
+        "helper = *data > 'd0",
+        "--virtual",
+        "result = helper & *rstn",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 0, "virtual-only match failed: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.starts_with("result")),
+        "the selected virtual row must render: {stdout}"
+    );
+    assert!(
+        stdout.lines().all(|line| !line.starts_with("helper")),
+        "the unselected helper leaked into the output: {stdout}"
+    );
+    assert!(
+        !stderr.contains("no signals match"),
+        "the selected virtual was reported missing: {stderr}"
+    );
+}
+
+#[test]
+fn wave_rejects_a_selection_that_misses_stored_and_virtual_names() {
+    let bwave = build_bwave("test_wide_signals.vcd", "virt_total_miss_wave");
     let bp = bwave.to_string_lossy().to_string();
     let (stdout, stderr, code) = run(&[
         "wave",
@@ -1504,15 +1627,139 @@ fn wave_with_virtual_only_match_is_not_a_total_miss() {
         "virt = *byte8* > 'd0",
     ]);
     let _ = std::fs::remove_file(&bwave);
-    assert_eq!(
-        code, 0,
-        "virtual-only match must not be a total miss: {}",
-        stderr
+
+    assert_eq!(code, 2, "total miss must fail: {stderr}");
+    assert!(stdout.is_empty(), "total miss wrote output: {stdout}");
+    assert!(
+        stderr.contains("ERROR: no signals match pattern(s) 'no_such_signal'"),
+        "total-miss diagnostic is unclear: {stderr}"
+    );
+}
+
+#[test]
+fn wave_orders_stored_then_selected_virtual_rows_without_duplicates() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_wave_order");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &bp,
+        "-t",
+        "1:2",
+        "-s",
+        "rstn",
+        "-s",
+        "helper",
+        "-s",
+        "result",
+        "-s",
+        "*result*",
+        "--virtual",
+        "helper = *data > 'd0",
+        "--virtual",
+        "result = helper & *rstn",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "mixed stored/virtual wave failed: {stderr}");
+    let row_names: Vec<&str> = stdout
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(row_names, vec!["rstn", "helper", "result"]);
+}
+
+#[test]
+fn wave_default_selection_includes_stored_and_virtual_rows() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_wave_default_selection");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &bp,
+        "-t",
+        "1:2",
+        "--virtual",
+        "helper = *data > 'd0",
+        "--virtual",
+        "result = helper & *rstn",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "default wave selection failed: {stderr}");
+    assert!(stdout.contains("rstn"), "stored row is absent: {stdout}");
+    assert!(stdout.contains("helper"), "helper row is absent: {stdout}");
+    assert!(
+        stdout.contains("result"),
+        "composed row is absent: {stdout}"
+    );
+}
+
+#[test]
+fn wave_reports_only_patterns_missing_from_both_signal_namespaces() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_wave_partial_miss");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &bp,
+        "-t",
+        "1:2",
+        "-s",
+        "data",
+        "-s",
+        "result",
+        "-s",
+        "absent",
+        "--virtual",
+        "helper = *data > 'd0",
+        "--virtual",
+        "result = helper & *rstn",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "partial-miss wave failed: {stderr}");
+    assert!(stdout.contains("data"), "stored row is absent: {stdout}");
+    assert!(stdout.contains("result"), "virtual row is absent: {stdout}");
+    assert!(
+        stderr.contains("no signals match 'absent'"),
+        "missing pattern was not reported: {stderr}"
     );
     assert!(
-        stdout.contains("virt"),
-        "the virtual row must render: {}",
-        stdout
+        stderr.contains("1 of 3 -s patterns matched nothing"),
+        "matched virtual pattern was falsely reported missing: {stderr}"
+    );
+}
+
+#[test]
+fn async_wave_columns_ignore_unselected_virtual_helper_transitions() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_wave_async_columns");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &bp,
+        "--async",
+        "--with-reset",
+        "-t",
+        "0ns:100ns",
+        "-s",
+        "result",
+        "--virtual",
+        "helper = *data > 'd0",
+        "--virtual",
+        "result = *data > 'd5",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "async virtual wave failed: {stderr}");
+    let headers: Vec<&str> = stdout
+        .lines()
+        .next()
+        .expect("wave header")
+        .split_whitespace()
+        .collect();
+    assert_eq!(headers, vec!["time", "15", "70"]);
+    assert!(
+        !stdout.contains("helper"),
+        "unselected helper leaked into async output: {stdout}"
     );
 }
 
