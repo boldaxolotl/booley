@@ -174,7 +174,8 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     _init_repo(project)
     _add_submodule(project, dependency, "vendor/dependency")
     _set_submodule_url(project, "vendor/dependency")
-    _git(project, "add", ".gitmodules", "vendor/dependency")
+    (project / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
+    _git(project, "add", ".gitmodules", "booley.toml", "vendor/dependency")
     _git(project, "commit", "-qm", "project")
 
     destination = tmp_path / "destination"
@@ -220,13 +221,13 @@ def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> No
     )
     _git(source, "add", ".gitmodules")
     _git(source, "update-index", "--add", "--cacheinfo", f"160000,{root_sha},vendor/missing")
-    project_dir = source / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
     _git(source, "commit", "-qm", "configured submodule")
 
     destination = tmp_path / "destination"
     _add_worktree(source, destination, "HEAD")
+    project_dir = destination / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
 
     materialize_submodules(source, destination)
 
@@ -239,13 +240,13 @@ def test_rejects_unsafe_configured_path_before_touching_destination(tmp_path: Pa
     source = tmp_path / "source"
     _init_repo(source)
     _commit_file(source, "root\n", "root")
-    project_dir = source / ".booley_project"
+    destination = tmp_path / "destination"
+    _git(source, "worktree", "add", str(destination))
+    project_dir = destination / ".booley_project"
     project_dir.mkdir()
     (project_dir / "booley.toml").write_text(
         '[submodules]\npaths = ["../../../victim"]\n', encoding="utf-8"
     )
-    destination = tmp_path / "destination"
-    _git(source, "worktree", "add", str(destination))
     sentinel = tmp_path / "victim"
     sentinel.write_text("keep\n", encoding="utf-8")
 
@@ -263,11 +264,11 @@ def test_rejects_invalid_submodule_configuration(tmp_path: Path, configuration: 
     source = tmp_path / "source"
     _init_repo(source)
     _commit_file(source, "root\n", "root")
-    project_dir = source / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text(configuration, encoding="utf-8")
     destination = tmp_path / "destination"
     _add_worktree(source, destination)
+    project_dir = destination / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text(configuration, encoding="utf-8")
 
     with pytest.raises(SubmoduleMaterializationError, match=r"\[submodules\]"):
         materialize_submodules(source, destination)
@@ -285,18 +286,47 @@ def test_configuration_selects_only_matching_top_level_gitlinks(tmp_path: Path) 
     _add_submodule(source, first, "vendor/first")
     _add_submodule(source, second, "vendor/second")
     _git(source, "commit", "-am", "two submodules")
-    project_dir = source / ".booley_project"
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    project_dir = destination / ".booley_project"
     project_dir.mkdir()
     (project_dir / "booley.toml").write_text(
         '[submodules]\npaths = ["vendor/second", "not/a/gitlink"]\n', encoding="utf-8"
     )
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
 
     materialize_submodules(source, destination)
 
     assert not any((destination / "vendor/first").iterdir())
     assert (destination / "vendor/second/source.sv").read_text(encoding="utf-8") == "second\n"
+
+
+def test_selection_policy_comes_from_projected_commit(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _init_repo(first)
+    _init_repo(second)
+    _commit_file(first, "first\n", "first")
+    _commit_file(second, "second\n", "second")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, first, "vendor/first")
+    _add_submodule(source, second, "vendor/second")
+    project_dir = source / ".booley_project"
+    project_dir.mkdir()
+    config = project_dir / "booley.toml"
+    config.write_text('[submodules]\npaths = ["vendor/first"]\n', encoding="utf-8")
+    _git(source, "add", "-f", ".booley_project/booley.toml")
+    _git(source, "commit", "-am", "projected selection")
+    projected = _git(source, "rev-parse", "HEAD").stdout.strip()
+    config.write_text('[submodules]\npaths = ["vendor/second"]\n', encoding="utf-8")
+    _git(source, "commit", "-am", "live selection drift")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination, projected)
+
+    materialize_submodules(source, destination)
+
+    assert (destination / "vendor/first/source.sv").read_text() == "first\n"
+    assert not any((destination / "vendor/second").iterdir())
 
 
 def test_materializes_nested_historical_gitlinks_by_same_path(tmp_path: Path) -> None:

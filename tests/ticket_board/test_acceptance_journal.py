@@ -70,9 +70,7 @@ def _composite_basis() -> AcceptanceBasis:
     )
 
 
-def test_source_surface_materializes_submodules_before_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _trace_surface_validation(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(acceptance_impl, "_clone_checkout", lambda *_args: events.append("clone"))
     monkeypatch.setattr(
@@ -92,6 +90,13 @@ def test_source_surface_materializes_submodules_before_validation(
         "booley.ticket_board.acceptance_targets.validate_binding_selectors",
         lambda *_args: (),
     )
+    return events
+
+
+def test_source_surface_materializes_submodules_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = _trace_surface_validation(monkeypatch)
 
     acceptance_impl._validate_source_surface(
         tmp_path, tmp_path / "project", _composite_basis(), {"outer": "a", "project": "b"}
@@ -103,21 +108,7 @@ def test_source_surface_materializes_submodules_before_validation(
 def test_candidate_surface_materializes_submodules_before_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    events: list[str] = []
-    monkeypatch.setattr(acceptance_impl, "_clone_checkout", lambda *_args: events.append("clone"))
-    monkeypatch.setattr(
-        acceptance_impl, "checkout_project_dir_relative_to", lambda _root: Path("project")
-    )
-    monkeypatch.setattr(
-        acceptance_impl,
-        "_materialize_surface_submodules",
-        lambda *_args: events.append("materialize"),
-    )
-    monkeypatch.setattr(
-        acceptance_impl,
-        "assert_inputs_unchanged",
-        lambda *_args: events.append("validate"),
-    )
+    events = _trace_surface_validation(monkeypatch)
     journal = SimpleNamespace(
         candidates={
             "outer": SimpleNamespace(prepared_sha="a" * 40),

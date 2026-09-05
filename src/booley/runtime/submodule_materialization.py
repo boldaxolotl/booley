@@ -26,15 +26,26 @@ def materialize_submodules(
 ) -> None:
     """Populate destination gitlinks from initialized same-path source repositories.
 
+    The destination checkout supplies ``[submodules].paths`` so historical and
+    Acceptance Basis projections retain the selection policy of their exact commit.
     ``excluded_top_level`` names checkouts already owned by a higher-level workspace
     transaction; their own nested gitlinks are materialized by that owner separately.
     """
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
+    selected = _selected_top_level_paths(destination_root)
+    selected = [path for path in selected if path.as_posix() not in excluded_top_level]
+    _materialize_selection(source_root, destination_root, selected)
+
+
+def _materialize_selection(
+    source_root: Path,
+    destination_root: Path,
+    selected: list[Path],
+) -> None:
+    """Populate one already-resolved top-level selection with rollback."""
     created: list[tuple[Path, bool]] = []
     try:
-        selected = _selected_top_level_paths(source_root, destination_root)
-        selected = [path for path in selected if path.as_posix() not in excluded_top_level]
         _materialize_tree(
             source_root,
             destination_root,
@@ -91,7 +102,11 @@ def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> 
         destination_root,
         excluded_top_level=frozenset({project_relative.as_posix()}),
     )
-    materialize_submodules(project_source, project_destination)
+    _materialize_selection(
+        project_source.resolve(),
+        project_destination.resolve(),
+        _submodule_paths(project_destination.resolve()),
+    )
 
 
 def _materialize_tree(
@@ -118,10 +133,10 @@ def _materialize_tree(
         _materialize_tree(source_root, destination, destination_root, full_relative, created)
 
 
-def _selected_top_level_paths(source_root: Path, destination_root: Path) -> list[Path]:
+def _selected_top_level_paths(destination_root: Path) -> list[Path]:
     discovered = _submodule_paths(destination_root)
     try:
-        configured_paths = load_submodule_config(source_root).paths
+        configured_paths = load_submodule_config(destination_root).paths
     except SubmoduleConfigError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
     if configured_paths is None:
