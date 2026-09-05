@@ -274,6 +274,25 @@ def test_receipt_validation_reports_missing_and_mismatched_receipts(
         acceptance_basis.load_basis_receipt(tmp_path, "ticket", basis.as_dict())
 
 
+def test_receipt_path_uses_explicit_control_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control_root = tmp_path / "control"
+    control_project = control_root / ".booley_project"
+    authored_project = control_project / "worktrees" / "ticket" / ".booley_project"
+    control_project.mkdir(parents=True)
+    authored_project.mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(authored_project))
+
+    path = acceptance_basis._receipt_path(
+        control_root,
+        "ticket",
+        AcceptanceBasis((_participant(),)),
+    )
+
+    assert path.is_relative_to(control_project / ".runtime")
+
+
 def test_write_basis_receipt_rejects_source_drift_and_write_once_conflict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

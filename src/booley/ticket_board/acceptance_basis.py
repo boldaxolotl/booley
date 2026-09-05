@@ -24,7 +24,6 @@ from booley.core.boundary import (
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     resolve_checkout_project_dir,
-    runtime_dir,
 )
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
@@ -506,7 +505,8 @@ def _receipt_payload(
 
 
 def _receipt_path(project_root: Path, slug: str, basis: AcceptanceBasis) -> Path:
-    return runtime_dir(project_root) / "acceptance" / "bases" / slug / f"{basis.basis_id}.json"
+    control_runtime = resolve_checkout_project_dir(project_root) / ".runtime"
+    return control_runtime / "acceptance" / "bases" / slug / f"{basis.basis_id}.json"
 
 
 def write_basis_receipt(
