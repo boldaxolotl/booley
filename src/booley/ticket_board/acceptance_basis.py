@@ -699,12 +699,18 @@ def assert_live_inputs_unchanged(
     outer = basis.participant("outer")
     outer_worktree = worktree_for_ref(root, outer.ticket_ref)
     if outer_worktree is not None:
+        recorded = _recorded_worktree_path(root, outer.ticket_ref)
+        if recorded is None:
+            raise AcceptanceBasisError(
+                f"registered worktree for {outer.ticket_ref} disappeared during validation"
+            )
         _assert_repository_inputs_unchanged(
             outer_worktree,
             outer.authoring_sha,
             outer_protected,
             git_owner=root,
             generated_reference=reference,
+            generated_checkout_root=recorded,
             excluded_prefixes=(prefix,) if len(basis.participants) > 1 else (),
         )
     project = next((item for item in basis.participants if item.role == "project"), None)

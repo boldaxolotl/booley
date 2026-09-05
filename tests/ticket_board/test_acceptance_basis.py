@@ -372,6 +372,22 @@ def _enable_isolated_test_core(project_dir: Path) -> None:
     )
 
 
+def _remap_generated_test_view(workspace: Path, host_root: Path) -> None:
+    from booley.fusesoc.core_projection import (
+        isolated_registry_root,
+        reconcile_isolated_registry,
+        reconcile_projected_cores,
+    )
+
+    reconcile_projected_cores(workspace)
+    reconcile_isolated_registry(workspace)
+    for core in isolated_registry_root(workspace).glob("*.core"):
+        core.write_text(
+            core.read_text(encoding="utf-8").replace(str(workspace), str(host_root)),
+            encoding="utf-8",
+        )
+
+
 def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None:
     _root, _project_dir, tio = _paired_basis_project(tmp_path)
 
@@ -582,12 +598,6 @@ def test_live_isolated_cores_accept_recorded_host_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.fusesoc.core_projection import (
-        isolated_registry_root,
-        reconcile_isolated_registry,
-        reconcile_projected_cores,
-    )
-
     root, project_dir, tio = _paired_basis_project(tmp_path)
     _enable_isolated_test_core(project_dir)
     _git(project_dir, "add", "-A")
@@ -608,18 +618,47 @@ def test_live_isolated_cores_accept_recorded_host_root(
     workspace = project_dir / "worktrees/mounted-generated"
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
     validate_ticket_view(reference, basis, allow_generated=True)
-    reconcile_projected_cores(workspace)
-    reconcile_isolated_registry(workspace)
     host_root = Path("/host/worktrees/mounted-generated")
-    for core in isolated_registry_root(workspace).glob("*.core"):
-        core.write_text(
-            core.read_text(encoding="utf-8").replace(str(workspace), str(host_root)),
-            encoding="utf-8",
-        )
+    _remap_generated_test_view(workspace, host_root)
     monkeypatch.setattr(
         acceptance_basis_module,
         "_recorded_worktree_path",
         lambda *_args: host_root / ".booley_project",
+    )
+
+    assert_live_inputs_unchanged(basis, root, reference)
+
+
+def test_outer_only_isolated_cores_accept_recorded_host_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    _enable_isolated_test_core(project_dir)
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "enable isolated core")
+    ticket = tio.create_ticket_file(
+        "mounted-outer-generated",
+        TicketFileSpec(
+            summary="Compare mounted outer generated input",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("mounted-outer-generated") is True
+    basis = tio.load_basis("mounted-outer-generated")
+    workspace = project_dir / "worktrees/mounted-outer-generated"
+    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
+    validate_ticket_view(reference, basis, allow_generated=True)
+    host_root = Path("/host/worktrees/mounted-outer-generated")
+    _remap_generated_test_view(workspace, host_root)
+    monkeypatch.setattr(
+        acceptance_basis_module,
+        "_recorded_worktree_path",
+        lambda *_args: host_root,
     )
 
     assert_live_inputs_unchanged(basis, root, reference)

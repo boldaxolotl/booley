@@ -20,8 +20,11 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
+from booley.flows.execution import flow_enabled
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.git import scope_matches_file
+from booley.runtime.project_prepare import prepare_project
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError, authored_ticket_record
 from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.readiness import check_ticket_ready
@@ -211,10 +214,6 @@ def _status(repository: Path) -> str:
     ).stdout.strip()
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _ticket_fields(project_dir: Path, slug: str) -> tuple[dict[str, Any], Path]:
     ticket, _status_name = find_ticket_file(project_dir / "tickets", slug)
     if ticket is None:
@@ -228,9 +227,27 @@ def _validate_ticket_fixture(contract_path: Path, fixture: str, ticket: Path) ->
     fixture_path = repository_root / fixture
     if not fixture_path.is_file():
         return [f"CI-owned ticket fixture is missing: {fixture}"]
-    if _digest(fixture_path) != _digest(ticket):
+    try:
+        fixture_fields, fixture_body = parse_frontmatter(fixture_path.read_text(encoding="utf-8"))
+        ticket_fields, ticket_body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+        fixture_record = authored_ticket_record(fixture_fields, fixture_body, ())
+        ticket_record = authored_ticket_record(ticket_fields, ticket_body, ())
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
+        return [f"cannot compare CI-owned ticket fixture {fixture}: {exc}"]
+    if fixture_record["ticket"] != ticket_record["ticket"]:
         return [f"injected ticket does not match CI-owned fixture: {fixture}"]
     return []
+
+
+def _prepare_demo_project(root: Path, ticket: Path, slug: str) -> list[str]:
+    preparation = prepare_project(
+        root,
+        root,
+        slug=slug,
+        ticket_path=ticket,
+        sim_flow_enabled=flow_enabled("sim", root),
+    )
+    return [] if preparation.ok else [preparation.error]
 
 
 def _validate_targets(
@@ -308,7 +325,7 @@ def _validate_generated_input(
     if not artifact.is_file():
         errors.append(f"generated input was not prepared: {path}")
     else:
-        digest = _digest(artifact)
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     if scope_matches_file(scope, path):
         errors.append(f"generated input must not be ticket Scope: {path}")
     if _git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0:
@@ -352,6 +369,7 @@ def validate_demo(
     errors.extend(_validate_ticket_fixture(Path(contract_path), contract.ticket_fixture, ticket))
     first = check_ticket_ready(root, contract.ticket_slug)
     errors.extend(first.errors)
+    errors.extend(_prepare_demo_project(root, ticket, contract.ticket_slug))
     errors.extend(_validate_targets(root, fields, contract.required_targets))
     errors.extend(_validate_bindings(fields, contract.required_bindings))
     generated_errors, first_digests = _validate_generated_inputs(
@@ -361,6 +379,10 @@ def validate_demo(
 
     second = check_ticket_ready(root, contract.ticket_slug)
     errors.extend(f"second preparation: {error}" for error in second.errors)
+    errors.extend(
+        f"second preparation: {error}"
+        for error in _prepare_demo_project(root, ticket, contract.ticket_slug)
+    )
     generated_errors, second_digests = _validate_generated_inputs(
         root, fields, contract.generated_inputs
     )

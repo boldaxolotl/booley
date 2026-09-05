@@ -24,7 +24,7 @@ from booley.dev_support.demo_contract import (
     _validate_generated_input,
     load_contract,
 )
-from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 
 CONTRACT = Path(".github/contracts/picorv32-demo.toml")
 PREPARE_ACTION = Path(".github/actions/prepare-picorv32-demo/action.yml")
@@ -546,6 +546,28 @@ def test_checkout_ticket_and_fixture_helpers(
     )
 
 
+def test_ticket_fixture_comparison_ignores_generated_publication_fields(tmp_path: Path) -> None:
+    contract_path = tmp_path / ".github/contracts/contract.toml"
+    fixture_name = ".github/contracts/ticket.md"
+    fixture = tmp_path / fixture_name
+    ticket = tmp_path / "published.md"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(format_frontmatter({"summary": "Demo"}, "Body\n"), encoding="utf-8")
+    ticket.write_text(
+        format_frontmatter(
+            {
+                "summary": "Demo",
+                "created": "2026-09-05T00:00:00Z",
+                "acceptance_basis": {"schema": 1, "participants": []},
+            },
+            "Body\n",
+        ),
+        encoding="utf-8",
+    )
+
+    assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == []
+
+
 def test_target_validation_handles_future_missing_invalid_and_broken_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -662,6 +684,7 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     )
     readiness = iter([SimpleNamespace(errors=["first"]), SimpleNamespace(errors=["second"])])
     monkeypatch.setattr(demo_contract_module, "check_ticket_ready", lambda *_args: next(readiness))
+    monkeypatch.setattr(demo_contract_module, "_prepare_demo_project", lambda *_args: [])
     monkeypatch.setattr(demo_contract_module, "_validate_targets", lambda *_args: ["target"])
     monkeypatch.setattr(demo_contract_module, "_validate_bindings", lambda *_args: ["binding"])
     generated = iter([(["generated"], {"image.hex": "one"}), (["again"], {"image.hex": "two"})])
