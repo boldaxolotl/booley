@@ -677,10 +677,11 @@ def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[s
     paired = paired_project_repository(surface_root)
     if paired is None:
         return set() if project_repository else paths
-    prefix = paired.path_prefix.rstrip("/") + "/"
+    project_root = paired.path_prefix.rstrip("/")
+    prefix = project_root + "/"
     if project_repository:
         return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
-    return {path for path in paths if not path.startswith(prefix)}
+    return {path for path in paths if path != project_root and not path.startswith(prefix)}
 
 
 def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:

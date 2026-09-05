@@ -602,7 +602,7 @@ async def test_enqueued_paired_basis_materializes_for_ticket_setup(
     assert context.feature_branch == basis.participant("outer").ticket_ref.removeprefix(
         "refs/heads/"
     )
-    assert _git(outer, "rev-parse", f"{basis.outer_sha}:.booley_project") == basis.project_sha
+    assert _git(outer, "ls-tree", "--name-only", basis.outer_sha, "--", ".booley_project") == ""
     assert _git(outer, "status", "--porcelain") == ""
 
 
