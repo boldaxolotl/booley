@@ -40,6 +40,8 @@ _FLOW_BY_CRITERION = {
 }
 
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
+_TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
+_TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
 
 
 @dataclass(frozen=True, order=True)
@@ -425,12 +427,22 @@ def _missing_target_sources(root: Path, target: str) -> list[str]:
     return sorted({item.path for item in _missing_target_inputs(root, target)})
 
 
+def _deferable_rtl_or_tb_input(item: TargetInput) -> bool:
+    if item.file_type.startswith(_RTL_FILE_TYPE_PREFIXES):
+        return True
+    if "tb" not in item.tags:
+        return False
+    if item.file_type.startswith(_TB_FILE_TYPE_PREFIXES):
+        return True
+    return item.file_type == "user" and Path(item.path).suffix.lower() in _TB_USER_SOURCE_SUFFIXES
+
+
 def _nondeferable_missing_inputs(inputs: Iterable[TargetInput]) -> list[str]:
     return sorted(
         {
             f"{item.path} (file_type={item.file_type!r})"
             for item in inputs
-            if "tb" not in item.tags and not item.file_type.startswith(_RTL_FILE_TYPE_PREFIXES)
+            if not _deferable_rtl_or_tb_input(item)
         }
     )
 

@@ -328,11 +328,21 @@ def test_validate_changed_targets_handles_duplicate_missing_and_resolvable_targe
     assert errors[1] == "resolved ready in ready"
 
 
-@pytest.mark.parametrize("file_type", ["SDC", "xdc", "user", "tclSource"])
+@pytest.mark.parametrize(
+    ("path", "file_type", "tags"),
+    [
+        ("constraints/new.sdc", "SDC", ()),
+        ("constraints/new.xdc", "xdc", ("tb",)),
+        ("firmware/new.hex", "user", ("tb",)),
+        ("hooks/new.tcl", "tclSource", ("tb",)),
+    ],
+)
 def test_scope_new_cannot_defer_missing_non_hdl_target_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    path: str,
     file_type: str,
+    tags: tuple[str, ...],
 ) -> None:
     monkeypatch.setattr(
         acceptance_targets,
@@ -343,13 +353,13 @@ def test_scope_new_cannot_defer_missing_non_hdl_target_input(
     monkeypatch.setattr(
         acceptance_targets,
         "_missing_target_inputs",
-        lambda *_args: (_target_input("inputs/new", file_type=file_type),),
+        lambda *_args: (_target_input(path, file_type=file_type, tags=tags),),
     )
 
     errors = acceptance_targets.validate_criterion_targets(
         {
             "criteria": {"mandatory": {"sim_pass": ["sim"]}},
-            "scope": ["inputs/new [new]"],
+            "scope": [f"{path} [new]"],
         },
         tmp_path,
     )
@@ -365,7 +375,8 @@ def test_scope_new_cannot_defer_missing_non_hdl_target_input(
         ("verilogSource-2005", ()),
         ("systemVerilogSource", ()),
         ("vhdlSource-2008", ()),
-        ("user", ("tb",)),
+        ("cSource", ("tb",)),
+        ("cppSource", ("tb",)),
     ],
 )
 def test_scope_new_can_defer_missing_rtl_or_testbench_target_input(
@@ -390,6 +401,32 @@ def test_scope_new_can_defer_missing_rtl_or_testbench_target_input(
         {
             "criteria": {"mandatory": {"sim_pass": ["sim"]}},
             "scope": ["sources/new [new]"],
+        },
+        tmp_path,
+    )
+
+    assert errors == []
+
+
+def test_scope_new_can_defer_missing_cocotb_python_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_targets,
+        "select_target",
+        lambda *_args: SimpleNamespace(flow="sim", eda_tool="iverilog"),
+    )
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
+    monkeypatch.setattr(
+        acceptance_targets,
+        "_missing_target_inputs",
+        lambda *_args: (_target_input("tb/test_new.py", file_type="user", tags=("tb",)),),
+    )
+
+    errors = acceptance_targets.validate_criterion_targets(
+        {
+            "criteria": {"mandatory": {"sim_pass": ["sim"]}},
+            "scope": ["tb/test_new.py [new]"],
         },
         tmp_path,
     )
