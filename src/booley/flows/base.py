@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows import execution
-from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
+from booley.mcp.base import McpTool
 from booley.runtime import runtime_context
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -149,16 +150,16 @@ class BooleyFlow(McpTool):
     endpoint_kind = "flow"
     target_required = True
 
-    def _pre_state_gate(self) -> McpToolResult | None:
+    def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
         self._acceptance_basis = None
         location_error = runtime_context.container_only_error(f"booley flow {self.name}")
         if location_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=location_error)
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=location_error)
         try:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
@@ -190,17 +191,17 @@ class BooleyFlow(McpTool):
             work_dir = Path(self.args.work_dir)
             assert_inputs_unchanged(basis, work_dir)
         except (OSError, AcceptanceBasisError, TicketSlugError) as exc:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
             )
         return None
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         """Execute subprocess and interpret results."""
         cmd = self._build_command()
         if not cmd:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="No command to execute",
             )
@@ -214,7 +215,7 @@ class BooleyFlow(McpTool):
         """
         raise NotImplementedError
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Interpret output for command-backed Flows."""
         raise NotImplementedError
 
