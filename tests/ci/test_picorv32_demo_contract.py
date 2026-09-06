@@ -219,6 +219,11 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
     ]
     installer = next(step for step in steps if "install_demo_ticket.py" in step.get("run", ""))
+    materializer = next(
+        step
+        for step in steps
+        if step.get("name") == "Materialize and validate reviewed demo inputs"
+    )
 
     assert len(checkouts) == 2
     assert steps.index(exporter) < min(steps.index(step) for step in checkouts)
@@ -234,6 +239,12 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "TICKET_FIXTURE": "${{ steps.contract.outputs.ticket_fixture }}",
         "TICKET_SLUG": "${{ steps.contract.outputs.ticket_slug }}",
     }
+    assert steps.index(installer) < steps.index(materializer)
+    assert materializer["env"] == {
+        "CONTRACT_PATH": "${{ inputs.contract }}",
+        "PYTHONPATH": "${{ github.workspace }}/src",
+    }
+    assert "picorv32_demo_contract.py" in materializer["run"]
 
     excludes = next(
         step for step in steps if step.get("name") == "Apply documented local checkout excludes"

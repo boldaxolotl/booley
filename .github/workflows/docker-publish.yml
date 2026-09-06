@@ -385,10 +385,6 @@ jobs:
           sed -i '/^\[flows\.synth\]$/,/^\[flows\.fpga\]$/ s/^enabled = true$/enabled = false/' \
             "${project_config}"
           grep -A1 -Fx '[flows.synth]' "${project_config}" | grep -Fxq 'enabled = false'
-          (
-            cd "${RUNNER_TEMP}/simulation-project"
-            BOOLEY_WORKTREE="${PWD}" .booley_project/hooks/post-setup.sh
-          )
           sudo chown -R 1000:1000 \
             "${RUNNER_TEMP}/simulation-project" "${RUNNER_TEMP}/simulation-evidence"
           .github/scripts/run_with_container_cleanup.sh \

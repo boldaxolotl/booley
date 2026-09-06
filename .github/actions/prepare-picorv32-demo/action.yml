@@ -108,3 +108,14 @@ runs:
         --project-dir demo/.booley_project
         --fixture "${TICKET_FIXTURE}"
         --slug "${TICKET_SLUG}"
+
+    - name: Materialize and validate reviewed demo inputs
+      shell: bash
+      env:
+        CONTRACT_PATH: ${{ inputs.contract }}
+        PYTHONPATH: ${{ github.workspace }}/src
+      run: >-
+        python "${GITHUB_WORKSPACE}/.github/scripts/picorv32_demo_contract.py"
+        --contract "${CONTRACT_PATH}"
+        --demo-root demo
+        --project-dir demo/.booley_project
