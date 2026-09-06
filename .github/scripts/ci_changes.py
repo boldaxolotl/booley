@@ -28,6 +28,7 @@ CATEGORIES = (
     "stable_base",
     "packaging",
     "workflow",
+    "exhaustive_recovery",
     "release",
     "full",
 )
@@ -35,6 +36,8 @@ CONDITIONAL_JOBS = (
     "docs-check",
     "lint",
     "test",
+    "test-verify",
+    "coverage",
     "rust-test",
     "bwave-integration",
     "package-artifacts",
@@ -106,6 +109,19 @@ _SIDECAR_FILES = {
     "tests/docker/test_reaper_image_e2e.py",
     "tests/docker/test_sidecar_image_helpers.py",
 }
+_EXHAUSTIVE_RECOVERY_PREFIXES = (
+    ".github/ci/",
+    ".github/scripts/",
+    ".github/workflows/",
+    "src/booley/ticket_board/",
+    "tests/ticket_board/",
+)
+_EXHAUSTIVE_RECOVERY_FILES = {
+    "pyproject.toml",
+    "src/booley/flows/baseline_worktree.py",
+    "src/booley/runtime/git.py",
+    "tests/conftest.py",
+}
 
 
 def _sidecar_categories(path: str) -> tuple[str, ...]:
@@ -127,6 +143,12 @@ def _release_image_categories(path: str) -> tuple[str, ...]:
     if path.startswith(_STANDARD_IMAGE_PREFIXES) or path in _STANDARD_IMAGE_FILES:
         categories.append("standard_image")
     return tuple(categories)
+
+
+def _recovery_categories(path: str) -> tuple[str, ...]:
+    if path.startswith(_EXHAUSTIVE_RECOVERY_PREFIXES) or path in _EXHAUSTIVE_RECOVERY_FILES:
+        return ("exhaustive_recovery",)
+    return ()
 
 
 def _boolean(value: str) -> bool:
@@ -172,6 +194,7 @@ def _path_categories(path: str) -> set[str]:
         categories.add("image_tests")
     categories.update(_release_image_categories(path))
     categories.update(_riscv_image_categories(path))
+    categories.update(_recovery_categories(path))
     if path.startswith(_NATIVE_BWAVE_PREFIXES):
         categories.add("native_bwave")
     categories.update(_sidecar_categories(path))
@@ -211,6 +234,8 @@ def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
         categories.update(path_categories)
     if not categories:
         categories.add("full")
+    if "full" in categories:
+        categories.add("exhaustive_recovery")
     if force_all:
         # Main/manual runs execute every conditional job, but only rebuild the
         # 57-minute runtime base or its 9-minute RISC-V extension when their
@@ -226,7 +251,7 @@ def required_jobs(categories: set[str]) -> set[str]:
     if "docs" in categories:
         jobs.add("docs-check")
     if categories & {"python_source", "python_tests"}:
-        jobs.update({"lint", "test"})
+        jobs.update({"lint", "test", "test-verify", "coverage"})
     if "rust" in categories:
         jobs.update({"rust-test", "bwave-integration", "package-artifacts", "bwave-smoke"})
     if "native_bwave" in categories:

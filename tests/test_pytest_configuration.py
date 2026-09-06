@@ -55,10 +55,11 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     workflow = _test_workflow()
 
     test_steps = workflow["jobs"]["test"]["steps"]
-    parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
-    assert parallel_step["env"]["RUNNER_TEMP"] == "${{ runner.temp }}"
-    assert "PYTEST_ADDOPTS" not in parallel_step["env"]
-    assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
+    pytest_steps = [step for step in test_steps if "pytest tests/" in str(step.get("run", ""))]
+    assert pytest_steps
+    assert all(step["env"]["RUNNER_TEMP"] == "${{ runner.temp }}" for step in pytest_steps)
+    assert all("PYTEST_ADDOPTS" not in step["env"] for step in pytest_steps)
+    assert all('--basetemp "${{ runner.temp }}/pytest"' in step["run"] for step in pytest_steps)
 
 
 def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
@@ -66,16 +67,14 @@ def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
     workflow = _test_workflow()
 
     test_steps = workflow["jobs"]["test"]["steps"]
-    parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
-
-    assert (
-        parallel_step["run"]
-        .replace("\n", " ")
-        .startswith(
-            "pytest tests/ -q --tb=short -n 4 "
-            "--dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}"
-        )
+    parallel_step = next(
+        step for step in test_steps if step.get("name") == "Run duration-balanced shard"
     )
+
+    assert "pytest tests/ -q --tb=short -n 4 --dist=worksteal" in parallel_step["run"].replace(
+        "\n", " "
+    )
+    assert "--ci-shard-count" in parallel_step["run"]
 
 
 def test_sidecar_proofs_have_cancellation_cleanup() -> None:
@@ -146,11 +145,14 @@ def test_generic_python_matrix_excludes_native_bwave() -> None:
 
     assert "Swatinem/rust-cache" not in rendered_steps
     assert "cargo build" not in rendered_steps
-    pytest_steps = [
-        step for step in test_steps if str(step.get("name", "")).startswith("Run tests")
-    ]
+    pytest_steps = [step for step in test_steps if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
-    assert all('-m "not native_bwave"' in step["run"] for step in pytest_steps)
+    assert "not native_bwave" in workflow["jobs"]["test"]["env"]["TEST_MARK_EXPRESSION"]
+    assert all(
+        '-m "not native_bwave"' in step["run"]
+        or '-m "${{ env.TEST_MARK_EXPRESSION }}"' in step["run"]
+        for step in pytest_steps
+    )
 
 
 def test_bwave_integration_prebuilds_and_runs_native_tests_without_skips() -> None:
@@ -189,11 +191,12 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dev_dependencies = project["project"]["optional-dependencies"]["dev"]
     coverage_config = project["tool"]["coverage"]["run"]
+    coverage_paths = project["tool"]["coverage"]["paths"]["source"]
     workflow = _test_workflow()
     coverage_step = next(
         step
         for step in workflow["jobs"]["test"]["steps"]
-        if step.get("name") == "Run tests with coverage"
+        if step.get("name") == "Run duration-balanced coverage shard"
     )
     command = coverage_step["run"]
 
@@ -202,19 +205,24 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "coverage run" not in command
     assert "pytest tests/" in command
     assert "-n 4 --dist=loadscope" in command
-    assert '-m "not native_bwave"' in command
+    assert '-m "${{ env.TEST_MARK_EXPRESSION }}"' in command
     assert "--cov=booley" in command
     assert "--cov-report=" in command
+    assert "--ci-shard-count" in command
     assert coverage_config["branch"] is True
+    assert coverage_config["relative_files"] is True
+    assert coverage_paths == ["src/booley", "*/src/booley"]
     assert "--cov-fail-under=0" in command
-    rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["test"]["steps"])
+    rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["coverage"]["steps"])
+    assert "coverage combine" in rendered_steps
+    assert "coverage xml" in rendered_steps
     assert "coverage report --fail-under=80" in rendered_steps
     assert "git fetch --no-tags --unshallow origin" in rendered_steps
     assert "diff-cover coverage.xml" in rendered_steps
     assert "--fail-under=90" in rendered_steps
     changed_line_step = next(
         step
-        for step in workflow["jobs"]["test"]["steps"]
+        for step in workflow["jobs"]["coverage"]["steps"]
         if step.get("name") == "Enforce 90% changed-line coverage"
     )
     assert changed_line_step["env"]["BASE_SHA"] == "${{ needs.changes.outputs.diff_base }}"
@@ -346,11 +354,112 @@ def test_matrix_enforces_the_ci_duration_budget() -> None:
 
     assert test_job["timeout-minutes"] == 15
 
-    pytest_steps = [
-        step for step in test_job["steps"] if str(step.get("name", "")).startswith("Run tests")
-    ]
+    pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
     assert all("--timeout=60" in step["run"] for step in pytest_steps)
+
+
+def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
+    workflow = _test_workflow()
+    jobs = workflow["jobs"]
+    entries = jobs["test"]["strategy"]["matrix"]["include"]
+
+    assert sum(entry["mode"] == "shard" for entry in entries) == 4
+    assert sum(entry["mode"] == "coverage" for entry in entries) == 3
+    assert {
+        (entry["os"], entry["python"], entry["mode"])
+        for entry in entries
+        if entry["mode"] in {"full", "compatibility"}
+    } == {
+        ("ubuntu-latest", "3.11", "full"),
+        ("ubuntu-latest", "3.14", "full"),
+        ("windows-latest", "3.11", "compatibility"),
+        ("windows-latest", "3.13", "compatibility"),
+    }
+    verifier = "\n".join(str(step) for step in jobs["test-verify"]["steps"])
+    assert "--group windows --shard-count 4" in verifier.replace("\n", " ")
+    assert "--group coverage --shard-count 3" in verifier.replace("\n", " ")
+
+
+def test_ci_records_queue_and_runner_minutes() -> None:
+    workflow = _test_workflow()
+    metrics_job = workflow["jobs"]["ci-metrics"]
+
+    assert workflow["permissions"]["actions"] == "read"
+    assert metrics_job["needs"] == "ci-required"
+    assert metrics_job["if"] == "always()"
+    assert metrics_job["steps"][-1]["uses"] == "./.github/actions/collect-ci-metrics"
+
+    action_path = REPOSITORY_ROOT / ".github/actions/collect-ci-metrics/action.yml"
+    action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+    rendered = "\n".join(str(step) for step in action["runs"]["steps"])
+    assert ".github/scripts/ci_run_metrics.py" in rendered
+    assert "/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" in rendered
+    assert "GITHUB_STEP_SUMMARY" in rendered
+    upload = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Upload CI timing telemetry"
+    )
+    assert upload["with"]["retention-days"] == 90
+
+
+def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
+    path = REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
+
+    assert "schedule" in workflow[True]
+    assert "workflow_dispatch" in workflow[True]
+    assert matrix["os"] == ["ubuntu-latest", "windows-latest"]
+    assert matrix["python"] == ["3.11", "3.13", "3.14"]
+    assert workflow["jobs"]["metrics"]["if"] == "always()"
+    proof = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Prove the full suite executed"
+    )
+    assert "--min-tests 10000" in proof["run"]
+    assert workflow["jobs"]["metrics"]["steps"][-1]["uses"] == (
+        "./.github/actions/collect-ci-metrics"
+    )
+
+
+def test_exhaustive_recovery_marker_retains_a_pr_subset() -> None:
+    paths = [
+        "tests/ticket_board/test_acceptance_journal_recovery.py",
+        "tests/ticket_board/test_completion.py",
+    ]
+
+    def collect(expression: str) -> set[str]:
+        env = os.environ.copy()
+        # A nested pytest process must not impersonate its parent xdist worker:
+        # tests/conftest.py would otherwise delete the parent's private temp
+        # root when the nested collection session exits.
+        env.pop("PYTEST_XDIST_WORKER", None)
+        env.pop("PYTEST_XDIST_TESTRUNUID", None)
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", expression, *paths],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            env=env,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return {line for line in result.stdout.splitlines() if line.startswith("tests/")}
+
+    exhaustive = collect("exhaustive_recovery")
+    representative = collect("not exhaustive_recovery")
+
+    assert len(exhaustive) == 32
+    assert "test_retry_survives_every_semantic_checkpoint[before-normalized]" in "\n".join(
+        representative
+    )
+    assert (
+        "test_retry_survives_each_repository_boundary[before-project-candidate-preparation-False]"
+        in "\n".join(representative)
+    )
 
 
 def test_lint_job_uses_quality_only_dependencies() -> None:
@@ -530,7 +639,12 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     """Conditional jobs never leave the stable required check unresolved."""
     workflow = _test_workflow()
     jobs = workflow["jobs"]
-    conditional = set(jobs) - {"changes", "release-semantic", "ci-required"}
+    conditional = set(jobs) - {
+        "changes",
+        "release-semantic",
+        "ci-required",
+        "ci-metrics",
+    }
 
     changes = jobs["changes"]
     rendered_changes = "\n".join(str(step) for step in changes["steps"])
@@ -560,3 +674,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
     assert "toJSON(needs)" in rendered_aggregate
+
+    metrics = jobs["ci-metrics"]
+    assert metrics["needs"] == "ci-required"
+    assert metrics["if"] == "always()"

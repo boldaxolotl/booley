@@ -1,0 +1,32 @@
+name: Collect CI timing telemetry
+description: Record queue latency and consumed runner minutes for one workflow run.
+
+runs:
+  using: composite
+  steps:
+    - name: Collect queue and runner-time telemetry
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        mkdir -p "${RUNNER_TEMP}/ci-metrics"
+        gh api \
+          "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+          > "${RUNNER_TEMP}/ci-metrics/run.json"
+        gh api \
+          "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+          > "${RUNNER_TEMP}/ci-metrics/jobs.json"
+        python .github/scripts/ci_run_metrics.py \
+          --run-json "${RUNNER_TEMP}/ci-metrics/run.json" \
+          --jobs-json "${RUNNER_TEMP}/ci-metrics/jobs.json" \
+          --observed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --output "${RUNNER_TEMP}/ci-metrics/metrics.json" \
+          --summary "${GITHUB_STEP_SUMMARY}"
+
+    - name: Upload CI timing telemetry
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ci-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/ci-metrics/metrics.json
+        if-no-files-found: error
+        retention-days: 90

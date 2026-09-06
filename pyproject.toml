@@ -263,6 +263,7 @@ asyncio_mode = "strict"
 strict_config = true
 strict_markers = true
 markers = [
+    "exhaustive_recovery: exhaustive real-Git interruption and recovery permutations",
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]
@@ -283,9 +284,19 @@ filterwarnings = [
 source = ["booley"]
 omit = ["tests/*"]
 branch = true
+# Raw shard artifacts are reported from a different runner. Canonical relative
+# paths also fold subprocess imports from temporary source checkouts back onto
+# the repository's src/ tree instead of retaining vanished absolute paths.
+relative_files = true
 # pytest-cov 7 removed its implicit .pth subprocess hook. Coverage.py's patch
 # starts measurement in Python child processes and writes combinable data.
 patch = ["subprocess"]
+
+[tool.coverage.paths]
+source = [
+    "src/booley",
+    "*/src/booley",
+]
 
 [tool.coverage.report]
 # Measured on origin/main at batch-2 start: 82.84% statements, 74.40%

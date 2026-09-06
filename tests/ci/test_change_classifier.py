@@ -249,6 +249,8 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
         "release-semantic",
         "lint",
         "test",
+        "test-verify",
+        "coverage",
         "package-artifacts",
         "bwave-smoke",
     }
@@ -416,6 +418,51 @@ def test_ordinary_python_source_skips_release_image_smoke(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "path",
     [
+        ".github/scripts/ci_test_shards.py",
+        ".github/workflows/test.yml",
+        "pyproject.toml",
+        "src/booley/runtime/git.py",
+        "src/booley/ticket_board/completion.py",
+        "tests/conftest.py",
+        "tests/ticket_board/test_completion.py",
+    ],
+)
+def test_recovery_sensitive_changes_request_exhaustive_permutations(
+    tmp_path: Path, path: str
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "recovery-sensitive change")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["exhaustive_recovery"] == "true"
+
+
+def test_ordinary_source_change_uses_representative_recovery_subset(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/criteria/policy.py")
+    head = _commit(repo, "ordinary source change")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["exhaustive_recovery"] == "false"
+
+
+def test_unknown_path_fails_safe_to_exhaustive_recovery(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "unclassified.input")
+    head = _commit(repo, "unknown change")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["full"] == "true"
+    assert outputs["exhaustive_recovery"] == "true"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "src/booley/data/docker/Dockerfile.egress-proxy",
         "src/booley/data/docker/Dockerfile.flexnet-relay",
         "src/booley/data/docker/Dockerfile.reaper",
@@ -467,6 +514,8 @@ def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> 
     assert _required(outputs) >= {
         "lint",
         "test",
+        "test-verify",
+        "coverage",
         "rust-test",
         "bwave-integration",
         "package-artifacts",
@@ -501,6 +550,8 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "docs-check",
         "lint",
         "test",
+        "test-verify",
+        "coverage",
         "rust-test",
         "bwave-integration",
         "package-artifacts",
@@ -508,10 +559,12 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
+    assert workflow["exhaustive_recovery"] == "true"
     assert _required(workflow) == expected
     assert forced["full"] == "true"
     assert forced["stable_base"] == "false"
     assert forced["riscv_image"] == "false"
+    assert forced["exhaustive_recovery"] == "true"
     assert _required(forced) == expected
 
 
