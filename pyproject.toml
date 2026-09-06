@@ -263,6 +263,7 @@ asyncio_mode = "strict"
 strict_config = true
 strict_markers = true
 markers = [
+    "exhaustive_recovery: exhaustive real-Git interruption and recovery permutations",
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]

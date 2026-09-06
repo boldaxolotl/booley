@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   packages: read
 
@@ -37,6 +38,7 @@ jobs:
       stable_base: ${{ steps.classify.outputs.stable_base }}
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
+      exhaustive_recovery: ${{ steps.classify.outputs.exhaustive_recovery }}
       release: ${{ steps.classify.outputs.release }}
       full: ${{ steps.classify.outputs.full }}
       jobs: ${{ steps.classify.outputs.jobs }}
@@ -228,15 +230,82 @@ jobs:
   test:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['test']
+    name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
-      COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
+      TEST_MARK_EXPRESSION: >-
+        ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
+        'not native_bwave' || 'not native_bwave and not exhaustive_recovery' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.13", "3.14"]
+        include:
+          - name: ubuntu-3.11-full
+            os: ubuntu-latest
+            python: "3.11"
+            mode: full
+          - name: ubuntu-3.14-full
+            os: ubuntu-latest
+            python: "3.14"
+            mode: full
+          - name: windows-3.11-compatibility
+            os: windows-latest
+            python: "3.11"
+            mode: compatibility
+          - name: windows-3.13-compatibility
+            os: windows-latest
+            python: "3.13"
+            mode: compatibility
+          - name: windows-3.14-shard-1-of-4
+            os: windows-latest
+            python: "3.14"
+            mode: shard
+            group: windows
+            shard_index: 0
+            shard_count: 4
+          - name: windows-3.14-shard-2-of-4
+            os: windows-latest
+            python: "3.14"
+            mode: shard
+            group: windows
+            shard_index: 1
+            shard_count: 4
+          - name: windows-3.14-shard-3-of-4
+            os: windows-latest
+            python: "3.14"
+            mode: shard
+            group: windows
+            shard_index: 2
+            shard_count: 4
+          - name: windows-3.14-shard-4-of-4
+            os: windows-latest
+            python: "3.14"
+            mode: shard
+            group: windows
+            shard_index: 3
+            shard_count: 4
+          - name: ubuntu-3.13-coverage-1-of-3
+            os: ubuntu-latest
+            python: "3.13"
+            mode: coverage
+            group: coverage
+            shard_index: 0
+            shard_count: 3
+          - name: ubuntu-3.13-coverage-2-of-3
+            os: ubuntu-latest
+            python: "3.13"
+            mode: coverage
+            group: coverage
+            shard_index: 1
+            shard_count: 3
+          - name: ubuntu-3.13-coverage-3-of-3
+            os: ubuntu-latest
+            python: "3.13"
+            mode: coverage
+            group: coverage
+            shard_index: 2
+            shard_count: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -248,72 +317,158 @@ jobs:
       - name: Install package with test dependencies
         run: pip install -e ".[test]"
 
-      # Linux keeps module/class affinity. Windows uses work stealing because
-      # real-Git integration modules are much slower there and otherwise leave
-      # one worker with a long serialized tail. pytest-cov combines worker and
-      # configured subprocess data.
-      - name: Run tests (parallel)
-        if: env.COVERAGE_LEG != 'true'
+      - name: Run full compatibility suite
+        if: matrix.mode == 'full'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
         run: >-
-          pytest tests/ -q --tb=short -n 4
-          --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
-          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
-      # Fold the former standalone coverage job into the existing Linux/3.13
-      # compatibility leg. This preserves its full suite and fail-under gate
-      # without serializing a seventh full-suite run after the matrix.
-      - name: Run tests with coverage
-        if: env.COVERAGE_LEG == 'true'
+      - name: Run focused Windows compatibility suite
+        if: matrix.mode == 'compatibility'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-        run: |
-          pytest tests/ -q --tb=short -n 4 --dist=loadscope \
-            --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave" \
-            --timeout=60 \
-            --cov=booley --cov-report=term-missing --cov-report=xml:coverage.xml \
-            --cov-report=html:htmlcov --cov-fail-under=0 \
-            --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+        run: >-
+          pytest tests/architecture tests/config
+          tests/runtime/test_file_lock.py tests/runtime/test_pid.py
+          tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
+          -q --tb=short -n 4 --dist=loadscope
+          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --timeout=60 --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+
+      - name: Run duration-balanced shard
+        if: matrix.mode == 'shard'
+        env:
+          PYTHONPATH: .github/scripts
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: >-
+          pytest tests/ -q --tb=short -n 4 --dist=worksteal
+          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
+          --timeout=60 --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
+          --ci-shard-index "${{ matrix.shard_index }}"
+          --ci-shard-count "${{ matrix.shard_count }}"
+          --ci-timing-model .github/ci/windows-test-timings.json
+          --ci-shard-manifest "${{ runner.temp }}/shard/shard-manifest.json"
+          --ci-timing-output "${{ runner.temp }}/shard/test-timings.json"
+
+      - name: Run duration-balanced coverage shard
+        if: matrix.mode == 'coverage'
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage.${{ matrix.shard_index }}
+          PYTHONPATH: .github/scripts
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: >-
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
+          --timeout=60 --cov=booley --cov-report= --cov-fail-under=0
+          --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
+          --ci-shard-index "${{ matrix.shard_index }}"
+          --ci-shard-count "${{ matrix.shard_count }}"
+          --ci-timing-model .github/ci/windows-test-timings.json
+          --ci-shard-manifest "${{ runner.temp }}/shard/shard-manifest.json"
+          --ci-timing-output "${{ runner.temp }}/shard/test-timings.json"
 
       - name: Summarize pytest execution and skips
         if: always()
         shell: bash
         run: >-
           python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
-          --label "${{ matrix.os }} / Python ${{ matrix.python }}"
+          --label "${{ matrix.name }}"
           --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
 
-      - name: Enforce measured global branch-coverage ratchet
-        if: env.COVERAGE_LEG == 'true'
-        run: coverage report --fail-under=80
+      - name: Upload test timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-${{ matrix.name }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: error
+
+      - name: Upload shard selection and timing evidence
+        if: always() && (matrix.mode == 'shard' || matrix.mode == 'coverage')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shard-${{ matrix.group }}-${{ matrix.shard_index }}
+          path: ${{ runner.temp }}/shard/
+          if-no-files-found: error
+
+      - name: Upload raw coverage shard
+        if: always() && matrix.mode == 'coverage'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-shard-${{ matrix.shard_index }}
+          path: ${{ runner.temp }}/.coverage.${{ matrix.shard_index }}
+          if-no-files-found: error
+          include-hidden-files: true
+
+  test-verify:
+    needs: [changes, test]
+    if: fromJSON(needs.changes.outputs.jobs)['test-verify']
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          pattern: shard-*
+          path: ${{ runner.temp }}/shards
+
+      - name: Prove every sharded test ran exactly once
+        run: |
+          python .github/scripts/ci_test_shards.py \
+            --root "${RUNNER_TEMP}/shards" --group windows --shard-count 4
+          python .github/scripts/ci_test_shards.py \
+            --root "${RUNNER_TEMP}/shards" --group coverage --shard-count 3
+
+  coverage:
+    needs: [changes, test, test-verify]
+    if: fromJSON(needs.changes.outputs.jobs)['coverage']
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install coverage gate dependencies
+        run: pip install -e ".[test]"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          pattern: coverage-shard-*
+          path: ${{ runner.temp }}/coverage
+          merge-multiple: true
+
+      - name: Combine raw coverage and enforce global ratchet
+        run: |
+          coverage combine "${RUNNER_TEMP}/coverage"
+          coverage xml -o coverage.xml
+          coverage html -d htmlcov
+          coverage report --fail-under=80
 
       - name: Fetch pull-request base for changed-line coverage
-        if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
-        shell: bash
+        if: github.event_name == 'pull_request'
         run: git fetch --no-tags --unshallow origin
 
       - name: Enforce 90% changed-line coverage
-        if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
-        shell: bash
+        if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: >-
           diff-cover coverage.xml --compare-branch="${BASE_SHA}" --fail-under=90
           --format html:diff-cover.html,markdown:diff-cover.md
 
-      - name: Upload test timing data
+      - name: Upload combined coverage report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: junit-${{ matrix.os }}-py${{ matrix.python }}
-          path: ${{ runner.temp }}/junit.xml
-          if-no-files-found: warn
-
-      - name: Upload coverage artifact
-        if: always() && env.COVERAGE_LEG == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
@@ -322,7 +477,7 @@ jobs:
             htmlcov/
             diff-cover.html
             diff-cover.md
-          if-no-files-found: warn
+          if-no-files-found: error
 
   rust-test:
     needs: changes
@@ -1018,6 +1173,8 @@ jobs:
       - docs-check
       - lint
       - test
+      - test-verify
+      - coverage
       - rust-test
       - bwave-integration
       - package-artifacts
@@ -1036,3 +1193,38 @@ jobs:
         run: >-
           python .github/scripts/ci_required.py
           --required "${REQUIRED_JOBS}" --needs-json "${NEEDS_JSON}"
+
+  ci-metrics:
+    name: ci-metrics
+    needs: ci-required
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect queue and runner-time telemetry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci-metrics"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > "${RUNNER_TEMP}/ci-metrics/run.json"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+            > "${RUNNER_TEMP}/ci-metrics/jobs.json"
+          python .github/scripts/ci_run_metrics.py \
+            --run-json "${RUNNER_TEMP}/ci-metrics/run.json" \
+            --jobs-json "${RUNNER_TEMP}/ci-metrics/jobs.json" \
+            --observed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "${RUNNER_TEMP}/ci-metrics/metrics.json" \
+            --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload CI timing telemetry
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/metrics.json
+          if-no-files-found: error
+          retention-days: 90

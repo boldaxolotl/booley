@@ -1496,8 +1496,12 @@ def _assert_retained_target_removal_completion(
     assert tio.entry["status"] == "done"
 
 
-@pytest.mark.parametrize("role", ["outer", "project"])
-@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize(
+    "role", ["outer", pytest.param("project", marks=pytest.mark.exhaustive_recovery)]
+)
+@pytest.mark.parametrize(
+    "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
+)
 def test_retry_converges_each_finalization_ref_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1585,7 +1589,9 @@ def test_target_finalization_cleanup_removes_all_journal_owned_refs(
         assert acceptance_impl._ref_commit(repository, keepalive) is None
 
 
-@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize(
+    "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
+)
 def test_retry_converges_finalized_identity_journal_interruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1621,8 +1627,12 @@ def test_retry_converges_finalized_identity_journal_interruption(
     )
 
 
-@pytest.mark.parametrize("role", ["outer", "project"])
-@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize(
+    "role", ["outer", pytest.param("project", marks=pytest.mark.exhaustive_recovery)]
+)
+@pytest.mark.parametrize(
+    "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
+)
 def test_retry_converges_each_finalized_keepalive_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1669,7 +1679,9 @@ def test_retry_converges_each_finalized_keepalive_update(
     )
 
 
-@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize(
+    "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
+)
 def test_retry_converges_finalization_worktree_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

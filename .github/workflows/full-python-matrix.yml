@@ -1,0 +1,97 @@
+name: Full Python compatibility matrix
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: full-python-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: full / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run complete compatibility suite
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: >-
+          pytest tests/ -q --tb=short -n 4
+          --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
+          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --timeout=60 --durations=30
+          --junitxml="${{ runner.temp }}/junit.xml"
+
+      - name: Prove the full suite executed
+        if: always()
+        shell: bash
+        run: >-
+          python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
+          --label "${{ matrix.os }} / Python ${{ matrix.python }}"
+          --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload full-matrix timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-junit-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: error
+          retention-days: 30
+
+  metrics:
+    name: full-matrix-metrics
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect queue and runner-time telemetry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci-metrics"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > "${RUNNER_TEMP}/ci-metrics/run.json"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+            > "${RUNNER_TEMP}/ci-metrics/jobs.json"
+          python .github/scripts/ci_run_metrics.py \
+            --run-json "${RUNNER_TEMP}/ci-metrics/run.json" \
+            --jobs-json "${RUNNER_TEMP}/ci-metrics/jobs.json" \
+            --observed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "${RUNNER_TEMP}/ci-metrics/metrics.json" \
+            --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload CI timing telemetry
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-metrics/metrics.json
+          if-no-files-found: error
+          retention-days: 90
