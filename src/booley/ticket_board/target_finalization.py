@@ -371,9 +371,11 @@ def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
         normalize_tests_toml(raw)
     except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
         raise TargetFinalizationError(f"finalized tests.toml is invalid: {exc}") from exc
-    declarations = {handle.name for handle in catalog.list()}
     orphaned = sorted(
-        key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) not in declarations
+        key
+        for key in raw
+        if key != TEST_LISTS_TABLE
+        and catalog.declaration_count(_bare_target(key), include_private=True) == 0
     )
     if orphaned:
         raise TargetFinalizationError(

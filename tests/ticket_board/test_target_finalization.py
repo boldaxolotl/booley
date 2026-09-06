@@ -199,4 +199,28 @@ def test_removal_preserves_another_targets_qualified_test_table(tmp_path: Path) 
     apply_target_removals(tmp_path, plan)
 
     assert tests.read_text(encoding="utf-8") == original
-    assert fusesoc_registry.resolve_ref(tmp_path, "acme:lib:b:1.0#same")
+    assert TargetCatalog.build(tmp_path).select("acme:lib:b:1.0#same")
+
+
+def test_removal_preserves_doctor_private_test_table(tmp_path: Path) -> None:
+    _write_core(tmp_path / "a.core", vlnv="acme:lib:a:1.0", targets="  obsolete: {}\n")
+    _write_core(
+        tmp_path / "doctor.core",
+        vlnv="acme:lib:doctor:1.0",
+        targets=(
+            "  doctor:\n"
+            "    flow: lint\n"
+            "    flow_options: {booley: {doctor_selftest: true}}\n"
+        ),
+    )
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    tests = project / "tests.toml"
+    original = '[doctor]\ntests = ["keep"]\n'
+    tests.write_text(original, encoding="utf-8")
+    removed = "acme:lib:a:1.0#obsolete"
+
+    plan = plan_target_removals(tmp_path, (removed,), _binding(removed))
+    apply_target_removals(tmp_path, plan)
+
+    assert tests.read_text(encoding="utf-8") == original
