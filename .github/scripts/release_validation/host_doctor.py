@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
+
+_MCP_TOOLS = re.compile(r"MCP server exposes [0-9]+ MCP tool\(s\)")
 
 
 def _inside(root: Path, path: Path, label: str) -> Path:
@@ -102,9 +105,9 @@ def validate(
             raise RuntimeError("Project Initialization reported a warning or failure")
         checks.append({"id": "project-initialization.clean", "status": "pass"})
         doctor = _run([str(booley), "doctor"], project=project, env=env)
-        if "0 failed." not in doctor:
-            raise RuntimeError("plain host Doctor summary contains failures")
-        checks.append({"id": "host-doctor.plain", "status": "pass"})
+        if "0 failed." not in doctor or _MCP_TOOLS.search(doctor) is None:
+            raise RuntimeError("plain host Doctor did not prove the issued-image MCP seam")
+        checks.append({"id": "host-doctor.plain-issued-image", "status": "pass"})
     finally:
         probe.unlink(missing_ok=True)
         _editor_marker(home).unlink(missing_ok=True)

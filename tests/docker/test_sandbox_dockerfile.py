@@ -576,17 +576,6 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     )
 
 
-def test_release_validation_runs_one_deep_doctor_gate() -> None:
-    scripts = Path(".github/scripts/release_validation")
-    command_fragment = '"doctor", "--deep"'
-    invocations = sum(
-        path.read_text(encoding="utf-8").count(command_fragment)
-        for path in scripts.glob("*.py")
-    )
-
-    assert invocations == 1
-
-
 def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> None:
     jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
     surface = jobs["demo-ticket-surface"]

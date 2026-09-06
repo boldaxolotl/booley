@@ -39,6 +39,7 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
         "elif sys.argv[1] == 'init':\n"
         "    print('[OK] initialized')\n"
         "elif sys.argv[1] == 'doctor':\n"
+        "    print('MCP server exposes 17 MCP tool(s)')\n"
         "    print('0 failed.')\n",
         encoding="utf-8",
     )
@@ -80,7 +81,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
     assert evidence["checks"][-1] == {
-        "id": "host-doctor.plain",
+        "id": "host-doctor.plain-issued-image",
         "status": "pass",
     }
     assert evidence["cleanup"] == {

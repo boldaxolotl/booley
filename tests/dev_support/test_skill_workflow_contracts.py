@@ -361,14 +361,14 @@ def test_setup_reserves_deep_doctor_for_one_final_gate():
     greenfield = _skill_text("booley-setup", "steps/new-greenfield.md")
     agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
 
-    assert "then one final `--deep`" in skill
-    assert "Reserve `booley doctor --deep` for Step 4's" in project_config
+    assert "`booley doctor --deep` both exit 0" in skill
+    assert "Reserve the full deep Doctor matrix" in project_config
+    assert "booley doctor --deep" not in project_config
     assert "Re-validate with\n`booley doctor --deep`" not in project_config
     assert doctor.count("Run `booley doctor --deep`") == 1
     assert "a failed attempt does not count as the one successful final run" in doctor
-    assert "This summary does not schedule an additional deep run" in " ".join(
-        greenfield.split()
-    )
+    assert "booley doctor --deep" not in greenfield
+    assert "does not schedule an additional run" in " ".join(greenfield.split())
     assert "Reuse a successful setup/heal deep result" in agents
 
 

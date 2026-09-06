@@ -283,8 +283,8 @@ Booley's cheap `.core` reader stays green. Re-validate after **every** `.core`
 edit with the focused sandbox resolver command
 `fusesoc --cores-root <dir> run --setup --work-root "$(mktemp -d)" --target
 <target> <vlnv>` — raw fusesoc takes `--cores-root` *before* `run` and rejects
-Booley's `<vlnv>#<target>` spelling. Reserve `booley doctor --deep` for Step 4's
-final whole-matrix gate:
+Booley's `<vlnv>#<target>` spelling. Reserve the full deep Doctor matrix for
+Step 4's final gate:
 
 - Legacy EDA-tool-API Targets (`default_tool:` + `tools:` blocks) should be
   converted to the flow API (`flow:` + `flow_options:`). Booley falls back to
@@ -627,8 +627,7 @@ Before writing:
 - Confirm `tests.toml` `select` templates are single well-formed option tokens.
 - Run `booley doctor` (its "FuseSoC .core checks" phase runs exactly these
   audits). For a changed Target, use the focused `fusesoc run --setup` command
-  above during iteration; Step 4 runs `booley doctor --deep` once over the final
-  configuration.
+  above during iteration; Step 4 owns the final deep gate.
 - Where practical, run each Booley Flow in the sandbox against a resolved Target
   (`booley flow <name> …`) and prove the fail path with a deliberate
   mutation — a passing-only check is not evidence the Flow can detect a
