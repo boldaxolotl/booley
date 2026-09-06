@@ -501,9 +501,9 @@ class McpTool(ABC):
         if not source_target or not key.endswith(source_target):
             return key
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            name = select_target(Path(self.args.work_dir), source_target).name
+            name = TargetCatalog.build(Path(self.args.work_dir)).select(source_target).name
         except FuseSocError:
             return key
         return key[: -len(source_target)] + name
@@ -783,9 +783,9 @@ class McpTool(ABC):
         criterion_target = target
         target_identity: str | None = None
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            selected = select_target(Path(self.args.work_dir), target)
+            selected = TargetCatalog.build(Path(self.args.work_dir)).select(target)
             criterion_target = selected.name
             target_identity = selected.identity
         except FuseSocError:
@@ -847,9 +847,12 @@ class McpTool(ABC):
         if invoked_identity is None:
             return False
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            return select_target(Path(self.args.work_dir), authored).identity == invoked_identity
+            return (
+                TargetCatalog.build(Path(self.args.work_dir)).select(authored).identity
+                == invoked_identity
+            )
         except FuseSocError:
             return False
 

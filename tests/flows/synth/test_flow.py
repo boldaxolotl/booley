@@ -3379,7 +3379,7 @@ class TestSynthResolution:
             side_effect=fake_resolve,
         ):
             flow._build_synth_cmd("lite")
-        assert captured["target"] == "::test:0#lite"
+        assert captured["target"] == "lite"
         assert captured["vlnv"] == "::test:0"
         assert captured["project_root"] == tmp_path
         # Compare build_root in POSIX form for Windows portability.

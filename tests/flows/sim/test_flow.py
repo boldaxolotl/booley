@@ -113,10 +113,10 @@ def test_human_display_caps_targets_at_three():
 
 def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
-        patch(
-            "booley.flows.sim.flow.fusesoc_registry.target_cocotb_modules",
-            return_value={"native": None, "cocotb": "test_demo"},
-        ),
+            patch(
+                "booley.flows.sim.flow._target_is_cocotb",
+                side_effect=lambda _root, target: target == "cocotb",
+            ),
         patch(
             "booley.flows.sim.flow._get_test_names",
             return_value={

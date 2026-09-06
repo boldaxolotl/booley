@@ -10,13 +10,24 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import TargetHandle, select_target
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError, TargetHandle
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 
 class ImplementationComparisonError(ValueError):
     """Persisted criterion metadata cannot define an executable Target pair."""
+
+
+def select_target(
+    project_root: Path | str,
+    token: str,
+    *,
+    for_flow: str | None = None,
+) -> TargetHandle:
+    """Select one comparison Target through its checkout catalog."""
+    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
 
 
 @dataclass(frozen=True)
@@ -150,7 +161,7 @@ def _select_execution_ref(
 ) -> TargetExecutionRef:
     try:
         handle = select_target(project_root, target, for_flow=flow)
-    except fusesoc_registry.FuseSocError as exc:
+    except FuseSocError as exc:
         raise ImplementationComparisonError(str(exc)) from exc
     if handle.doctor_private:
         raise ImplementationComparisonError(
@@ -402,8 +413,12 @@ def baseline_execution_context(
     for plan in plans:
         ref = plan.baseline
         try:
-            handle = select_target(project_root, ref.selector, for_flow=plan.flow)
-        except fusesoc_registry.FuseSocError as exc:
+            handle = select_target(
+                project_root,
+                ref.selector,
+                for_flow=plan.flow,
+            )
+        except FuseSocError as exc:
             raise ImplementationComparisonError(
                 f"baseline Target {ref.selector!r} cannot be selected: {exc}"
             ) from exc
@@ -434,9 +449,7 @@ def resolve_target_execution_ref(
             f"Target execution reference {ref.identity!r} does not match "
             f"selected handle {handle.identity!r}"
         )
-    return fusesoc_registry.resolve_target(
-        ref.selector,
-        project_root=handle.project_root,
+    return fusesoc_registry.resolve_target_handle(
+        handle,
         build_root=build_root,
-        vlnv=ref.vlnv,
     )

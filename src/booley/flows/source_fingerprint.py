@@ -23,18 +23,24 @@ from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     classified_sources,
     discover_cores,
-    resolve_ref,
     selectable_core_closure,
     source_dirs_from_core,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import inspect_target_selector
+from booley.targets.domain import TargetInspection
 
 logger = logging.getLogger(__name__)
 
 
 SOURCE_FINGERPRINT_DETAIL_KEY = "_source_fingerprint"
+
+
+def inspect_target_selector(project_root: Path | str, token: str) -> TargetInspection:
+    """Select and inspect one fingerprint Target through a shared catalog."""
+    catalog = TargetCatalog.build(project_root)
+    return catalog.inspect(catalog.select(token))
 
 
 def as_str_list(value: Any, default: list[str]) -> list[str]:
@@ -146,8 +152,8 @@ def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
     cores = discover_cores(root)
     if target is None or not cores:
         return cores
-    resolve_ref(root, target)  # fail loudly for an unknown or ambiguous Target
-    closure = selectable_core_closure(root, [target])
+    handle = TargetCatalog.build(root).select(target)
+    closure = selectable_core_closure(root, [handle.selector])
     if not closure:
         raise FuseSocError(f"Target {target!r} resolved without a core dependency closure")
     return sorted(closure)

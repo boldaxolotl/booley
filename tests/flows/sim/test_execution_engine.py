@@ -625,7 +625,7 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
             return_value=_inspection(cocotb=False),
         ),
         patch(
-            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command",
+                "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
             return_value=["setup"],
         ),
     ):

@@ -1,9 +1,7 @@
-"""target_surface.py — the project's runnable-Target surface (``booley targets``).
+"""Presentation of the Project's runnable Target catalog (``booley targets``).
 
-A read-only presentation layer over :mod:`booley.fusesoc.fusesoc_registry`: the cheap
-YAML-only enumeration (never ``fusesoc run``) joined with per-Target Doctor
-membership from the same ``.core``. Shared by the ``booley targets`` CLI verb and the
-``booley_targets`` MCP tool so both render the same facts.
+A read-only presentation layer over :class:`booley.targets.catalog.TargetCatalog`.
+Shared by the CLI verb and MCP tool so both render the same catalog facts.
 
 Vocabulary (docs/CONTEXT.md): a **Target** is a named FuseSoC ``.core`` build
 target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
@@ -23,8 +21,8 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.fusesoc_registry import TargetRef
-from booley.targets.target import TARGET_AWARE_FLOWS, flow_can_drive
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TARGET_AWARE_FLOWS, TargetRef, flow_can_drive
 
 # Glob metacharacters: a `booley targets` positional containing any of these is
 # a filter pattern; anything else is a selection token for the detail view.
@@ -142,30 +140,30 @@ class TargetDetailPayload(TypedDict):
 
 def collect_surface(project_root: Path | str) -> TargetSurface:
     """Build the public Target surface for *project_root* — YAML reads only."""
-    root = Path(project_root)
-    declarations = fusesoc_registry.target_declarations(root)
+    return _surface_from_catalog(TargetCatalog.build(project_root))
 
-    core_docs: dict[Path, Mapping[str, object]] = {}
 
-    def declared_toplevel(ref: TargetRef) -> str:
-        doc = core_docs.get(ref.core_file)
-        if doc is None:
-            doc = fusesoc_registry.read_core(ref.core_file)
-            core_docs[ref.core_file] = doc
-        return fusesoc_registry.core_target_toplevel(doc, ref.name)
-
+def _surface_from_catalog(catalog: TargetCatalog) -> TargetSurface:
     grouped: dict[tuple[str, Path], list[TargetEntry]] = {}
-    for bucket in declarations.values():
-        public_bucket = [ref for ref in bucket if not ref.doctor_selftest]
-        for ref in public_bucket:
-            entry = TargetEntry(
-                ref=ref,
-                selector=fusesoc_registry.minimal_selector(ref, public_bucket),
-                toplevel=declared_toplevel(ref),
-                doctor_flows=ref.doctor_flows,
-                drivable_by=tuple(b for b in TARGET_AWARE_FLOWS if flow_can_drive(b, ref)),
-            )
-            grouped.setdefault((ref.vlnv, ref.core_file), []).append(entry)
+    for handle in catalog.list():
+        ref = TargetRef(
+            name=handle.name,
+            vlnv=handle.vlnv,
+            core_file=handle.core_file,
+            eda_tool=handle.eda_tool,
+            flow=handle.flow,
+            cocotb_module=handle.cocotb_module,
+            doctor_flows=handle.doctor_flows,
+            doctor_selftest=handle.doctor_private,
+        )
+        entry = TargetEntry(
+            ref=ref,
+            selector=handle.selector,
+            toplevel=handle.declared_toplevel,
+            doctor_flows=handle.doctor_flows,
+            drivable_by=handle.drivable_by,
+        )
+        grouped.setdefault((handle.vlnv, handle.core_file), []).append(entry)
 
     groups = tuple(
         CoreGroup(
@@ -290,9 +288,11 @@ def detail_payload(
     :func:`fusesoc_registry.resolve_target`.
     """
     root = Path(project_root)
-    ref = fusesoc_registry.resolve_public_ref(root, token)
-    surface = collect_surface(root)
-    entry = next(e for e in surface.entries() if e.ref == ref)
+    catalog = TargetCatalog.build(root)
+    handle = catalog.select(token)
+    surface = _surface_from_catalog(catalog)
+    entry = next(e for e in surface.entries() if e.selector == handle.selector)
+    ref = entry.ref
 
     payload: TargetDetailPayload = {
         "name": ref.name,
@@ -314,9 +314,8 @@ def detail_payload(
 
     build_root = edam_layer.work_root_for(root, "targets", ref.name)
     try:
-        resolved = fusesoc_registry.resolve_target(
-            token,
-            project_root=root,
+        resolved = fusesoc_registry.resolve_target_handle(
+            handle,
             build_root=build_root,
             fusesoc_cmd=fusesoc_cmd,
             env=env,

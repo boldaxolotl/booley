@@ -536,7 +536,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
 
 
 def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
-    """Stub fusesoc_registry.resolve_target — no real FuseSoC (Unit A.3).
+    """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
     dir, so ``_run_elab`` derives the make/bin-dir from it and writes its
@@ -544,7 +544,15 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
     """
     import types
 
-    def _fake_resolve(target, *, project_root, build_root, **kwargs):
+    def _fake_select(work_dir, target, *, for_flow=None):
+        return types.SimpleNamespace(
+            selector=target,
+            name=target,
+            vlnv=f"::{target}:0",
+            project_root=Path(work_dir),
+        )
+
+    def _fake_resolve(handle, *, build_root, **kwargs):
         return types.SimpleNamespace(
             build_root=Path(build_root),
             toplevel="tb",
@@ -552,7 +560,11 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         )
 
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.resolve_target",
+        "booley.specialists.mutation_tester._select_target_handle",
+        _fake_select,
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
         _fake_resolve,
     )
 
@@ -1286,12 +1298,12 @@ class TestValidateScopeAgainstTarget:
 def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
-        lambda work_dir: {"default": module},
+        "booley.specialists.mutation_tester._target_cocotb_module",
+        lambda work_dir, target: module,
     )
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools",
-        lambda work_dir: {"default": eda_tool},
+        "booley.specialists.mutation_tester._target_eda_tool",
+        lambda work_dir, target: eda_tool,
     )
 
 

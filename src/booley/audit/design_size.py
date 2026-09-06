@@ -9,7 +9,8 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import inspect_target_selector
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetInspection
 
 HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 SKIP_DIRECTORIES = frozenset(
@@ -26,6 +27,12 @@ SKIP_DIRECTORIES = frozenset(
 )
 LARGE_DESIGN_FILES = 250
 LARGE_DESIGN_LOC = 150_000
+
+
+def inspect_target_selector(project_root: Path | str, token: str) -> TargetInspection:
+    """Select and inspect one design-size Target through a shared catalog."""
+    catalog = TargetCatalog.build(project_root)
+    return catalog.inspect(catalog.select(token))
 
 
 class DesignSizeScope(StrEnum):

@@ -7,16 +7,20 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.librarymanager import Library, LibraryManager
 from fusesoc.vlnv import Vlnv
 
 from booley.fusesoc import fusesoc_registry
-
-if TYPE_CHECKING:
-    from booley.targets.target import TargetHandle, TargetInput, TargetInspection
+from booley.targets.domain import (
+    TargetHandle,
+    TargetInput,
+    TargetInspection,
+    TargetRef,
+    partition_target_inputs,
+)
 
 
 @dataclass(frozen=True)
@@ -45,8 +49,6 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
 def _inspect_inputs(
     root: Path, cores: list[Any], flags: Mapping[str, Any]
 ) -> tuple[TargetInput, ...]:
-    from booley.targets.target import TargetInput
-
     inputs: list[TargetInput] = []
     top = cores[-1]
     for core in cores:
@@ -101,6 +103,7 @@ class TargetSourceInspector:
         self._documents: dict[Path, dict[str, Any]] = {}
         self._conditioned_targets: frozenset[str] = frozenset()
         self._sources: dict[tuple[object, ...], fusesoc_registry.CoreSources] = {}
+        self._inspections: dict[TargetHandle, TargetInspection] = {}
 
     def _prepare(self) -> tuple[fusesoc_registry.CoreLibraryPlan, CoreManager]:
         """Prepare and retain the shared FuseSoC state on first use."""
@@ -137,7 +140,7 @@ class TargetSourceInspector:
             self._startup_error = error
             raise error from exc
 
-    def _source_key(self, ref: fusesoc_registry.TargetRef) -> tuple[object, ...]:
+    def _source_key(self, ref: TargetRef) -> tuple[object, ...]:
         """Identify source-equivalent Targets without merging conditional variants."""
         self._prepare()
         core_file = ref.core_file.resolve()
@@ -191,8 +194,6 @@ class TargetSourceInspector:
 
     def _inspect_handle(self, handle: TargetHandle) -> TargetInspection:
         """Inspect one canonical handle with fresh Target-specific flags."""
-        from booley.targets.target import TargetInspection
-
         flags = _inspection_flags(handle)
         cores = self._cores(
             identity=handle.identity,
@@ -218,7 +219,7 @@ class TargetSourceInspector:
 
     def inspect(
         self,
-        ref: fusesoc_registry.TargetRef,
+        ref: TargetRef,
     ) -> fusesoc_registry.CoreSources:
         """Return one Target partition, reusing source-equivalent results."""
         source_key = self._source_key(ref)
@@ -239,17 +240,23 @@ class TargetSourceInspector:
             raise fusesoc_registry.FuseSocError(
                 f"could not inspect Target {identity!r}: {exc}"
             ) from exc
-        from booley.targets.target import partition_target_inputs
-
         sources = partition_target_inputs(inputs)
         self._sources[source_key] = sources
         return sources
+
+    def inspect_handle(self, handle: TargetHandle) -> TargetInspection:
+        """Inspect one catalog-authorized handle through the shared library view."""
+        cached = self._inspections.get(handle)
+        if cached is None:
+            cached = self._inspect_handle(handle)
+            self._inspections[handle] = cached
+        return cached
 
 
 def inspect_handle(root: Path, handle: TargetHandle) -> TargetInspection:
     """Inspect a selected handle while containing FuseSoC's untyped API."""
     try:
-        return TargetSourceInspector(root)._inspect_handle(handle)
+        return TargetSourceInspector(root).inspect_handle(handle)
     except (DependencyError, OSError, SyntaxError, RuntimeError, ValueError) as exc:
         raise fusesoc_registry.FuseSocError(
             f"could not inspect Target {handle.identity!r}: {exc}"

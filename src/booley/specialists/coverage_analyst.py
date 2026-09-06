@@ -51,7 +51,7 @@ from booley.flows.target_campaign import (
 )
 from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_test_suite import NoRunnableTestsError
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -62,6 +62,7 @@ from booley.mcp.base import (
 from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
+from booley.targets.catalog import TargetCatalog
 
 from .coverage_verilog_utils import (
     _build_rtl_name_map,  # noqa: F401  # re-exported for backward compatibility
@@ -76,6 +77,21 @@ from .coverage_verilog_utils import (
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
+
+
+def _select_target_handle(work_dir: Path, target: str, *, for_flow: str | None = None) -> Any:
+    """Select one Target through the catalog boundary."""
+    return TargetCatalog.build(work_dir).select(target, for_flow=for_flow)
+
+
+def _target_eda_tool(work_dir: Path, target: str) -> str | None:
+    """Read one selected Target's EDA-tool fact from its catalog."""
+    return TargetCatalog.build(work_dir).select(target).eda_tool
+
+
+def _target_cocotb_module(work_dir: Path, target: str) -> str | None:
+    """Read one selected Target's Cocotb module fact from its catalog."""
+    return TargetCatalog.build(work_dir).select(target).cocotb_module
 
 
 def _bwave_stats_cmd() -> list[str] | None:
@@ -615,10 +631,10 @@ class CoverageAnalystSpecialist(Specialist):
         conventions do not apply.
         """
         try:
-            modules = fusesoc_registry.target_cocotb_modules(self.args.work_dir)
+            module = _target_cocotb_module(Path(self.args.work_dir), self.args.target)
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return False
-        return modules.get(self.args.target) is not None
+        return module is not None
 
     def _validate_interactive_args(self) -> McpToolResult | None:
         """Reject missing args in Interactive Mode with a clear message.
@@ -1117,7 +1133,7 @@ class CoverageAnalystSpecialist(Specialist):
         # ADR 0022 decision 8: the run-half family comes from the Target's EDA tool
         # (read cheaply from the .core), not the boundary-named backend.
         eda_tool = sim_edam.normalize_eda_tool(
-            fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
+            _target_eda_tool(work_dir, self.args.target)
         )
 
         # Collect all design RTL files: scope file directories may contain
@@ -2842,16 +2858,13 @@ abort path". Omit this field or leave empty if all criteria are already met.
             self.args.target,
             variant="trace",
         )
-        overlay = fusesoc_registry.write_trace_overlay(
-            self.args.target,
-            project_root=work_dir,
-        )
+        handle = _select_target_handle(work_dir, self.args.target, for_flow="sim")
+        overlay = fusesoc_trace_overlay.write_trace_overlay(handle, project_root=work_dir)
         try:
-            resolved = fusesoc_registry.resolve_target(
-                self.args.target,
-                project_root=work_dir,
+            resolved = fusesoc_registry.resolve_target_handle(
+                handle,
                 build_root=build_root,
-                vlnv=overlay.vlnv,
+                resolution_vlnv=overlay.vlnv,
             )
             return resolved, overlay.mode
         finally:
@@ -2932,10 +2945,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
         context: _TraceRunContext,
     ) -> tuple[list[str], str]:
         """Select the traced run-half for the Target's simulator family."""
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(context.work_dir)
-        cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
+        cocotb_module = _target_cocotb_module(context.work_dir, self.args.target)
         if cocotb_module:
-            fusesoc_registry.validate_cocotb_trace_mode(
+            fusesoc_trace_overlay.validate_cocotb_trace_mode(
                 self.args.target,
                 context.trace_mode,
             )
@@ -2971,7 +2983,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> list[str]:
         """Resolve the Target and return its guarded build + traced-run command."""
         eda_tool = sim_edam.normalize_eda_tool(
-            fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
+            _target_eda_tool(work_dir, self.args.target)
         )
         resolved, trace_mode = self._resolve_trace_target(
             fusesoc_registry,

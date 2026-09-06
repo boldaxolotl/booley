@@ -693,7 +693,7 @@ class TestFpgaResolution:
         ):
             flow._prepare_fpga_command("default")
 
-        assert seen["target"] == "::test:0#default"
+        assert seen["target"] == "default"
         assert seen["vlnv"] == "::test:0"
         assert seen["project_root"] == tmp_path
         # FuseSoC build dir is keyed distinctly so it can't clobber the vivado dir.

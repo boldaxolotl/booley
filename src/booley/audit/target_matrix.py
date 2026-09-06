@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.targets import target_naming
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +30,11 @@ class DoctorTargetMatrix:
 def doctor_targets(project_root: Path, flow_name: str) -> tuple[str, ...]:
     """Return authored Doctor Target selectors for one Flow, failing soft."""
     try:
-        return tuple(fusesoc_registry.doctor_target_selectors(project_root, flow_name))
+        return tuple(
+            handle.selector
+            for handle in TargetCatalog.build(project_root).list()
+            if flow_name in handle.doctor_flows
+        )
     except FuseSocError:
         return ()
 
@@ -38,28 +42,19 @@ def doctor_targets(project_root: Path, flow_name: str) -> tuple[str, ...]:
 def build_doctor_target_matrix(project_root: Path) -> DoctorTargetMatrix:
     """Resolve the complete Doctor matrix once for matching and naming checks."""
     try:
-        seed = tuple(fusesoc_registry.doctor_target_seed(project_root))
+        handles = TargetCatalog.build(project_root).list()
     except FuseSocError:
-        seed = ()
+        handles = ()
 
-    selected: set[tuple[str, str]] = set()
-    for token in seed:
-        try:
-            ref = fusesoc_registry.resolve_ref(project_root, token)
-        except FuseSocError:
-            continue
-        selected.add((ref.name, ref.vlnv))
+    selected_handles = tuple(handle for handle in handles if handle.doctor_flows)
+    seed = tuple(dict.fromkeys(handle.selector for handle in selected_handles))
+    selected = {(handle.name, handle.vlnv) for handle in selected_handles}
 
     axes: dict[str, str] = {}
-    try:
-        declarations = fusesoc_registry.target_declarations(project_root)
-    except FuseSocError:
-        declarations = {}
-    for name, refs in declarations.items():
-        for ref in refs:
-            for flow_name in ref.doctor_flows:
-                axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
-                if axis is not None:
-                    axes.setdefault(name, axis)
+    for handle in handles:
+        for flow_name in handle.doctor_flows:
+            axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
+            if axis is not None:
+                axes.setdefault(handle.name, axis)
 
     return DoctorTargetMatrix(seed, frozenset(selected), tuple(axes.items()))

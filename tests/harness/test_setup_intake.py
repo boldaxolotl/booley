@@ -10,6 +10,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -357,6 +358,19 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         fusesoc_registry,
         "resolve_target",
         lambda *_args, **_kwargs: resolved,
+    )
+    monkeypatch.setattr(
+        "booley.targets.catalog.TargetCatalog.build",
+        classmethod(
+            lambda _cls, root: SimpleNamespace(
+                select=lambda target: SimpleNamespace(
+                    selector=target,
+                    name=target,
+                    vlnv="::core:0",
+                    project_root=Path(root),
+                )
+            )
+        ),
     )
     from booley.flows import baseline_worktree as baseline_module
 

@@ -12,11 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import selftest_overlay
+from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
-    TRACE_OVERLAY_MARKER,
     AmbiguousTargetError,
     CoreCollisionError,
     FuseSocError,
@@ -24,7 +25,6 @@ from booley.fusesoc.fusesoc_registry import (
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
-    TraceMode,
     UnknownTargetError,
     _enumerate_all,
     all_referenced_files,
@@ -56,9 +56,11 @@ from booley.fusesoc.fusesoc_registry import (
     target_referenced_files,
     target_source_files,
     target_source_files_for_ref,
-    trace_overlay_vlnv,
     try_resolve_target,
     vendored_files,
+)
+from booley.fusesoc.fusesoc_trace_overlay import (
+    trace_overlay_vlnv,
     write_trace_overlay,
 )
 from tests.conftest import require_symlinks, symlink_or_skip

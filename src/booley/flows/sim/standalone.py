@@ -14,13 +14,19 @@ from typing import Any
 
 from booley.flows.eda_parsers import extract_error_gist
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import inspect_target
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle, TargetInspection
 
 from .. import edam as edam_layer
 from .. import output_budget
 from ..flow_config import _load_flow_config
 
 logger = logging.getLogger(__name__)
+
+
+def inspect_target(project_root: Path | str, handle: TargetHandle) -> TargetInspection:
+    """Inspect a selected standalone Target through its snapshot catalog."""
+    return TargetCatalog.build(project_root).inspect(handle)
 
 # Max chars of error output retained in the report / displayed. This is the
 # 12KB-MCP-budget default; the effective cap scales with a raised

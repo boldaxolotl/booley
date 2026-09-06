@@ -36,14 +36,12 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.flow_names import config_section
-from booley.targets.target import (
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
-    inspect_target,
-    select_target,
-    select_targets,
 )
+from booley.targets.flow_names import config_section
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -87,6 +85,39 @@ from .target_tests import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def select_target(
+    project_root: Path | str,
+    token: str,
+    *,
+    for_flow: str | None = None,
+) -> TargetHandle:
+    """Select one simulation boundary input through a Target catalog."""
+    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
+
+
+def select_targets(
+    project_root: Path | str,
+    target_arg: str | None,
+    *,
+    for_flow: str | None = None,
+) -> tuple[TargetHandle, ...]:
+    """Select simulation boundary inputs through one Target catalog."""
+    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
+
+
+def inspect_target(project_root: Path | str, handle: TargetHandle) -> Any:
+    """Inspect an already-selected simulation Target through its catalog."""
+    return TargetCatalog.build(project_root).inspect(handle)
+
+
+def _target_is_cocotb(work_dir: Path, target: str) -> bool:
+    """Read Cocotb identity through the Target catalog, failing soft for sizing."""
+    try:
+        return bool(TargetCatalog.build(work_dir).select(target).cocotb_module)
+    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
+        return False
 
 # Default literal prefix for cycle count extraction from sim output.
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -679,15 +710,11 @@ def _resolve_sim_campaign_work_units(
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
         return 1
-    try:
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
-    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
-        cocotb_modules = {}
     test_names = _get_test_names(work_dir)
     configured_skips = _get_test_skips(work_dir)
     units = 0
     for target in targets:
-        if lookup_target_section(cocotb_modules, target):
+        if _target_is_cocotb(work_dir, target):
             units += 1
             continue
         units += _selected_test_work_units(
@@ -1883,11 +1910,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         try:
             handle = self._target_handle(target)
-            setup = fusesoc_registry.setup_command(
-                handle.selector,
-                project_root=handle.project_root,
+            setup = fusesoc_registry.setup_command_for_handle(
+                handle,
                 build_root=build_root,
-                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
@@ -2081,7 +2106,11 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        handles = select_targets(
+            self.args.work_dir,
+            self.args.target,
+            for_flow="sim",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if targets:

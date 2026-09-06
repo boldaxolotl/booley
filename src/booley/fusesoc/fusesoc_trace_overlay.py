@@ -39,11 +39,13 @@ from booley.flows.sim.trace_recipe import (
     require_cocotb_trace_mode,
     resolve_verilator_trace_mode,
 )
+from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
 )
+from booley.targets.domain import TargetHandle, TargetRef
 
 logger = logging.getLogger(__name__)
 
@@ -278,8 +280,6 @@ def _inject_runtime_dump_trace(
     path when the overlay supplied one (``None`` when the design's own tb
     fileset already carries it).
     """
-    from booley.fusesoc.fusesoc_registry import TRACE_OVERLAY_MARKER
-
     # If the design's own tb fileset carries the module, root that. Otherwise
     # the overlay *supplies* it from
     # Booley's refs/ so the design repo needs no tracked booley_vcd_dump —
@@ -317,7 +317,7 @@ def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
 
 
 def write_trace_overlay(
-    target: str,
+    target: str | TargetHandle,
     *,
     project_root: Path | str,
     trace_depth: int = DEFAULT_TRACE_DEPTH,
@@ -355,13 +355,14 @@ def write_trace_overlay(
     * **Icarus** — inject an extra ``-s<dump-module>`` ``iverilog_options`` root so
       the uninstantiated ``booley_vcd_dump`` (pruned by edalize's ``-s
       <toplevel>``) is elaborated and its runtime ``+trace`` ``$dumpvars`` fires.
-    Raises :class:`UnknownTargetError` / :class:`AmbiguousTargetError` if *target*
-    is not a single selectable Target (ADR 0030);
+    A catalog handle is consumed without selecting its authored token again.
+    The string form remains as a compatibility adapter and raises
+    :class:`UnknownTargetError` / :class:`AmbiguousTargetError` when *target* is
+    not a single selectable Target (ADR 0030);
     :class:`FuseSocError` if it is not a Verilator/Icarus sim Target, or if the
     supplied dump module cannot be written.
     """
     from booley.fusesoc.fusesoc_registry import (
-        TRACE_OVERLAY_MARKER,
         FuseSocError,
         core_target_eda_tool,
         core_target_flow,
@@ -369,14 +370,32 @@ def write_trace_overlay(
         resolve_ref,
     )
 
-    # Raises UnknownTargetError / AmbiguousTargetError for a token that is not a
-    # single selectable Target (ADR 0030). Rebind to the bare name so every
-    # downstream `.core` target-key lookup below is correct even for a vlnv#name.
-    ref = resolve_ref(project_root, target)
+    root = Path(project_root).resolve()
+    if isinstance(target, TargetHandle):
+        if target.project_root != root:
+            raise FuseSocError(
+                f"Target {target.identity!r} was selected for Project "
+                f"{target.project_root}, not {root}"
+            )
+        ref = TargetRef(
+            name=target.name,
+            vlnv=target.vlnv,
+            core_file=target.core_file,
+            flow=target.flow,
+            eda_tool=target.eda_tool,
+            cocotb_module=target.cocotb_module,
+            doctor_flows=target.doctor_flows,
+            doctor_selftest=target.doctor_private,
+        )
+        flow = target.flow
+        eda_tool = target.eda_tool
+    else:
+        ref = resolve_ref(root, target)
+        legacy_doc = read_core(ref.core_file)
+        flow = core_target_flow(legacy_doc, ref.name)
+        eda_tool = core_target_eda_tool(legacy_doc, ref.name)
     target = ref.name
     doc = read_core(ref.core_file)
-    flow = core_target_flow(doc, target)
-    eda_tool = core_target_eda_tool(doc, target)
     if flow != "sim" or eda_tool not in ("verilator", "icarus"):
         raise FuseSocError(
             f"trace overlay unsupported for Target {target!r} "

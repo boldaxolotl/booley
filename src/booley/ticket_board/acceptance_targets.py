@@ -21,12 +21,11 @@ from booley.core.boundary import (
 from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import (
+from booley.targets.domain import (
+    FuseSocError,
     TargetInput,
-    flow_can_drive,
-    inspect_target_selector,
-    select_target,
 )
 
 _FLOW_BY_CRITERION = {
@@ -42,6 +41,11 @@ _FLOW_BY_CRITERION = {
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
+
+
+def select_target(project_root: Path | str, token: str):
+    """Select one acceptance Target through its checkout catalog."""
+    return TargetCatalog.build(project_root).select(token)
 
 
 @dataclass(frozen=True, order=True)
@@ -410,21 +414,21 @@ def _new_scope_matches(scope: Any, path: str) -> bool:
 
 
 def _missing_target_inputs(
-    root: Path,
+    catalog: TargetCatalog,
     target: str,
 ) -> tuple[TargetInput, ...]:
     missing: list[TargetInput] = []
-    for item in inspect_target_selector(root, target).inputs:
+    for item in catalog.inspect(catalog.select(target)).inputs:
         candidate = Path(item.path)
         if not candidate.is_absolute():
-            candidate = root / candidate
+            candidate = catalog.project_root / candidate
         if not candidate.exists():
             missing.append(item)
     return tuple(sorted(missing, key=lambda item: (item.path, item.file_type)))
 
 
-def _missing_target_sources(root: Path, target: str) -> list[str]:
-    return sorted({item.path for item in _missing_target_inputs(root, target)})
+def _missing_target_sources(catalog: TargetCatalog, target: str) -> list[str]:
+    return sorted({item.path for item in _missing_target_inputs(catalog, target)})
 
 
 def _deferable_rtl_or_tb_input(item: TargetInput) -> bool:
@@ -450,9 +454,10 @@ def _nondeferable_missing_inputs(inputs: Iterable[TargetInput]) -> list[str]:
 def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
     """Validate every mandatory/optional criterion Target without running tools."""
     root = Path(project_root)
+    catalog = TargetCatalog.build(root)
     errors: list[str] = []
     for binding in criterion_targets(fields.get("criteria")):
-        errors.extend(_validate_binding(binding, fields, root))
+        errors.extend(_validate_binding(binding, fields, catalog))
     errors.extend(_validate_coverage_suites(fields.get("criteria"), root))
     return errors
 
@@ -469,18 +474,19 @@ def validate_acceptance_targets(
     errors = validate_criterion_targets(fields, root)
     if errors:
         return errors
+    catalog = TargetCatalog.build(root)
     bindings = criterion_targets(fields.get("criteria"))
-    required = _required_targets(root, bindings)
-    errors.extend(_validate_required_targets(root, Path(build_root), required))
+    required = _required_targets(catalog, bindings)
+    errors.extend(_validate_required_targets(catalog, Path(build_root), required))
     for binding in bindings:
         if binding.baseline != binding.target and not _missing_target_sources(
-            root, binding.target
+            catalog, binding.target
         ):
-            errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
+            errors.extend(_validate_comparison_basis(binding, catalog, Path(build_root)))
     errors.extend(
         _validate_changed_targets(
             fields,
-            root,
+            catalog,
             Path(build_root),
             changed_targets,
             seen=set(required),
@@ -490,7 +496,7 @@ def validate_acceptance_targets(
 
 
 def _required_targets(
-    root: Path,
+    catalog: TargetCatalog,
     bindings: Iterable[CriterionTarget],
 ) -> dict[str, tuple[CriterionTarget, bool]]:
     # A Target used as a baseline anywhere always receives the stronger
@@ -498,7 +504,7 @@ def _required_targets(
     # candidate whose [new] sources could otherwise defer resolution.
     required: dict[str, tuple[CriterionTarget, bool]] = {}
     for binding in bindings:
-        candidate_missing = bool(_missing_target_sources(root, binding.target))
+        candidate_missing = bool(_missing_target_sources(catalog, binding.target))
         prior = required.get(binding.target)
         required[binding.target] = (
             binding,
@@ -510,7 +516,7 @@ def _required_targets(
 
 
 def _validate_required_targets(
-    root: Path,
+    catalog: TargetCatalog,
     build_root: Path,
     required: Mapping[str, tuple[CriterionTarget, bool]],
 ) -> list[str]:
@@ -519,13 +525,13 @@ def _validate_required_targets(
         if not must_resolve:
             continue
         target_build = Path(build_root) / _safe_target_dir(target)
-        errors.extend(_dry_resolve_binding(binding, root, target_build, target=target))
+        errors.extend(_dry_resolve_binding(binding, catalog, target_build, target=target))
     return errors
 
 
 def _validate_changed_targets(
     fields: Mapping[str, Any],
-    root: Path,
+    catalog: TargetCatalog,
     build_root: Path,
     changed_targets: Iterable[str],
     *,
@@ -536,7 +542,7 @@ def _validate_changed_targets(
         if target in seen:
             continue
         seen.add(target)
-        missing_inputs = _missing_target_inputs(root, target)
+        missing_inputs = _missing_target_inputs(catalog, target)
         missing = sorted({item.path for item in missing_inputs})
         nondeferable = _nondeferable_missing_inputs(missing_inputs)
         if nondeferable:
@@ -558,7 +564,7 @@ def _validate_changed_targets(
             continue
         binding = CriterionTarget("acceptance", "changed_target", target, "", False)
         target_build = build_root / _safe_target_dir(target)
-        errors.extend(_dry_resolve_binding(binding, root, target_build))
+        errors.extend(_dry_resolve_binding(binding, catalog, target_build))
     return errors
 
 
@@ -568,13 +574,13 @@ def _safe_target_dir(target: str) -> str:
 
 def _validate_comparison_basis(
     binding: CriterionTarget,
-    root: Path,
+    catalog: TargetCatalog,
     build_root: Path,
 ) -> list[str]:
     """Reject bindings whose resolvable Targets change measurement methodology."""
     try:
-        snapshots = _comparison_snapshots(binding, root, build_root)
-    except (fusesoc_registry.FuseSocError, BoundaryError, OSError) as exc:
+        snapshots = _comparison_snapshots(binding, catalog, build_root)
+    except (FuseSocError, BoundaryError, OSError) as exc:
         return [f"{binding.label}: cannot compare Target measurement basis: {exc}"]
     if snapshots is None:
         return []
@@ -595,16 +601,14 @@ def _validate_comparison_basis(
 
 
 def _comparison_snapshots(
-    binding: CriterionTarget, root: Path, build_root: Path
+    binding: CriterionTarget, catalog: TargetCatalog, build_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    baseline = fusesoc_registry.resolve_target(
-        binding.baseline,
-        project_root=root,
+    baseline = fusesoc_registry.resolve_target_handle(
+        catalog.select(binding.baseline),
         build_root=build_root / f"basis-baseline-{_safe_target_dir(binding.baseline)}",
     )
-    candidate = fusesoc_registry.resolve_target(
-        binding.target,
-        project_root=root,
+    candidate = fusesoc_registry.resolve_target_handle(
+        catalog.select(binding.target),
         build_root=build_root / f"basis-candidate-{_safe_target_dir(binding.target)}",
     )
     if binding.flow == "synth":
@@ -627,19 +631,18 @@ def _comparison_snapshots(
 
 def _dry_resolve_binding(
     binding: CriterionTarget,
-    root: Path,
+    catalog: TargetCatalog,
     build_root: Path,
     *,
     target: str | None = None,
 ) -> list[str]:
     selected = target or binding.target
     try:
-        resolved = fusesoc_registry.resolve_target(
-            selected,
-            project_root=root,
+        resolved = fusesoc_registry.resolve_target_handle(
+            catalog.select(selected),
             build_root=build_root,
         )
-    except (fusesoc_registry.FuseSocError, OSError) as exc:
+    except (FuseSocError, OSError) as exc:
         return [f"{binding.label}: target {selected!r} dry-run failed: {exc}"]
     if not resolved.toplevel:
         return [f"{binding.label}: target {selected!r} resolves without a toplevel"]
@@ -649,24 +652,18 @@ def _dry_resolve_binding(
 def _validate_binding(
     binding: CriterionTarget,
     fields: Mapping[str, Any],
-    root: Path,
+    catalog: TargetCatalog,
 ) -> list[str]:
     errors: list[str] = []
     for role, target in (("candidate", binding.target), ("baseline", binding.baseline)):
         if role == "baseline" and target == binding.target:
             continue
         try:
-            ref = select_target(root, target)
-        except fusesoc_registry.FuseSocError as exc:
+            handle = catalog.select(target, for_flow=binding.flow)
+        except FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
             continue
-        if not flow_can_drive(binding.flow, ref):
-            errors.append(
-                f"{binding.label}: {role} target {target!r} cannot satisfy {binding.key} "
-                f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
-            )
-            continue
-        missing_inputs = _missing_target_inputs(root, target)
+        missing_inputs = _missing_target_inputs(catalog, handle.selector)
         missing = sorted({item.path for item in missing_inputs})
         if not missing:
             continue
@@ -730,7 +727,7 @@ def validate_binding_selectors(
         ):
             try:
                 resolved = select_target(root, selector)
-            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            except (FuseSocError, OSError, ValueError) as exc:
                 errors.append(
                     f"{binding.criterion}: {role} selector {selector!r} cannot be resolved: {exc}"
                 )

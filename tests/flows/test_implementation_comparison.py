@@ -222,7 +222,7 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
     resolve.return_value = object()
     monkeypatch.setattr(fusesoc_registry, "resolve_target", resolve)
     resolve_target_execution_ref(candidate, plan.candidate, build_root=tmp_path / "build")
-    assert resolve.call_args.args[0] == binding.candidate_selector
+    assert resolve.call_args.args[0] == candidate.selector
     assert resolve.call_args.kwargs["vlnv"] == candidate.vlnv
 
 

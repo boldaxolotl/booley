@@ -47,8 +47,9 @@ from booley.flows.sim.config import (
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
-from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.targets.target import TargetHandle, inspect_target
+from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay, selftest_overlay
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 
 from .artifacts import CompatibilityArtifactPolicy, TraceArtifactPolicy, artifact_path_component
 from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invocation
@@ -79,6 +80,11 @@ _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
 _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable waveform"
+
+
+def inspect_target(project_root: Path | str, handle: TargetHandle) -> Any:
+    """Inspect a selected simulation Target through its snapshot catalog."""
+    return TargetCatalog.build(project_root).inspect(handle)
 
 
 @dataclass(frozen=True)
@@ -283,7 +289,10 @@ class SimulationExecution:
                 environment=_target_environment(handle),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
-                fusesoc_registry.validate_cocotb_trace_mode(handle.selector, overlay.mode)
+                fusesoc_trace_overlay.validate_cocotb_trace_mode(
+                    handle.selector,
+                    overlay.mode,
+                )
             mode = overlay.mode if overlay is not None else TraceMode.VCD_FIFO
             return prepared, mode
         finally:
@@ -437,11 +446,9 @@ class SimulationExecution:
         root = handle.project_root
         variant = "trace" if self._options.trace else ""
         build_root = edam_layer.work_root_for(root, "sim", handle.selector, variant=variant)
-        setup = fusesoc_registry.setup_command(
-            handle.selector,
-            project_root=root,
+        setup = fusesoc_registry.setup_command_for_handle(
+            handle,
             build_root=build_root,
-            vlnv=handle.vlnv,
         )
         rel = edam_layer.relpath_for_make(build_root, root)
         work = _preview_work(self, handle, inspection, test_names, cocotb, rel)
@@ -475,8 +482,8 @@ class SimulationExecution:
 
 
 def _trace_overlay(handle: TargetHandle) -> Any:
-    return fusesoc_registry.write_trace_overlay(
-        handle.selector,
+    return fusesoc_trace_overlay.write_trace_overlay(
+        handle,
         project_root=handle.project_root,
     )
 
