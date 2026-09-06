@@ -750,8 +750,10 @@ def _partition_protected_inputs(
     protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
     try:
         prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
-    except (FileNotFoundError, ValueError):
-        prefix = ".booley_project/"
+    except (OSError, ValueError) as exc:
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: project-directory resolution failed in {root}: {exc}"
+        ) from exc
     outer_protected = {path for path in protected if not path.startswith(prefix)}
     project = next((row for row in basis.participants if row.role == "project"), None)
     if project is None:

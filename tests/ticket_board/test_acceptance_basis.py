@@ -1549,6 +1549,41 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
         assert_inputs_unchanged(basis, root)
 
 
+def test_input_validation_rejects_project_directory_outside_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (root / "booley.toml").write_text(
+        f'[project]\ndir = "{external.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", "booley.toml")
+    _git(root, "commit", "-m", "external project route")
+    sha = _git(root, "rev-parse", "HEAD")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                sha,
+                "refs/heads/booley-generation/0123456789abcdef/external-route",
+                "refs/heads/main",
+                sha,
+            ),
+        )
+    )
+    monkeypatch.setattr(acceptance_basis_module, "_basis_control_paths", lambda *_args: set())
+
+    with pytest.raises(AcceptanceBasisError, match="project-directory resolution failed"):
+        assert_inputs_unchanged(basis, root)
+
+
 def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
