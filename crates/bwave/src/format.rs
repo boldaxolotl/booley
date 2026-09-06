@@ -104,7 +104,7 @@ impl TimeToken {
                             .to_string(),
                     );
                 }
-                let ticks = (ns as f64 / ticks_to_ns) as i64;
+                let ticks = (ns / ticks_to_ns) as i64;
                 Ok(ticks / clock_period_ticks as i64)
             }
         }
@@ -129,19 +129,19 @@ impl TimeToken {
                 if ticks_to_ns <= 0.0 {
                     return Err("no VCD timescale available".to_string());
                 }
-                Ok((ns as f64 / ticks_to_ns) as i64)
+                Ok((ns / ticks_to_ns) as i64)
             }
         }
     }
 
     /// Helper: convert physical-time tokens to nanoseconds. Returns None for
     /// non-physical tokens (Cycle/Tick).
-    fn to_ns(&self) -> Option<i64> {
+    fn to_ns(&self) -> Option<f64> {
         match *self {
-            TimeToken::Pico(n) => Some(n / 1000),
-            TimeToken::Nano(n) => Some(n),
-            TimeToken::Micro(n) => Some(n * 1_000),
-            TimeToken::Milli(n) => Some(n * 1_000_000),
+            TimeToken::Pico(n) => Some(n as f64 / 1_000.0),
+            TimeToken::Nano(n) => Some(n as f64),
+            TimeToken::Micro(n) => Some(n as f64 * 1_000.0),
+            TimeToken::Milli(n) => Some(n as f64 * 1_000_000.0),
             _ => None,
         }
     }

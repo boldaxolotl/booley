@@ -475,7 +475,7 @@ fn help_virtual_examples_parse() {
 }
 
 #[test]
-fn signal_and_diff_reject_virtual_but_keep_marker() {
+fn signal_and_diff_reject_virtual() {
     for subcommand in ["signal", "diff"] {
         let (help, stderr, code) = run(&[subcommand, "--help"]);
         assert_eq!(code, 0, "{subcommand} --help failed: {stderr}");
@@ -483,10 +483,6 @@ fn signal_and_diff_reject_virtual_but_keep_marker() {
         assert!(
             !usage.contains("--virtual"),
             "{subcommand} must not advertise --virtual:\n{help}"
-        );
-        assert!(
-            usage.contains("--marker"),
-            "{subcommand} must preserve its current --marker surface:\n{help}"
         );
 
         let args: Vec<&str> = if subcommand == "signal" {
@@ -502,6 +498,255 @@ fn signal_and_diff_reject_virtual_but_keep_marker() {
             "{subcommand} rejection did not come from clap: {stderr}"
         );
     }
+}
+
+struct MarkerCommandCase {
+    name: &'static str,
+    help: &'static [&'static str],
+    rejection: Option<&'static [&'static str]>,
+}
+
+const MARKER_COMMAND_CASES: &[MarkerCommandCase] = &[
+    MarkerCommandCase {
+        name: "build",
+        help: &["build", "--help"],
+        rejection: Some(&[
+            "build",
+            "missing.vcd",
+            "-o",
+            "unused.fst",
+            "--marker",
+            "m",
+            "1",
+        ]),
+    },
+    MarkerCommandCase {
+        name: "list",
+        help: &["list", "--help"],
+        rejection: Some(&["list", "missing.fst", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "signal",
+        help: &["signal", "--help"],
+        rejection: Some(&["signal", "missing.fst", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "wave",
+        help: &["wave", "--help"],
+        rejection: None,
+    },
+    MarkerCommandCase {
+        name: "value",
+        help: &["value", "--help"],
+        rejection: Some(&["value", "missing.fst", "--at", "1", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "find",
+        help: &["find", "--help"],
+        rejection: Some(&["find", "missing.fst", "sig", "1", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "sample",
+        help: &["sample", "--help"],
+        rejection: Some(&["sample", "missing.fst", "sig", "1", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "diff",
+        help: &["diff", "--help"],
+        rejection: Some(&["diff", "missing.fst", "1", "2", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "distance",
+        help: &["distance", "--help"],
+        rejection: Some(&["distance", "missing.fst", "sig", "1", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "stats",
+        help: &["stats", "--help"],
+        rejection: Some(&["stats", "missing.fst", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "stuck",
+        help: &["stuck", "--help"],
+        rejection: Some(&["stuck", "missing.fst", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "schema",
+        help: &["schema", "--help"],
+        rejection: Some(&["schema", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "docs",
+        help: &["docs", "topics", "--help"],
+        rejection: Some(&["docs", "topics", "--marker", "m", "1"]),
+    },
+    MarkerCommandCase {
+        name: "skill",
+        help: &["skill", "--help"],
+        rejection: Some(&["skill", "--marker", "m", "1"]),
+    },
+];
+
+fn assert_marker_surface(case: &MarkerCommandCase) {
+    let (help, stderr, code) = run(case.help);
+    assert_eq!(code, 0, "{} --help failed: {stderr}", case.name);
+    assert_eq!(
+        live_usage(&help).contains("--marker"),
+        case.rejection.is_none(),
+        "unexpected --marker help surface for {}:\n{help}",
+        case.name
+    );
+    if let Some(args) = case.rejection {
+        let (stdout, stderr, code) = run(args);
+        assert_eq!(code, 2, "{} accepted --marker: {stderr}", case.name);
+        assert!(
+            stdout.is_empty(),
+            "{} parser rejection wrote stdout: {stdout}",
+            case.name
+        );
+        assert!(
+            stderr.contains("unexpected argument '--marker'"),
+            "{} rejection did not come from clap: {stderr}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn marker_option_is_wave_only() {
+    for case in MARKER_COMMAND_CASES {
+        assert_marker_surface(case);
+    }
+}
+
+#[test]
+fn wave_renders_sync_marker_and_rejects_malformed_time() {
+    let bwave = build_bwave("test_basic.vcd", "marker_sync");
+    let store_path = bwave.to_string_lossy().to_string();
+
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "-t",
+        "4:8",
+        "--with-reset",
+        "--marker",
+        "checkpoint",
+        "6c",
+    ]);
+    assert_eq!(code, 0, "sync marker wave failed: {stderr}");
+    assert!(
+        stdout.contains("checkpoint"),
+        "marker label is absent:\n{stdout}"
+    );
+
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "-t",
+        "4:8",
+        "--marker",
+        "checkpoint",
+        "nope",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 2, "malformed marker time was accepted: {stderr}");
+    assert!(stdout.is_empty(), "malformed marker wrote stdout: {stdout}");
+    assert!(
+        stderr.contains("invalid time token"),
+        "wrong error: {stderr}"
+    );
+
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "--marker",
+        "before_zero",
+        "-1c",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 2, "negative marker time was accepted: {stderr}");
+    assert!(stdout.is_empty(), "negative marker wrote stdout: {stdout}");
+    assert!(
+        stderr.contains("unexpected argument '-1'"),
+        "negative marker did not fail during clap parsing: {stderr}"
+    );
+}
+
+#[test]
+fn wave_marker_collisions_are_deterministic_and_aligned() {
+    let bwave = build_bwave("test_basic.vcd", "marker_collisions");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "data",
+        "-t",
+        "4:8",
+        "--with-reset",
+        "--marker",
+        "checkpoint",
+        "5c",
+        "--marker",
+        "checkpoint",
+        "6c",
+        "--marker",
+        "peer",
+        "6c",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 0, "collision wave failed: {stderr}");
+    assert_eq!(stdout.matches("checkpoint").count(), 1, "{stdout}");
+    let marker_line = stdout
+        .lines()
+        .find(|line| line.contains("checkpoint,peer"))
+        .unwrap();
+    let cycle_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("cycle"))
+        .unwrap();
+    let label_end = marker_line.find("checkpoint,peer").unwrap() + "checkpoint,peer".len();
+    assert_eq!(
+        cycle_line.as_bytes()[label_end - 1],
+        b'6',
+        "marker is misaligned:\n{stdout}"
+    );
+}
+
+#[test]
+fn async_marker_adds_and_preserves_a_quiet_tick_column() {
+    let bwave = build_bwave("test_ps_timescale.vcd", "marker_async");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "wave",
+        &store_path,
+        "-s",
+        "counter",
+        "-t",
+        "0t:40000t",
+        "--async",
+        "--rle",
+        "--marker",
+        "tick",
+        "22500t",
+        "--marker",
+        "physical",
+        "22500ps",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "async marker wave failed: {stderr}");
+    assert!(
+        stdout.contains("tick,physical"),
+        "equivalent tick and picosecond markers did not share a column:\n{stdout}"
+    );
 }
 
 #[test]

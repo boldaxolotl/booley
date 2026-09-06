@@ -724,13 +724,17 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
     _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
 
     cases = [
-        (["-t", "start:done"], ["-t", "10:20"]),
-        (["--before", "done"], ["--before", "20"]),
-        (["--after", "start"], ["--after", "10"]),
-        (["--diff", "start", "done"], ["--diff", "10", "20"]),
-        (["diff", "start", "done"], ["diff", "10", "20"]),
-        (["value", "--at", "start"], ["value", "--at", "10"]),
-        (["-t", "unknown:done"], ["-t", "unknown:20"]),
+        (["-t", "start:done"], ["-t", "10c:20c"]),
+        (["--before", "done"], ["-t", ":20c", "--last"]),
+        (["--after", "start"], ["-t", "10c:", "--first"]),
+        (
+            ["find", "sig", "1", "--before", "done", "--async"],
+            ["find", "sig", "1", "-t", ":20c", "--last", "--async"],
+        ),
+        (["--diff", "start", "done"], ["--diff", "10c", "20c"]),
+        (["diff", "start", "done"], ["diff", "10c", "20c"]),
+        (["value", "--at", "start"], ["value", "--at", "10c"]),
+        (["-t", "unknown:done"], ["-t", "unknown:20c"]),
     ]
     for args, expected in cases:
         bwave._resolve_markers_in_args(args, "dut")
@@ -746,11 +750,11 @@ def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
 
     legacy = ["--wave"]
     bwave._inject_marker_flags(legacy, "dut")
-    assert legacy[-6:] == ["--marker", "start", "10", "--marker", "done", "20"]
+    assert legacy[-6:] == ["--marker", "start", "10c", "--marker", "done", "20c"]
 
     v02 = ["wave"]
     bwave._inject_marker_flags(v02, "dut")
-    assert v02[-6:] == ["--marker", "start", "10", "--marker", "done", "20"]
+    assert v02[-6:] == ["--marker", "start", "10c", "--marker", "done", "20c"]
 
     non_wave = ["find"]
     bwave._inject_marker_flags(non_wave, "dut")
@@ -789,13 +793,13 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "-s",
             "top.dut.state",
             "-t",
-            "10:20",
+            "10c:20c",
             "--marker",
             "start",
-            "10",
+            "10c",
             "--marker",
             "done",
-            "20",
+            "20c",
             "--limit",
             "5000",
         ]
@@ -822,7 +826,7 @@ def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
         bwave.cmd_query(argparse.Namespace(extra=["@dut", "diff", "start", "done"]))
 
     assert exc.value.code == 0
-    assert calls == [["bwave-bin", "diff", str(trace), "10", "20", "--limit", "5000"]]
+    assert calls == [["bwave-bin", "diff", str(trace), "10c", "20c", "--limit", "5000"]]
 
 
 def test_meta_query_bypasses_alias_resolution(monkeypatch):

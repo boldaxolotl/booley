@@ -619,7 +619,13 @@ def _add_doctor_subparser(sub) -> None:
         help="Run setup and environment health checks",
         parents=[_project_root_parent()],
     )
-    doctor_p.add_argument("--verbose", "-v", action="store_true")
+    output = doctor_p.add_mutually_exclusive_group()
+    output.add_argument("--verbose", "-v", action="store_true")
+    output.add_argument(
+        "--concise",
+        action="store_true",
+        help="Hide successful check rows while preserving findings and final counts",
+    )
     doctor_p.add_argument(
         "--deep",
         action="store_true",

@@ -8,7 +8,7 @@ bwave sample <FST_FILE> <TRIGGER_PAT> <TRIGGER_VAL>
              [--first | --last | --before N | --after N] [--count]
              [-t START:END]
              [--async] [--clock PAT] [--reset PAT] [--with-reset]
-             [--virtual "name = expr"] [--marker NAME CYCLE]
+             [--virtual "name = expr"]
              [--format text|json] [--limit N]
 ```
 
@@ -37,7 +37,7 @@ literals, width-prefixed literals, and edge keywords
   trigger and to selected virtual rows.
 - Modifier flags (`--first`, `--last`, `--before`,
   `--after`, `--count`) mirror `find`.
-- `--virtual` and `--marker` apply.
+- `--virtual` applies.
 
 ## Output shape
 

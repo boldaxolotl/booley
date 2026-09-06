@@ -11,7 +11,7 @@ pub mod signal;
 pub mod vcd_chunk;
 pub mod virtual_signal;
 
-use format::Radix;
+use format::{Radix, TimeToken};
 
 pub struct ExtractConfig {
     pub patterns: Vec<String>,
@@ -42,8 +42,10 @@ pub struct ExtractConfig {
     pub distance_b: Option<(String, String)>,
     /// Per-signal radix overrides: (pattern, radix), parallel to patterns
     pub signal_radixes: Vec<(String, Radix)>,
-    /// Named markers for --wave display: (name, cycle/tick)
+    /// Named markers for --wave display, resolved to cycles (sync) or ticks (async).
     pub markers: Vec<(String, i64)>,
+    /// Marker time tokens awaiting resolution against the store header.
+    pub marker_tokens: Vec<(String, TimeToken)>,
     /// Virtual signal definitions: "name = expr"
     pub virtual_defs: Vec<String>,
     /// Output format: true = JSON, false = text
@@ -90,6 +92,7 @@ impl Default for ExtractConfig {
             distance_b: None,
             signal_radixes: Vec::new(),
             markers: Vec::new(),
+            marker_tokens: Vec::new(),
             virtual_defs: Vec::new(),
             json_format: false,
             time_str: None,
@@ -123,6 +126,17 @@ impl ExtractConfig {
                 tok.resolve_to_cycle(ticks_to_ns, clock_period_ticks)
             }
         };
+
+        let mut markers = Vec::with_capacity(self.marker_tokens.len());
+        for (name, token) in &self.marker_tokens {
+            let position = resolve(token)
+                .map_err(|error| format!("--marker {name}: cannot resolve marker time: {error}"))?;
+            // Repeating a name updates its position. Retaining insertion order
+            // keeps distinct marker labels deterministic for rendering.
+            markers.retain(|(existing, _)| existing != name);
+            markers.push((name.clone(), position));
+        }
+        self.markers = markers;
 
         if let Some(s) = self.time_str.clone() {
             let (lo, hi) = parse_time_range(&s, self.async_mode)?;

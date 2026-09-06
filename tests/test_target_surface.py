@@ -11,15 +11,21 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
     projected_core_path,
     reconcile_projected_cores,
 )
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
+from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.targets import target_surface
-from booley.targets.target import TargetHandle, inspect_target, select_target, select_targets
+from booley.targets.target import (
+    TargetHandle,
+    inspect_target,
+    select_target,
+    select_targets,
+)
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
@@ -189,9 +195,12 @@ class TestTargetInterface:
             encoding="utf-8",
         )
         inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
+        refs = fusesoc_registry.enumerate_targets(tmp_path)
+        sources = TargetSourceInspector(tmp_path).inspect(refs["synth"])
 
         assert inspection.handle.core_file == authored
         assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
+        assert sources.rtl_source_files == ("rtl/demo.sv",)
 
     def test_inspection_refreshes_owned_stale_projection(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
@@ -481,6 +490,96 @@ class TestTargetInterface:
         assert [item.path for item in inspection.inputs] == ["ibex_simple_system_main.cc"]
         assert inspection.toplevel == "ibex_simple_system"
         assert inspection.eda_tool == "verilator"
+
+    def test_source_inspector_keeps_target_conditions_isolated_in_a_b_a_order(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (tmp_path / "conditional.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:ip:conditional:1.0
+                filesets:
+                  selected:
+                    files:
+                      - target_lint_a ? (rtl/a.sv)
+                      - target_lint_b ? (rtl/b.sv)
+                targets:
+                  lint_a:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                    filesets: [selected]
+                    toplevel: a
+                  lint_b:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                    filesets: [selected]
+                    toplevel: b
+                """
+            ),
+            encoding="utf-8",
+        )
+        refs = fusesoc_registry.enumerate_targets(tmp_path)
+        inspector = TargetSourceInspector(tmp_path)
+        resolutions = 0
+        real_get_depends = target_inspection.CoreManager.get_depends
+
+        def counting_get_depends(self, *args, **kwargs):
+            nonlocal resolutions
+            resolutions += 1
+            return real_get_depends(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            target_inspection.CoreManager,
+            "get_depends",
+            counting_get_depends,
+        )
+
+        observed = [
+            inspector.inspect(refs[name]).rtl_source_files
+            for name in ("lint_a", "lint_b", "lint_a")
+        ]
+
+        assert observed == [("rtl/a.sv",), ("rtl/b.sv",), ("rtl/a.sv",)]
+        assert resolutions == 2
+
+    def test_source_inspector_continues_after_one_target_cannot_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "mixed.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:ip:mixed:1.0
+                filesets:
+                  broken:
+                    depend: [missing:dependency:core]
+                  healthy:
+                    files: [rtl/healthy.sv]
+                targets:
+                  lint_broken:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                    filesets: [broken]
+                    toplevel: broken
+                  lint_healthy:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                    filesets: [healthy]
+                    toplevel: healthy
+                """
+            ),
+            encoding="utf-8",
+        )
+        refs = fusesoc_registry.enumerate_targets(tmp_path)
+        inspector = TargetSourceInspector(tmp_path)
+
+        with pytest.raises(fusesoc_registry.FuseSocError, match="lint_broken"):
+            inspector.inspect(refs["lint_broken"])
+
+        assert inspector.inspect(refs["lint_healthy"]).rtl_source_files == ("rtl/healthy.sv",)
 
     def test_selection_keeps_identity_separate_from_callable_selector(self, project: Path):
         selected = select_target(project, "acme:ip:alpha:1.0#lint", for_flow="lint")

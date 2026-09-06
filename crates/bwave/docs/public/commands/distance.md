@@ -7,7 +7,7 @@ bwave distance <FST_FILE> <PATTERN> <VALUE>
                [--to <PATTERN_B> <VALUE_B>] [--stats]
                [-s PATTERN[%RADIX] ...] [-t START:END]
                [--async] [--clock PAT] [--reset PAT] [--with-reset]
-               [--virtual "name = expr"] [--marker NAME CYCLE]
+               [--virtual "name = expr"]
                [--format text|json] [--limit N]
 ```
 
@@ -43,7 +43,7 @@ and edge keywords.
 - `--stats` optional; replaces the raw pair list with
   summary stats.
 - `-t START:END` time-bounds the search for events.
-- `--virtual` and `--marker` apply.
+- `--virtual` applies.
 
 ## Output shape
 
