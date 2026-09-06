@@ -147,6 +147,22 @@ _Avoid_: Design Configuration, build config, profile, named config
 A directed baseline/candidate pair of frozen **Targets** used by a baseline-relative Criterion. A single Target name denotes the equal pair whose baseline and candidate are that Target.
 _Avoid_: mutable Target, recipe patch, before/after config
 
+**Target Plan**:
+An optional, machine-readable **Ticket** transition plan that classifies every Target authored during Ticket creation as persistent, replacement, or ephemeral. Its absence means the Ticket authors no Target changes of its own; its sealed dispositions determine which Targets remain in the accepted Project.
+_Avoid_: Target removal list, Target metadata, build migration
+
+**Persistent Target**:
+A Target authored by a **Target Plan** as an additional supported build that remains independently selectable after Ticket acceptance.
+_Avoid_: permanent Target, default Target
+
+**Replacement Target**:
+A Target authored by a **Target Plan** to supersede one runnable baseline Target. Both recipes remain available while the Ticket runs; acceptance removes the baseline and retains the replacement exactly as approved.
+_Avoid_: modified Target, in-place Target edit, temporary Target
+
+**Ephemeral Target**:
+A Target authored by a **Target Plan** solely to collect one Ticket's evidence and removed during acceptance.
+_Avoid_: disposable config, temporary persistent Target
+
 **Cocotb Target**:
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Waveform analysis).
 _Avoid_: python testbench config, cocotb core, cocotb suite
@@ -198,7 +214,7 @@ A self-contained unit of hardware development work that carries its own acceptan
 _Avoid_: task, issue, story
 
 **Ticket Creation Guidance**:
-Project-authored prose that guides the Criteria and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
+Project-authored prose that guides the Criteria, optional **Target Plan**, and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
 _Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defaults
 
 **Criterion**:
@@ -230,7 +246,7 @@ The filesystem-backed state machine that tracks one Ticket from draft through ex
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Target Contract**:
-The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, and canonical creation-time Target-removal disposition to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
+The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, canonicalized **Target Plan**, and derived Target dispositions to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
 _Avoid_: target snapshot, config patch, mutable recipe
 
 **Ticket Workspace**:
