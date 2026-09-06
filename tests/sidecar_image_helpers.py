@@ -20,7 +20,7 @@ import pytest
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 
 DIND_IMAGE = (
-    "docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6"
+    "docker:29.8.0-dind@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
 )
 _DOCKER_SOCKET = "unix:///var/run/docker.sock"
 _NAME_PREFIX_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
