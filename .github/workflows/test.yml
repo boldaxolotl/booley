@@ -83,7 +83,7 @@ jobs:
           cache: pip
 
       - name: Install semantic-check dependency
-        run: pip install PyYAML==6.0.2
+        run: pip install PyYAML==6.0.3
 
       - name: Validate release semantics
         run: >-

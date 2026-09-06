@@ -25,7 +25,12 @@ from typing import Any, ClassVar
 from booley.flows import eda_parsers
 from booley.flows.run_log import write_run_log
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+    EndpointOutcome,
+)
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -340,7 +345,7 @@ def _lint_result_parts(
     elapsed: float,
     target_results: list[LintConfigResult] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Build (display_lines, detail) for the lint McpToolResult.
+    """Build (display_lines, detail) for the lint endpoint outcome.
 
     One shared builder for the concise display line plus the
     targets/count/elapsed detail dict.
@@ -413,9 +418,9 @@ class LintFlow(BooleyFlow):
         """Not used вЂ” LintFlow overrides _run() for multi-config logic."""
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Not used вЂ” LintFlow overrides _run()."""
-        return McpToolResult()
+        return EndpointOutcome()
 
     def _get_timeout(self) -> int:
         """Per-config timeout in seconds (CLI flag is ms)."""
@@ -497,7 +502,7 @@ class LintFlow(BooleyFlow):
         script = f"{shlex.join(setup_cmd)} && {shlex.join(edam_layer.make_command(rel))}"
         return ["sh", "-c", script]
 
-    def _dry_run(self, targets: tuple[TargetHandle, ...]) -> McpToolResult:
+    def _dry_run(self, targets: tuple[TargetHandle, ...]) -> EndpointOutcome:
         """Print the side-effect-free ``fusesoc run --setup`` + ``make`` preview.
 
         One ``sh -c`` script per Target, emitted as JSON — the same shape the
@@ -506,7 +511,7 @@ class LintFlow(BooleyFlow):
         commands = {target.selector: self._dry_run_command(target) for target in targets}
         output = json.dumps(commands, indent=2)
         print(output)
-        return McpToolResult(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
+        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
 
     def _run_lint_target(
         self,
@@ -535,7 +540,7 @@ class LintFlow(BooleyFlow):
 
         try:
             cmd, resolved = self._prepare_lint_command(target)
-        except Exception as exc:  # isolate per-Target setup failure
+        except Exception as exc:  # isolate and normalize a Target setup failure
             result.error = f"lint setup failed: {exc}"
             result.error_is_eda_tool_failure = True
             logger.debug("lint EDAM/configure failed for %s", selector, exc_info=True)
@@ -742,7 +747,7 @@ class LintFlow(BooleyFlow):
             return (EXIT_FAILURE if warnings_as_errors else EXIT_SUCCESS), summary
         return EXIT_SUCCESS, "RESULT: PASS"
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
+    def _validate_interactive_args(self) -> EndpointOutcome | None:
         """Interactive-Mode argument validation.
 
         In Interactive Mode there is no project_config import path priming
@@ -753,7 +758,7 @@ class LintFlow(BooleyFlow):
         if self._state is not None and self._state._file_path is not None:
             return None  # Ticket Mode вЂ” existing discovery behaviour applies
         if not getattr(self.args, "target", "").strip():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "lint: --target is required when running outside a ticket. "
@@ -763,14 +768,14 @@ class LintFlow(BooleyFlow):
             )
         return None
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         """Run lint across configured build Targets."""
         err = self._validate_interactive_args()
         if err is not None:
             return err
         targets = self._get_targets()
         if not targets:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "lint: no Target selected. Pass --target <name> (or "
@@ -780,7 +785,7 @@ class LintFlow(BooleyFlow):
             )
         # Resolve enablement before running any target.
         if not self._flow_enabled():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="lint is disabled ([flows.lint].enabled = false).",
             )
@@ -843,7 +848,7 @@ class LintFlow(BooleyFlow):
             )
         print(f"\n{summary}")
 
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=exit_code,
             report_text=summary,
             detail=detail,

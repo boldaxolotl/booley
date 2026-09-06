@@ -239,8 +239,8 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.259" \
-    && test "$(codex --version | awk '{print $2}')" = "0.153.1" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.263" \
+    && test "$(codex --version | awk '{print $2}')" = "0.153.4" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
@@ -314,7 +314,7 @@ RUN python -m pip install --break-system-packages --no-cache-dir \
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
 # (0.5.0 still uses the removed cocotb.clock.BaseClock).
 RUN python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
-    "cocotb==2.1.0" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
+    "cocotb==2.1.0" "numpy==2.5.3" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
 
 # Build-time sanity (D2): the image fails to build rather than failing at
 # first sim — cocotb-config resolves, the curated set imports, and the

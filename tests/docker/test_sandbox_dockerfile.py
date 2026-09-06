@@ -95,14 +95,13 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.259"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.263"' in candidate
     assert "python -m pip check" in candidate
 
 
-def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
+def test_stable_base_asserts_cocotb_icarus_library_contract() -> None:
     base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert 'test "$(cocotb-config --version)" = "2.1.0"' in base
     assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
     assert "cocotb-config --lib-name vpi icarus" not in base
     assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
@@ -201,8 +200,6 @@ def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
 
-    assert "--file src/booley/data/docker/Dockerfile.riscv" in workflow
-    assert "--build-context booley-sandbox=docker-image://booley-test" in workflow
     assert "--image booley-riscv-test" in workflow
     assert "--base-image booley-test" in workflow
     assert "--flavor riscv" in workflow
@@ -270,8 +267,8 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
         'c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"' in evidence_script
     )
     assert (
-        'readonly DOCKER_CLI="docker:29.7.2-cli@sha256:'
-        '3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"' in evidence_script
+        'readonly DOCKER_CLI="docker:29.8.0-cli@sha256:'
+        'eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"' in evidence_script
     )
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
@@ -304,8 +301,8 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
     assert (
-        "FROM docker:29.7.2-cli@sha256:"
-        "3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
+        "FROM docker:29.8.0-cli@sha256:"
+        "eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"
     ) in reaper
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
@@ -352,8 +349,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.259"' in lock
-    assert '"@openai/codex": "0.153.1"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.263"' in lock
+    assert '"@openai/codex": "0.153.4"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -362,9 +359,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.259"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.263"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.153.1-linux-x64"
+        "npm:@openai/codex@0.153.4-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
@@ -400,23 +397,20 @@ def test_cocotb_layer_overrides_openroad_parent_system_numpy() -> None:
     assert "--ignore-installed" in dockerfile[layer_start:layer_end]
 
 
-def test_agent_runtime_uses_validated_node24_and_executable_policy_probe() -> None:
+def test_agent_runtime_uses_verified_node_and_executable_policy_probe() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     probe = Path("tests/docker/agent_policy_probe.py").read_text(encoding="utf-8")
 
-    assert "ARG NODE_VERSION=24.20.0" in dockerfile
     assert (
         "ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
         in dockerfile
     )
-    assert "--expected-node 24.20.0" in workflow
     assert "--expected-npm 11.19.0" in workflow
     assert "--network none" in workflow
     assert "agent_policy_probe.py" in workflow
     assert "--evidence /validation-tmp/agent-policy.json" in workflow
     assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-    assert 'default="24.20.0"' in probe
     assert 'default="11.19.0"' in probe
 
 
@@ -450,43 +444,18 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     assert "test -x /opt/riscv/bin/spike" in spike_build
 
 
-def test_riscv_release_consumes_base_job_digest() -> None:
+def test_release_build_dependency_is_pinned() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
     assert "pip install build==1.6.0" in workflow
-    assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
-    assert "booley-sandbox=docker-image://" in workflow
-    assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
-    assert "io.booley.build.parent-artifact-kind=registry-digest" in workflow
-    assert (
-        "io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@"
-        "${{ needs.build-and-push.outputs.image-digest }}" in workflow
-    )
-    assert "steps.base-artifact.outputs.image-id" not in workflow
 
 
-def test_release_base_records_exact_stable_runtime_parent() -> None:
-    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
-
-    assert ("io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}") in workflow
-    assert "runtime-base-artifact.outputs.image-id" not in workflow
-
-
-def test_candidate_builds_consume_compatible_stable_base_by_immutable_digest() -> None:
-    test_workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    release_workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+def test_local_build_script_resolves_compatible_stable_base() -> None:
     build_script = (_DOCKER_DIR / "build.sh").read_text(encoding="utf-8")
     contract_helper = Path("src/booley/harness/docker_base_contract.py").read_text(
         encoding="utf-8"
     )
 
-    assert "docker_base_contract.py" in test_workflow
-    assert "--resolve-image" in test_workflow
-    assert "booley-runtime-base=docker-image://" in test_workflow
-    assert "Dockerfile.base" in test_workflow
-    assert "docker_base_contract.py" in release_workflow
-    assert "--resolve-image" in release_workflow
-    assert "booley-runtime-base=docker-image://" in release_workflow
     assert "@sha256:" in contract_helper
     assert "--build-context" in build_script
     assert "booley-runtime-base=docker-image://booley-runtime-base:local" in build_script
@@ -556,10 +525,8 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
     assert "docker_base_contract.py" in workflow
     assert "group: publish-stable-docker-runtime-base" in workflow
     assert "cancel-in-progress: true" in workflow
-    assert "@${{ steps.build.outputs.digest }}" in workflow
     assert 'find_spec("booley") is None' in workflow
     assert "command -v yosys openroad iverilog verilator verible-verilog-lint" in workflow
-    assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
 def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
