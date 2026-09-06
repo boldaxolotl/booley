@@ -1549,7 +1549,7 @@ def test_acceptance_path_policy_protects_routing_config(tmp_path: Path) -> None:
         assert_inputs_unchanged(basis, root)
 
 
-def test_input_validation_rejects_project_directory_outside_checkout(
+def test_input_validation_supports_project_directory_outside_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1580,8 +1580,7 @@ def test_input_validation_rejects_project_directory_outside_checkout(
     )
     monkeypatch.setattr(acceptance_basis_module, "_basis_control_paths", lambda *_args: set())
 
-    with pytest.raises(AcceptanceBasisError, match="project-directory resolution failed"):
-        assert_inputs_unchanged(basis, root)
+    assert_inputs_unchanged(basis, root)
 
 
 def test_gitignored_untracked_control_file_is_rejected(tmp_path: Path) -> None:

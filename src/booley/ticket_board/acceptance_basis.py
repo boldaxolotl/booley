@@ -22,6 +22,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.project_dir import (
+    PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
     checkout_runtime_dir,
     resolve_checkout_project_dir,
@@ -750,10 +751,8 @@ def _partition_protected_inputs(
     protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
     try:
         prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
-    except (OSError, ValueError) as exc:
-        raise AcceptanceBasisError(
-            f"{BLOCK_REASON}: project-directory resolution failed in {root}: {exc}"
-        ) from exc
+    except (FileNotFoundError, ValueError):
+        prefix = f"{PROJECT_DIR_NAME}/"
     outer_protected = {path for path in protected if not path.startswith(prefix)}
     project = next((row for row in basis.participants if row.role == "project"), None)
     if project is None:
