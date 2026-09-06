@@ -32,6 +32,7 @@ from booley.mcp.base import (
     read_source_dirs_from_toml,
 )
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import EndpointOutcome, execute_endpoint
 
 
 class ConcreteMcpTool(McpTool):
@@ -54,6 +55,30 @@ class ConcreteMcpTool(McpTool):
             criterion_key="test_criterion",
             criterion_met=True,
         )
+
+
+def test_documented_mcp_result_name_remains_source_compatible() -> None:
+    result = McpToolResult(report_text="ok")
+
+    assert type(result).__name__ == "McpToolResult"
+    assert isinstance(result, EndpointOutcome)
+
+
+def test_mcp_adapter_preserves_structured_pre_state_rejection(capsys) -> None:
+    class RejectingMcpTool(ConcreteMcpTool):
+        def _pre_state_gate(self) -> McpToolResult:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                detail={"acceptance_effect": "rejected"},
+                report_text="blocked before state",
+            )
+
+    result = execute_endpoint(RejectingMcpTool(), [])
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail == {"acceptance_effect": "rejected"}
+    assert result.outcome.report_text == "blocked before state"
+    assert capsys.readouterr().err == "blocked before state\n"
 
 
 class SimLikeMcpTool(ConcreteMcpTool):

@@ -35,6 +35,13 @@ This is an implementation-level guide. It assumes the vocabulary and whole-syste
 
 This guide owns the common MCP tool lifecycle and extension contract.
 
+The lifecycle sequence itself lives in the transport-independent
+`booley.runtime.endpoint_execution` module. Both the direct CLI path and the
+process launched by the MCP adapter enter that coordinator; MCP remains
+responsible for discovery, schema validation, and wire payloads. The public
+base classes described below remain source-compatible facades for Project-local
+extensions.
+
 ## Overview
 
 The Developer Agent does not invoke an EDA command, project script, or Specialist directly. It calls a discovered MCP tool inside the Session Runtime. That MCP tool owns the request schema, execution, result interpretation, and any Criterion updates.
@@ -57,7 +64,9 @@ Every agent-facing call follows the same shape:
 2. The agent calls it by its discovered name.
 3. The MCP tool validates common and endpoint-specific arguments.
 4. A Booley Flow runs deterministic work inside the Session Runtime, a Specialist runs its agent loop, or a direct `McpTool` subclass performs its own orchestration.
-5. The implementation interprets raw output into a `McpToolResult`.
+5. The implementation interprets raw output into a transport-neutral endpoint
+   outcome. `McpToolResult` is the source-compatible public name for that
+   outcome in Project-local extensions.
 6. In Ticket Mode, it also records every Criterion verdict it evaluated; the Harness reads persistent Criterion state when deciding whether the ticket may advance.
 
 Interactive Mode uses the same registry and implementations, but it has no Ticket state. The result is returned to the current session without persisting Criteria.
