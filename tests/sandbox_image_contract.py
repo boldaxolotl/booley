@@ -41,6 +41,7 @@ class WorkflowStep:
 class Build:
     step: WorkflowStep
     dockerfile: str
+    target: str
     contexts: dict[str, str]
     build_args: dict[str, str]
     labels: dict[str, str]
@@ -223,6 +224,7 @@ def _action_build(step: WorkflowStep) -> Build:
     return Build(
         step=step,
         dockerfile=str(inputs.get("file", "")),
+        target=str(inputs.get("target", "")),
         contexts=_key_values(inputs.get("build-contexts")),
         build_args=_key_values(inputs.get("build-args")),
         labels=_key_values(inputs.get("labels")),
@@ -241,6 +243,7 @@ def _shell_build(step: WorkflowStep, run: str) -> Build:
     return Build(
         step=step,
         dockerfile=_option(fields, "--file"),
+        target=_option(fields, "--target"),
         contexts=_repeated_key_values(fields, "--build-context"),
         build_args=_repeated_key_values(fields, "--build-arg"),
         labels={},
@@ -416,10 +419,12 @@ def _test_alternative_errors(base: Build, local: Build, remote: Build) -> list[s
     local_condition = _condition(base.step.value.get("if"))
     candidate_condition = _condition(local.step.value.get("if"))
     remote_condition = _condition(remote.step.value.get("if"))
-    if local_condition != candidate_condition:
-        errors.append(f"{role}: local stable-base producer and candidate conditions disagree")
-    if not _complementary(candidate_condition, remote_condition):
-        errors.append(f"{role}: local and published candidate conditions are not complementary")
+    local_expected = ("steps.runtime-base.outputs.build", "==", "true")
+    remote_expected = ("steps.runtime-base.outputs.build", "!=", "true")
+    if local_condition != local_expected or candidate_condition != local_expected:
+        errors.append(f"{role}: local builds must use the runtime-base build selector")
+    if remote_condition != remote_expected:
+        errors.append(f"{role}: published build must complement the runtime-base build selector")
     if base.step.path >= local.step.path:
         errors.append(f"{role}: local stable-base producer must precede its candidate")
     return errors
@@ -428,18 +433,6 @@ def _test_alternative_errors(base: Build, local: Build, remote: Build) -> list[s
 def _condition(value: object) -> tuple[str, str, str] | None:
     match = re.fullmatch(r"\s*([A-Za-z0-9_.-]+)\s*(==|!=)\s*'([^']+)'\s*", str(value or ""))
     return match.groups() if match else None
-
-
-def _complementary(
-    first: tuple[str, str, str] | None, second: tuple[str, str, str] | None
-) -> bool:
-    return bool(
-        first
-        and second
-        and first[0] == second[0]
-        and first[2] == second[2]
-        and {first[1], second[1]} == {"==", "!="}
-    )
 
 
 def _release_graph_errors(workflow: dict[str, Any]) -> list[str]:
@@ -538,6 +531,11 @@ def _build_shape_errors(
         errors.append(
             f"{role}: {build.step.locator} builds {build.dockerfile!r}, expected {dockerfile}"
         )
+    if build.target:
+        errors.append(
+            f"{role}: {build.step.locator} targets intermediate stage {build.target!r}; "
+            "expected the final image"
+        )
     if build.contexts != contexts:
         errors.append(
             f"{role}: {build.step.locator} named contexts {build.contexts} disagree with {contexts}"
@@ -561,72 +559,152 @@ def _resolver_errors(
     image: str,
     github_output: bool = True,
 ) -> list[str]:
-    run = str(step.value.get("run", "")).replace("\\\n", " ")
+    try:
+        fields = _shell_command(
+            str(step.value.get("run", "")), ".github/scripts/docker_base_contract.py"
+        )
+    except ValueError as error:
+        return [f"{role}: {step.locator}: {error}"]
     errors: list[str] = []
-    if "docker_base_contract.py" not in run or "--resolver remote" not in run:
+    if _option(fields, "--resolver") != "remote":
         errors.append(f"{role}: {step.locator} must use the remote stable-base resolver")
-    if f'--resolve-image "{image}"' not in run:
+    if _option(fields, "--resolve-image") != image:
         errors.append(f"{role}: {step.locator} resolves the wrong base instead of {image}")
-    has_output = '--github-output "${GITHUB_OUTPUT}"' in run
-    if github_output != has_output:
+    output = _option(fields, "--github-output")
+    if github_output != (output == "${GITHUB_OUTPUT}"):
         expectation = "write" if github_output else "not write"
         errors.append(f"{role}: {step.locator} must {expectation} a resolver output")
     return errors
 
 
+def _shell_command(run: str, executable: str) -> list[str]:
+    commands = []
+    for line in run.replace("\\\n", " ").splitlines():
+        fields = _shell_fields(line, comments=True)
+        if executable in fields:
+            commands.append(fields)
+    if len(commands) != 1:
+        raise ValueError(f"expected one {executable} command, found {len(commands)}")
+    return commands[0]
+
+
 def _runtime_role_errors(sources: ContractSources) -> list[str]:
     errors: list[str] = []
-    try:
-        node_role = _RUNTIME_ROLES["node"]
-        node = _unique_version(
-            f"{node_role.name} authority {node_role.authority}",
-            _argument_values(sources.base_dockerfile, "NODE_VERSION"),
-        )
-        node_probe = find_step(
-            "test.yml",
-            sources.test_workflow,
-            "bwave-smoke",
-            name="Run installed agent CLI policy probe",
-        )
-        node_evidence = _node_probe_version(str(node_probe.value.get("run", "")))
-        errors.extend(
-            _version_pair_errors(
-                node_role,
-                node,
-                node_evidence,
-                node_role.probes[0],
-            )
-        )
-        cocotb_role = _RUNTIME_ROLES["cocotb"]
-        cocotb = _unique_version(
-            f"{cocotb_role.name} authority {cocotb_role.authority}",
-            _cocotb_requirements(sources.base_dockerfile),
-        )
-        build_evidence = _unique_version(
-            "Cocotb build probe Dockerfile.base:cocotb-config",
-            _cocotb_assertions(sources.base_dockerfile),
-        )
-        smoke = find_step(
-            "test.yml",
-            sources.test_workflow,
-            "bwave-smoke",
-            name="Run cocotb Icarus/Verilator production-image flows",
-        )
-        smoke_evidence = _cocotb_workflow_version(str(smoke.value.get("run", "")))
-        errors.extend(
-            _version_pair_errors(
-                cocotb_role,
-                cocotb,
-                build_evidence,
-                cocotb_role.probes[0],
-            )
-        )
-        errors.extend(
-            _version_pair_errors(cocotb_role, cocotb, smoke_evidence, cocotb_role.probes[1])
-        )
-    except ValueError as error:
-        errors.append(str(error))
+    for validator in (_node_role_errors, _cocotb_role_errors):
+        try:
+            errors.extend(validator(sources))
+        except ValueError as error:
+            errors.append(str(error))
     return errors
+
+
+def _node_role_errors(sources: ContractSources) -> list[str]:
+    role = _RUNTIME_ROLES["node"]
+    authority = _unique_version(
+        f"{role.name} authority {role.authority}",
+        _argument_values(sources.base_dockerfile, "NODE_VERSION"),
+    )
+    probe = find_step(
+        "test.yml",
+        sources.test_workflow,
+        "bwave-smoke",
+        name="Run installed agent CLI policy probe",
+    )
+    evidence = _node_probe_version(str(probe.value.get("run", "")))
+    return _version_pair_errors(role, authority, evidence, role.probes[0])
+
+
+def _cocotb_role_errors(sources: ContractSources) -> list[str]:
+    role = _RUNTIME_ROLES["cocotb"]
+    authority = _unique_version(
+        f"{role.name} authority {role.authority}",
+        _cocotb_requirements(sources.base_dockerfile),
+    )
+    build_evidence = _unique_version(
+        "Cocotb build probe Dockerfile.base:cocotb-config",
+        _cocotb_assertions(sources.base_dockerfile),
+    )
+    smoke = find_step(
+        "test.yml",
+        sources.test_workflow,
+        "bwave-smoke",
+        name="Run cocotb Icarus/Verilator production-image flows",
+    )
+    image, command = _docker_run(smoke)
+    errors = _version_pair_errors(role, authority, build_evidence, role.probes[0])
+    if image != "booley-test":
+        errors.append(f"Cocotb exact role: production probe image is {image!r}, not 'booley-test'")
+    smoke_evidence, flow_errors = _cocotb_smoke_evidence(command)
+    errors.extend(flow_errors)
+    errors.extend(_version_pair_errors(role, authority, smoke_evidence, role.probes[1]))
+    return errors
+
+
+def _docker_run(step: WorkflowStep) -> tuple[str, tuple[str, ...]]:
+    fields = _shell_fields(str(step.value.get("run", "")).replace("\\\n", " "))
+    indexes = [index for index, field in enumerate(fields) if field == "docker"]
+    if len(indexes) != 1 or fields[indexes[0] : indexes[0] + 2] != ["docker", "run"]:
+        raise ValueError(f"{step.locator}: expected one docker run command")
+    index = indexes[0] + 2
+    valueless = {"--rm", "--init"}
+    while index < len(fields) and fields[index].startswith("-"):
+        index += 1 if fields[index] in valueless or "=" in fields[index] else 2
+    if index >= len(fields):
+        raise ValueError(f"{step.locator}: docker run image is missing")
+    return fields[index], tuple(fields[index + 1 :])
+
+
+def _cocotb_smoke_evidence(command: tuple[str, ...]) -> tuple[str, list[str]]:
+    if len(command) != 3 or command[:2] != ("bash", "-c"):
+        raise ValueError("Cocotb production probe test.yml: expected a bash -c command")
+    segments = _shell_segments(command[2])
+    versions = tuple(
+        segment[3]
+        for segment in segments
+        if len(segment) == 4 and segment[:3] == ("test", "$(cocotb-config --version)", "=")
+    )
+    errors: list[str] = []
+    for target in ("sim_icarus", "sim_verilator"):
+        expected = (
+            "python3",
+            "-m",
+            "booley.flows.sim",
+            "--work-dir",
+            "/validation-tmp/project",
+            "--target",
+            target,
+        )
+        if expected not in segments:
+            errors.append(f"Cocotb exact role: production probe is missing {target} Simulation")
+    return _unique_version("Cocotb production probe test.yml:cocotb-config", versions), errors
+
+
+def _shell_segments(command: str) -> tuple[tuple[str, ...], ...]:
+    segments: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for field in _shell_fields(command.replace("\\$", "$")):
+        if field == "&&":
+            segments.append(tuple(current))
+            current = []
+        else:
+            current.append(field)
+    segments.append(tuple(current))
+    return tuple(segments)
+
+
+def _shell_fields(command: str, *, comments: bool = False) -> list[str]:
+    expressions: list[str] = []
+
+    def mask(match: re.Match[str]) -> str:
+        expressions.append(match.group(0))
+        return f"__BOOLEY_EXPRESSION_{len(expressions) - 1}__"
+
+    masked = re.sub(r"\$\{\{.*?\}\}", mask, command)
+    fields = shlex.split(masked, comments=comments)
+    for index, expression in enumerate(expressions):
+        placeholder = f"__BOOLEY_EXPRESSION_{index}__"
+        fields = [field.replace(placeholder, expression) for field in fields]
+    return fields
 
 
 def _argument_values(contents: str, name: str) -> tuple[str, ...]:
@@ -671,12 +749,6 @@ def _node_probe_version(run: str) -> str:
     if match is None:
         raise ValueError("Node probe test.yml: expected agent_policy_probe.py against booley-test")
     return match.group(1)
-
-
-def _cocotb_workflow_version(run: str) -> str:
-    normalized = run.replace('\\"', '"').replace("\\$", "$").replace("\n", " ")
-    matches = re.findall(r'cocotb-config --version\)"\s*=\s*"?([^\s&\"]+)', normalized)
-    return _unique_version("Cocotb production probe test.yml:cocotb-config", tuple(matches))
 
 
 def _version_pair_errors(

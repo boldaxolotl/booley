@@ -162,6 +162,31 @@ def test_release_derivations_reject_mutable_parent_tags(target: str) -> None:
     assert "named contexts" in _errors(sources, role)
 
 
+@pytest.mark.parametrize("kind", ["action", "shell"])
+def test_represented_builds_reject_intermediate_targets(kind: str) -> None:
+    sources = _sources()
+    if kind == "action":
+        step = _step(
+            sources, "release_workflow", "docker-publish.yml", "build-and-push", step_id="build"
+        )
+        step["with"]["target"] = "bwave-builder"
+        role = "release candidate"
+    else:
+        step = _step(
+            sources,
+            "test_workflow",
+            "test.yml",
+            "bwave-smoke",
+            "Build candidate from changed stable base",
+        )
+        step["run"] = str(step["run"]).replace(
+            "docker buildx build", "docker buildx build --target bwave-builder", 1
+        )
+        role = "local-base candidate"
+
+    assert "intermediate stage" in _errors(sources, role)
+
+
 @pytest.mark.parametrize(
     ("step_name", "condition"),
     [
@@ -185,6 +210,26 @@ def test_candidate_alternatives_reject_missing_or_overlapping_conditions(
     step["if"] = condition
 
     assert "test candidate alternatives" in _errors(sources, "test candidate alternatives")
+
+
+def test_candidate_alternatives_require_the_runtime_base_selector() -> None:
+    sources = _sources()
+    for name in (
+        "Build changed stable runtime base locally",
+        "Build candidate from changed stable base",
+    ):
+        step = _step(sources, "test_workflow", "test.yml", "bwave-smoke", name)
+        step["if"] = "steps.other.outputs.build == 'true'"
+    remote = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Build candidate from published stable base",
+    )
+    remote["if"] = "steps.other.outputs.build != 'true'"
+
+    assert "runtime-base build selector" in _errors(sources, "test candidate alternatives")
 
 
 def test_local_stable_base_must_precede_its_candidate() -> None:
@@ -320,6 +365,21 @@ def test_current_workflow_callers_require_remote_resolution(
     assert "remote stable-base resolver" in _errors(sources, role)
 
 
+def test_resolver_contract_ignores_dead_comment_text() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "build-and-push",
+        "Resolve compatible stable runtime base",
+    )
+    step["run"] = str(step["run"]).replace("--resolver remote", "--resolver shadow")
+    step["run"] += "\n# --resolver remote"
+
+    assert "remote stable-base resolver" in _errors(sources, "release candidate")
+
+
 @pytest.mark.parametrize(
     ("mutation", "role", "left", "right"),
     [
@@ -333,30 +393,47 @@ def test_current_workflow_callers_require_remote_resolution(
 def test_runtime_role_mutations_name_both_disagreeing_sources(
     mutation: str, role: str, left: str, right: str
 ) -> None:
-    sources = _sources()
+    sources = _mutate_runtime_role(_sources(), mutation)
+
+    errors = _errors(sources, role)
+
+    assert left in errors
+    assert right in errors
+
+
+def _mutate_runtime_role(sources: ContractSources, mutation: str) -> ContractSources:
+    if mutation.startswith("node-"):
+        return _mutate_node_role(sources, mutation)
+    return _mutate_cocotb_role(sources, mutation)
+
+
+def _mutate_node_role(sources: ContractSources, mutation: str) -> ContractSources:
     if mutation == "node-authority":
         contents = _sub_once(
             r"ARG NODE_VERSION=[^\s]+", "ARG NODE_VERSION=99.0.0", sources.base_dockerfile
         )
-        sources = replace(sources, base_dockerfile=contents)
-    elif mutation == "node-probe":
-        step = _step(
-            sources,
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Run installed agent CLI policy probe",
-        )
-        step["run"] = _sub_once(r"--expected-node\s+[^\s]+", "--expected-node 99.0.0", step["run"])
-    elif mutation == "cocotb-authority":
-        sources = replace(
+        return replace(sources, base_dockerfile=contents)
+    step = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Run installed agent CLI policy probe",
+    )
+    step["run"] = _sub_once(r"--expected-node\s+[^\s]+", "--expected-node 99.0.0", step["run"])
+    return sources
+
+
+def _mutate_cocotb_role(sources: ContractSources, mutation: str) -> ContractSources:
+    if mutation == "cocotb-authority":
+        return replace(
             sources,
             base_dockerfile=_sub_once(
                 r'(["\']cocotb==)[^"\']+', r"\g<1>99.0.0", sources.base_dockerfile
             ),
         )
-    elif mutation == "cocotb-build-probe":
-        sources = replace(
+    if mutation == "cocotb-build-probe":
+        return replace(
             sources,
             base_dockerfile=_sub_once(
                 r'(cocotb-config --version\)"\s*=\s*")[^"]+',
@@ -364,24 +441,49 @@ def test_runtime_role_mutations_name_both_disagreeing_sources(
                 sources.base_dockerfile,
             ),
         )
-    else:
-        step = _step(
-            sources,
-            "test_workflow",
-            "test.yml",
-            "bwave-smoke",
-            "Run cocotb Icarus/Verilator production-image flows",
-        )
-        step["run"] = _sub_once(
-            r'(cocotb-config --version\)\\?"\s*=\s*)[0-9.]+',
-            r"\g<1>99.0.0",
-            str(step["run"]),
-        )
+    step = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Run cocotb Icarus/Verilator production-image flows",
+    )
+    step["run"] = _sub_once(
+        r'(cocotb-config --version\)\\?"\s*=\s*)[0-9.]+',
+        r"\g<1>99.0.0",
+        str(step["run"]),
+    )
+    return sources
 
-    errors = _errors(sources, role)
 
-    assert left in errors
-    assert right in errors
+def test_cocotb_production_probe_requires_candidate_image() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Run cocotb Icarus/Verilator production-image flows",
+    )
+    step["run"] = str(step["run"]).replace("booley-test bash -c", "other-image bash -c")
+
+    assert "production probe image" in _errors(sources, "Cocotb")
+
+
+@pytest.mark.parametrize("target", ["sim_icarus", "sim_verilator"])
+def test_cocotb_production_probe_requires_both_simulation_flows(target: str) -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Run cocotb Icarus/Verilator production-image flows",
+    )
+    command = f"python3 -m booley.flows.sim --work-dir /validation-tmp/project --target {target}"
+    step["run"] = str(step["run"]).replace(command, "true")
+
+    assert f"missing {target} Simulation" in _errors(sources, "Cocotb")
 
 
 def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
