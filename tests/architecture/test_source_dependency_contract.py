@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from tests.architecture.booley_contract import BOOLEY_SOURCE_DEPENDENCY_CONTRACT
 from tests.architecture.contract import evaluate_contract, format_problems
 from tests.architecture.import_graph import analyze_imports
@@ -29,6 +31,8 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
         "resolve_ref",
         "resolve_target",
         "resolve_target_selection",
+        "select_target",
+        "select_targets",
         "setup_command",
         "target_cocotb_modules",
         "target_declarations",
@@ -37,33 +41,79 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
     }
 )
 
+_LOW_LEVEL_MODULES = frozenset({"booley.fusesoc.fusesoc_registry"})
+_TARGET_ADAPTER_PATHS = frozenset({"fusesoc/fusesoc_registry.py", "targets/catalog.py"})
+
+
+def _target_mechanics_violations(path: Path, relative: str) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    module_aliases: set[str] = set()
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_aliases.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name in _LOW_LEVEL_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module in _LOW_LEVEL_MODULES:
+            violations.extend(
+                f"{relative}:{node.lineno}: {alias.name}"
+                for alias in node.names
+                if alias.name in _LOW_LEVEL_TARGET_MECHANICS
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "booley.fusesoc":
+            module_aliases.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == "fusesoc_registry"
+            )
+    for node in ast.walk(tree):
+        dotted = _dotted_name(node)
+        if (
+            isinstance(node, ast.Attribute)
+            and any(dotted == f"{module}.{node.attr}" for module in module_aliases)
+            and node.attr in _LOW_LEVEL_TARGET_MECHANICS
+        ):
+            violations.append(f"{relative}:{node.lineno}: {node.attr}")
+    return violations
+
+
+def _dotted_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
 
 def test_only_target_adapters_use_low_level_target_mechanics() -> None:
     """Keep discovery/selection behind TargetCatalog and the FuseSoC adapter."""
     violations: list[str] = []
     for path in sorted(_SOURCE_ROOT.rglob("*.py")):
         relative = path.relative_to(_SOURCE_ROOT).as_posix()
-        if relative.startswith("fusesoc/") or relative == "targets/catalog.py":
+        if relative in _TARGET_ADAPTER_PATHS:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Attribute)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "fusesoc_registry"
-                and node.attr in _LOW_LEVEL_TARGET_MECHANICS
-            ):
-                violations.append(f"{relative}:{node.lineno}: {node.attr}")
-            if isinstance(node, ast.ImportFrom) and node.module in {
-                "booley.fusesoc.fusesoc_registry",
-                "booley.targets.target",
-            }:
-                violations.extend(
-                    f"{relative}:{node.lineno}: {alias.name}"
-                    for alias in node.names
-                    if alias.name in _LOW_LEVEL_TARGET_MECHANICS
-                )
+        violations.extend(_target_mechanics_violations(path, relative))
 
     assert not violations, "Low-level Target mechanics escaped their adapters:\n" + "\n".join(
         violations
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import booley.fusesoc.fusesoc_registry as registry\nregistry.resolve_ref('.', 'sim')\n",
+        "import booley.fusesoc.fusesoc_registry\n"
+        "booley.fusesoc.fusesoc_registry.resolve_ref('.', 'sim')\n",
+        "from booley.fusesoc import fusesoc_registry as registry\nregistry.resolve_ref('.', 'sim')\n",
+        "from booley.fusesoc.fusesoc_registry import resolve_ref as choose\nchoose('.', 'sim')\n",
+    ],
+)
+def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: str) -> None:
+    path = tmp_path / "consumer.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert _target_mechanics_violations(path, "consumer.py")

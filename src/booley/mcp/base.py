@@ -827,7 +827,7 @@ class McpTool(ABC):
         invoked_identity: str | None,
     ) -> bool:
         """Compare criterion and invocation Targets by identity when resolvable."""
-        from booley.targets.target import (
+        from booley.targets.domain import (
             TARGET_IDENTITY_PARAM,
             TARGET_SELECTOR_PARAM,
             criterion_matches_target,

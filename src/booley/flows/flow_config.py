@@ -58,12 +58,7 @@ def _maybe_resolve(target: str, work_dir: Path | None) -> Any:
     try:
         handle = TargetCatalog.build(work_dir).select(target)
         build_root = (
-            work_dir
-            / ".booley_project"
-            / ".runtime"
-            / "edalize"
-            / "payload"
-            / handle.name
+            work_dir / ".booley_project" / ".runtime" / "edalize" / "payload" / handle.name
         )
         return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
     except FuseSocError as exc:

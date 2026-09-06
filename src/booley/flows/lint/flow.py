@@ -39,15 +39,6 @@ from ..base import BooleyFlow, SubprocessResult
 logger = logging.getLogger(__name__)
 
 
-def select_targets(
-    project_root: Path | str,
-    target_arg: str | None,
-    *,
-    for_flow: str | None = None,
-) -> tuple[TargetHandle, ...]:
-    """Select lint boundary inputs through one Target catalog."""
-    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
-
 # The Verilator/Verible warning/error regexes live in the shared parser
 # module (single source of truth). QA-7 context for the error scan: ``parse_warnings`` only matches ``%Warning``
 # lines, so an error run yields zero warnings and would otherwise score as a
@@ -440,8 +431,7 @@ class LintFlow(BooleyFlow):
         (``--target a,b``). An empty ``--target`` returns no selection rather
         than linting every core.
         """
-        return select_targets(
-            self.args.work_dir,
+        return TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
             for_flow="lint",
         )

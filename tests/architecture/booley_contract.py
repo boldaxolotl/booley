@@ -175,7 +175,6 @@ DIRECTION_RULES = (
             exact(name)
             for name in (
                 "booley.targets.catalog",
-                "booley.targets.target",
                 "booley.targets.target_surface",
             )
         ),

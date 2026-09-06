@@ -145,10 +145,6 @@ _SELFTEST_FLOWS = ("sim", "lint")
 _LINT_SELFTEST_BAD_TARGET = "lint_selftest_bad"
 
 
-def inspect_target(project_root: Path | str, token: str):
-    """Select and inspect one Doctor Target through its checkout catalog."""
-    catalog = TargetCatalog.build(project_root)
-    return catalog.inspect(catalog.select(token))
 _TICKET_CONTEXT_ENV = frozenset(
     {
         "BOOLEY_AGENT_ROLE",
@@ -4641,7 +4637,8 @@ def _check_sim_verdict_setup(
     sentinels, configured = _sim_pass_sentinels(project)
     if sources is None:
         try:
-            inspection = inspect_target(root, f"{ref.vlnv}#{ref.name}")
+            catalog = TargetCatalog.build(root)
+            inspection = catalog.inspect(catalog.select(f"{ref.vlnv}#{ref.name}"))
             sources = CoreSources(
                 rtl_source_files=inspection.rtl_files,
                 tb_files=inspection.tb_files,
@@ -4776,10 +4773,7 @@ def _check_target_naming(
     offenders = [
         (handle.name, handle)
         for handle in handles
-        if (
-            state_cores in handle.core_file.parents
-            or (handle.core_file, handle.name) in selected
-        )
+        if (state_cores in handle.core_file.parents or (handle.core_file, handle.name) in selected)
         and target_naming.violation(handle.name)
     ]
     if not offenders:
@@ -5758,7 +5752,8 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     sources: list[str] = []
     for token in seeds:
         try:
-            sources.extend(inspect_target(root, token).rtl_files)
+            catalog = TargetCatalog.build(root)
+            sources.extend(catalog.inspect(catalog.select(token)).rtl_files)
         except FuseSocError:
             continue  # an unresolvable Target is already reported elsewhere
 
@@ -6133,9 +6128,7 @@ def _selftest_plan(
     previous_kind = os.environ.get(selftest_overlay.INTERNAL_KIND_ENV)
     os.environ[selftest_overlay.INTERNAL_KIND_ENV] = selftest_overlay.BAD_KIND
     try:
-        bad_handle = TargetCatalog.build(project.project_root).select(
-            _LINT_SELFTEST_BAD_TARGET
-        )
+        bad_handle = TargetCatalog.build(project.project_root).select(_LINT_SELFTEST_BAD_TARGET)
     except FuseSocError:
         _warn_unvalidated_selftest(flow_name, _warn)
         return None

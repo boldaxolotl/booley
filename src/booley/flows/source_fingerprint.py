@@ -29,18 +29,11 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.domain import TargetInspection
 
 logger = logging.getLogger(__name__)
 
 
 SOURCE_FINGERPRINT_DETAIL_KEY = "_source_fingerprint"
-
-
-def inspect_target_selector(project_root: Path | str, token: str) -> TargetInspection:
-    """Select and inspect one fingerprint Target through a shared catalog."""
-    catalog = TargetCatalog.build(project_root)
-    return catalog.inspect(catalog.select(token))
 
 
 def as_str_list(value: Any, default: list[str]) -> list[str]:
@@ -69,7 +62,8 @@ def _core_source_files(
     if not discover_cores(work_dir):
         return None
     if target:
-        inspection = inspect_target_selector(work_dir, target)
+        catalog = TargetCatalog.build(work_dir)
+        inspection = catalog.inspect(catalog.select(target))
         rtl = [item.path for item in inspection.inputs if "tb" not in item.tags]
         return rtl, list(inspection.tb_files)
     cs = classified_sources(work_dir)

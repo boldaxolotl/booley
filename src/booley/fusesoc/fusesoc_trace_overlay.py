@@ -215,22 +215,6 @@ def _target_includes_dump_module(core_doc: Mapping[str, Any], target: str) -> bo
     return _target_dump_module_entry(core_doc, target) is not None
 
 
-def target_includes_dump_module(project_root: Path | str, target: str) -> bool:
-    """True when *target* carries the ``booley_vcd_dump.sv`` trace module.
-
-    Public, subprocess-free wrapper for setup-time checks (``booley doctor``):
-    without the module, ``simulate --trace`` has nothing to root and produces no
-    waveform — a failure that otherwise only surfaces on the first trace run.
-    """
-    from booley.fusesoc.fusesoc_registry import FuseSocError, read_core, resolve_ref
-
-    try:
-        ref = resolve_ref(project_root, target)
-    except FuseSocError:  # unknown / ambiguous → nothing to root
-        return False
-    return _target_includes_dump_module(read_core(ref.core_file), ref.name)
-
-
 @dataclass(frozen=True)
 class TraceOverlay:
     """Handle to a written trace-overlay ``.core`` and the VLNV it declares.
@@ -317,9 +301,8 @@ def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
 
 
 def write_trace_overlay(
-    target: str | TargetHandle,
+    handle: TargetHandle,
     *,
-    project_root: Path | str,
     trace_depth: int = DEFAULT_TRACE_DEPTH,
 ) -> TraceOverlay:
     """Write a co-located ``--trace`` overlay ``.core`` for a supported sim Target.
@@ -355,46 +338,30 @@ def write_trace_overlay(
     * **Icarus** — inject an extra ``-s<dump-module>`` ``iverilog_options`` root so
       the uninstantiated ``booley_vcd_dump`` (pruned by edalize's ``-s
       <toplevel>``) is elaborated and its runtime ``+trace`` ``$dumpvars`` fires.
-    A catalog handle is consumed without selecting its authored token again.
-    The string form remains as a compatibility adapter and raises
-    :class:`UnknownTargetError` / :class:`AmbiguousTargetError` when *target* is
-    not a single selectable Target (ADR 0030);
-    :class:`FuseSocError` if it is not a Verilator/Icarus sim Target, or if the
-    supplied dump module cannot be written.
+    The catalog handle is validated before any file is written. Raises
+    :class:`FuseSocError` if the handle is stale or does not describe a
+    Verilator/Icarus sim Target, or if the supplied dump module cannot be written.
     """
     from booley.fusesoc.fusesoc_registry import (
         FuseSocError,
-        core_target_eda_tool,
-        core_target_flow,
         read_core,
-        resolve_ref,
+        require_current_target_handle,
     )
 
-    root = Path(project_root).resolve()
-    if isinstance(target, TargetHandle):
-        if target.project_root != root:
-            raise FuseSocError(
-                f"Target {target.identity!r} was selected for Project "
-                f"{target.project_root}, not {root}"
-            )
-        ref = TargetRef(
-            name=target.name,
-            vlnv=target.vlnv,
-            core_file=target.core_file,
-            flow=target.flow,
-            eda_tool=target.eda_tool,
-            cocotb_module=target.cocotb_module,
-            doctor_flows=target.doctor_flows,
-            doctor_selftest=target.doctor_private,
-        )
-        flow = target.flow
-        eda_tool = target.eda_tool
-    else:
-        ref = resolve_ref(root, target)
-        legacy_doc = read_core(ref.core_file)
-        flow = core_target_flow(legacy_doc, ref.name)
-        eda_tool = core_target_eda_tool(legacy_doc, ref.name)
-    target = ref.name
+    project_root = require_current_target_handle(handle)
+    ref = TargetRef(
+        name=handle.name,
+        vlnv=handle.vlnv,
+        core_file=handle.core_file,
+        flow=handle.flow,
+        eda_tool=handle.eda_tool,
+        cocotb_module=handle.cocotb_module,
+        doctor_flows=handle.doctor_flows,
+        doctor_selftest=handle.doctor_private,
+    )
+    target = handle.name
+    flow = handle.flow
+    eda_tool = handle.eda_tool
     doc = read_core(ref.core_file)
     if flow != "sim" or eda_tool not in ("verilator", "icarus"):
         raise FuseSocError(

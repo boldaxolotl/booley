@@ -20,16 +20,6 @@ class ImplementationComparisonError(ValueError):
     """Persisted criterion metadata cannot define an executable Target pair."""
 
 
-def select_target(
-    project_root: Path | str,
-    token: str,
-    *,
-    for_flow: str | None = None,
-) -> TargetHandle:
-    """Select one comparison Target through its checkout catalog."""
-    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
-
-
 @dataclass(frozen=True)
 class TargetExecutionRef:
     """Checkout-independent Target identity and its callable selector."""
@@ -160,7 +150,7 @@ def _select_execution_ref(
     execution_selector: str | None = None,
 ) -> TargetExecutionRef:
     try:
-        handle = select_target(project_root, target, for_flow=flow)
+        handle = TargetCatalog.build(project_root).select(target, for_flow=flow)
     except FuseSocError as exc:
         raise ImplementationComparisonError(str(exc)) from exc
     if handle.doctor_private:
@@ -389,7 +379,7 @@ def selected_target_handle(
     selected = handles.get(target)
     if selected is not None and selected.project_root == root:
         return selected
-    return select_target(root, target, for_flow=flow)
+    return TargetCatalog.build(root).select(target, for_flow=flow)
 
 
 def candidate_execution_refs(
@@ -413,11 +403,7 @@ def baseline_execution_context(
     for plan in plans:
         ref = plan.baseline
         try:
-            handle = select_target(
-                project_root,
-                ref.selector,
-                for_flow=plan.flow,
-            )
+            handle = TargetCatalog.build(project_root).select(ref.selector, for_flow=plan.flow)
         except FuseSocError as exc:
             raise ImplementationComparisonError(
                 f"baseline Target {ref.selector!r} cannot be selected: {exc}"

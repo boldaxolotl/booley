@@ -20,12 +20,8 @@ from booley.fusesoc.core_projection import (
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
 from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.targets import target_surface
-from booley.targets.target import (
-    TargetHandle,
-    inspect_target,
-    select_target,
-    select_targets,
-)
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
@@ -38,6 +34,19 @@ from booley.targets.target_surface import (
     surface_payload,
 )
 from tests.conftest import symlink_or_skip
+
+
+def select_target(project_root, token, *, for_flow=None):
+    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
+
+
+def select_targets(project_root, target_arg, *, for_flow=None):
+    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
+
+
+def inspect_target(project_root, handle):
+    return TargetCatalog.build(project_root).inspect(handle)
+
 
 # ---------------------------------------------------------------------------
 # Fixture project: two cores, one ambiguous target name, one legacy target,

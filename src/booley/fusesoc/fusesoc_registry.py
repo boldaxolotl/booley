@@ -60,6 +60,7 @@ from booley.targets.domain import (
     AmbiguousTargetError,
     CoreCollisionError,
     CoreSources,
+    ForeignTargetHandleError,
     FuseSocError,
     IncompatibleTargetError,
     MissingSourceError,
@@ -110,6 +111,7 @@ _STATE_DIR_NAME = ".booley_project"
 # a scan root, so the ``.booley_project/FUSESOC_IGNORE`` marker does not veto
 # this subtree (verified against the pinned fusesoc 2.4.6 ``find_cores``).
 STATE_CORES_SUBDIR = "cores"
+
 
 # Filename infix Booley stamps onto a generated ``--trace`` overlay ``.core`` (see
 # :func:`write_trace_overlay`). It is co-located with its base ``.core`` so its
@@ -2164,9 +2166,6 @@ def setup_command(
     )
 
 
-_LEGACY_SETUP_COMMAND = setup_command
-
-
 def setup_command_for_handle(
     handle: TargetHandle,
     *,
@@ -2175,20 +2174,7 @@ def setup_command_for_handle(
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
 ) -> list[str]:
     """Build FuseSoC setup argv from catalog-authorized Target facts."""
-    root = handle.project_root
-    if setup_command is not _LEGACY_SETUP_COMMAND:
-        legacy_kwargs: dict[str, Any] = {
-            "project_root": root,
-            "build_root": build_root,
-            "vlnv": resolution_vlnv or handle.vlnv,
-        }
-        if tuple(fusesoc_cmd) != DEFAULT_FUSESOC_CMD:
-            legacy_kwargs["fusesoc_cmd"] = fusesoc_cmd
-        return setup_command(handle.selector, **legacy_kwargs)
-    if handle.snapshot_id and target_snapshot_id(root) != handle.snapshot_id:
-        raise StaleTargetCatalogError(
-            f"Target catalog for {root} is stale; select the Target again"
-        )
+    root = require_current_target_handle(handle)
     try:
         library_plan = prepare_core_library_plan(root)
         library_plan.operational_core(handle.core_file)
@@ -2203,6 +2189,25 @@ def setup_command_for_handle(
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
     )
+
+
+def require_current_target_handle(
+    handle: TargetHandle,
+    *,
+    project_root: Path | str | None = None,
+) -> Path:
+    """Validate a handle's Project and snapshot before operational preparation."""
+    root = handle.project_root
+    if project_root is not None and Path(project_root).resolve() != root:
+        raise ForeignTargetHandleError(
+            f"Target {handle.identity!r} was selected for Project {root}, "
+            f"not {Path(project_root).resolve()}"
+        )
+    if handle.snapshot_id and target_snapshot_id(root) != handle.snapshot_id:
+        raise StaleTargetCatalogError(
+            f"Target catalog for {root} is stale; select the Target again"
+        )
+    return root
 
 
 def _setup_argv(
@@ -2321,15 +2326,11 @@ def _run_setup_command(
         diagnostic = proc.stderr.strip() or proc.stdout.strip()
         detail = f":\n{diagnostic}" if diagnostic else " with no diagnostic output"
         raise TargetResolutionError(
-            f"fusesoc run --setup --target {target} {vlnv} failed "
-            f"(exit {proc.returncode}){detail}"
+            f"fusesoc run --setup --target {target} {vlnv} failed (exit {proc.returncode}){detail}"
         )
 
     edam_path = _find_edam(build_root, target)
     return parse_edam(edam_path, target=target, vlnv=vlnv)
-
-
-_LEGACY_TARGET_RESOLVER = resolve_target
 
 
 def resolve_target_handle(
@@ -2342,25 +2343,9 @@ def resolve_target_handle(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> ResolvedTarget:
     """Resolve a catalog-authorized handle without selecting its token again."""
-    root = handle.project_root
+    root = require_current_target_handle(handle)
     build = Path(build_root)
     vlnv = resolution_vlnv or handle.vlnv
-    if resolve_target is not _LEGACY_TARGET_RESOLVER:
-        # Preserve the long-standing resolver injection seam used by embedders
-        # and tests. The built-in resolver always follows the handle-native path
-        # below and therefore never performs a second token selection.
-        legacy_kwargs: dict[str, Any] = {
-            "project_root": root,
-            "build_root": build,
-            "vlnv": vlnv,
-        }
-        if tuple(fusesoc_cmd) != DEFAULT_FUSESOC_CMD:
-            legacy_kwargs["fusesoc_cmd"] = fusesoc_cmd
-        if env is not None:
-            legacy_kwargs["env"] = env
-        if runner is not subprocess.run:
-            legacy_kwargs["runner"] = runner
-        return resolve_target(handle.selector, **legacy_kwargs)
     cmd = setup_command_for_handle(
         handle,
         build_root=build_root,

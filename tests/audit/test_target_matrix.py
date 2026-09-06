@@ -35,7 +35,9 @@ def test_doctor_targets_reads_core_metadata_and_fails_soft(tmp_path, monkeypatch
     def fail(_root):
         raise fusesoc_registry.FuseSocError("bad core")
 
-    monkeypatch.setattr(target_matrix.TargetCatalog, "build", classmethod(lambda _cls, root: fail(root)))
+    monkeypatch.setattr(
+        target_matrix.TargetCatalog, "build", classmethod(lambda _cls, root: fail(root))
+    )
     assert target_matrix.doctor_targets(tmp_path, "sim") == ()
 
 

@@ -36,6 +36,7 @@ from booley.specialists.mutation_tester import (
     generate_specs_markdown,
     parse_creator_output,
 )
+from booley.targets.catalog import TargetCatalog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -550,6 +551,8 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
             name=target,
             vlnv=f"::{target}:0",
             project_root=Path(work_dir),
+            eda_tool=eda_tool,
+            cocotb_module=None,
         )
 
     def _fake_resolve(handle, *, build_root, **kwargs):
@@ -560,8 +563,19 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         )
 
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester._select_target_handle",
-        _fake_select,
+        TargetCatalog,
+        "build",
+        classmethod(
+            lambda _cls, work_dir: type(
+                "FakeCatalog",
+                (),
+                {
+                    "select": lambda _self, target, **kwargs: _fake_select(
+                        work_dir, target, **kwargs
+                    )
+                },
+            )()
+        ),
     )
     monkeypatch.setattr(
         "booley.fusesoc.fusesoc_registry.resolve_target_handle",
@@ -1297,13 +1311,28 @@ class TestValidateScopeAgainstTarget:
 
 def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
+
+    def build(_cls, work_dir):
+        def select(_self, target, **_kwargs):
+            return type(
+                "FakeHandle",
+                (),
+                {
+                    "selector": target,
+                    "name": target,
+                    "vlnv": f"::{target}:0",
+                    "project_root": Path(work_dir),
+                    "cocotb_module": module,
+                    "eda_tool": eda_tool,
+                },
+            )()
+
+        return type("FakeCatalog", (), {"select": select})()
+
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester._target_cocotb_module",
-        lambda work_dir, target: module,
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester._target_eda_tool",
-        lambda work_dir, target: eda_tool,
+        TargetCatalog,
+        "build",
+        classmethod(build),
     )
 
 

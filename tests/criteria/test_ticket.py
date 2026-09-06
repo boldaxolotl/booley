@@ -412,7 +412,7 @@ class TestInitCriteriaState:
                     )
                 ),
             ),
-            patch.object(fusesoc_registry, "resolve_target", return_value=resolved),
+            patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
         ):
             _init_criteria_state(ctx)
 

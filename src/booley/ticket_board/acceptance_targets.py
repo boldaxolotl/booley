@@ -43,11 +43,6 @@ _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
 
 
-def select_target(project_root: Path | str, token: str):
-    """Select one acceptance Target through its checkout catalog."""
-    return TargetCatalog.build(project_root).select(token)
-
-
 @dataclass(frozen=True, order=True)
 class AcceptanceTargetBinding:
     """Canonical directed Target identities and their callable selectors."""
@@ -699,8 +694,9 @@ def canonical_acceptance_bindings(
     root = Path(project_root)
     rows: set[AcceptanceTargetBinding] = set()
     for binding in bindings:
-        baseline = select_target(root, binding.baseline)
-        candidate = select_target(root, binding.target)
+        catalog = TargetCatalog.build(root)
+        baseline = catalog.select(binding.baseline)
+        candidate = catalog.select(binding.target)
         rows.add(
             AcceptanceTargetBinding(
                 flow=binding.flow,
@@ -726,7 +722,7 @@ def validate_binding_selectors(
             ("candidate", binding.candidate_selector, binding.candidate),
         ):
             try:
-                resolved = select_target(root, selector)
+                resolved = TargetCatalog.build(root).select(selector)
             except (FuseSocError, OSError, ValueError) as exc:
                 errors.append(
                     f"{binding.criterion}: {role} selector {selector!r} cannot be resolved: {exc}"

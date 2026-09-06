@@ -71,9 +71,7 @@ def _catalog_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     def resolve_target_handle(handle: SimpleNamespace, **kwargs: object) -> SimpleNamespace:
         return acceptance_targets.fusesoc_registry.resolve_target(
             handle.selector,
-            project_root=handle.project_root
-            if hasattr(handle, "project_root")
-            else Path.cwd(),
+            project_root=handle.project_root if hasattr(handle, "project_root") else Path.cwd(),
             **kwargs,
         )
 

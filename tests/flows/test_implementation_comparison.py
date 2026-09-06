@@ -16,9 +16,13 @@ from booley.flows.implementation_comparison import (
     target_pairs_for_candidates,
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.targets.target import select_target
+from booley.targets.catalog import TargetCatalog
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+
+
+def select_target(project_root, token, *, for_flow=None):
+    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
 
 
 def test_missing_metadata_preserves_equal_target_behavior() -> None:
@@ -220,10 +224,10 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
     assert plan.candidate.selector == binding.candidate_selector
     resolve = Mock()
     resolve.return_value = object()
-    monkeypatch.setattr(fusesoc_registry, "resolve_target", resolve)
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
     resolve_target_execution_ref(candidate, plan.candidate, build_root=tmp_path / "build")
-    assert resolve.call_args.args[0] == candidate.selector
-    assert resolve.call_args.kwargs["vlnv"] == candidate.vlnv
+    assert resolve.call_args.args == (candidate,)
+    assert resolve.call_args.kwargs["build_root"] == tmp_path / "build"
 
 
 def test_authored_criterion_metadata_supplies_ticket_baseline_ref(

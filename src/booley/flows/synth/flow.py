@@ -108,16 +108,6 @@ from .recipe import (
 logger = logging.getLogger(__name__)
 
 
-def select_targets(
-    project_root: Path | str,
-    target_arg: str | None,
-    *,
-    for_flow: str | None = None,
-) -> tuple[TargetHandle, ...]:
-    """Select synthesis boundary inputs through one Target catalog."""
-    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
-
-
 def synth_target_report_slug(target: str) -> str:
     """Filesystem-safe, collision-resistant name for one Target selector."""
     return target_report_slug(target)
@@ -1804,8 +1794,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         self._baseline_full_sha: str | None = None
         self._implementation_reports: dict[str, ImplementationReport] = {}
 
-        handles = select_targets(
-            self.args.work_dir,
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
             for_flow="synth",
         )

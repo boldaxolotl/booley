@@ -10,7 +10,6 @@ from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetInspection
 
 HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 SKIP_DIRECTORIES = frozenset(
@@ -27,12 +26,6 @@ SKIP_DIRECTORIES = frozenset(
 )
 LARGE_DESIGN_FILES = 250
 LARGE_DESIGN_LOC = 150_000
-
-
-def inspect_target_selector(project_root: Path | str, token: str) -> TargetInspection:
-    """Select and inspect one design-size Target through a shared catalog."""
-    catalog = TargetCatalog.build(project_root)
-    return catalog.inspect(catalog.select(token))
 
 
 class DesignSizeScope(StrEnum):
@@ -73,9 +66,10 @@ def analyze_design_size(
 
 def _configured_hdl_paths(project_root: Path, targets: Iterable[str]) -> set[Path]:
     paths: set[Path] = set()
+    catalog = TargetCatalog.build(project_root)
     for target in targets:
         try:
-            inspection = inspect_target_selector(project_root, target)
+            inspection = catalog.inspect(catalog.select(target))
         except fusesoc_registry.FuseSocError:
             continue
         for relative in (*inspection.rtl_files, *inspection.tb_files):

@@ -87,37 +87,13 @@ from .target_tests import (
 logger = logging.getLogger(__name__)
 
 
-def select_target(
-    project_root: Path | str,
-    token: str,
-    *,
-    for_flow: str | None = None,
-) -> TargetHandle:
-    """Select one simulation boundary input through a Target catalog."""
-    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
-
-
-def select_targets(
-    project_root: Path | str,
-    target_arg: str | None,
-    *,
-    for_flow: str | None = None,
-) -> tuple[TargetHandle, ...]:
-    """Select simulation boundary inputs through one Target catalog."""
-    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
-
-
-def inspect_target(project_root: Path | str, handle: TargetHandle) -> Any:
-    """Inspect an already-selected simulation Target through its catalog."""
-    return TargetCatalog.build(project_root).inspect(handle)
-
-
 def _target_is_cocotb(work_dir: Path, target: str) -> bool:
     """Read Cocotb identity through the Target catalog, failing soft for sizing."""
     try:
         return bool(TargetCatalog.build(work_dir).select(target).cocotb_module)
     except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
         return False
+
 
 # Default literal prefix for cycle count extraction from sim output.
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -1286,7 +1262,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """
         try:
             handle = self._target_handle(target)
-            options = inspect_target(self.args.work_dir, handle).flow_options
+            options = TargetCatalog.build(self.args.work_dir).inspect(handle).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
         module = options.get("cocotb_module")
@@ -2106,8 +2082,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        handles = select_targets(
-            self.args.work_dir,
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
             for_flow="sim",
         )
@@ -2133,14 +2108,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         selected = getattr(self, "_target_handles", {}).get(target)
         if selected is not None and selected.project_root == root:
             return selected
-        return select_target(root, target, for_flow="sim")
+        return TargetCatalog.build(root).select(target, for_flow="sim")
 
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
         if resolved is None:
-            return inspect_target(
-                self.args.work_dir,
-                self._target_handle(target),
-            ).toplevel
+            catalog = TargetCatalog.build(self.args.work_dir)
+            return catalog.inspect(self._target_handle(target)).toplevel
         return tb_top_for_target(
             target,
             self.args.work_dir,
@@ -2460,7 +2433,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            inspection = inspect_target(self.args.work_dir, self._target_handle(target))
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(self._target_handle(target))
             fileset = {
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),

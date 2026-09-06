@@ -356,7 +356,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     monkeypatch.setattr(fusesoc_registry, "resolve_ref", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         fusesoc_registry,
-        "resolve_target",
+        "resolve_target_handle",
         lambda *_args, **_kwargs: resolved,
     )
     monkeypatch.setattr(

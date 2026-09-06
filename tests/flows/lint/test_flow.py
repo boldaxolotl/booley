@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -22,8 +21,10 @@ from booley.flows.lint.flow import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
-from booley.targets.target import select_targets as canonical_select_targets
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
+
+_REAL_CATALOG_BUILD = TargetCatalog.build
 
 
 def _target_handle(
@@ -64,17 +65,52 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    def _lenient(project_root, target_arg, *, for_flow=None):
-        try:
-            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
-        except fusesoc_registry.UnknownTargetError:
+    class LenientCatalog:
+        def __init__(self, project_root):
+            self.project_root = Path(project_root)
+
+        def select(self, token, *, for_flow=None):
+            try:
+                return _REAL_CATALOG_BUILD(self.project_root).select(token, for_flow=for_flow)
+            except fusesoc_registry.UnknownTargetError:
+                return _target_handle(token, project_root=self.project_root)
+
+        def select_many(self, target_arg, *, for_flow=None):
             return tuple(
-                _target_handle(token.strip(), project_root=project_root)
+                self.select(token.strip(), for_flow=for_flow)
                 for token in (target_arg or "").split(",")
                 if token.strip()
             )
 
-    monkeypatch.setattr("booley.flows.lint.flow.select_targets", _lenient)
+        def inspect(self, handle):
+            catalog = _REAL_CATALOG_BUILD(self.project_root)
+            return catalog.inspect(catalog.select(handle.selector))
+
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: LenientCatalog(root)),
+    )
+
+    def resolve_handle(handle, **kwargs):
+        return fusesoc_registry.resolve_target(
+            handle.selector,
+            project_root=handle.project_root,
+            vlnv=handle.vlnv,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
+
+    def setup_handle(handle, **kwargs):
+        return fusesoc_registry.setup_command(
+            handle.selector,
+            project_root=handle.project_root,
+            vlnv=handle.vlnv,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 
 
 # ---------------------------------------------------------------------------
@@ -340,26 +376,15 @@ class TestDoctorTargetAuthority:
         )
 
     @staticmethod
-    def _doctor_selector(
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> Callable[[Path, str], tuple[TargetHandle, ...]]:
-        import booley.targets.target as target_selection
-
-        def select_for_doctor(
-            project_root: Path,
-            target_arg: str,
-            *,
-            for_flow: str | None = None,
-        ) -> tuple[TargetHandle, ...]:
+    def _doctor_catalog_builder(monkeypatch: pytest.MonkeyPatch):
+        def build_for_doctor(_cls, project_root: Path):
             monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-            selected = canonical_select_targets(project_root, target_arg, for_flow=for_flow)
-            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
-            rejected = MagicMock(side_effect=AssertionError("Target authority was re-requested"))
-            monkeypatch.setattr(target_selection, "select_target", rejected)
-            monkeypatch.setattr(target_selection, "select_targets", rejected)
-            return selected
+            try:
+                return _REAL_CATALOG_BUILD(project_root)
+            finally:
+                monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-        return select_for_doctor
+        return build_for_doctor
 
     def _authorized_lint_flow(
         self,
@@ -374,8 +399,9 @@ class TestDoctorTargetAuthority:
             target_name="lint_selftest_bad",
         )
         monkeypatch.setattr(
-            "booley.flows.lint.flow.select_targets",
-            self._doctor_selector(monkeypatch),
+            TargetCatalog,
+            "build",
+            classmethod(self._doctor_catalog_builder(monkeypatch)),
         )
         monkeypatch.setattr(
             LintFlow,
@@ -414,8 +440,9 @@ class TestDoctorTargetAuthority:
         )
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
         monkeypatch.setattr(
-            "booley.flows.lint.flow.select_targets",
-            canonical_select_targets,
+            TargetCatalog,
+            "build",
+            classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root)),
         )
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
@@ -452,7 +479,7 @@ class TestDoctorTargetAuthority:
             doctor_selftest=True,
         )
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        (target,) = canonical_select_targets(tmp_path, "doctor#lint")
+        (target,) = _REAL_CATALOG_BUILD(tmp_path).select_many("doctor#lint")
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
         resolved = _stub_resolved("verible")

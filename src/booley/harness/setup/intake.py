@@ -19,7 +19,7 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     find_retired_criteria,
 )
-from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
+from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
@@ -894,8 +894,7 @@ def _seed_project_criteria(
         from booley.targets.catalog import TargetCatalog
 
         target_eda_tool_map = {
-            handle.name: handle.eda_tool
-            for handle in TargetCatalog.build(project_root).list()
+            handle.name: handle.eda_tool for handle in TargetCatalog.build(project_root).list()
         }
     except Exception:  # noqa: BLE001 — no .core / registry error leaves expansion unfiltered
         target_eda_tool_map = {}

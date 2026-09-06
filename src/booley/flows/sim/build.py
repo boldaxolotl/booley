@@ -19,7 +19,7 @@ from typing import Literal
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle, TargetInspection
+from booley.targets.domain import TargetHandle
 from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     validate_top_parameter_intent,
@@ -32,11 +32,6 @@ from .config import resolve_run_cwd
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
-
-
-def inspect_target(project_root: Path | str, handle: TargetHandle) -> TargetInspection:
-    """Inspect a selected build Target through its snapshot catalog."""
-    return TargetCatalog.build(project_root).inspect(handle)
 
 
 class SimulationBuildPreparationError(RuntimeError):
@@ -158,7 +153,7 @@ def _prepare_simulation_build(
         )
     _stage_doctor_overlay(root, resolved.build_root)
     try:
-        inspection = inspect_target(root, handle)
+        inspection = TargetCatalog.build(root).inspect(handle)
         fileset = {
             "rtl": tuple(inspection.rtl_files),
             "tb": tuple(inspection.tb_files),

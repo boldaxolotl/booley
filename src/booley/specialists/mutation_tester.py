@@ -86,21 +86,6 @@ _resolve_sim_sentinels = resolve_sim_sentinels
 logger = logging.getLogger(__name__)
 
 
-def _select_target_handle(work_dir: Path, target: str, *, for_flow: str | None = None) -> Any:
-    """Select one Target through the catalog boundary."""
-    return TargetCatalog.build(work_dir).select(target, for_flow=for_flow)
-
-
-def _target_cocotb_module(work_dir: Path, target: str) -> str | None:
-    """Read one selected Target's Cocotb module fact from its catalog."""
-    return _select_target_handle(work_dir, target).cocotb_module
-
-
-def _target_eda_tool(work_dir: Path, target: str) -> str | None:
-    """Read one selected Target's EDA-tool fact from its catalog."""
-    return _select_target_handle(work_dir, target).eda_tool
-
-
 #: Per-mutant sim-log cap. Deliberately small: this file is written once per
 #: mutant per verification round, the mutant count has no upper bound, and a
 #: chatty testbench can emit megabytes per run. What a reader needs from a
@@ -1648,7 +1633,7 @@ replacement must differ, and every proposal must remain a single source edit.
         so the callers' ``returncode`` / ``stdout+stderr`` checks are unchanged.
         """
         try:
-            handle = _select_target_handle(work_dir, target, for_flow="sim")
+            handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
             resolved = fusesoc_registry.resolve_target_handle(
                 handle,
                 build_root=build_path,
@@ -1688,7 +1673,7 @@ replacement must differ, and every proposal must remain a single source edit.
         rather than producing a meaningless score.
         """
         try:
-            module = _target_cocotb_module(work_dir, target)
+            module = TargetCatalog.build(work_dir).select(target).cocotb_module
         except Exception:  # noqa: BLE001 — best-effort .core read; a classic Target is the safe default
             return None
         if not module:
@@ -1714,7 +1699,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if marker is not None and marker.exists():
             return sim_edam.normalize_eda_tool(marker.read_text(encoding="utf-8").strip())
         try:
-            declared = _target_eda_tool(work_dir, target)
+            declared = TargetCatalog.build(work_dir).select(target).eda_tool
         except Exception:  # noqa: BLE001 — best-effort .core read; legacy default is Verilator
             declared = None
         return sim_edam.normalize_eda_tool(declared)
@@ -1735,7 +1720,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if marker.exists():
             return marker.read_text(encoding="utf-8").strip()
         # Defensive: marker lost (e.g. external cleanup) — re-resolve.
-        handle = _select_target_handle(work_dir, target, for_flow="sim")
+        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
         resolved = fusesoc_registry.resolve_target_handle(
             handle,
             build_root=build_path,

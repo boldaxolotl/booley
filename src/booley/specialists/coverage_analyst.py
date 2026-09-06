@@ -79,21 +79,6 @@ from .specialist import Specialist
 logger = logging.getLogger(__name__)
 
 
-def _select_target_handle(work_dir: Path, target: str, *, for_flow: str | None = None) -> Any:
-    """Select one Target through the catalog boundary."""
-    return TargetCatalog.build(work_dir).select(target, for_flow=for_flow)
-
-
-def _target_eda_tool(work_dir: Path, target: str) -> str | None:
-    """Read one selected Target's EDA-tool fact from its catalog."""
-    return TargetCatalog.build(work_dir).select(target).eda_tool
-
-
-def _target_cocotb_module(work_dir: Path, target: str) -> str | None:
-    """Read one selected Target's Cocotb module fact from its catalog."""
-    return TargetCatalog.build(work_dir).select(target).cocotb_module
-
-
 def _bwave_stats_cmd() -> list[str] | None:
     """Return the `bwave stats --format json` prefix, or None if bwave is absent.
 
@@ -631,7 +616,7 @@ class CoverageAnalystSpecialist(Specialist):
         conventions do not apply.
         """
         try:
-            module = _target_cocotb_module(Path(self.args.work_dir), self.args.target)
+            module = TargetCatalog.build(self.args.work_dir).select(self.args.target).cocotb_module
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return False
         return module is not None
@@ -1133,7 +1118,7 @@ class CoverageAnalystSpecialist(Specialist):
         # ADR 0022 decision 8: the run-half family comes from the Target's EDA tool
         # (read cheaply from the .core), not the boundary-named backend.
         eda_tool = sim_edam.normalize_eda_tool(
-            _target_eda_tool(work_dir, self.args.target)
+            TargetCatalog.build(work_dir).select(self.args.target).eda_tool
         )
 
         # Collect all design RTL files: scope file directories may contain
@@ -2858,8 +2843,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
             self.args.target,
             variant="trace",
         )
-        handle = _select_target_handle(work_dir, self.args.target, for_flow="sim")
-        overlay = fusesoc_trace_overlay.write_trace_overlay(handle, project_root=work_dir)
+        handle = TargetCatalog.build(work_dir).select(self.args.target, for_flow="sim")
+        overlay = fusesoc_trace_overlay.write_trace_overlay(handle)
         try:
             resolved = fusesoc_registry.resolve_target_handle(
                 handle,
@@ -2945,7 +2930,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
         context: _TraceRunContext,
     ) -> tuple[list[str], str]:
         """Select the traced run-half for the Target's simulator family."""
-        cocotb_module = _target_cocotb_module(context.work_dir, self.args.target)
+        cocotb_module = (
+            TargetCatalog.build(context.work_dir).select(self.args.target).cocotb_module
+        )
         if cocotb_module:
             fusesoc_trace_overlay.validate_cocotb_trace_mode(
                 self.args.target,
@@ -2983,7 +2970,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> list[str]:
         """Resolve the Target and return its guarded build + traced-run command."""
         eda_tool = sim_edam.normalize_eda_tool(
-            _target_eda_tool(work_dir, self.args.target)
+            TargetCatalog.build(work_dir).select(self.args.target).eda_tool
         )
         resolved, trace_mode = self._resolve_trace_target(
             fusesoc_registry,

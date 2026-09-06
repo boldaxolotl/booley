@@ -60,9 +60,11 @@ from booley.fusesoc.fusesoc_registry import (
     vendored_files,
 )
 from booley.fusesoc.fusesoc_trace_overlay import (
+    _target_includes_dump_module,
     trace_overlay_vlnv,
     write_trace_overlay,
 )
+from booley.targets.catalog import TargetCatalog
 from tests.conftest import require_symlinks, symlink_or_skip
 
 # ---------------------------------------------------------------------------
@@ -1600,7 +1602,7 @@ class TestWriteTraceOverlay:
         base = _write_core(tmp_path / "ip")  # sim target: verilator, flow sim
         base_vlnv = read_core(base)["name"]
         expected_vlnv = trace_overlay_vlnv(base_vlnv)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # Co-located with the base .core so relative fileset paths still resolve.
             assert overlay.core_file.parent == base.parent
@@ -1622,7 +1624,7 @@ class TestWriteTraceOverlay:
 
     def test_overlay_is_skipped_by_discovery(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # The overlay .core exists on disk beside the base...
             assert overlay.core_file.exists()
@@ -1642,7 +1644,7 @@ class TestWriteTraceOverlay:
         )
         assert "verilator_options" in core  # guard: the replace actually matched
         _write_core(tmp_path / "ip", core)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "verilator_options"
@@ -1666,7 +1668,7 @@ class TestWriteTraceOverlay:
         )
         _write_core(tmp_path / "ip", core)
 
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "verilator_options"
@@ -1704,7 +1706,7 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
 
         with pytest.raises(FuseSocError, match=message):
-            write_trace_overlay("sim", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
 
     @pytest.mark.parametrize(
         ("options", "message"),
@@ -1740,11 +1742,11 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
 
         with pytest.raises(FuseSocError, match=message):
-            write_trace_overlay("sim", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
 
     def test_cleanup_is_idempotent(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         overlay.cleanup()
         assert not overlay.core_file.exists()
         overlay.cleanup()  # second call must not raise
@@ -1752,7 +1754,7 @@ class TestWriteTraceOverlay:
     def test_rejects_unknown_target(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         with pytest.raises(UnknownTargetError):
-            write_trace_overlay("nope", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("nope"))
 
     def test_rejects_non_verilator_sim_target(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1775,7 +1777,7 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
         # lint flow has no testbench — the trace overlay is sim-only.
         with pytest.raises(FuseSocError):
-            write_trace_overlay("lint", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("lint"))
 
     # --- Icarus sim trace overlay (roots the dump module, no verilator_options) -
 
@@ -1807,7 +1809,7 @@ class TestWriteTraceOverlay:
 
     def test_icarus_overlay_roots_dump_module(self, tmp_path: Path):
         _write_core(tmp_path / "ip", self._ICARUS_CORE)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             sim = read_core(overlay.core_file)["targets"]["sim"]["flow_options"]
             # Icarus gets an explicit dump-module root (edalize's -s <top> prunes
@@ -1825,7 +1827,7 @@ class TestWriteTraceOverlay:
         )
         assert "iverilog_options" in core  # guard: the replace matched
         _write_core(tmp_path / "ip", core)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "iverilog_options"
@@ -1845,7 +1847,7 @@ class TestWriteTraceOverlay:
         )
         assert "booley_vcd_dump" not in core  # guard: the replace matched
         _write_core(tmp_path / "ip", core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             doc = read_core(overlay.core_file)
             sim = doc["targets"]["sim"]
@@ -1888,7 +1890,7 @@ class TestWriteTraceOverlay:
             "",
         )
         _write_core(cores, core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=project)
+        overlay = write_trace_overlay(TargetCatalog.build(project).select("sim"))
         try:
             resolved = resolve_target(
                 "sim",
@@ -1917,7 +1919,7 @@ class TestWriteTraceOverlay:
             "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
         )
         _write_core(project_dir / "cores", core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             from booley.fusesoc.fusesoc_registry import setup_command
 
@@ -2646,8 +2648,6 @@ class TestFilesetsAppend:
         """The trace-overlay readiness check shares the blind spot: a
         booley_vcd_dump.sv fileset added via append would false-warn 'no dump
         module' and provoke a duplicate overlay injection."""
-        from booley.fusesoc.fusesoc_trace_overlay import target_includes_dump_module
-
         text = textwrap.dedent(
             """\
             CAPI=2:
@@ -2668,8 +2668,8 @@ class TestFilesetsAppend:
                 toplevel: counter
             """
         )
-        _write_core(tmp_path, text)
-        assert target_includes_dump_module(tmp_path, "sim") is True
+        core = _write_core(tmp_path, text)
+        assert _target_includes_dump_module(read_core(core), "sim") is True
 
 
 # ---------------------------------------------------------------------------

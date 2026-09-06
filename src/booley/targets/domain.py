@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import cast
 
 from booley.targets import target_naming
 
@@ -113,6 +115,9 @@ class TargetInput:
     is_include: bool
     attributes: Mapping[str, object]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attributes", immutable_mapping(self.attributes))
+
 
 @dataclass(frozen=True)
 class TargetInspection:
@@ -125,6 +130,10 @@ class TargetInspection:
     flow_options: Mapping[str, object]
     parameters: Mapping[str, object]
     inputs: tuple[TargetInput, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "flow_options", immutable_mapping(self.flow_options))
+        object.__setattr__(self, "parameters", immutable_mapping(self.parameters))
 
     @property
     def sources(self) -> CoreSources:
@@ -153,6 +162,25 @@ def partition_target_inputs(inputs: Iterable[TargetInput]) -> CoreSources:
     )
 
 
+def immutable_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Return a recursively immutable copy of an untrusted mapping value."""
+    return _immutable_mapping(cast(Mapping[object, object], value))
+
+
+def _immutable_mapping(value: Mapping[object, object]) -> Mapping[str, object]:
+    return MappingProxyType({str(key): _immutable_value(item) for key, item in value.items()})
+
+
+def _immutable_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _immutable_mapping(cast(Mapping[object, object], value))
+    if isinstance(value, (list, tuple)):
+        return tuple(_immutable_value(item) for item in cast(Iterable[object], value))
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_immutable_value(item) for item in cast(Iterable[object], value))
+    return value
+
+
 def criterion_matches_target(
     params: Mapping[str, object],
     *,
@@ -179,9 +207,7 @@ def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
     if target_naming.fpga_intent(target.name, target.eda_tool):
         return flow == "fpga"
     if flow == "sim":
-        return target.eda_tool in _SIM_EDA_TOOLS and (
-            target.flow == "sim" or target.flow is None
-        )
+        return target.eda_tool in _SIM_EDA_TOOLS and (target.flow == "sim" or target.flow is None)
     if flow == "lint":
         return target.flow == "lint" or (
             target.flow is None and target.eda_tool in _LINT_EDA_TOOLS
@@ -212,5 +238,6 @@ __all__ = [
     "UnknownTargetError",
     "criterion_matches_target",
     "flow_can_drive",
+    "immutable_mapping",
     "partition_target_inputs",
 ]

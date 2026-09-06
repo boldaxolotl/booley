@@ -71,7 +71,9 @@ def _resolve(declarations: dict[str, tuple[TargetRef, ...]], token: str) -> Targ
             f"Target {name!r} is declared by {len(bucket)} cores: "
             f"{', '.join(candidates)}; qualify it as 'vlnv#name' (e.g. {hint!r})."
         )
-    matches = tuple(ref for ref in bucket if _vlnv_matches(qualifier, ref.vlnv))
+    matches: tuple[TargetRef, ...] = tuple(
+        ref for ref in bucket if _vlnv_matches(qualifier, ref.vlnv)
+    )
     if not matches:
         candidates = ", ".join(sorted(ref.vlnv for ref in bucket))
         raise UnknownTargetError(
@@ -84,7 +86,7 @@ def _resolve(declarations: dict[str, tuple[TargetRef, ...]], token: str) -> Targ
             f"{token!r} is ambiguous — {qualifier!r} matches {len(matches)} "
             f"cores: {candidates}; use a longer VLNV qualifier."
         )
-    return matches[0]
+    return next(iter(matches))
 
 
 def _doctor_private_authority() -> bool:
@@ -94,7 +96,7 @@ def _doctor_private_authority() -> bool:
 @dataclass
 class _OperationalState:
     inspector: TargetSourceInspector | None = None
-    documents: dict[Path, dict[str, Any]] = field(default_factory=dict)
+    documents: dict[Path, dict[str, Any]] = field(default_factory=lambda: {})
 
 
 @dataclass(frozen=True)
@@ -138,7 +140,7 @@ class TargetCatalog:
     def list(self, *, for_flow: str | None = None) -> tuple[TargetHandle, ...]:
         """List visible Targets from this snapshot, optionally by compatible Flow."""
         for_flow = _canonical_flow(for_flow)
-        handles = []
+        handles: list[TargetHandle] = []
         for _name, refs in self._declarations:
             visible = self._visible(refs)
             for ref in visible:
@@ -185,9 +187,7 @@ class TargetCatalog:
 
     def _visible_declarations(self) -> dict[str, tuple[TargetRef, ...]]:
         return {
-            name: visible
-            for name, refs in self._declarations
-            if (visible := self._visible(refs))
+            name: visible for name, refs in self._declarations if (visible := self._visible(refs))
         }
 
     def _handle(self, ref: TargetRef, bucket: tuple[TargetRef, ...]) -> TargetHandle:
@@ -204,9 +204,7 @@ class TargetCatalog:
             core_file=core_file,
             flow=ref.flow,
             eda_tool=ref.eda_tool,
-            drivable_by=tuple(
-                flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, ref)
-            ),
+            drivable_by=tuple(flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, ref)),
             project_root=self.project_root,
             doctor_private=ref.doctor_selftest,
             cocotb_module=ref.cocotb_module,

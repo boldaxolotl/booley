@@ -24,7 +24,7 @@ from booley.flows.sim.flow import (
     TestResult as SimTestResult,
 )
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
-from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"

@@ -106,16 +106,6 @@ from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 logger = logging.getLogger(__name__)
 
 
-def select_targets(
-    project_root: Path | str,
-    target_arg: str | None,
-    *,
-    for_flow: str | None = None,
-) -> tuple[TargetHandle, ...]:
-    """Select FPGA boundary inputs through one Target catalog."""
-    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
-
-
 @dataclass(frozen=True)
 class _PreparedFpgaCommand:
     """Materialized command plus the exact inputs governing cache reuse."""
@@ -281,8 +271,7 @@ class FpgaImplFlow(BooleyFlow):
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
         self._baseline_full_sha: str | None = None
-        handles = select_targets(
-            self.args.work_dir,
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
             for_flow="fpga",
         )

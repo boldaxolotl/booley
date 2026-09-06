@@ -50,6 +50,25 @@ from booley.specialists.coverage_analyst import (
 # ---------------------------------------------------------------------------
 
 
+def _catalog(
+    eda_tool: str = "verilator",
+    *,
+    cocotb_module: str | None = None,
+    project_root: Path | str = ".",
+):
+    def select(target: str, **_kwargs):
+        return types.SimpleNamespace(
+            selector=target,
+            name=target,
+            vlnv=f"::{target}:0",
+            project_root=Path(project_root),
+            eda_tool=eda_tool,
+            cocotb_module=cocotb_module,
+        )
+
+    return types.SimpleNamespace(select=select)
+
+
 def _sig(name="sig", transitions=5, value_hist=None, width=1):
     """Shorthand for building a SignalStats."""
     return SignalStats(
@@ -775,7 +794,9 @@ class TestFilterStructuralNoise:
             (tmp_path / scope_file).write_text(scope_content, encoding="utf-8")
         return endpoint
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_ivl_for_loop_zero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=0)]
@@ -783,7 +804,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_ivl_for_loop_nonzero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=50)]
@@ -791,7 +814,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_zero_transitions_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -800,7 +825,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -809,7 +836,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_zero_transitions_not_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -818,7 +847,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_normal_signal_zero_transitions_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.data_out[7:0]", transitions=0)]
@@ -826,7 +857,10 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="verilator")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
+    )
     def test_unknown_backend_all_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [
@@ -837,7 +871,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 2
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_mixed_bag(self, _mock_be, tmp_path):
         rtl = "module alu;\n  localparam WIDTH = 8;\n  parameter DEPTH = 4;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -859,7 +895,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.DEPTH", "dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_localparam_with_range(self, _mock_be, tmp_path):
         rtl = "localparam [7:0] INIT_VAL = 8'hFF;"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -867,7 +905,9 @@ class TestFilterStructuralNoise:
         _kept, excluded = endpoint._filter_structural_noise(stats, ["alu.sv"])
         assert len(excluded) == 1
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_zero_transitions_excluded(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\n  generate for (i=0; i<4; i=i+1) begin : gen\n  end endgenerate\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -876,7 +916,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -885,7 +927,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_not_in_scope_generate_constant_excluded(self, _mock_be, tmp_path):
         """Signal under generate scope with ≤1 transition and ≤1 value is a
         generate-scope constant even if its leaf name isn't a declared genvar."""
@@ -896,7 +940,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_not_in_scope_active_signal_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with many transitions is NOT noise."""
         rtl = "module top;\n  genvar i;\nendmodule"
@@ -906,7 +952,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_generate_scope_nested_constant_excluded(self, _mock_be, tmp_path):
         """Nested generate hierarchy (row[0].col[1].word_idx) with constant
         value is structural noise."""
@@ -916,7 +964,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_generate_scope_multi_value_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with multiple observed values is real."""
         endpoint = self._make_endpoint(tmp_path)
@@ -925,7 +975,10 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="verilator")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
+    )
     def test_generate_scope_constant_not_filtered_on_verilator(self, _mock_be, tmp_path):
         """Generate-scope constant detection is Icarus-only."""
         endpoint = self._make_endpoint(tmp_path)
@@ -934,7 +987,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_one_transition_excluded(self, _mock_be, tmp_path):
         """Params with exactly 1 transition (X->constant) are now excluded."""
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
@@ -944,7 +999,10 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="verilator")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
+    )
     def test_param_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -953,7 +1011,10 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="verilator")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
+    )
     def test_genvar_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar j;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -962,7 +1023,10 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="verilator")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
+    )
     def test_ivl_for_loop_not_filtered_on_verilator(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=0)]
@@ -970,7 +1034,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_mixed_bag_with_genvars(self, _mock_be, tmp_path):
         rtl = "module top;\n  parameter WIDTH = 8;\n  genvar i, j;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -993,7 +1059,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_lowercase_param_not_filtered(self, _mock_be, tmp_path):
         """Lowercase params bypass the uppercase gate — avoids false filtering
         of dynamic signals that share a name with a localparam in another file."""
@@ -1004,7 +1072,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_submodule_param_in_sibling_file_filtered(self, _mock_be, tmp_path):
         """Params declared in sibling RTL files (same directory) are now
         picked up — fixes the AES submodule constant gap."""
@@ -1031,7 +1101,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.sub_inst.data_out[7:0]"}
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_typed_parameter_filtered(self, _mock_be, tmp_path):
         """Typed parameters (parameter int/logic/string) are correctly captured
         by the regex — the type keyword is skipped, not mistaken for the name."""
@@ -1053,7 +1125,9 @@ class TestFilterStructuralNoise:
         assert excluded_names == {"dut.WIDTH", "dut.DEPTH[3:0]", "dut.MODE"}
         assert kept == []
 
-    @patch("booley.specialists.coverage_analyst._target_eda_tool", return_value="icarus")
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_params_in_header_files_filtered(self, _mock_be, tmp_path):
         """Params declared in .svh/.vh header files are picked up."""
         endpoint = self._make_endpoint(tmp_path, scope_content="module top;\nendmodule")
@@ -2788,24 +2862,9 @@ class TestBuildEdalizeTraceCmd:
 
     @pytest.fixture(autouse=True)
     def _catalog_target(self, monkeypatch):
-        import types
-
         monkeypatch.setattr(
-            "booley.specialists.coverage_analyst._select_target_handle",
-            lambda work_dir, target, *, for_flow=None: types.SimpleNamespace(
-                selector=target,
-                name=target,
-                vlnv=f"::{target}:0",
-                project_root=Path(work_dir),
-            ),
-        )
-        monkeypatch.setattr(
-            "booley.specialists.coverage_analyst._target_eda_tool",
-            lambda work_dir, target: "verilator",
-        )
-        monkeypatch.setattr(
-            "booley.specialists.coverage_analyst._target_cocotb_module",
-            lambda work_dir, target: None,
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            lambda work_dir: _catalog(project_root=work_dir),
         )
 
     def _resolved(self, build_root):
@@ -2909,8 +2968,8 @@ class TestBuildEdalizeTraceCmd:
                 return_value=self._resolved(build_root),
             ),
             patch(
-                "booley.specialists.coverage_analyst._target_cocotb_module",
-                return_value="test_dut",
+                "booley.specialists.coverage_analyst.TargetCatalog.build",
+                side_effect=lambda root: _catalog(cocotb_module="test_dut", project_root=root),
             ),
             patch(
                 "booley.config.project_config.TEST_NAMES",
@@ -2942,8 +3001,8 @@ class TestBuildEdalizeTraceCmd:
                 return_value=self._resolved(tmp_path / "build"),
             ),
             patch(
-                "booley.specialists.coverage_analyst._target_cocotb_module",
-                return_value="test_dut",
+                "booley.specialists.coverage_analyst.TargetCatalog.build",
+                side_effect=lambda root: _catalog(cocotb_module="test_dut", project_root=root),
             ),
             pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
         ):

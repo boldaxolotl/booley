@@ -1069,8 +1069,8 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
     monkeypatch.setattr(
         doctor.fusesoc_registry,
-        "resolve_target",
-        lambda name, **kwargs: calls.append((name, kwargs.get("vlnv"))),
+        "resolve_target_handle",
+        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
     )
     rec = _Rec()
 

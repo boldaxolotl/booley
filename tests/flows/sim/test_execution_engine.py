@@ -33,7 +33,7 @@ from booley.flows.sim.execution import (
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 
 def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
@@ -76,12 +76,14 @@ def _prepared(handle: TargetHandle, *, cocotb: bool) -> PreparedSimulationBuild:
 
 
 def _inspection(*, cocotb: bool) -> SimpleNamespace:
-    return SimpleNamespace(
+    inspection = SimpleNamespace(
         toplevel="tb_demo",
         eda_tool="icarus",
         parameters={},
         flow_options={"cocotb_module": "test_demo"} if cocotb else {},
     )
+    inspection.inspect = lambda _handle: inspection
+    return inspection
 
 
 def _run_execution(
@@ -103,7 +105,7 @@ def _run_execution(
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "booley.flows.sim.execution.engine.inspect_target",
+                "booley.flows.sim.execution.engine.TargetCatalog.build",
                 return_value=_inspection(cocotb=cocotb),
             )
         )
@@ -540,7 +542,7 @@ def test_pre_run_stage_preserves_elaboration_and_infrastructure_classes(
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
     with (
         patch(
-            "booley.flows.sim.execution.engine.inspect_target",
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
@@ -564,7 +566,7 @@ def test_unexpected_execution_defect_propagates(tmp_path: Path) -> None:
 
     with (
         patch(
-            "booley.flows.sim.execution.engine.inspect_target",
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
         pytest.raises(RuntimeError, match="programmer defect"),
@@ -594,7 +596,7 @@ def test_run_and_preview_share_the_same_work_grouping(
     execution._preview_group = MagicMock(return_value=("sh", "-c", "preview"))
 
     with patch(
-        "booley.flows.sim.execution.engine.inspect_target",
+        "booley.flows.sim.execution.engine.TargetCatalog.build",
         return_value=_inspection(cocotb=cocotb),
     ):
         execution.run(handle, NamedTests(("a", "b")))
@@ -621,11 +623,11 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
     with (
         patch(
-            "booley.flows.sim.execution.engine.inspect_target",
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
         patch(
-                "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
             return_value=["setup"],
         ),
     ):
@@ -962,7 +964,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
     execution = SimulationExecution(invoke=run.invoke, options=SimulationOptions(trace=True))
     with (
         patch(
-            "booley.flows.sim.execution.engine.inspect_target",
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),

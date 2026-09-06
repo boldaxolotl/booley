@@ -15,7 +15,6 @@ from typing import Any
 from booley.flows.eda_parsers import extract_error_gist
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle, TargetInspection
 
 from .. import edam as edam_layer
 from .. import output_budget
@@ -23,10 +22,6 @@ from ..flow_config import _load_flow_config
 
 logger = logging.getLogger(__name__)
 
-
-def inspect_target(project_root: Path | str, handle: TargetHandle) -> TargetInspection:
-    """Inspect a selected standalone Target through its snapshot catalog."""
-    return TargetCatalog.build(project_root).inspect(handle)
 
 # Max chars of error output retained in the report / displayed. This is the
 # 12KB-MCP-budget default; the effective cap scales with a raised
@@ -168,8 +163,9 @@ class StandaloneMixin:
         failure — the caller grades that a Flow ERROR (no verdict reached).
         """
         seen: dict[str, None] = {}
+        catalog = TargetCatalog.build(self.args.work_dir)
         for tgt in targets:
-            for rel in inspect_target(self.args.work_dir, self._target_handle(tgt)).rtl_files:
+            for rel in catalog.inspect(self._target_handle(tgt)).rtl_files:
                 seen.setdefault(rel, None)
         return [rel for rel in seen if Path(rel).suffix.lower() in _HDL_SUFFIXES]
 

@@ -59,7 +59,7 @@ from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.targets.target import inspect_target
+from booley.targets.catalog import TargetCatalog
 
 # Built-in Flow execution inside the Session Runtime.
 _FLOW_ENABLED = True
@@ -113,10 +113,10 @@ def test_human_display_caps_targets_at_three():
 
 def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
-            patch(
-                "booley.flows.sim.flow._target_is_cocotb",
-                side_effect=lambda _root, target: target == "cocotb",
-            ),
+        patch(
+            "booley.flows.sim.flow._target_is_cocotb",
+            side_effect=lambda _root, target: target == "cocotb",
+        ),
         patch(
             "booley.flows.sim.flow._get_test_names",
             return_value={
@@ -308,7 +308,7 @@ class _BoundaryHarness(SimulationExecution):
         )
 
     def _prepare_build(self, handle):
-        inspection = inspect_target(handle.project_root, handle)
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         eda_tool = (
             getattr(self._flow, "_boundary_eda_tool", None) or inspection.eda_tool or "verilator"
         )

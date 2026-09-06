@@ -35,11 +35,11 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
-from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
-from booley.targets.target import select_target as canonical_select_target
-from booley.targets.target import select_targets as canonical_select_targets
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
 
 _REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
+_REAL_CATALOG_BUILD = TargetCatalog.build
 
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
@@ -71,24 +71,52 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    def _select(project_root, token, *, for_flow=None):
-        try:
-            return canonical_select_target(project_root, token, for_flow=for_flow)
-        except fusesoc_registry.UnknownTargetError:
-            return _layer_target_handle(project_root, token)
+    class LenientCatalog:
+        def __init__(self, project_root):
+            self.project_root = Path(project_root)
 
-    def _select_many(project_root, target_arg, *, for_flow=None):
-        try:
-            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
-        except fusesoc_registry.UnknownTargetError:
+        def select(self, token, *, for_flow=None):
+            try:
+                return _REAL_CATALOG_BUILD(self.project_root).select(token, for_flow=for_flow)
+            except fusesoc_registry.UnknownTargetError:
+                return _layer_target_handle(self.project_root, token)
+
+        def select_many(self, target_arg, *, for_flow=None):
             return tuple(
-                _layer_target_handle(project_root, token.strip())
+                self.select(token.strip(), for_flow=for_flow)
                 for token in (target_arg or "").split(",")
                 if token.strip()
             )
 
-    monkeypatch.setattr("booley.flows.fpga.flow.select_targets", _select_many)
-    monkeypatch.setattr("booley.flows.implementation_comparison.select_target", _select)
+        def inspect(self, handle):
+            catalog = _REAL_CATALOG_BUILD(self.project_root)
+            return catalog.inspect(catalog.select(handle.selector))
+
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: LenientCatalog(root)),
+    )
+
+    def resolve_handle(handle, **kwargs):
+        return fusesoc_registry.resolve_target(
+            handle.selector,
+            project_root=handle.project_root,
+            vlnv=handle.vlnv,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
+
+    def setup_handle(handle, **kwargs):
+        return fusesoc_registry.setup_command(
+            handle.selector,
+            project_root=handle.project_root,
+            vlnv=handle.vlnv,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 
 
 @pytest.fixture()

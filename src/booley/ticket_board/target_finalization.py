@@ -79,9 +79,7 @@ def _tests_key(root: Path, handle: TargetHandle, catalog: TargetCatalog) -> str:
     canonical = handle.identity
     if canonical in raw:
         return canonical
-    matching = [
-        key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == handle.name
-    ]
+    matching = [key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == handle.name]
     if not matching:
         return ""
     if len(matching) > 1:
