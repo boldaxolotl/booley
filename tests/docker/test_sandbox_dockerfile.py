@@ -559,6 +559,11 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
         "-m release_validation.demo_surface"
         in _named_step(surface, "Validate immutable ticket surface")["run"]
     )
+
+    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
+    assert ".booley_project/hooks/post-setup.sh" in simulation_run
+    assert "/^\\[flows\\.synth\\]$/,/^\\[flows\\.fpga\\]$/" in simulation_run
+    assert "enabled = false" in simulation_run
     assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
     assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
     assert _named_step(flows, "Restore demo ownership")["if"] == "always()"

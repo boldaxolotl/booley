@@ -43,6 +43,7 @@ def _environment(home: Path, executable: Path) -> dict[str, str]:
             "HOME": str(home),
             "PATH": f"{executable.parent}{os.pathsep}{home / 'bin'}{os.pathsep}{env['PATH']}",
             "PYTHONUSERBASE": str(home / ".local"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
         }
     )
     return env

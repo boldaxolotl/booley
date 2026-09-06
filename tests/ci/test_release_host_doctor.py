@@ -47,6 +47,20 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
     return executable, log
 
 
+def test_host_doctor_isolates_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ambient = tmp_path / "ambient-config"
+    home = tmp_path / "home"
+    executable = tmp_path / "venv" / "bin" / "booley"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(ambient))
+
+    env = host_doctor._environment(home, executable)
+
+    assert env["HOME"] == str(home)
+    assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+
+
 def test_host_doctor_uses_isolated_paths_and_records_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
