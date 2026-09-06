@@ -48,10 +48,11 @@ def test_duplicate_collected_nodeids_fail_loudly() -> None:
         assign_shards(("test::same", "test::same"), 2, TimingModel(1.0, {}))
 
 
-def test_timing_model_rejects_non_positive_values(tmp_path: Path) -> None:
+@pytest.mark.parametrize("duration", [0, float("nan"), float("inf"), float("-inf")])
+def test_timing_model_rejects_invalid_values(tmp_path: Path, duration: float) -> None:
     path = tmp_path / "timings.json"
     path.write_text(
-        json.dumps({"schema": 1, "default_seconds": 1, "tests": {"test::bad": 0}}),
+        json.dumps({"schema": 1, "default_seconds": 1, "tests": {"test::bad": duration}}),
         encoding="utf-8",
     )
 
@@ -96,3 +97,34 @@ def test_manifest_verifier_rejects_missing_shard(tmp_path: Path) -> None:
 
     with pytest.raises(ShardError, match=r"indexes 0\.\.1"):
         verify_manifests(paths[:1], group="windows", shard_count=2)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("selected", "test::a", "selected must be a list"),
+        ("selected", ["test::a", 3], "selected must be a list"),
+        ("expected_count", True, "expected_count must be an integer"),
+        ("expected_sha256", "not-a-digest", "must be a lowercase SHA-256"),
+    ],
+)
+def test_manifest_verifier_rejects_malformed_fields(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
+    payload = json.loads(paths[0].read_text(encoding="utf-8"))
+    payload[field] = value
+    paths[0].write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ShardError, match=message):
+        verify_manifests(paths, group="windows", shard_count=2)
+
+
+def test_manifest_verifier_rejects_incorrect_expected_count(tmp_path: Path) -> None:
+    paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
+    payload = json.loads(paths[1].read_text(encoding="utf-8"))
+    payload["expected_count"] = 1
+    paths[1].write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ShardError, match="expected test count"):
+        verify_manifests(paths, group="windows", shard_count=2)

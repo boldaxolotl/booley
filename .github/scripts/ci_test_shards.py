@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -24,9 +25,41 @@ class TimingModel:
 
 
 def _positive_number(value: Any, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
         raise ShardError(f"{field} must be a positive number")
     return float(value)
+
+
+def _integer(value: Any, *, field: str, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ShardError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def _non_empty_string(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ShardError(f"{field} must be a non-empty string")
+    return value
+
+
+def _nodeids(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ShardError(f"{field} must be a list of non-empty test IDs")
+    if len(value) != len(set(value)):
+        raise ShardError(f"{field} test IDs must be unique")
+    return value
+
+
+def _sha256(value: Any, *, field: str) -> str:
+    digest = _non_empty_string(value, field=field)
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ShardError(f"{field} must be a lowercase SHA-256 digest")
+    return digest
 
 
 def load_timings(path: Path | None) -> TimingModel:
@@ -111,6 +144,22 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         raise ShardError(f"cannot read manifest {path}: {error}") from error
     if not isinstance(payload, dict) or payload.get("schema") != 1:
         raise ShardError(f"{path} must contain a schema-1 object")
+    payload["group"] = _non_empty_string(payload.get("group"), field=f"{path}.group")
+    payload["shard_index"] = _integer(
+        payload.get("shard_index"), field=f"{path}.shard_index", minimum=0
+    )
+    payload["shard_count"] = _integer(
+        payload.get("shard_count"), field=f"{path}.shard_count", minimum=1
+    )
+    payload["expected_count"] = _integer(
+        payload.get("expected_count"), field=f"{path}.expected_count", minimum=0
+    )
+    payload["expected_sha256"] = _sha256(
+        payload.get("expected_sha256"), field=f"{path}.expected_sha256"
+    )
+    payload["selected"] = _nodeids(payload.get("selected"), field=f"{path}.selected")
+    if "expected" in payload:
+        payload["expected"] = _nodeids(payload["expected"], field=f"{path}.expected")
     return payload
 
 
@@ -125,8 +174,11 @@ def verify_manifests(paths: Sequence[Path], *, group: str, shard_count: int) -> 
         raise ShardError(f"{group} manifests disagree about shard count")
     reference = next(manifest for manifest in matching if manifest["shard_index"] == 0)
     expected = reference.get("expected")
-    if not isinstance(expected, list) or not all(isinstance(item, str) for item in expected):
+    if not isinstance(expected, list):
         raise ShardError(f"{group} shard zero must carry the expected node IDs")
+    expected_count = len(expected)
+    if any(manifest["expected_count"] != expected_count for manifest in matching):
+        raise ShardError(f"{group} manifests disagree about the expected test count")
     selected = [item for manifest in matching for item in manifest.get("selected", [])]
     if len(selected) != len(set(selected)):
         raise ShardError(f"{group} selected at least one node ID more than once")

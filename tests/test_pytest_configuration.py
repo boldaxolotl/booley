@@ -382,16 +382,22 @@ def test_pr_matrix_is_pairwise_sharded_and_exactly_verified() -> None:
 def test_ci_records_queue_and_runner_minutes() -> None:
     workflow = _test_workflow()
     metrics_job = workflow["jobs"]["ci-metrics"]
-    rendered = "\n".join(str(step) for step in metrics_job["steps"])
 
     assert workflow["permissions"]["actions"] == "read"
     assert metrics_job["needs"] == "ci-required"
     assert metrics_job["if"] == "always()"
+    assert metrics_job["steps"][-1]["uses"] == "./.github/actions/collect-ci-metrics"
+
+    action_path = REPOSITORY_ROOT / ".github/actions/collect-ci-metrics/action.yml"
+    action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+    rendered = "\n".join(str(step) for step in action["runs"]["steps"])
     assert ".github/scripts/ci_run_metrics.py" in rendered
     assert "/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" in rendered
     assert "GITHUB_STEP_SUMMARY" in rendered
     upload = next(
-        step for step in metrics_job["steps"] if step.get("name") == "Upload CI timing telemetry"
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Upload CI timing telemetry"
     )
     assert upload["with"]["retention-days"] == 90
 
@@ -406,6 +412,15 @@ def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
     assert matrix["os"] == ["ubuntu-latest", "windows-latest"]
     assert matrix["python"] == ["3.11", "3.13", "3.14"]
     assert workflow["jobs"]["metrics"]["if"] == "always()"
+    proof = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Prove the full suite executed"
+    )
+    assert "--min-tests 10000" in proof["run"]
+    assert workflow["jobs"]["metrics"]["steps"][-1]["uses"] == (
+        "./.github/actions/collect-ci-metrics"
+    )
 
 
 def test_exhaustive_recovery_marker_retains_a_pr_subset() -> None:
