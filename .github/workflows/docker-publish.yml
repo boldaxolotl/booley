@@ -366,6 +366,8 @@ jobs:
           python-version: "3.13"
       - name: Prepare exact reviewed demo contract
         uses: ./.github/actions/prepare-picorv32-demo
+        with:
+          materialize: true
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}

@@ -244,6 +244,7 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "CONTRACT_PATH": "${{ inputs.contract }}",
         "PYTHONPATH": "${{ github.workspace }}/src",
     }
+    assert materializer["if"] == "inputs.materialize == 'true'"
     assert "picorv32_demo_contract.py" in materializer["run"]
 
     excludes = next(
