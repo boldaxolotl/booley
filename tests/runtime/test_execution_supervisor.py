@@ -7,7 +7,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,14 @@ if sys.platform != "linux":
 
 import pty
 
+from tests.execution_test_support import (
+    runtime_env,
+    start_supervisor_with_detached_descendant,
+    wait_for,
+)
+
 from booley.runtime.execution_records import (
+    ExecutionId,
     atomic_write_json,
     execution_paths,
     force_cancellation_requested,
@@ -29,17 +35,7 @@ from booley.runtime.execution_records import (
     write_attachment_heartbeat,
 )
 
-_EXECUTION_ID = "a" * 32
-_SRC_ROOT = Path(__file__).parents[2] / "src"
-
-
-def _runtime_env(project_dir: Path) -> dict[str, str]:
-    python_path = os.environ.get("PYTHONPATH", "")
-    return {
-        **os.environ,
-        "BOOLEY_PROJECT_DIR": str(project_dir),
-        "PYTHONPATH": f"{_SRC_ROOT}{os.pathsep}{python_path}",
-    }
+_EXECUTION_ID = ExecutionId("a" * 32)
 
 
 def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
@@ -54,7 +50,7 @@ def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
 def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) -> None:
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
-    execution_id = "d" * 32
+    execution_id = ExecutionId("d" * 32)
     paths = execution_paths(execution_id, project_dir=project_dir)
     marker = tmp_path / "command-started"
     write_attachment_heartbeat(paths, generation=1)
@@ -74,7 +70,7 @@ def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) ->
             f"open({str(marker)!r}, 'w').close()",
         ],
         check=False,
-        env=_runtime_env(project_dir),
+        env=runtime_env(project_dir),
     )
 
     assert result.returncode == 130
@@ -88,7 +84,7 @@ def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) ->
 def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> None:
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
-    execution_id = "e" * 32
+    execution_id = ExecutionId("e" * 32)
     paths = execution_paths(execution_id, project_dir=project_dir)
     write_attachment_heartbeat(paths, generation=1)
     atomic_write_json(
@@ -110,19 +106,10 @@ def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> N
             "raise SystemExit(99)",
         ],
         check=False,
-        env=_runtime_env(project_dir),
+        env=runtime_env(project_dir),
     )
 
     assert result.returncode == 130
-
-
-def _wait_for(predicate, *, timeout_s: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.02)
-    raise AssertionError("condition did not become true before timeout")
 
 
 def _non_zombie_alive(pid: int) -> bool:
@@ -133,45 +120,6 @@ def _non_zombie_alive(pid: int) -> bool:
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
 
-def _start_supervisor_with_detached_descendant(
-    project_dir: Path, descendant_pid_file: Path
-) -> subprocess.Popen[str]:
-    descendant_script = (
-        "import signal,time\n"
-        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "time.sleep(120)\n"
-    )
-    command_script = (
-        "import subprocess,sys,time\n"
-        f"p=subprocess.Popen([sys.executable,'-c',{descendant_script!r}],start_new_session=True)\n"
-        f"open({str(descendant_pid_file)!r},'w').write(str(p.pid))\n"
-        "time.sleep(120)\n"
-    )
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "booley.runtime.execution_supervisor",
-            "run",
-            "--execution-id",
-            _EXECUTION_ID,
-            "--grace-seconds",
-            "0.1",
-            "--attachment-timeout-seconds",
-            "5",
-            "--",
-            sys.executable,
-            "-c",
-            command_script,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=_runtime_env(project_dir),
-    )
-
-
 def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path) -> None:
     """Cancellation remains scoped and complete across a descendant's setsid()."""
     project_dir = tmp_path / ".booley_project"
@@ -179,10 +127,15 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     paths = execution_paths(_EXECUTION_ID, project_dir=project_dir)
     write_attachment_heartbeat(paths, generation=1)
     descendant_pid_file = tmp_path / "descendant.pid"
-    supervisor = _start_supervisor_with_detached_descendant(project_dir, descendant_pid_file)
+    supervisor = start_supervisor_with_detached_descendant(
+        project_dir, _EXECUTION_ID, descendant_pid_file
+    )
     descendant_pid: int | None = None
     try:
-        _wait_for(lambda: paths.record.exists() and descendant_pid_file.exists())
+        wait_for(
+            lambda: paths.record.exists() and descendant_pid_file.exists(),
+            failure="supervisor and descendant did not become ready",
+        )
         descendant_pid = int(descendant_pid_file.read_text(encoding="utf-8"))
 
         cancel = subprocess.run(
@@ -197,12 +150,15 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
             capture_output=True,
             text=True,
             check=False,
-            env=_runtime_env(project_dir),
+            env=runtime_env(project_dir),
         )
         assert cancel.returncode == 0, cancel.stderr
 
         assert supervisor.wait(timeout=5) == 130
-        _wait_for(lambda: descendant_pid is not None and not _non_zombie_alive(descendant_pid))
+        wait_for(
+            lambda: descendant_pid is not None and not _non_zombie_alive(descendant_pid),
+            failure="detached descendant did not stop",
+        )
         payload = json.loads(paths.record.read_text(encoding="utf-8"))
         assert payload["state"] == "terminal"
         assert payload["exit_code"] == 130
@@ -218,7 +174,8 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
-    paths = execution_paths("b" * 32, project_dir=project_dir)
+    execution_id = ExecutionId("b" * 32)
+    paths = execution_paths(execution_id, project_dir=project_dir)
     write_attachment_heartbeat(paths, generation=1)
     supervisor = subprocess.Popen(
         [
@@ -227,7 +184,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "booley.runtime.execution_supervisor",
             "run",
             "--execution-id",
-            "b" * 32,
+            execution_id,
             "--grace-seconds",
             "0.1",
             "--attachment-timeout-seconds",
@@ -236,7 +193,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "sleep",
             "120",
         ],
-        env=_runtime_env(project_dir),
+        env=runtime_env(project_dir),
     )
     try:
         assert supervisor.wait(timeout=5) == 130
@@ -255,7 +212,7 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
         return
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
-    execution_id = "c" * 32
+    execution_id = ExecutionId("c" * 32)
     paths = execution_paths(execution_id, project_dir=project_dir)
     write_attachment_heartbeat(paths, generation=1)
     child_check = (
@@ -276,7 +233,7 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
     ]
     pid, fd = pty.fork()
     if pid == 0:
-        os.execve(sys.executable, argv, _runtime_env(project_dir))
+        os.execve(sys.executable, argv, runtime_env(project_dir))
     try:
         _waited, status = os.waitpid(pid, 0)
     finally:
