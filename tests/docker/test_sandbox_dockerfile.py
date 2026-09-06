@@ -95,7 +95,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.259"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.263"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -267,8 +267,8 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
         'c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"' in evidence_script
     )
     assert (
-        'readonly DOCKER_CLI="docker:29.7.2-cli@sha256:'
-        '3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"' in evidence_script
+        'readonly DOCKER_CLI="docker:29.8.0-cli@sha256:'
+        'eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"' in evidence_script
     )
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
@@ -301,8 +301,8 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
     assert (
-        "FROM docker:29.7.2-cli@sha256:"
-        "3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
+        "FROM docker:29.8.0-cli@sha256:"
+        "eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"
     ) in reaper
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
@@ -349,8 +349,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.259"' in lock
-    assert '"@openai/codex": "0.153.1"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.263"' in lock
+    assert '"@openai/codex": "0.153.4"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -359,9 +359,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.259"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.263"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.153.1-linux-x64"
+        "npm:@openai/codex@0.153.4-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]

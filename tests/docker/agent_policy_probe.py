@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-EXPECTED_CLAUDE = "2.1.259"
-EXPECTED_CODEX = "0.153.1"
+EXPECTED_CLAUDE = "2.1.263"
+EXPECTED_CODEX = "0.153.4"
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
