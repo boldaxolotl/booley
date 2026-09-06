@@ -350,6 +350,26 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "host: final plain `booley doctor`",
     ):
         assert required in skill
+    assert "A clean run is the final deep evidence" in skill
+    assert "instead of rerunning the whole deep matrix after each edit" in skill
+
+
+def test_setup_reserves_deep_doctor_for_one_final_gate():
+    skill = _skill_text("booley-setup")
+    project_config = _skill_text("booley-setup", "steps/2-project-config.md")
+    doctor = _skill_text("booley-setup", "steps/4-doctor.md")
+    greenfield = _skill_text("booley-setup", "steps/new-greenfield.md")
+    agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+
+    assert "`booley doctor --deep` both exit 0" in skill
+    assert "Reserve the full deep Doctor matrix" in project_config
+    assert "booley doctor --deep" not in project_config
+    assert "Re-validate with\n`booley doctor --deep`" not in project_config
+    assert doctor.count("Run `booley doctor --deep`") == 1
+    assert "a failed attempt does not count as the one successful final run" in doctor
+    assert "booley doctor --deep" not in greenfield
+    assert "does not schedule an additional run" in " ".join(greenfield.split())
+    assert "Reuse a successful setup/heal deep result" in agents
 
 
 def test_heal_preserves_scope_and_routes_exceptional_findings():
