@@ -292,6 +292,12 @@ relative_files = true
 # starts measurement in Python child processes and writes combinable data.
 patch = ["subprocess"]
 
+[tool.coverage.paths]
+source = [
+    "src/booley",
+    "*/src/booley",
+]
+
 [tool.coverage.report]
 # Measured on origin/main at batch-2 start: 82.84% statements, 74.40%
 # branches, 80.72% combined. Keep modest environment headroom while ratcheting

@@ -191,6 +191,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dev_dependencies = project["project"]["optional-dependencies"]["dev"]
     coverage_config = project["tool"]["coverage"]["run"]
+    coverage_paths = project["tool"]["coverage"]["paths"]["source"]
     workflow = _test_workflow()
     coverage_step = next(
         step
@@ -210,6 +211,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "--ci-shard-count" in command
     assert coverage_config["branch"] is True
     assert coverage_config["relative_files"] is True
+    assert coverage_paths == ["src/booley", "*/src/booley"]
     assert "--cov-fail-under=0" in command
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["coverage"]["steps"])
     assert "coverage combine" in rendered_steps
