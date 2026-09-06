@@ -203,18 +203,22 @@ workaround a Booley success.
 ## 6. Deep verification and acknowledgment
 
 When plain Doctor has no active findings other than the expected
-`upgrade.review-pending` warning, run `booley doctor --deep`. Deep
+`upgrade.review-pending` warning and the delivered files are settled, run
+`booley doctor --deep`. A clean run is the final deep evidence; do not repeat it
+when no deep-relevant input changed. Deep
 checks can take minutes or tens of minutes. Run a long invocation in a managed
 background session or detached with output redirected to a file, then poll it;
 do not abandon it while waiting. Read the final output unabridged.
 
-Repair deep findings through the same classify → diagnose → repair → rerun
-loop. A failed deep simulation, lint, or synthesis smoke can be build-system
+Repair deep findings through the same classify → diagnose → repair loop. A
+failed deep simulation, lint, or synthesis smoke can be build-system
 configuration or a real design problem; use its log to distinguish them before
-editing anything.
+editing anything. During repair, exercise the affected Flow and Target directly
+instead of rerunning the whole deep matrix after each edit.
 
 After deep repairs, run plain Doctor again because deep-side changes can regress
-non-deep checks. Then run the final deep check over the exact delivered files.
+non-deep checks. Once the repair is settled and plain Doctor is clean, rerun deep
+Doctor as the final evidence; the earlier failed run cannot serve as evidence.
 
 Changes affecting project configuration, Targets, dependencies, or the Session
 Runtime require all of this evidence:

@@ -39,7 +39,6 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
         "elif sys.argv[1] == 'init':\n"
         "    print('[OK] initialized')\n"
         "elif sys.argv[1] == 'doctor':\n"
-        "    print('MCP server exposes 17 MCP tool(s)')\n"
         "    print('0 failed.')\n",
         encoding="utf-8",
     )
@@ -72,7 +71,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     assert commands == [
         ["bootstrap"],
         ["init", "--skip-credentials"],
-        ["doctor", "--deep", "--skip-agent-checks"],
+        ["doctor"],
     ]
     assert evidence["schema"] == 1
     assert evidence["candidate"] == {
@@ -81,7 +80,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
     assert evidence["checks"][-1] == {
-        "id": "host-doctor.deep-issued-image",
+        "id": "host-doctor.plain",
         "status": "pass",
     }
     assert evidence["cleanup"] == {

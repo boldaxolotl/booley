@@ -56,8 +56,10 @@ only):
   the normal plan phase instead of guessing.
 
 Then **Reopen in Container** and run **Step 3 (optional — offer it) and Step 4
-(the doctor gate)**: `booley doctor`, fix, `booley doctor --deep`, fix, and do
-**not** declare the project ready until both exit 0 with zero active warnings.
+(the doctor gate)**. Use plain `booley doctor` while fixing the scaffold, then
+run Step 4's single final `booley doctor --deep` over the settled files. This
+summary does not schedule an additional deep run. Do **not** declare the project
+ready until both exit 0 with zero active warnings.
 For a scaffolded project
 the sim/lint/synth smokes should pass before a line of design is written; that
 green gate is the whole point of the mode. Confirm deep Doctor ran both the good

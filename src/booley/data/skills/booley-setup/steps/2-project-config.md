@@ -279,12 +279,12 @@ projection exists.
 Required instead of authoring a parallel one when an open-footprint repo already
 ships the appropriate CAPI2 core. Modernize only selected Targets; leave
 unrelated legacy Targets intact. This has its own traps, and most only explode under *real* fusesoc while
-Booley's cheap `.core` reader stays green. Re-validate with
-`booley doctor --deep` (or, by hand in the sandbox,
+Booley's cheap `.core` reader stays green. Re-validate after **every** `.core`
+edit with the focused sandbox resolver command
 `fusesoc --cores-root <dir> run --setup --work-root "$(mktemp -d)" --target
 <target> <vlnv>` — raw fusesoc takes `--cores-root` *before* `run` and rejects
-Booley's `<vlnv>#<target>` spelling) after **every** `.core` edit, not just the
-first:
+Booley's `<vlnv>#<target>` spelling. Reserve `booley doctor --deep` for Step 4's
+final whole-matrix gate:
 
 - Legacy EDA-tool-API Targets (`default_tool:` + `tools:` blocks) should be
   converted to the flow API (`flow:` + `flow_options:`). Booley falls back to
@@ -626,8 +626,9 @@ Before writing:
   / in-Scope imperative scripts are present (the security rules in 2a).
 - Confirm `tests.toml` `select` templates are single well-formed option tokens.
 - Run `booley doctor` (its "FuseSoC .core checks" phase runs exactly these
-  audits); when the sandbox is available, `booley doctor --deep` additionally
-  resolves each Target through `fusesoc run --setup`.
+  audits). For a changed Target, use the focused `fusesoc run --setup` command
+  above during iteration; Step 4 runs `booley doctor --deep` once over the final
+  configuration.
 - Where practical, run each Booley Flow in the sandbox against a resolved Target
   (`booley flow <name> …`) and prove the fail path with a deliberate
   mutation — a passing-only check is not evidence the Flow can detect a
