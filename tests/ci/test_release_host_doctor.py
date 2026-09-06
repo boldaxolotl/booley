@@ -72,7 +72,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     assert commands == [
         ["bootstrap"],
         ["init", "--skip-credentials"],
-        ["doctor", "--deep", "--skip-agent-checks"],
+        ["doctor"],
     ]
     assert evidence["schema"] == 1
     assert evidence["candidate"] == {
@@ -81,7 +81,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
     assert evidence["checks"][-1] == {
-        "id": "host-doctor.deep-issued-image",
+        "id": "host-doctor.plain-issued-image",
         "status": "pass",
     }
     assert evidence["cleanup"] == {

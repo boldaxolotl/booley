@@ -41,29 +41,30 @@ over that severity bug with a project waiver.
    warning describes a deliberate project constraint that cannot or should not
    be changed, review and record a waiver as described below; do not merely
    ignore it.
-4. Run `booley doctor --deep` — never skip it because plain doctor passed.
-   Fix all deep-check failures and warnings, then re-run until it exits 0 with
-   0 warnings. Confirm the deep
-   smoke and self-test lines actually **executed** — a SKIP on the line you
-   were counting on (e.g. selftests skipped for a missing runtime) is not a
-   pass. `--deep` resolves every Target and runs the smokes, so **minutes to
-   tens of minutes is normal and it signals nothing on completion**: start it
-   detached and poll it per SKILL.md → "Waiting on long runs" rather than
-   standing by.
+4. During iteration, exercise an affected Flow and Target directly when a live
+   check is needed; reserve the full deep matrix for the final gate.
 5. **Settle the git footprint** per the plan's decision row 16 — see below.
    This can create or change `doctor-waivers.toml`, so it precedes the final
    evidence runs.
-6. Run plain `booley doctor` **once more** in the container after the footprint
-   is settled. Deep and non-deep checks overlap only partially, and deep-side
-   fixes have regressed plain checks before.
-7. Run `booley doctor --deep` once more in the container. This is the final
-   deep evidence over the exact configuration and waiver file being delivered.
-8. Run plain Doctor once on the **host** as well (`booley doctor` from the repo
+6. Run plain Doctor once on the **host** (`booley doctor` from the repo
    root there). Each side checks what only it can see — host-side
    Docker/network/image checks never run in the container. Expect a few
    runtime-specific SKIPs on each side; a *FAIL* that exists on one side only
-   is real. Resolve or waive host-only warnings too. If this changes the waiver
-   file, repeat the final container plain and deep runs.
+   is real. Resolve or waive host-only warnings before continuing.
+7. Run plain `booley doctor` **once more** in the container after the footprint
+   and host findings are settled. Host-side waiver changes must land before this
+   point.
+8. Run `booley doctor --deep` once in the container. This is the final deep
+   evidence over the exact configuration and waiver file being delivered.
+   Confirm the deep smoke and self-test lines actually **executed** — a SKIP on
+   the line you were counting on (e.g. selftests skipped for a missing runtime)
+   is not a pass. `--deep` resolves every Target and runs the smokes, so
+   **minutes to tens of minutes is normal and it signals nothing on
+   completion**: start it detached and poll it per SKILL.md → "Waiting on long
+   runs" rather than standing by. If it finds a problem, diagnose and iterate
+   with the affected Flow and Target directly, settle the files, repeat the
+   applicable plain checks, and rerun deep Doctor only as the final evidence;
+   a failed attempt does not count as the one successful final run.
 
 ### `--deep` lines specific to setup completeness
 

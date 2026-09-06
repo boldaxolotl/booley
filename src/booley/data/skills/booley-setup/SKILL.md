@@ -34,7 +34,7 @@ without interruption.
 | 1 | **Environment** — planned image + `booley init` re-run. | host | only if the plan changes the sandbox image | (execution phase, below) |
 | 2 | **Project config** — `.core`, `tests.toml`, `booley.toml`. | container; validate via `booley doctor` | yes | `steps/2-project-config.md` |
 | 3 | **AGENTS.md** — Project-level guidance for RTL agents. | container; file edits only | yes | `steps/3-agents-md.md` |
-| 4 | **Doctor** — final audit; resolve every failure and warning, then `--deep`. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
+| 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
 | 6 | **Findings** — report, triage, optional bug report to Booley. | container (host to submit) | yes | `steps/6-findings.md` |
 

@@ -1,4 +1,4 @@
-"""Exercise Host Bootstrap, Project Initialization, and deep Doctor in isolation."""
+"""Exercise Host Bootstrap, Project Initialization, and plain Doctor in isolation."""
 
 from __future__ import annotations
 
@@ -104,14 +104,10 @@ def validate(
         if "[!!]" in init or "[XX]" in init:
             raise RuntimeError("Project Initialization reported a warning or failure")
         checks.append({"id": "project-initialization.clean", "status": "pass"})
-        doctor = _run(
-            [str(booley), "doctor", "--deep", "--skip-agent-checks"],
-            project=project,
-            env=env,
-        )
+        doctor = _run([str(booley), "doctor"], project=project, env=env)
         if "0 failed." not in doctor or _MCP_TOOLS.search(doctor) is None:
-            raise RuntimeError("deep Doctor did not prove the issued-image MCP seam")
-        checks.append({"id": "host-doctor.deep-issued-image", "status": "pass"})
+            raise RuntimeError("plain host Doctor did not prove the issued-image MCP seam")
+        checks.append({"id": "host-doctor.plain-issued-image", "status": "pass"})
     finally:
         probe.unlink(missing_ok=True)
         _editor_marker(home).unlink(missing_ok=True)
