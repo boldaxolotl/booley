@@ -19,7 +19,7 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     find_retired_criteria,
 )
-from booley.targets.target import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
+from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
@@ -796,10 +796,12 @@ def _snapshot_intake_recipe(
     """Resolve one intake Target and return its normalized recipe when it exists."""
     from booley.core.boundary import BoundaryError
     from booley.fusesoc import fusesoc_registry
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import FuseSocError, TargetResolutionError, UnknownTargetError
 
     try:
-        fusesoc_registry.resolve_ref(project_root, target)
-    except fusesoc_registry.UnknownTargetError:
+        handle = TargetCatalog.build(project_root).select(target)
+    except UnknownTargetError:
         if needs_baseline:
             raise FatalError(
                 f"{flow_label} criterion {key!r} requires baseline metrics, but "
@@ -812,19 +814,18 @@ def _snapshot_intake_recipe(
             target,
         )
         return None
-    except fusesoc_registry.FuseSocError as exc:
+    except FuseSocError as exc:
         raise FatalError(
             f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
             slug=ctx.slug,
         ) from exc
     try:
-        resolved = fusesoc_registry.resolve_target(
-            target,
-            project_root=project_root,
+        resolved = fusesoc_registry.resolve_target_handle(
+            handle,
             build_root=build_root,
         )
         return snapshot_builder(resolved, target)
-    except (fusesoc_registry.TargetResolutionError, BoundaryError, OSError) as exc:
+    except (TargetResolutionError, BoundaryError, OSError) as exc:
         raise FatalError(
             f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
             slug=ctx.slug,
@@ -890,9 +891,11 @@ def _seed_project_criteria(
     # tool covers most families; FPGA intent uses the Target axis when present.
     # Empty (no .core authored yet) leaves the expansion unfiltered.
     try:
-        from booley.fusesoc.fusesoc_registry import target_eda_tools
+        from booley.targets.catalog import TargetCatalog
 
-        target_eda_tool_map = target_eda_tools(project_root)
+        target_eda_tool_map = {
+            handle.name: handle.eda_tool for handle in TargetCatalog.build(project_root).list()
+        }
     except Exception:  # noqa: BLE001 — no .core / registry error leaves expansion unfiltered
         target_eda_tool_map = {}
     project_expanded = expand_criteria_defs(project_defs, targets, target_eda_tool_map)

@@ -41,8 +41,9 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
-from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts, edam
 from ..base import BooleyFlow, SubprocessResult
@@ -1793,7 +1794,10 @@ class AsicSynthesizeFlow(BooleyFlow):
         self._baseline_full_sha: str | None = None
         self._implementation_reports: dict[str, ImplementationReport] = {}
 
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="synth")
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="synth",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:
@@ -1985,11 +1989,9 @@ class AsicSynthesizeFlow(BooleyFlow):
     def _setup_preview(self, target: str, reason: str) -> str:
         """Return the non-mutating preview used when full resolution is unavailable."""
         handle = self._target_handle(target)
-        setup_cmd = fusesoc_registry.setup_command(
-            handle.selector,
-            project_root=handle.project_root,
+        setup_cmd = fusesoc_registry.setup_command_for_handle(
+            handle,
             build_root=self._synth_work_root(target),
-            vlnv=handle.vlnv,
         )
         return (
             f"[synth] dry-run ({target}): {' '.join(setup_cmd)}"

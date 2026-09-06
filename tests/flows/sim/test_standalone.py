@@ -78,13 +78,14 @@ def _stub_sources(
     tb: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(SimulateFlow, "_target_handle", lambda *_args: MagicMock())
+    inspection = MagicMock(
+        rtl_files=tuple(rtl),
+        tb_files=tuple(tb or []),
+    )
     monkeypatch.setattr(
-        standalone_mod,
-        "inspect_target",
-        lambda *args, **kwargs: MagicMock(
-            rtl_files=tuple(rtl),
-            tb_files=tuple(tb or []),
-        ),
+        standalone_mod.TargetCatalog,
+        "build",
+        classmethod(lambda _cls, _root: MagicMock(inspect=MagicMock(return_value=inspection))),
     )
 
 

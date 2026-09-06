@@ -23,13 +23,11 @@ from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     classified_sources,
     discover_cores,
-    resolve_ref,
-    selectable_core_closure,
     source_dirs_from_core,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import inspect_target_selector
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +61,8 @@ def _core_source_files(
     if not discover_cores(work_dir):
         return None
     if target:
-        inspection = inspect_target_selector(work_dir, target)
+        catalog = TargetCatalog.build(work_dir)
+        inspection = catalog.inspect(catalog.select(target))
         rtl = [item.path for item in inspection.inputs if "tb" not in item.tags]
         return rtl, list(inspection.tb_files)
     cs = classified_sources(work_dir)
@@ -146,8 +145,9 @@ def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
     cores = discover_cores(root)
     if target is None or not cores:
         return cores
-    resolve_ref(root, target)  # fail loudly for an unknown or ambiguous Target
-    closure = selectable_core_closure(root, [target])
+    catalog = TargetCatalog.build(root)
+    handle = catalog.select(target)
+    closure = catalog.core_closure([handle])
     if not closure:
         raise FuseSocError(f"Target {target!r} resolved without a core dependency closure")
     return sorted(closure)

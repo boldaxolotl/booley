@@ -20,6 +20,7 @@ from booley.fusesoc.core_security import (
     validate_core,
     validate_project_cores,
 )
+from booley.targets.catalog import TargetCatalog
 
 # ---------------------------------------------------------------------------
 # Helpers: build .core docs as parsed dicts (mirrors test_fusesoc_registry style).
@@ -486,10 +487,11 @@ class TestFuseSocScopedAudit:
         # `rtl/*` is in the agent's write Scope; the rogue core's generator lives
         # there, but rogue is unreachable from the seeded Target. `sim` is declared
         # by both top and rogue, so the seed is qualified `top#sim` (ADR 0030).
+        handle = TargetCatalog.build(tmp_path).select("top#sim")
         violations = validate_project_cores(
             tmp_path,
             scope=["rtl/*"],
-            seed_targets=["top#sim"],
+            audit_scope=TargetCatalog.build(tmp_path).core_closure([handle]),
         )
         assert violations == []
 

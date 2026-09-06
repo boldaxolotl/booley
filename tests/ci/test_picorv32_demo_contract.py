@@ -530,9 +530,9 @@ def test_generated_input_rejects_scope_patterns(
 
     monkeypatch.setattr(demo_contract_module, "_git", git_result)
     monkeypatch.setattr(
-        demo_contract_module.fusesoc_registry,
-        "target_referenced_files",
-        lambda _root, _target: (generated.path,),
+        demo_contract_module,
+        "_target_inputs",
+        lambda _catalog, _target: (SimpleNamespace(path=generated.path),),
     )
 
     errors, _path, _digest = _validate_generated_input(tmp_path, scope, generated)
@@ -853,8 +853,18 @@ def test_target_validation_handles_future_missing_invalid_and_broken_targets(
             raise demo_contract_module.fusesoc_registry.FuseSocError("cannot resolve")
         return SimpleNamespace(toplevel="" if target == "empty" else "top")
 
-    monkeypatch.setattr(demo_contract_module.fusesoc_registry, "missing_target_sources", missing)
-    monkeypatch.setattr(demo_contract_module.fusesoc_registry, "resolve_target", resolve)
+    monkeypatch.setattr(
+        demo_contract_module,
+        "_target_inputs",
+        lambda _catalog, target: tuple(
+            SimpleNamespace(path=path) for path in missing(tmp_path, target)
+        ),
+    )
+    monkeypatch.setattr(
+        demo_contract_module,
+        "_resolve_catalog_target",
+        lambda _catalog, target, _build_root: resolve(target),
+    )
 
     errors = demo_contract_module._validate_targets(
         tmp_path,
@@ -886,7 +896,11 @@ def test_generated_input_reports_every_policy_failure(
 
     monkeypatch.setattr(demo_contract_module, "_git", git_result)
     monkeypatch.setattr(
-        demo_contract_module.fusesoc_registry, "target_referenced_files", referenced
+        demo_contract_module,
+        "_target_inputs",
+        lambda _catalog, target: tuple(
+            SimpleNamespace(path=path) for path in referenced(tmp_path, target)
+        ),
     )
 
     errors, path, digest = _validate_generated_input(tmp_path, ["build/**"], generated)

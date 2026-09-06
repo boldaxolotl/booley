@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -22,8 +21,11 @@ from booley.flows.lint.flow import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
-from booley.targets.target import select_targets as canonical_select_targets
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
+from tests.target_test_support import install_lenient_target_catalog, make_target_handle
+
+_REAL_CATALOG_BUILD = TargetCatalog.build
 
 
 def _target_handle(
@@ -37,18 +39,14 @@ def _target_handle(
     """Build a selected Target value for layer-focused Lint tests."""
     root = Path.cwd() if project_root is None else Path(project_root)
     target_vlnv = vlnv or f"::{selector}:0"
-    return TargetHandle(
-        identity=f"{target_vlnv}#{selector}",
-        selector=selector,
-        name=selector,
+    return make_target_handle(
+        root,
+        selector,
         vlnv=target_vlnv,
-        core_file=root.resolve() / f"{selector}.core",
         flow=flow,
         eda_tool=eda_tool,
         drivable_by=("lint",),
-        project_root=root.resolve(),
-        doctor_private=False,
-        _factory_key=_HANDLE_FACTORY_KEY,
+        core_file=root.resolve() / f"{selector}.core",
     )
 
 
@@ -64,17 +62,11 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    def _lenient(project_root, target_arg, *, for_flow=None):
-        try:
-            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
-        except fusesoc_registry.UnknownTargetError:
-            return tuple(
-                _target_handle(token.strip(), project_root=project_root)
-                for token in (target_arg or "").split(",")
-                if token.strip()
-            )
-
-    monkeypatch.setattr("booley.flows.lint.flow.select_targets", _lenient)
+    install_lenient_target_catalog(
+        monkeypatch,
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=lambda root, token: _target_handle(token, project_root=root),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +212,7 @@ class TestLintResolution:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=fake_resolve,
         ):
             cmd, resolved = flow._prepare_lint_command(
@@ -252,7 +244,7 @@ class TestLintResolution:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=fusesoc_registry.TargetResolutionError("boom"),
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
@@ -294,10 +286,10 @@ class TestLintResolution:
         else:
             fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
-        orig_resolve = fusesoc_registry.resolve_target
+        orig_resolve = fusesoc_registry._resolve_target
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: orig_resolve(
                 *a,
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
@@ -340,26 +332,15 @@ class TestDoctorTargetAuthority:
         )
 
     @staticmethod
-    def _doctor_selector(
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> Callable[[Path, str], tuple[TargetHandle, ...]]:
-        import booley.targets.target as target_selection
-
-        def select_for_doctor(
-            project_root: Path,
-            target_arg: str,
-            *,
-            for_flow: str | None = None,
-        ) -> tuple[TargetHandle, ...]:
+    def _doctor_catalog_builder(monkeypatch: pytest.MonkeyPatch):
+        def build_for_doctor(_cls, project_root: Path):
             monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-            selected = canonical_select_targets(project_root, target_arg, for_flow=for_flow)
-            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
-            rejected = MagicMock(side_effect=AssertionError("Target authority was re-requested"))
-            monkeypatch.setattr(target_selection, "select_target", rejected)
-            monkeypatch.setattr(target_selection, "select_targets", rejected)
-            return selected
+            try:
+                return _REAL_CATALOG_BUILD(project_root)
+            finally:
+                monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-        return select_for_doctor
+        return build_for_doctor
 
     def _authorized_lint_flow(
         self,
@@ -374,8 +355,9 @@ class TestDoctorTargetAuthority:
             target_name="lint_selftest_bad",
         )
         monkeypatch.setattr(
-            "booley.flows.lint.flow.select_targets",
-            self._doctor_selector(monkeypatch),
+            TargetCatalog,
+            "build",
+            classmethod(self._doctor_catalog_builder(monkeypatch)),
         )
         monkeypatch.setattr(
             LintFlow,
@@ -414,12 +396,13 @@ class TestDoctorTargetAuthority:
         )
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
         monkeypatch.setattr(
-            "booley.flows.lint.flow.select_targets",
-            canonical_select_targets,
+            TargetCatalog,
+            "build",
+            classmethod(lambda _cls, root: _REAL_CATALOG_BUILD(root)),
         )
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
-        with patch.object(fusesoc_registry, "resolve_target") as resolve:
+        with patch.object(fusesoc_registry, "_resolve_target") as resolve:
             exit_code = LintFlow().main(
                 [
                     "--work-dir",
@@ -452,13 +435,13 @@ class TestDoctorTargetAuthority:
             doctor_selftest=True,
         )
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        (target,) = canonical_select_targets(tmp_path, "doctor#lint")
+        (target,) = _REAL_CATALOG_BUILD(tmp_path).select_many("doctor#lint")
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
         resolved = _stub_resolved("verible")
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", target.selector])
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved) as resolve:
+        with patch.object(fusesoc_registry, "_resolve_target", return_value=resolved) as resolve:
             flow._prepare_lint_command(target)
 
         resolve.assert_called_once_with(
@@ -469,7 +452,7 @@ class TestDoctorTargetAuthority:
             ),
             vlnv="acme:ip:doctor:1.0",
         )
-        setup = fusesoc_registry.setup_command(
+        setup = fusesoc_registry._setup_command(
             target.selector,
             project_root=tmp_path,
             build_root=tmp_path / "build",
@@ -656,7 +639,7 @@ class TestDryRun:
         """Dry-run previews ``fusesoc run --setup`` + ``make`` without resolving.
 
         The preview is sourced from a cheap ``.core`` YAML read; patching
-        ``resolve_target`` to fail proves dry-run never invokes fusesoc.
+        ``_resolve_target`` to fail proves dry-run never invokes fusesoc.
         """
         from booley.fusesoc import fusesoc_registry
 
@@ -670,7 +653,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
@@ -697,7 +680,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "setup_command",
+            "_setup_command",
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
@@ -1676,7 +1659,7 @@ class TestVeribleTargets:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()

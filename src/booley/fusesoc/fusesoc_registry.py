@@ -32,17 +32,19 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import yaml
 from fusesoc.capi2.exprs import Exprs
 
+from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
     CoreProjectionError,
@@ -54,11 +56,32 @@ from booley.fusesoc.core_projection import (
     reconcile_isolated_registry,
     reconcile_projected_cores,
 )
+from booley.targets.domain import (
+    AmbiguousTargetError,  # noqa: F401 - compatibility error re-export
+    CoreCollisionError,
+    CoreSources,
+    ForeignTargetHandleError,
+    FuseSocError,
+    IncompatibleTargetError,
+    MissingSourceError,
+    StaleTargetCatalogError,
+    TargetHandle,
+    TargetRef,
+    TargetResolutionError,
+    UnknownTargetError,  # noqa: F401 - compatibility error re-export
+    flow_can_drive,
+)
+from booley.targets.selection import (
+    resolve as _resolve_selector,
+)
+from booley.targets.selection import (
+    split_selector as _split_qualifier,
+)
+from booley.targets.selection import (
+    vlnv_key as _vlnv_key,
+)
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from booley.targets.target import TargetHandle
 
 # The default fusesoc invocation. In the Sandbox the ``fusesoc`` console script
 # is on PATH (pinned in the image, Phase 0); callers may override for tests or
@@ -98,6 +121,7 @@ _STATE_DIR_NAME = ".booley_project"
 # this subtree (verified against the pinned fusesoc 2.4.6 ``find_cores``).
 STATE_CORES_SUBDIR = "cores"
 
+
 # Filename infix Booley stamps onto a generated ``--trace`` overlay ``.core`` (see
 # :func:`write_trace_overlay`). It is co-located with its base ``.core`` so its
 # relative fileset paths resolve, so it *would* be discovered by the ``*.core``
@@ -105,58 +129,6 @@ STATE_CORES_SUBDIR = "cores"
 # :func:`discover_cores` (Booley's enumeration) skip it so a stray overlay (left
 # behind by a crashed run) can never pollute ``--target`` validation or criteria
 # expansion; FuseSoC itself still sees it during the single resolve that needs it.
-TRACE_OVERLAY_MARKER = ".booleytrace"
-
-
-class FuseSocError(Exception):
-    """Base for FuseSoC registry failures (enumeration or resolution)."""
-
-
-class CoreCollisionError(FuseSocError):
-    """The same logical VLNV is authored in both core roots (ADR 0036).
-
-    A core in ``.booley_project/cores/`` sharing a ``vendor:library:name`` with
-    a repo-tree core is the worktree-shadowing bug reborn as an authoring
-    mistake: whichever copy won would win *silently*. Precedence is never
-    silent — enumeration refuses outright and names both files.
-    """
-
-
-class TargetResolutionError(FuseSocError):
-    """``fusesoc run --setup`` failed, or its resolved EDAM could not be read."""
-
-
-class MissingSourceError(TargetResolutionError):
-    """A Target's fileset references source paths that do not exist on disk.
-
-    Raised by the :func:`resolve_target` preflight *before* ``fusesoc run
-    --setup`` runs: FuseSoC stops at the **first** missing file with a terse
-    ``Cannot find <file> in .``, whereas the incident class this guards against
-    (a ``.core`` baseline fileset pointing into a ``worktrees/`` checkout the
-    user has not created yet) typically has a whole directory of missing files
-    and a one-command fix. The preflight message lists **all** missing paths
-    and, when they fall under a ``worktrees/`` directory, the ``git worktree
-    add`` command that materializes the baseline.
-    """
-
-
-class UnknownTargetError(FuseSocError):
-    """A ``--target`` name is not a selectable Target (decision 10)."""
-
-
-class AmbiguousTargetError(FuseSocError):
-    """A bare ``--target`` name is declared by more than one core (ADR 0030).
-
-    Distinct from :class:`UnknownTargetError` (the name exists — it just isn't
-    unique). The message names the candidate VLNVs so the caller can re-select
-    with a ``vlnv#name`` qualifier.
-    """
-
-
-class IncompatibleTargetError(FuseSocError):
-    """A Target exists but its declared Flow/EDA tool cannot drive this run."""
-
-
 @dataclass(frozen=True)
 class CoreSetupHazard:
     """A statically detectable condition that makes FuseSoC setup unsafe."""
@@ -169,57 +141,6 @@ class CoreSetupHazard:
 # ---------------------------------------------------------------------------
 # .core enumeration — trusted, data-only, no CLI
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TargetRef:
-    """A Target name resolved back to the core that declares it."""
-
-    name: str
-    """The bare Target name — the string a Booley Flow passes as ``--target`` and the
-    ``<target>`` suffix in ``sim_pass_<target>`` / ``lint_clean_<target>`` (decision 10)."""
-
-    vlnv: str
-    """The declaring core's VLNV (its ``.core`` ``name:`` field) — what
-    :func:`resolve_target` hands to ``fusesoc run``."""
-
-    core_file: Path
-    """Absolute path to the ``.core`` that declares the Target."""
-
-    eda_tool: str | None = None
-    """The EDA tool the Target declares (``flow_options.tool``, or the
-    upstream ``default_tool`` mirror) — read straight from the ``.core`` YAML, the same
-    field :func:`resolve_target` later reads from the resolved EDAM. Drives
-    decision-11 criterion-family eligibility without a full resolve. ``None``
-    when the Target declares no EDA tool."""
-
-    flow: str | None = None
-    """The CAPI2 ``flow`` the Target declares (``sim`` / ``lint`` / ``generic``).
-    The *intent* discriminator the EDA tool cannot give: ``verilator`` backs both
-    ``sim`` and ``lint`` flows, so "does this Target need a testbench?" is
-    ``flow == 'sim'``, not an EDA-tool-family test. ``None`` when undeclared (e.g. the
-    implicit ``default`` Target)."""
-
-    cocotb_module: str | None = None
-    """The cocotb Python test module the Target declares
-    (``flow_options.cocotb_module``, ADR 0034 decision 2). Non-``None`` marks a
-    **Cocotb Target** for validation/doctor menus; run-time detection reads the
-    *resolved* flow options instead (:class:`ResolvedTarget.cocotb_module`)."""
-
-    doctor_flows: tuple[str, ...] = ()
-    """Booley Doctor Flows selected by ``flow_options.booley.doctor``.
-
-    The metadata stays inside CAPI2's extensible ``flow_options`` mapping:
-    FuseSoC rejects unknown keys directly on a Target definition. An empty
-    tuple means the Target is intentionally outside Doctor's smoke matrix.
-    """
-
-    doctor_selftest: bool = False
-    """Whether the Target is an internal known-bad fixture for Doctor.
-
-    Doctor self-test Targets remain resolvable by the deep audit, but are not
-    part of Booley's public Target interface or ordinary Flow selection.
-    """
 
 
 _DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "fpga"})
@@ -349,6 +270,27 @@ def discover_cores(project_root: Path | str) -> list[Path]:
         # FUSESOC_IGNORE *at or under* it is honored, matching FuseSoC).
         cores += _scan_core_root(stealth_root)
     return sorted(cores)
+
+
+def target_snapshot_id(project_root: Path | str) -> str:
+    """Content identity for one Project's authored Target and projection inputs."""
+    root = Path(project_root).resolve()
+    digest = hashlib.sha256(str(root).encode())
+    paths = list(discover_cores(root))
+    projection_config = root / _STATE_DIR_NAME / "booley.toml"
+    if projection_config.is_file():
+        paths.append(projection_config)
+    for path in sorted(set(paths)):
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = str(path)
+        digest.update(relative.encode())
+        try:
+            digest.update(path.read_bytes())
+        except OSError as exc:
+            digest.update(f"unreadable:{type(exc).__name__}:{exc}".encode())
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -755,17 +697,6 @@ def core_target_names(core_doc: Mapping[str, Any]) -> list[str]:
     return [name for name in targets if name != _IMPLICIT_TARGET]
 
 
-def _vlnv_key(vlnv: str) -> str:
-    """Normalize a VLNV to its ``vendor:library:name`` identity.
-
-    CAPI2 ``name:`` fields may or may not carry the trailing ``:version``
-    segment; identity/qualifier matching must not depend on whether the author
-    wrote it.
-    """
-    parts = vlnv.split(":")
-    return ":".join(parts[:3]) if len(parts) >= 3 else vlnv
-
-
 def core_identity_key(core_doc: Mapping[str, Any]) -> str:
     """The parsed core's version-independent ``vendor:library:name`` identity.
 
@@ -842,30 +773,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
     return refs
 
 
-def enumerate_targets(project_root: Path | str) -> dict[str, TargetRef]:
-    """Map every selectable Target name to its declaring core (first-wins view).
-
-    Reads ``.core`` YAML directly (decision 6). When a name is declared by more
-    than one distinct core (ADR 0030 — normal in a multi-core FuseSoC repo) the
-    first core in :func:`discover_cores` order wins for a *direct* lookup; drive
-    ``--target`` selection through :func:`resolve_ref`, which refuses an
-    ambiguous bare name rather than guessing. The ``default`` Target is not
-    enumerated (it is not a selectable config).
-    """
-    return {name: bucket[0] for name, bucket in _enumerate_all(project_root).items()}
-
-
-def enumerate_public_targets(project_root: Path | str) -> dict[str, TargetRef]:
-    """Map user-selectable Target names to their first public declaration."""
-    public: dict[str, TargetRef] = {}
-    for name, bucket in _enumerate_all(project_root).items():
-        ref = next((candidate for candidate in bucket if not candidate.doctor_selftest), None)
-        if ref is not None:
-            public[name] = ref
-    return public
-
-
-def target_declarations(project_root: Path | str) -> dict[str, list[TargetRef]]:
+def _target_declarations(project_root: Path | str) -> dict[str, list[TargetRef]]:
     """Map every selectable Target name to ALL cores that declare it (ADR 0030).
 
     The multi-core companion of :func:`enumerate_targets`: instead of the
@@ -878,65 +786,7 @@ def target_declarations(project_root: Path | str) -> dict[str, list[TargetRef]]:
     return {name: list(bucket) for name, bucket in _enumerate_all(project_root).items()}
 
 
-def _split_qualifier(token: str) -> tuple[str | None, str]:
-    """Split a ``vlnv#name`` selection token into ``(vlnv_or_None, name)``.
-
-    A bare ``name`` yields ``(None, name)``. ``#`` is FuseSoC's own VLNV/target
-    separator (ADR 0030); ``rpartition`` keeps any ``:`` in the VLNV part intact
-    (VLNVs carry colons, Target names never do).
-    """
-    if "#" in token:
-        vlnv, _, name = token.rpartition("#")
-        return (vlnv or None, name)
-    return (None, token)
-
-
-def _vlnv_matches(query: str, vlnv: str) -> bool:
-    """True when *query* is a segment-suffix of *vlnv*'s ``vendor:library:name``.
-
-    Lets a VLNV qualifier be shortened to its shortest unambiguous form (ADR
-    0030): ``ibex_top`` (name only), ``ibex:ibex_top``, and the full
-    ``lowrisc:ibex:ibex_top`` all match ``lowrisc:ibex:ibex_top``. The trailing
-    ``:version`` segment is ignored on both sides.
-    """
-    key_segs = _vlnv_key(vlnv).split(":")
-    q_segs = _vlnv_key(query).split(":")
-    return len(q_segs) <= len(key_segs) and key_segs[-len(q_segs) :] == q_segs
-
-
-def _resolve_from(declarations: Mapping[str, Sequence[TargetRef]], token: str) -> TargetRef:
-    """Resolve *token* against one already-filtered Target declaration view."""
-    qualifier, name = _split_qualifier(token)
-    bucket = declarations.get(name)
-    if not bucket:
-        known = ", ".join(sorted(declarations)) or "(none authored)"
-        raise UnknownTargetError(f"Unknown target {token!r}; selectable Targets: {known}")
-    if qualifier is not None:
-        matches = [r for r in bucket if _vlnv_matches(qualifier, r.vlnv)]
-        if not matches:
-            cands = ", ".join(sorted(r.vlnv for r in bucket))
-            raise UnknownTargetError(
-                f"no Target {name!r} in a core matching {qualifier!r}; "
-                f"cores declaring {name!r}: {cands}"
-            )
-        if len(matches) > 1:
-            cands = ", ".join(sorted(r.vlnv for r in matches))
-            raise AmbiguousTargetError(
-                f"{token!r} is ambiguous — {qualifier!r} matches {len(matches)} "
-                f"cores: {cands}; use a longer VLNV qualifier."
-            )
-        return matches[0]
-    if len(bucket) > 1:
-        cands = sorted(r.vlnv for r in bucket)
-        hint = f"{_vlnv_key(cands[0]).split(':')[-1]}#{name}"
-        raise AmbiguousTargetError(
-            f"Target {name!r} is declared by {len(bucket)} cores: "
-            f"{', '.join(cands)}; qualify it as 'vlnv#{name}' (e.g. {hint!r})."
-        )
-    return bucket[0]
-
-
-def resolve_ref(project_root: Path | str, token: str) -> TargetRef:
+def _resolve_ref(project_root: Path | str, token: str) -> TargetRef:
     """Resolve a ``--target`` token to the one core that declares it (ADR 0030).
 
     *token* is either a bare Target name — which must be declared by exactly one
@@ -947,92 +797,16 @@ def resolve_ref(project_root: Path | str, token: str) -> TargetRef:
     VLNV qualifier — matches more than one core, naming the candidates so the
     caller can qualify further. This low-level view includes Doctor self-tests.
     """
-    return _resolve_from(_enumerate_all(project_root), token)
+    return _resolve_selector(_enumerate_all(project_root), token)
 
 
-def resolve_public_ref(project_root: Path | str, token: str) -> TargetRef:
+def _resolve_public_ref(project_root: Path | str, token: str) -> TargetRef:
     """Resolve one user-selectable Target without exposing Doctor self-tests."""
     declarations = {
         name: [ref for ref in refs if not ref.doctor_selftest]
         for name, refs in _enumerate_all(project_root).items()
     }
-    return _resolve_from({name: refs for name, refs in declarations.items() if refs}, token)
-
-
-def minimal_selector(ref: TargetRef, declaring: Sequence[TargetRef]) -> str:
-    """The shortest ``--target`` token that uniquely selects *ref* (ADR 0030).
-
-    The inverse of :func:`resolve_ref`: given every core declaring the same
-    bare name (*declaring* — a :func:`target_declarations` bucket), return the
-    bare name when it is unambiguous, else the shortest VLNV segment-suffix
-    qualifier (``ibex_top#lint``) that :func:`resolve_ref` accepts. The full
-    ``vendor:library:name`` suffix is always unique (same-key cores collapse in
-    enumeration), so the loop always terminates with a valid token.
-    """
-    if len(declaring) <= 1:
-        return ref.name
-    segments = _vlnv_key(ref.vlnv).split(":")
-    for length in range(1, len(segments) + 1):
-        qualifier = ":".join(segments[-length:])
-        if sum(1 for r in declaring if _vlnv_matches(qualifier, r.vlnv)) == 1:
-            return f"{qualifier}#{ref.name}"
-    return f"{ref.vlnv}#{ref.name}"  # unreachable; kept for type-safety
-
-
-def available_targets(project_root: Path | str) -> list[str]:
-    """Sorted selectable Target names for the project (decision 10).
-
-    The names that ``--target`` validation and per-Target criteria expansion
-    drive off — the project's ``.core`` Target names. The transitional
-    ``configs.toml``-derived fallback (decision 23) was removed once every project
-    migrated to ``.core``.
-    """
-    return sorted(enumerate_public_targets(project_root))
-
-
-def doctor_target_selectors(project_root: Path | str, flow_name: str) -> list[str]:
-    """Return every unambiguous Target selector opted into one Doctor Flow."""
-    selected: list[str] = []
-    for _name, declaring in sorted(target_declarations(project_root).items()):
-        for ref in declaring:
-            if flow_name in ref.doctor_flows:
-                selected.append(minimal_selector(ref, declaring))
-    return selected
-
-
-def doctor_target_seed(project_root: Path | str) -> list[str]:
-    """Return the deduplicated selectors for Doctor's complete target matrix."""
-    seed: list[str] = []
-    for flow_name in sorted(_DOCTOR_FLOW_NAMES):
-        for selector in doctor_target_selectors(project_root, flow_name):
-            if selector not in seed:
-                seed.append(selector)
-    return seed
-
-
-def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
-    """Map each selectable Target name to its declared EDA tool (decision 11).
-
-    Powers criterion-family eligibility (a Yosys synth Target is not eligible
-    for ``sim_pass_*``, etc.).  Empty when no ``.core`` files exist yet — the
-    transitional configs.toml world declares no per-Target EDA tool, so eligibility
-    filtering is dormant until migration.
-    """
-    return {name: ref.eda_tool for name, ref in enumerate_public_targets(project_root).items()}
-
-
-def target_cocotb_modules(project_root: Path | str) -> dict[str, str | None]:
-    """Map each selectable Target name to its declared ``cocotb_module`` (ADR 0034).
-
-    The cheap ``.core``-read mirror of :func:`target_eda_tools`: a non-``None``
-    value marks a **Cocotb Target** for validation, dry-run previews and doctor
-    menus (decision 2 — cocotb-ness is never marked in ``tests.toml``). Run-time
-    detection reads the *resolved* flow options (ADR 0022 decision 6's
-    enumerate-vs-resolve line), via :class:`ResolvedTarget.cocotb_module`.
-    """
-    return {
-        name: ref.cocotb_module for name, ref in enumerate_public_targets(project_root).items()
-    }
+    return _resolve_selector({name: refs for name, refs in declarations.items() if refs}, token)
 
 
 # ---------------------------------------------------------------------------
@@ -1133,62 +907,50 @@ def depended_on_core_keys(project_root: Path | str) -> set[str]:
     return keys
 
 
-def selectable_core_closure(
-    project_root: Path | str,
-    seed_target_names: Collection[str] | None = None,
-) -> frozenset[Path] | None:
-    """Core files reachable from the project's declared Targets' closures.
-
-    Returns ``None`` when *seed_target_names* is empty/``None`` — the caller then
-    audits *every* discovered ``.core`` exactly as before, so a single-core or
-    unconfigured repo is unaffected.
-
-    When the project marks its Doctor Targets in ``flow_options.booley.doctor``,
-    a 208-core monorepo would otherwise
-    fold the scripts/paths of every unselectable core into the host-side ``.core``
-    audits (:func:`core_security.validate_project_cores`), producing false doctor
-    FAILs on cores that can never be a selectable Target (SETUP-19). This restricts
-    the audit set to the cores reachable from the seeded Targets:
-
-      * the cores that DECLARE a seeded Target (roots), plus
-      * the transitive closure of CAPI2 ``depend`` edges — each root Target's own
-        ``depend`` and the ``depend`` of the filesets it pulls in, then every
-        ``depend`` of each core so reached.
-
-    Each seed token is resolved via :func:`resolve_ref` (a bare name or a
-    ``vlnv#name`` qualifier); a seed that does not resolve simply does not widen
-    the scope. Matching is version-independent (``vendor:library:name``); a core
-    versioned at two paths maps to both, so a depend reaches whichever version
-    FuseSoC picks.
-    """
-    if not seed_target_names:
-        return None  # no declared Target surface → audit every core (historical)
-
-    root = Path(project_root)
-    # Index every discovered core by VLNV identity, caching parsed docs so the
-    # BFS re-reads nothing (the audit caller parses them again independently).
+def _index_core_documents(
+    project_root: Path,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> tuple[dict[Path, Mapping[str, Any]], dict[str, list[Path]]]:
+    """Capture/index core documents, or index a catalog's frozen capture."""
     by_key: dict[str, list[Path]] = {}
-    docs: dict[Path, dict[str, Any]] = {}
-    for core_file in discover_cores(root):
-        try:
-            doc = read_core(core_file)
-        except FuseSocError:
-            continue
-        docs[core_file] = doc
+    docs: dict[Path, Mapping[str, Any]] = {}
+    source_documents = documents
+    if source_documents is None:
+        captured: dict[Path, Mapping[str, Any]] = {}
+        for core_file in discover_cores(project_root):
+            try:
+                captured[core_file.resolve()] = read_core(core_file)
+            except FuseSocError:
+                continue
+        source_documents = captured
+    for core_file, doc in source_documents.items():
+        resolved_core_file = core_file.resolve()
+        docs[resolved_core_file] = doc
         vlnv = doc.get("name")
         if isinstance(vlnv, str) and vlnv:
-            by_key.setdefault(_vlnv_key(vlnv), []).append(core_file)
+            by_key.setdefault(_vlnv_key(vlnv), []).append(resolved_core_file)
+    return docs, by_key
+
+
+def _selectable_core_closure_for_refs(
+    project_root: Path,
+    seed_refs: Collection[TargetRef | TargetHandle],
+    *,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> frozenset[Path]:
+    """Walk dependency cores from references already selected by an adapter.
+
+    A catalog supplies its frozen *documents*. Legacy registry-internal callers
+    omit them and get one live document capture without any token selection.
+    """
+    docs, by_key = _index_core_documents(project_root, documents)
 
     # Seed the closure with the declaring core of each seeded Target; the first
     # frontier is only those Targets' depends (precise per-Target — a root core's
     # *other*, unselectable Targets must not widen the closure).
     closure: set[Path] = set()
     frontier: set[str] = set()
-    for token in seed_target_names:
-        try:
-            ref = resolve_ref(root, token)
-        except FuseSocError:
-            continue  # a misconfigured/absent seed just doesn't widen the scope
+    for ref in seed_refs:
         closure.add(ref.core_file)
         doc = docs.get(ref.core_file)
         if doc is not None:
@@ -1209,32 +971,6 @@ def selectable_core_closure(
     return frozenset(closure)
 
 
-@dataclass(frozen=True)
-class CoreSources:
-    """RTL/TB source-file partition read straight from a ``.core`` (pre-resolve).
-
-    The cheap, subprocess-free analog of
-    :attr:`ResolvedTarget.rtl_source_files` / :attr:`ResolvedTarget.tb_files`
-    (decision 13). Paths are **project-root-relative**: a CAPI2 fileset path is
-    relative to its ``.core`` file's directory, so it is re-based here — for a
-    repo-root core that is the identity, but a nested or state-zone core
-    (ADR 0036 stealth cores) resolves its files beside the core, not the root.
-    Callers that must act on *source* files **before** ``fusesoc run`` stages a
-    build — ``tb_coder``'s RTL-blind information barrier and
-    ``mutation_tester``'s in-place mux swap (Unit A.3 ordering) — can therefore
-    join these paths to the project root directly. In-project resolution
-    symlinks are collapsed to their real project-relative source paths so
-    callers, Git, and scope guards all name the same file. External sources
-    remain absolute.
-    """
-
-    rtl_source_files: tuple[str, ...]
-    """Non-TB compiled sources, excluding ``is_include_file`` headers."""
-
-    tb_files: tuple[str, ...]
-    """Files tagged ``tb``."""
-
-
 def core_relative_to_project(core_file: Path | str, project_root: Path | str, path: str) -> str:
     """A fileset path (core-dir-relative per CAPI2) re-based project-root-relative.
 
@@ -1245,10 +981,16 @@ def core_relative_to_project(core_file: Path | str, project_root: Path | str, pa
     never ``resolve()``): a stealth core's reach-through symlinks must keep
     their project-relative spelling, not collapse to their targets.
     """
-    joined = os.path.normpath(str(_core_files_root(Path(core_file), Path(project_root)) / path))
+    # FuseSoC values can cross a Windows/POSIX process boundary (for example,
+    # a provider-generated prospective checkout inspected in Linux). Treat both
+    # separators as lexical path separators regardless of this process's host.
+    portable_path = path.replace("\\", "/")
+    joined = os.path.normpath(
+        str(_core_files_root(Path(core_file), Path(project_root)) / portable_path)
+    )
     # Forward slashes always — .core files are authored that way, and consumers
     # compare against git ls-files output (also forward-slash on every OS).
-    return os.path.relpath(joined, str(project_root)).replace(os.sep, "/")
+    return os.path.relpath(joined, str(project_root)).replace("\\", "/")
 
 
 def canonical_project_path(project_root: Path | str, path: Path | str) -> str:
@@ -1414,7 +1156,7 @@ def _dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
     return list(filesets) if isinstance(filesets, Mapping) else []
 
 
-def target_source_files(
+def _target_source_files(
     project_root: Path | str,
     target: str,
     include_dependencies: bool = False,
@@ -1443,7 +1185,7 @@ def target_source_files(
     Raises :class:`UnknownTargetError` / :class:`AmbiguousTargetError` when
     *target* is not a single selectable Target (ADR 0030).
     """
-    ref = resolve_ref(project_root, target)
+    ref = _resolve_ref(project_root, target)
     return target_source_files_for_ref(
         project_root,
         ref,
@@ -1476,8 +1218,7 @@ def target_source_files_for_ref(
     )
 
     if include_dependencies:
-        token = f"{ref.vlnv}#{ref.name}"
-        closure = selectable_core_closure(project_root, [token]) or frozenset()
+        closure = _selectable_core_closure_for_refs(Path(project_root), [ref])
         for core_file in sorted(closure):
             if core_file == ref.core_file:
                 continue  # already partitioned above, per the selected Target
@@ -1607,7 +1348,7 @@ def _literal_target_source_paths(
     return paths
 
 
-def target_referenced_files(project_root: Path | str, target: str) -> tuple[str, ...]:
+def _target_referenced_files(project_root: Path | str, target: str) -> tuple[str, ...]:
     """Return every file referenced by one Target, including data files.
 
     Unlike :func:`target_source_files`, this inventory intentionally includes
@@ -1616,7 +1357,7 @@ def target_referenced_files(project_root: Path | str, target: str) -> tuple[str,
     Paths are relative to *project_root*, matching ticket Scope and CI contracts.
     """
     root = Path(project_root)
-    ref = resolve_ref(root, target)
+    ref = _resolve_ref(root, target)
     doc = read_core(ref.core_file)
     targets = doc.get("targets") or {}
     target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
@@ -1627,8 +1368,7 @@ def target_referenced_files(project_root: Path | str, target: str) -> tuple[str,
         _possible_fileset_names(target_def),
     )
 
-    token = f"{ref.vlnv}#{ref.name}"
-    closure = selectable_core_closure(root, [token]) or frozenset()
+    closure = _selectable_core_closure_for_refs(root, [ref])
     for core_file in sorted(closure):
         if core_file == ref.core_file:
             continue
@@ -1687,7 +1427,7 @@ def _worktree_root_of(path: str) -> str | None:
     return None
 
 
-def missing_target_sources(project_root: Path | str, target: str) -> list[str]:
+def _missing_target_sources(project_root: Path | str, target: str) -> list[str]:
     """Literal fileset paths of *target*'s declaring core that don't exist on disk.
 
     CAPI2 fileset paths are relative to the declaring ``.core``'s directory
@@ -1698,7 +1438,18 @@ def missing_target_sources(project_root: Path | str, target: str) -> list[str]:
     resolution's own errors take over.
     """
     try:
-        ref = resolve_ref(project_root, target)
+        ref = _resolve_ref(project_root, target)
+    except FuseSocError:
+        return []
+    return missing_target_sources_for_ref(project_root, ref)
+
+
+def missing_target_sources_for_ref(
+    project_root: Path | str,
+    ref: TargetRef,
+) -> list[str]:
+    """Return missing literal paths for an already-selected Target declaration."""
+    try:
         doc = read_core(ref.core_file)
     except FuseSocError:
         return []
@@ -1714,7 +1465,7 @@ def missing_target_sources(project_root: Path | str, target: str) -> list[str]:
     return missing
 
 
-def preflight_target_sources(target: str, project_root: Path | str) -> None:
+def _preflight_target_sources(target: str, project_root: Path | str) -> None:
     """Fail fast when *target* references source paths that don't exist on disk.
 
     The shared seam every built-in resolves through (:func:`resolve_target` —
@@ -1728,10 +1479,21 @@ def preflight_target_sources(target: str, project_root: Path | str) -> None:
     (the motivating incident: a baseline Target pointing at a worktree checkout
     the user was expected to create).
     """
-    missing = missing_target_sources(project_root, target)
+    missing = _missing_target_sources(project_root, target)
     if not missing:
         return
-    ref = resolve_ref(project_root, target)  # exists: missing is non-empty
+    ref = _resolve_ref(project_root, target)  # exists: missing is non-empty
+    _raise_missing_target_sources(target, ref, missing)
+
+
+def preflight_target_sources_for_ref(project_root: Path | str, ref: TargetRef) -> None:
+    """Fail fast for missing sources without resolving a selected token again."""
+    missing = missing_target_sources_for_ref(project_root, ref)
+    if missing:
+        _raise_missing_target_sources(ref.name, ref, missing)
+
+
+def _raise_missing_target_sources(target: str, ref: TargetRef, missing: list[str]) -> None:
     lines = [
         f"cannot resolve Target '{target}': {len(missing)} source path(s) "
         f"declared by {ref.core_file} do not exist on disk "
@@ -1875,7 +1637,7 @@ def source_dirs_from_core(
     return (sorted(rtl_dirs), sorted(tb_dirs), sorted(tb_incl))
 
 
-def sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
+def _sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
     """True when a sim Target declares files but none carry ``tags:[tb]``.
 
     A sim Target needs a testbench, and Source Isolation partitions RTL-vs-TB by
@@ -1887,7 +1649,7 @@ def sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
     filesets") raises on.  Non-sim Targets (synth/fpga) legitimately have no TB
     and are out of scope — callers gate on the Target's EDA tool first.
     """
-    src = target_source_files(project_root, target)
+    src = _target_source_files(project_root, target)
     return bool(src.rtl_source_files) and not src.tb_files
 
 
@@ -1898,10 +1660,10 @@ def _selection_resolver() -> Callable[[Path | str, str], TargetRef]:
     doctor_selftest = (
         os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
     )
-    return resolve_ref if doctor_selftest else resolve_public_ref
+    return _resolve_ref if doctor_selftest else _resolve_public_ref
 
 
-def resolve_selected_ref(project_root: Path | str, token: str) -> TargetRef:
+def _resolve_selected_ref(project_root: Path | str, token: str) -> TargetRef:
     """Resolve one Target at the public or Doctor-internal selection boundary."""
     return _selection_resolver()(project_root, token)
 
@@ -1910,8 +1672,6 @@ def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -
     """Reject a known Target that the requested Flow cannot drive."""
     if for_flow is None:
         return
-    from booley.targets.target_surface import flow_can_drive
-
     if flow_can_drive(for_flow, ref):
         return
     from booley.targets.flow_names import canonical
@@ -1924,12 +1684,12 @@ def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -
     )
 
 
-def parse_target_tokens(target_arg: str | None) -> list[str]:
+def _parse_target_tokens(target_arg: str | None) -> list[str]:
     """Split a comma-separated ``--target`` argument into nonempty tokens."""
     return [token.strip() for token in (target_arg or "").split(",") if token.strip()]
 
 
-def resolve_target_selection(
+def _resolve_target_selection(
     target_arg: str | None,
     project_root: Path | str,
     *,
@@ -1941,12 +1701,12 @@ def resolve_target_selection(
     Bare names must be unambiguous; ``vlnv#name`` qualifiers disambiguate.
     Doctor's private self-test Targets remain hidden from public selection.
     """
-    selected = parse_target_tokens(target_arg)
+    selected = _parse_target_tokens(target_arg)
     if not selected:
         return []
 
     for token in selected:
-        ref = resolve_selected_ref(project_root, token)
+        ref = _resolve_selected_ref(project_root, token)
         _require_flow_compatible(for_flow, token, ref)
     return selected
 
@@ -2186,7 +1946,7 @@ def _find_edam(build_root: Path, target: str) -> Path:
     return matches[0]
 
 
-def setup_command(
+def _setup_command(
     target: str,
     *,
     project_root: Path | str,
@@ -2217,29 +1977,83 @@ def setup_command(
         raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
     if vlnv is None:
         try:
-            ref = resolve_ref(project_root, target)
+            ref = _resolve_ref(project_root, target)
         except FuseSocError as exc:  # unknown / ambiguous → resolution error
             raise TargetResolutionError(str(exc)) from exc
         vlnv = ref.vlnv
     else:
         # vlnv names the core explicitly; still enumerate for the tool_<x> flag.
         try:
-            ref = resolve_ref(project_root, target)
+            ref = _resolve_ref(project_root, target)
         except FuseSocError:
             ref = None
-    # fusesoc's --target takes the bare Target name, never the vlnv#name token.
     target_name = ref.name if ref is not None else target
-    # Flow-API Targets don't set the upstream ``tool_<x>`` use-flag that the legacy
-    # FuseSoC API sets, so upstream cores gating files behind `tool_verilator ? (...)`
-    # (lowRISC: the C++ harness, memutil, lint waivers) silently lose them.
-    # Re-inject the flag fusesoc would have set for the declared EDA tool, so
-    # flow-API Targets see the same fileset a legacy FuseSoC API build would.
-    flag_args: list[str] = []
-    if ref is not None and ref.flow and ref.eda_tool:
-        flag_args = ["--flag", f"tool_{ref.eda_tool}"]
-    # --cores-root is repeatable (argparse action="append" in the pinned
-    # FuseSoC). The prepared plan keeps CLI setup and in-process inspection on
-    # the same ordered library view.
+    return _setup_argv(
+        library_plan,
+        target_name=target_name,
+        vlnv=vlnv,
+        flow=ref.flow if ref is not None else None,
+        eda_tool=ref.eda_tool if ref is not None else None,
+        build_root=build_root,
+        fusesoc_cmd=fusesoc_cmd,
+    )
+
+
+def setup_command_for_handle(
+    handle: TargetHandle,
+    *,
+    build_root: Path | str,
+    resolution_vlnv: str | None = None,
+    fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
+) -> list[str]:
+    """Build FuseSoC setup argv from catalog-authorized Target facts."""
+    root = require_current_target_handle(handle)
+    try:
+        library_plan = prepare_core_library_plan(root)
+        library_plan.operational_core(handle.core_file)
+    except (CoreProjectionError, OSError) as exc:
+        raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
+    return _setup_argv(
+        library_plan,
+        target_name=handle.name,
+        vlnv=resolution_vlnv or handle.vlnv,
+        flow=handle.flow,
+        eda_tool=handle.eda_tool,
+        build_root=Path(build_root),
+        fusesoc_cmd=fusesoc_cmd,
+    )
+
+
+def require_current_target_handle(
+    handle: TargetHandle,
+    *,
+    project_root: Path | str | None = None,
+) -> Path:
+    """Validate a handle's Project and snapshot before operational preparation."""
+    root = handle.project_root
+    if project_root is not None and Path(project_root).resolve() != root:
+        raise ForeignTargetHandleError(
+            f"Target {handle.identity!r} was selected for Project {root}, "
+            f"not {Path(project_root).resolve()}"
+        )
+    if handle.snapshot_id and target_snapshot_id(root) != handle.snapshot_id:
+        raise StaleTargetCatalogError(
+            f"Target catalog for {root} is stale; select the Target again"
+        )
+    return root
+
+
+def _setup_argv(
+    library_plan: CoreLibraryPlan,
+    *,
+    target_name: str,
+    vlnv: str,
+    flow: str | None,
+    eda_tool: str | None,
+    build_root: Path,
+    fusesoc_cmd: Sequence[str],
+) -> list[str]:
+    flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
         argument
         for library_root in library_plan.roots
@@ -2259,7 +2073,7 @@ def setup_command(
     ]
 
 
-def resolve_target(
+def _resolve_target(
     target: str,
     *,
     project_root: Path | str,
@@ -2289,7 +2103,7 @@ def resolve_target(
     # after '#' (Target names never contain one).
     bare_target = _split_qualifier(target)[1]
 
-    cmd = setup_command(
+    cmd = _setup_command(
         target,
         project_root=project_root,
         build_root=build_root,
@@ -2302,7 +2116,30 @@ def resolve_target(
     # `git worktree add` hint for missing worktree baselines). Checked against
     # the *enumerated* core for `target`, so an explicit-vlnv resolve (e.g. a
     # --trace overlay, which reuses the base core's filesets) is covered too.
-    preflight_target_sources(bare_target, project_root)
+    _preflight_target_sources(bare_target, project_root)
+    return _run_setup_command(
+        cmd,
+        project_root=project_root,
+        build_root=build_root,
+        target=bare_target,
+        vlnv=vlnv,
+        fusesoc_cmd=fusesoc_cmd,
+        env=env,
+        runner=runner,
+    )
+
+
+def _run_setup_command(
+    cmd: list[str],
+    *,
+    project_root: Path,
+    build_root: Path,
+    target: str,
+    vlnv: str,
+    fusesoc_cmd: Sequence[str],
+    env: Mapping[str, str] | None,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
     try:
         proc = runner(
@@ -2322,12 +2159,11 @@ def resolve_target(
         diagnostic = proc.stderr.strip() or proc.stdout.strip()
         detail = f":\n{diagnostic}" if diagnostic else " with no diagnostic output"
         raise TargetResolutionError(
-            f"fusesoc run --setup --target {bare_target} {vlnv} failed "
-            f"(exit {proc.returncode}){detail}"
+            f"fusesoc run --setup --target {target} {vlnv} failed (exit {proc.returncode}){detail}"
         )
 
-    edam_path = _find_edam(build_root, bare_target)
-    return parse_edam(edam_path, target=bare_target, vlnv=vlnv)
+    edam_path = _find_edam(build_root, target)
+    return parse_edam(edam_path, target=target, vlnv=vlnv)
 
 
 def resolve_target_handle(
@@ -2335,17 +2171,46 @@ def resolve_target_handle(
     *,
     build_root: Path | str,
     resolution_vlnv: str | None = None,
+    fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
+    env: Mapping[str, str] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> ResolvedTarget:
-    """Resolve a complete, selection-authorized Target handle through FuseSoC."""
-    return resolve_target(
-        handle.selector,
-        project_root=handle.project_root,
+    """Resolve a catalog-authorized handle without selecting its token again."""
+    root = require_current_target_handle(handle)
+    build = Path(build_root)
+    vlnv = resolution_vlnv or handle.vlnv
+    cmd = setup_command_for_handle(
+        handle,
         build_root=build_root,
-        vlnv=resolution_vlnv or handle.vlnv,
+        resolution_vlnv=resolution_vlnv,
+        fusesoc_cmd=fusesoc_cmd,
+    )
+    preflight_target_sources_for_ref(
+        root,
+        TargetRef(
+            name=handle.name,
+            vlnv=handle.vlnv,
+            core_file=handle.core_file,
+            eda_tool=handle.eda_tool,
+            flow=handle.flow,
+            cocotb_module=handle.cocotb_module,
+            doctor_flows=handle.doctor_flows,
+            doctor_selftest=handle.doctor_private,
+        ),
+    )
+    return _run_setup_command(
+        cmd,
+        project_root=root,
+        build_root=build,
+        target=handle.name,
+        vlnv=vlnv,
+        fusesoc_cmd=fusesoc_cmd,
+        env=env,
+        runner=runner,
     )
 
 
-def try_resolve_target(
+def _try_resolve_target(
     target: str,
     *,
     project_root: Path | str,
@@ -2372,14 +2237,14 @@ def try_resolve_target(
     """
     proot = Path(project_root)
     try:
-        ref = resolve_ref(proot, target)
+        ref = _resolve_ref(proot, target)
     except FuseSocError as exc:  # unknown / ambiguous / unreadable .core → legacy fallback
         logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
         return None
     if build_root is None:
         build_root = proot / ".booley_project" / ".runtime" / "edalize" / "payload" / ref.name
     try:
-        return resolve_target(
+        return _resolve_target(
             ref.name,
             project_root=proot,
             build_root=build_root,
@@ -2389,22 +2254,3 @@ def try_resolve_target(
     except FuseSocError as exc:  # no fusesoc on PATH / setup failure → legacy fallback
         logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
         return None
-
-
-# ---------------------------------------------------------------------------
-# Trace overlay — a generated, agent-immutable-safe ``--trace`` build (ADR 0022)
-# ---------------------------------------------------------------------------
-#
-# The overlay *construction* responsibility now lives in a sibling module
-# (:mod:`booley.fusesoc.fusesoc_trace_overlay`, principle 8 / SRP). The symbols are
-# re-exported here unchanged so existing ``fusesoc_registry.X`` consumers
-# (doctor, simulate, coverage_analyst, tests) keep working.
-from .fusesoc_trace_overlay import (  # noqa: F401  # re-exported for backward compatibility
-    DEFAULT_TRACE_DEPTH,
-    TraceMode,
-    TraceOverlay,
-    target_includes_dump_module,
-    trace_overlay_vlnv,
-    validate_cocotb_trace_mode,
-    write_trace_overlay,
-)

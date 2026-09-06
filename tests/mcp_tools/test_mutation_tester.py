@@ -36,6 +36,7 @@ from booley.specialists.mutation_tester import (
     generate_specs_markdown,
     parse_creator_output,
 )
+from booley.targets.catalog import TargetCatalog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -536,7 +537,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
 
 
 def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
-    """Stub fusesoc_registry.resolve_target — no real FuseSoC (Unit A.3).
+    """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
     dir, so ``_run_elab`` derives the make/bin-dir from it and writes its
@@ -544,7 +545,17 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
     """
     import types
 
-    def _fake_resolve(target, *, project_root, build_root, **kwargs):
+    def _fake_select(work_dir, target, *, for_flow=None):
+        return types.SimpleNamespace(
+            selector=target,
+            name=target,
+            vlnv=f"::{target}:0",
+            project_root=Path(work_dir),
+            eda_tool=eda_tool,
+            cocotb_module=None,
+        )
+
+    def _fake_resolve(handle, *, build_root, **kwargs):
         return types.SimpleNamespace(
             build_root=Path(build_root),
             toplevel="tb",
@@ -552,7 +563,22 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         )
 
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.resolve_target",
+        TargetCatalog,
+        "build",
+        classmethod(
+            lambda _cls, work_dir: type(
+                "FakeCatalog",
+                (),
+                {
+                    "select": lambda _self, target, **kwargs: _fake_select(
+                        work_dir, target, **kwargs
+                    )
+                },
+            )()
+        ),
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
         _fake_resolve,
     )
 
@@ -561,7 +587,7 @@ def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
     """Stub the edalize build+run mutation_tester drives (Unit A.3).
 
     Behaviour:
-      * ``resolve_target`` → fake (no FuseSoC CLI).
+      * ``_resolve_target`` → fake (no FuseSoC CLI).
       * a ``make`` build returns rc=0.
       * a ``verilator_run`` per-mutant invocation returns the chosen rc, so
         baseline + pinned + sweep all "pass" by default.
@@ -1285,13 +1311,28 @@ class TestValidateScopeAgainstTarget:
 
 def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
+
+    def build(_cls, work_dir):
+        def select(_self, target, **_kwargs):
+            return type(
+                "FakeHandle",
+                (),
+                {
+                    "selector": target,
+                    "name": target,
+                    "vlnv": f"::{target}:0",
+                    "project_root": Path(work_dir),
+                    "cocotb_module": module,
+                    "eda_tool": eda_tool,
+                },
+            )()
+
+        return type("FakeCatalog", (), {"select": select})()
+
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
-        lambda work_dir: {"default": module},
-    )
-    monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools",
-        lambda work_dir: {"default": eda_tool},
+        TargetCatalog,
+        "build",
+        classmethod(build),
     )
 
 

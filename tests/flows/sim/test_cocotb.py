@@ -158,7 +158,7 @@ def _run_cocotb(
             stdout = f"BOOLEY_BUILD_STAGE token={token} rc=0\n{stdout}"
     with (
         patch(
-            "booley.fusesoc.fusesoc_registry.resolve_target",
+            "booley.fusesoc.fusesoc_registry._resolve_target",
             return_value=_fake_resolved(tmp_path, resolved_eda_tool),
         ),
         patch.object(
@@ -472,7 +472,7 @@ class TestCocotbBatching:
 
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry._resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
@@ -524,7 +524,7 @@ class TestCocotbBatching:
 
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry._resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
@@ -564,7 +564,7 @@ class TestCocotbBatching:
 
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry._resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
@@ -649,7 +649,7 @@ class TestCocotbDryRun:
         with (
             patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry._resolve_target",
                 side_effect=AssertionError("dry-run must not resolve"),
             ),
         ):

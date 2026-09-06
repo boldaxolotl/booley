@@ -10,7 +10,8 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import TargetHandle, select_target
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError, TargetHandle
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
@@ -149,8 +150,8 @@ def _select_execution_ref(
     execution_selector: str | None = None,
 ) -> TargetExecutionRef:
     try:
-        handle = select_target(project_root, target, for_flow=flow)
-    except fusesoc_registry.FuseSocError as exc:
+        handle = TargetCatalog.build(project_root).select(target, for_flow=flow)
+    except FuseSocError as exc:
         raise ImplementationComparisonError(str(exc)) from exc
     if handle.doctor_private:
         raise ImplementationComparisonError(
@@ -378,7 +379,7 @@ def selected_target_handle(
     selected = handles.get(target)
     if selected is not None and selected.project_root == root:
         return selected
-    return select_target(root, target, for_flow=flow)
+    return TargetCatalog.build(root).select(target, for_flow=flow)
 
 
 def candidate_execution_refs(
@@ -399,11 +400,12 @@ def baseline_execution_context(
     """Reselect and identity-check every planned baseline in its checkout."""
     handles: dict[str, TargetHandle] = {}
     references: dict[str, TargetExecutionRef] = {}
+    catalog = TargetCatalog.build(project_root)
     for plan in plans:
         ref = plan.baseline
         try:
-            handle = select_target(project_root, ref.selector, for_flow=plan.flow)
-        except fusesoc_registry.FuseSocError as exc:
+            handle = catalog.select(ref.selector, for_flow=plan.flow)
+        except FuseSocError as exc:
             raise ImplementationComparisonError(
                 f"baseline Target {ref.selector!r} cannot be selected: {exc}"
             ) from exc
@@ -434,9 +436,7 @@ def resolve_target_execution_ref(
             f"Target execution reference {ref.identity!r} does not match "
             f"selected handle {handle.identity!r}"
         )
-    return fusesoc_registry.resolve_target(
-        ref.selector,
-        project_root=handle.project_root,
+    return fusesoc_registry.resolve_target_handle(
+        handle,
         build_root=build_root,
-        vlnv=ref.vlnv,
     )

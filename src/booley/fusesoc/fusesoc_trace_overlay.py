@@ -39,11 +39,13 @@ from booley.flows.sim.trace_recipe import (
     require_cocotb_trace_mode,
     resolve_verilator_trace_mode,
 )
+from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
 )
+from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -213,22 +215,6 @@ def _target_includes_dump_module(core_doc: Mapping[str, Any], target: str) -> bo
     return _target_dump_module_entry(core_doc, target) is not None
 
 
-def target_includes_dump_module(project_root: Path | str, target: str) -> bool:
-    """True when *target* carries the ``booley_vcd_dump.sv`` trace module.
-
-    Public, subprocess-free wrapper for setup-time checks (``booley doctor``):
-    without the module, ``simulate --trace`` has nothing to root and produces no
-    waveform — a failure that otherwise only surfaces on the first trace run.
-    """
-    from booley.fusesoc.fusesoc_registry import FuseSocError, read_core, resolve_ref
-
-    try:
-        ref = resolve_ref(project_root, target)
-    except FuseSocError:  # unknown / ambiguous → nothing to root
-        return False
-    return _target_includes_dump_module(read_core(ref.core_file), ref.name)
-
-
 @dataclass(frozen=True)
 class TraceOverlay:
     """Handle to a written trace-overlay ``.core`` and the VLNV it declares.
@@ -278,8 +264,6 @@ def _inject_runtime_dump_trace(
     path when the overlay supplied one (``None`` when the design's own tb
     fileset already carries it).
     """
-    from booley.fusesoc.fusesoc_registry import TRACE_OVERLAY_MARKER
-
     # If the design's own tb fileset carries the module, root that. Otherwise
     # the overlay *supplies* it from
     # Booley's refs/ so the design repo needs no tracked booley_vcd_dump —
@@ -317,9 +301,8 @@ def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
 
 
 def write_trace_overlay(
-    target: str,
+    handle: TargetHandle,
     *,
-    project_root: Path | str,
     trace_depth: int = DEFAULT_TRACE_DEPTH,
 ) -> TraceOverlay:
     """Write a co-located ``--trace`` overlay ``.core`` for a supported sim Target.
@@ -355,28 +338,21 @@ def write_trace_overlay(
     * **Icarus** — inject an extra ``-s<dump-module>`` ``iverilog_options`` root so
       the uninstantiated ``booley_vcd_dump`` (pruned by edalize's ``-s
       <toplevel>``) is elaborated and its runtime ``+trace`` ``$dumpvars`` fires.
-    Raises :class:`UnknownTargetError` / :class:`AmbiguousTargetError` if *target*
-    is not a single selectable Target (ADR 0030);
-    :class:`FuseSocError` if it is not a Verilator/Icarus sim Target, or if the
-    supplied dump module cannot be written.
+    The catalog handle is validated before any file is written. Raises
+    :class:`FuseSocError` if the handle is stale or does not describe a
+    Verilator/Icarus sim Target, or if the supplied dump module cannot be written.
     """
     from booley.fusesoc.fusesoc_registry import (
-        TRACE_OVERLAY_MARKER,
         FuseSocError,
-        core_target_eda_tool,
-        core_target_flow,
         read_core,
-        resolve_ref,
+        require_current_target_handle,
     )
 
-    # Raises UnknownTargetError / AmbiguousTargetError for a token that is not a
-    # single selectable Target (ADR 0030). Rebind to the bare name so every
-    # downstream `.core` target-key lookup below is correct even for a vlnv#name.
-    ref = resolve_ref(project_root, target)
-    target = ref.name
-    doc = read_core(ref.core_file)
-    flow = core_target_flow(doc, target)
-    eda_tool = core_target_eda_tool(doc, target)
+    project_root = require_current_target_handle(handle)
+    target = handle.name
+    flow = handle.flow
+    eda_tool = handle.eda_tool
+    doc = read_core(handle.core_file)
     if flow != "sim" or eda_tool not in ("verilator", "icarus"):
         raise FuseSocError(
             f"trace overlay unsupported for Target {target!r} "
@@ -385,7 +361,7 @@ def write_trace_overlay(
         )
 
     overlay_doc = copy.deepcopy(doc)
-    overlay_vlnv = trace_overlay_vlnv(ref.vlnv)
+    overlay_vlnv = trace_overlay_vlnv(handle.vlnv)
     overlay_doc["name"] = overlay_vlnv
     target_def = overlay_doc["targets"][target]
     flow_options = target_def.setdefault("flow_options", {})
@@ -410,7 +386,7 @@ def write_trace_overlay(
             overlay_doc,
             doc,
             target,
-            ref,
+            handle,
             flow_options,
             project_root,
         )
@@ -422,8 +398,8 @@ def write_trace_overlay(
         relative = injected.relative_to(Path(project_root)).as_posix()
         overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"] = [{relative: attrs}]
 
-    overlay_path = ref.core_file.with_name(
-        f"{ref.core_file.stem}{TRACE_OVERLAY_MARKER}{ref.core_file.suffix}"
+    overlay_path = handle.core_file.with_name(
+        f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}{handle.core_file.suffix}"
     )
     _write_overlay_core_file(overlay_path, overlay_doc)
     if projection_enabled(project_root):

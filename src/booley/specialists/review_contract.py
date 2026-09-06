@@ -7,17 +7,14 @@ out of prompt construction so every TB focus uses the same contract.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from booley.fusesoc import fusesoc_registry
-from booley.targets.target import (
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import (
+    FuseSocError,
+    TargetHandle,
     TargetInspection,
-    flow_can_drive,
-    inspect_target,
-    select_target,
-    select_targets,
 )
 
 
@@ -65,15 +62,14 @@ def _matches_scope(
 
 
 def _inspect_candidates(
-    project_root: Path,
-    declarations: Mapping[str, list[fusesoc_registry.TargetRef]],
+    catalog: TargetCatalog,
+    handles: tuple[TargetHandle, ...],
     *,
     category: str,
     target_hint: str | None,
 ) -> tuple[list[tuple[str, TargetInspection]], list[_InspectionFailure]]:
     if target_hint:
-        selected = select_targets(
-            project_root,
+        selected = catalog.select_many(
             target_hint,
             for_flow="sim" if category == "tb" else None,
         )
@@ -82,31 +78,25 @@ def _inspect_candidates(
         candidates = []
         for handle in selected:
             try:
-                candidates.append((handle.selector, inspect_target(project_root, handle)))
-            except (fusesoc_registry.FuseSocError, OSError) as exc:
+                candidates.append((handle.selector, catalog.inspect(handle)))
+            except (FuseSocError, OSError) as exc:
                 raise ReviewContractError(
                     f"Relevant Target {handle.identity!r} could not be inspected: {exc}"
                 ) from exc
         return candidates, []
 
-    handles = {}
+    candidates_by_identity = {}
     failures: list[_InspectionFailure] = []
-    for ref in (ref for bucket in declarations.values() for ref in bucket):
-        if ref.doctor_selftest or (category == "tb" and not flow_can_drive("sim", ref)):
+    for handle in handles:
+        if category == "tb" and "sim" not in handle.drivable_by:
             continue
-        identity = f"{ref.vlnv}#{ref.name}"
-        try:
-            handle = select_target(project_root, identity)
-        except (fusesoc_registry.FuseSocError, OSError) as exc:
-            failures.append(_InspectionFailure(identity, str(exc)))
-            continue
-        handles[handle.identity] = handle
+        candidates_by_identity[handle.identity] = handle
 
     candidates = []
-    for handle in sorted(handles.values(), key=lambda item: item.identity):
+    for handle in sorted(candidates_by_identity.values(), key=lambda item: item.identity):
         try:
-            candidates.append((handle.selector, inspect_target(project_root, handle)))
-        except (fusesoc_registry.FuseSocError, OSError) as exc:
+            candidates.append((handle.selector, catalog.inspect(handle)))
+        except (FuseSocError, OSError) as exc:
             failures.append(_InspectionFailure(handle.identity, str(exc)))
     return candidates, sorted(failures, key=lambda item: item.identity)
 
@@ -170,11 +160,12 @@ def resolve_review_target(
     """
 
     normalized_scope = {_normalize(path) for path in scope}
-    declarations = fusesoc_registry.target_declarations(project_root)
+    catalog = TargetCatalog.build(project_root)
+    handles = catalog.list()
 
     refs, failures = _inspect_candidates(
-        project_root,
-        declarations,
+        catalog,
+        handles,
         category=category,
         target_hint=target_hint,
     )
@@ -189,7 +180,7 @@ def resolve_review_target(
             f"--target {target_hint!r} does not contain every {category.upper()} scope file"
         )
     if not matches:
-        if category == "tb" and declarations:
+        if category == "tb" and handles:
             raise ReviewContractError(
                 "No selectable Target contains every TB scope file; register the files "
                 "with tags: [tb] or pass --target <selector>"

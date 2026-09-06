@@ -19,11 +19,27 @@ from booley.fusesoc import fusesoc_registry
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
+from booley.targets.catalog import TargetCatalog
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
+
+
+def _patch_catalog_select(monkeypatch, resolver) -> None:
+    class Catalog:
+        def __init__(self, root):
+            self.root = root
+
+        def select(self, token, **kwargs):
+            return resolver(self.root, token, **kwargs)
+
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: Catalog(root)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -206,8 +222,8 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
     )
     flow._attach_workload_snapshots = MagicMock()
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda root, *_args, **_kwargs: MagicMock(
             identity="sim_core",
             selector="sim_core",
@@ -246,8 +262,8 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
     )
     flow._attach_workload_snapshots = MagicMock()
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda *_args, **_kwargs: MagicMock(
             identity=identity,
             selector="sim_core",
@@ -277,8 +293,8 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
     flow._run_target = MagicMock()
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda *_args, **_kwargs: MagicMock(
             identity="other:library:core#sim_core",
             selector="sim_core",
@@ -313,7 +329,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     def ambiguous_target(*_args, **_kwargs):
         raise fusesoc_registry.AmbiguousTargetError("sim_core is ambiguous")
 
-    monkeypatch.setattr("booley.flows.sim.flow.select_target", ambiguous_target)
+    _patch_catalog_select(monkeypatch, ambiguous_target)
 
     @contextmanager
     def fake_worktree(_root, _ref):

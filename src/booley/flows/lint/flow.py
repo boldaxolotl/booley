@@ -33,14 +33,16 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
-from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
 
 logger = logging.getLogger(__name__)
+
 
 # The Verilator/Verible warning/error regexes live in the shared parser
 # module (single source of truth). QA-7 context for the error scan: ``parse_warnings`` only matches ``%Warning``
@@ -434,7 +436,10 @@ class LintFlow(BooleyFlow):
         (``--target a,b``). An empty ``--target`` returns no selection rather
         than linting every core.
         """
-        return select_targets(self.args.work_dir, self.args.target, for_flow="lint")
+        return TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="lint",
+        )
 
     def _prepare_lint_command(
         self,
@@ -487,11 +492,9 @@ class LintFlow(BooleyFlow):
         """
         build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
         try:
-            setup_cmd = fusesoc_registry.setup_command(
-                target.selector,
-                project_root=self.args.work_dir,
+            setup_cmd = fusesoc_registry.setup_command_for_handle(
+                target,
                 build_root=build_root,
-                vlnv=target.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: lint dry-run: {exc}"]

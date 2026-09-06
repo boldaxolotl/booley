@@ -15,7 +15,7 @@ from booley.flows.sim.adapter_transport import (
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 _TOKEN = "abc123"
 
@@ -81,8 +81,9 @@ def _run(
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
     inspection = SimpleNamespace(toplevel="tb_core", eda_tool="icarus", flow_options={})
+    inspection.inspect = lambda _handle: inspection
     with (
-        patch("booley.flows.sim.execution.engine.inspect_target", return_value=inspection),
+        patch("booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=_TOKEN),
     ):

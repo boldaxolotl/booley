@@ -8,12 +8,78 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.targets.domain import FuseSocError
 from booley.ticket_board import (
     acceptance_targets,
 )
 from booley.ticket_board.acceptance_basis import (
     BasisParticipant,
 )
+
+
+@pytest.fixture(autouse=True)
+def _catalog_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit seams focused while production consumers use TargetCatalog."""
+
+    def select_target(_root: Path, target: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            identity=f"acme:lib:unit:1#{target}",
+            selector=target,
+            name=target,
+            flow="sim",
+            eda_tool="iverilog",
+            drivable_by=("sim", "lint", "synth", "fpga"),
+        )
+
+    def inspect_target_selector(_root: Path, _target: str) -> SimpleNamespace:
+        return SimpleNamespace(inputs=())
+
+    monkeypatch.setattr(acceptance_targets, "select_target", select_target, raising=False)
+    monkeypatch.setattr(
+        acceptance_targets,
+        "inspect_target_selector",
+        inspect_target_selector,
+        raising=False,
+    )
+    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True, raising=False)
+
+    class FakeCatalog:
+        def __init__(self, root: Path | str) -> None:
+            self.project_root = Path(root)
+
+        def select(self, target: str, *, for_flow: str | None = None) -> SimpleNamespace:
+            handle = acceptance_targets.select_target(self.project_root, target)
+            if not hasattr(handle, "selector"):
+                handle.selector = target
+            if not hasattr(handle, "project_root"):
+                handle.project_root = self.project_root
+            if for_flow is not None and not acceptance_targets.flow_can_drive(for_flow, handle):
+                raise FuseSocError(
+                    f"Target {target!r} cannot satisfy selection for Flow {for_flow}"
+                )
+            return handle
+
+        def inspect(self, handle: SimpleNamespace) -> SimpleNamespace:
+            return acceptance_targets.inspect_target_selector(self.project_root, handle.selector)
+
+    monkeypatch.setattr(
+        acceptance_targets.TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: FakeCatalog(root)),
+    )
+
+    def resolve_target_handle(handle: SimpleNamespace, **kwargs: object) -> SimpleNamespace:
+        return acceptance_targets.fusesoc_registry._resolve_target(
+            handle.selector,
+            project_root=handle.project_root if hasattr(handle, "project_root") else Path.cwd(),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry,
+        "resolve_target_handle",
+        resolve_target_handle,
+    )
 
 
 def _completed(
@@ -566,7 +632,7 @@ def test_comparison_snapshots_dispatch_by_flow(
 ) -> None:
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda target, **_kwargs: SimpleNamespace(name=target),
     )
     monkeypatch.setattr("booley.flows.synth.recipe.default_recipe_args", SimpleNamespace)
@@ -598,7 +664,7 @@ def test_comparison_snapshots_dispatch_fpga(
 ) -> None:
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda target, **_kwargs: SimpleNamespace(name=target),
     )
     monkeypatch.setattr(
@@ -628,7 +694,7 @@ def test_dry_resolve_binding_reports_failure_and_missing_toplevel(
     monkeypatch.setattr(acceptance_targets, "_missing_target_sources", lambda *_args: [])
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
     assert (
@@ -637,7 +703,7 @@ def test_dry_resolve_binding_reports_failure_and_missing_toplevel(
     )
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda *_args, **_kwargs: SimpleNamespace(toplevel=""),
     )
     assert (
@@ -663,7 +729,7 @@ def test_validate_binding_reports_resolution_flow_and_scope_errors(
     monkeypatch.setattr(acceptance_targets, "criterion_targets", lambda *_args: (binding,))
     errors = acceptance_targets.validate_criterion_targets({}, tmp_path)
     assert "candidate target 'candidate': unknown" in errors[0]
-    assert "cannot satisfy synthesis_ok" in errors[1]
+    assert "cannot satisfy selection for Flow synth" in errors[1]
 
     monkeypatch.setattr(
         acceptance_targets,

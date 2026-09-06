@@ -14,6 +14,7 @@ import pytest
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime.project_dir import reset_cache
+from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.ticket_board import (
     acceptance_basis as acceptance_basis_module,
@@ -158,9 +159,15 @@ def test_canonical_binding_preserves_full_criterion_path(
     section: str,
 ) -> None:
     monkeypatch.setattr(
-        acceptance_targets,
-        "select_target",
-        lambda _root, target: SimpleNamespace(identity=f"acme:lib:toy#{target}", selector=target),
+        TargetCatalog,
+        "build",
+        classmethod(
+            lambda _cls, _root: SimpleNamespace(
+                select=lambda target: SimpleNamespace(
+                    identity=f"acme:lib:toy#{target}", selector=target
+                )
+            )
+        ),
     )
     specification = acceptance_targets.CriterionTarget(
         section,
@@ -1657,8 +1664,13 @@ def test_binding_selector_validation_rejects_changed_identity(
         "sim",
     )
     monkeypatch.setattr(
-        "booley.ticket_board.acceptance_targets.select_target",
-        lambda *_args, **_kwargs: SimpleNamespace(identity="acme:lib:new#sim"),
+        TargetCatalog,
+        "build",
+        classmethod(
+            lambda _cls, _root: SimpleNamespace(
+                select=lambda *_args, **_kwargs: SimpleNamespace(identity="acme:lib:new#sim")
+            )
+        ),
     )
 
     errors = validate_binding_selectors(tmp_path, (binding,))

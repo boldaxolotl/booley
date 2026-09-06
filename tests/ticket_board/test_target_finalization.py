@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets.catalog import TargetCatalog
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
@@ -108,7 +109,7 @@ def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> Non
         encoding="utf-8"
     )
     with pytest.raises(fusesoc_registry.UnknownTargetError):
-        fusesoc_registry.resolve_ref(tmp_path, canonical)
+        TargetCatalog.build(tmp_path).select(canonical)
 
 
 def test_last_target_leaves_valid_empty_targets_mapping(tmp_path: Path) -> None:

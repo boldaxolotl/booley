@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import inspect_target_selector
+from booley.targets.catalog import TargetCatalog
 
 HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 SKIP_DIRECTORIES = frozenset(
@@ -66,9 +66,10 @@ def analyze_design_size(
 
 def _configured_hdl_paths(project_root: Path, targets: Iterable[str]) -> set[Path]:
     paths: set[Path] = set()
+    catalog = TargetCatalog.build(project_root)
     for target in targets:
         try:
-            inspection = inspect_target_selector(project_root, target)
+            inspection = catalog.inspect(catalog.select(target))
         except fusesoc_registry.FuseSocError:
             continue
         for relative in (*inspection.rtl_files, *inspection.tb_files):

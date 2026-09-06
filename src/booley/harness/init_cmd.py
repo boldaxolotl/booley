@@ -1802,16 +1802,13 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         return False
     if section.get("enabled") is False:
         return True
-    from booley.fusesoc import fusesoc_registry
+    from booley.targets.catalog import TargetCatalog
 
+    handles = TargetCatalog.build(project_root).list()
     if key != "fpga":
-        return bool(fusesoc_registry.doctor_target_selectors(project_root, key))
-    from booley.targets.target_surface import flow_can_drive
+        return any(key in handle.doctor_flows for handle in handles)
 
-    return any(
-        flow_can_drive("fpga", ref)
-        for ref in fusesoc_registry.enumerate_targets(project_root).values()
-    )
+    return any("fpga" in handle.drivable_by for handle in handles)
 
 
 def _outstanding_setup_steps(project_root: Path) -> list[str]:

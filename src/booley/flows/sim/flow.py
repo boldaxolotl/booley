@@ -36,14 +36,12 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.flow_names import config_section
-from booley.targets.target import (
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
-    inspect_target,
-    select_target,
-    select_targets,
 )
+from booley.targets.flow_names import config_section
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -87,6 +85,15 @@ from .target_tests import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _target_is_cocotb(work_dir: Path, target: str) -> bool:
+    """Read Cocotb identity through the Target catalog, failing soft for sizing."""
+    try:
+        return bool(TargetCatalog.build(work_dir).select(target).cocotb_module)
+    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
+        return False
+
 
 # Default literal prefix for cycle count extraction from sim output.
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -679,15 +686,11 @@ def _resolve_sim_campaign_work_units(
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
         return 1
-    try:
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
-    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
-        cocotb_modules = {}
     test_names = _get_test_names(work_dir)
     configured_skips = _get_test_skips(work_dir)
     units = 0
     for target in targets:
-        if lookup_target_section(cocotb_modules, target):
+        if _target_is_cocotb(work_dir, target):
             units += 1
             continue
         units += _selected_test_work_units(
@@ -1259,7 +1262,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """
         try:
             handle = self._target_handle(target)
-            options = inspect_target(self.args.work_dir, handle).flow_options
+            options = TargetCatalog.build(self.args.work_dir).inspect(handle).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
         module = options.get("cocotb_module")
@@ -1883,11 +1886,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         try:
             handle = self._target_handle(target)
-            setup = fusesoc_registry.setup_command(
-                handle.selector,
-                project_root=handle.project_root,
+            setup = fusesoc_registry.setup_command_for_handle(
+                handle,
                 build_root=build_root,
-                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
@@ -2081,7 +2082,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="sim",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if targets:
@@ -2104,14 +2108,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         selected = getattr(self, "_target_handles", {}).get(target)
         if selected is not None and selected.project_root == root:
             return selected
-        return select_target(root, target, for_flow="sim")
+        return TargetCatalog.build(root).select(target, for_flow="sim")
 
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
         if resolved is None:
-            return inspect_target(
-                self.args.work_dir,
-                self._target_handle(target),
-            ).toplevel
+            catalog = TargetCatalog.build(self.args.work_dir)
+            return catalog.inspect(self._target_handle(target)).toplevel
         return tb_top_for_target(
             target,
             self.args.work_dir,
@@ -2431,7 +2433,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            inspection = inspect_target(self.args.work_dir, self._target_handle(target))
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(self._target_handle(target))
             fileset = {
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),

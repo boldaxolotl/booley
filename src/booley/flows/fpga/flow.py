@@ -38,9 +38,10 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
-from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
@@ -270,7 +271,10 @@ class FpgaImplFlow(BooleyFlow):
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
         self._baseline_full_sha: str | None = None
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="fpga")
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="fpga",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:

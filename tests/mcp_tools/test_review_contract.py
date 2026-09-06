@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.specialists.review_contract import ReviewContractError, resolve_review_target
-from booley.targets.target import inspect_target as real_inspect_target
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 
 def _write_project(root: Path) -> None:
@@ -153,13 +153,14 @@ def test_scope_matching_uses_condition_selected_target_inputs(tmp_path: Path) ->
 
 def test_bound_target_ignores_unrelated_uninspectable_target(tmp_path: Path) -> None:
     _write_project(tmp_path)
+    real_inspect = TargetCatalog.inspect
 
-    def inspect(root, handle):
+    def inspect(handle):
         if handle.name == "sim_hdl":
             raise FuseSocError("missing optional dependency")
-        return real_inspect_target(root, handle)
+        return real_inspect(TargetCatalog.build(tmp_path), handle)
 
-    with patch("booley.specialists.review_contract.inspect_target", side_effect=inspect):
+    with patch("booley.targets.catalog.TargetCatalog.inspect", side_effect=inspect):
         contract = resolve_review_target(
             tmp_path,
             ["tb/test_uart.py"],
@@ -175,7 +176,7 @@ def test_bound_target_reports_relevant_inspection_failure(tmp_path: Path) -> Non
 
     with (
         patch(
-            "booley.specialists.review_contract.inspect_target",
+            "booley.targets.catalog.TargetCatalog.inspect",
             side_effect=FuseSocError("missing required dependency"),
         ),
         pytest.raises(ReviewContractError, match=r"Relevant Target.*missing required dependency"),
@@ -190,14 +191,15 @@ def test_bound_target_reports_relevant_inspection_failure(tmp_path: Path) -> Non
 
 def test_unbound_candidate_failure_is_isolated_and_fails_closed(tmp_path: Path) -> None:
     _write_project(tmp_path)
+    real_inspect = TargetCatalog.inspect
 
-    def inspect(root, handle):
+    def inspect(handle):
         if handle.name == "sim_hdl":
             raise FuseSocError("missing optional dependency")
-        return real_inspect_target(root, handle)
+        return real_inspect(TargetCatalog.build(tmp_path), handle)
 
     with (
-        patch("booley.specialists.review_contract.inspect_target", side_effect=inspect),
+        patch("booley.targets.catalog.TargetCatalog.inspect", side_effect=inspect),
         pytest.raises(ReviewContractError, match=r"potentially relevant.*sim_hdl"),
     ):
         resolve_review_target(tmp_path, ["tb/test_uart.py"], category="tb")
