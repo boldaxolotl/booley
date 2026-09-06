@@ -1004,6 +1004,9 @@ class TicketIO:
         self._validate_return_to_draft_preconditions(slug, check_owner=not pending)
         with self._ticket_lock(slug):
             self._validate_return_to_draft_preconditions(slug, check_owner=False)
+            from .basis_refresh import discard_basis_refresh
+
+            discard_basis_refresh(self._project_root, slug)
             current_path, current_status = find_ticket_file(self.tickets_dir, slug)
             result = return_to_draft(
                 self._project_root,

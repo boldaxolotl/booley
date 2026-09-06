@@ -91,6 +91,11 @@ class AcceptanceBasisError(ValueError):
     """An Acceptance Basis or its committed record is malformed."""
 
 
+def requires_return_to_draft(fields: Mapping[str, Any]) -> bool:
+    """Return whether Acceptance Basis drift forbids direct requeue or execution."""
+    return fields.get("blocked_reason") == BLOCK_REASON
+
+
 @dataclass(frozen=True)
 class AcceptancePathPolicy:
     """Versioned discovery policy for schema-1 acceptance control paths."""
@@ -249,7 +254,9 @@ class AcceptanceBasis:
         except TargetPlanError as exc:
             raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
         removals = _record_string_tuple(record, "removal_targets")
-        providers = tuple(_provider_from_record(row) for row in record.get("providers", ()))
+        providers = tuple(
+            provider_binding_from_mapping(row) for row in record.get("providers", ())
+        )
         return AcceptanceBasis(
             self.participants,
             bindings,
@@ -433,7 +440,8 @@ def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
     return binding
 
 
-def _provider_from_record(value: Any) -> ProviderTargetBinding:
+def provider_binding_from_mapping(value: Any) -> ProviderTargetBinding:
+    """Parse and validate one persisted provider Target binding."""
     expected = {"provider", "basis_id", "target", "role", "surface_sha256"}
     try:
         mapping = require_dict(value, field="Acceptance Basis provider binding")
@@ -497,25 +505,9 @@ def load_basis_record(
 
 
 def _validate_record(value: Any) -> None:
-    try:
-        record = require_dict(value, field="Acceptance Basis record")
-        ticket = require_dict(record.get("ticket"), field="Acceptance Basis record.ticket")
-        frontmatter = require_dict(
-            ticket.get("frontmatter"), field="Acceptance Basis record.ticket.frontmatter"
-        )
-        body = require_str(ticket, "body")
-        bindings = require_list(record.get("bindings"), field="Acceptance Basis record.bindings")
-        raw_plan = require_list(
-            record.get("target_plan"), field="Acceptance Basis record.target_plan"
-        )
-        removals = require_list(
-            record.get("removal_targets"), field="Acceptance Basis record.removal_targets"
-        )
-        providers = require_list(
-            record.get("providers"), field="Acceptance Basis record.providers"
-        )
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
+    record, ticket, frontmatter, bindings, raw_plan, removals, providers = _record_components(
+        value
+    )
     if set(record) != {
         "schema",
         "ticket",
@@ -527,11 +519,12 @@ def _validate_record(value: Any) -> None:
         raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
     try:
         schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
+        require_str(ticket, "body")
     except BoundaryError as exc:
         raise AcceptanceBasisError(str(exc)) from exc
     if schema != RECORD_SCHEMA_VERSION:
         raise AcceptanceBasisError("Acceptance Basis record has an unsupported schema")
-    if set(ticket) != {"frontmatter", "body"} or not isinstance(body, str):
+    if set(ticket) != {"frontmatter", "body"}:
         raise AcceptanceBasisError("Acceptance Basis record.ticket has an invalid schema")
     unknown = sorted(set(frontmatter) - set(_AUTHORED_FIELDS))
     if unknown:
@@ -542,7 +535,7 @@ def _validate_record(value: Any) -> None:
         raise AcceptanceBasisError("Acceptance Basis record authored defaults are not canonical")
     for binding in bindings:
         _binding_from_record(binding)
-    provider_bindings = tuple(_provider_from_record(provider) for provider in providers)
+    provider_bindings = tuple(provider_binding_from_mapping(provider) for provider in providers)
     if provider_bindings != tuple(sorted(set(provider_bindings))):
         raise AcceptanceBasisError("Acceptance Basis record providers must be sorted and unique")
     _validate_record_target_plan(frontmatter, raw_plan, removals)
@@ -555,6 +548,28 @@ def _validate_record(value: Any) -> None:
         errors = OnSuccess.from_dict(dict(on_success)).validate()
         if errors:
             raise AcceptanceBasisError(f"Acceptance Basis record {errors[0]}")
+
+
+def _record_components(value: Any) -> tuple:
+    try:
+        record = require_dict(value, field="Acceptance Basis record")
+        ticket = require_dict(record.get("ticket"), field="Acceptance Basis record.ticket")
+        frontmatter = require_dict(
+            ticket.get("frontmatter"), field="Acceptance Basis record.ticket.frontmatter"
+        )
+        bindings = require_list(record.get("bindings"), field="Acceptance Basis record.bindings")
+        raw_plan = require_list(
+            record.get("target_plan"), field="Acceptance Basis record.target_plan"
+        )
+        removals = require_list(
+            record.get("removal_targets"), field="Acceptance Basis record.removal_targets"
+        )
+        providers = require_list(
+            record.get("providers"), field="Acceptance Basis record.providers"
+        )
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    return record, ticket, frontmatter, bindings, raw_plan, removals, providers
 
 
 def _validate_record_target_plan(
@@ -580,7 +595,7 @@ def _validate_record_target_plan(
         )
 
 
-def _selector_matches_canonical(authored: str, canonical: str) -> bool:
+def selector_matches_canonical(authored: str, canonical: str) -> bool:
     authored_qualifier, separator, authored_target = authored.rpartition("#")
     if not separator:
         authored_target = authored
@@ -612,10 +627,10 @@ def _plan_selectors_match(authored: TargetPlan | None, canonical: TargetPlan | N
             candidate
             for candidate in remaining
             if candidate.role is entry.role
-            and _selector_matches_canonical(entry.target, candidate.target)
+            and selector_matches_canonical(entry.target, candidate.target)
             and (
                 entry.role is not TargetPlanRole.REPLACEMENT
-                or _selector_matches_canonical(entry.replaces, candidate.replaces)
+                or selector_matches_canonical(entry.replaces, candidate.replaces)
             )
         ]
         if len(matches) != 1:

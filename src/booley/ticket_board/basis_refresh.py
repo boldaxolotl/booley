@@ -6,24 +6,21 @@ import hashlib
 import json
 import re
 import secrets
-import subprocess
 import tomllib
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 from booley.core.models import TargetPlan
 from booley.fusesoc import fusesoc_registry
+from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
     runtime_dir,
 )
-from booley.runtime.ticket_repositories import (
-    paired_project_repository,
-    resolve_inner_project_repo,
-    ticket_project_worktree,
-)
+from booley.runtime.ticket_repositories import paired_project_repository
 
 from .acceptance_basis import (
     AcceptanceBasis,
@@ -32,20 +29,26 @@ from .acceptance_basis import (
     load_acceptance_basis,
     write_basis_receipt,
 )
+from .basis_publication import BasisPublicationError
 from .frontmatter import parse_frontmatter
 from .persistence import atomic_replace_bytes
 from .planned_dependencies import PlannedDependencyError, target_surface_sha256
 from .scanner import find_ticket_file
-from .target_surface_edit import TargetSurfaceEditError, merge_target_definition
+from .target_surface_edit import (
+    TargetSurfaceEditError,
+    merge_target_definition,
+    toml_table_block,
+)
 from .workspace_ops import (
     AcceptanceBasisOperationError,
     AuthoringWorkspace,
-    _generation_branch,
-    _open_generation,
-    _remove_authoring_worktrees,
-    _require_git,
-    _worktree_owns_branch,
+    basis_changed_paths,
+    discard_generation_refs,
+    discard_refresh_workspace,
+    load_refresh_source_workspace,
+    open_authoring_generation,
     prepare_replacement_acceptance_basis,
+    relocate_refresh_workspace,
 )
 
 _OPERATION_RE = re.compile(r"[0-9a-f]{32}")
@@ -67,10 +70,24 @@ class BasisRefreshJournal:
     old_basis_id: str
     state: str
     new_basis: dict[str, Any]
-    receipt: dict[str, Any]
 
-    def prepared(self, basis: AcceptanceBasis, receipt: dict[str, Any]) -> BasisRefreshJournal:
-        return replace(self, state="prepared", new_basis=basis.as_dict(), receipt=receipt)
+    def prepared(self, basis: AcceptanceBasis) -> BasisRefreshJournal:
+        return replace(self, state="prepared", new_basis=basis.as_dict())
+
+
+@dataclass(frozen=True)
+class _RefreshBuild:
+    root: Path
+    ticket: Path
+    slug: str
+    fields: dict[str, Any]
+    old_basis: AcceptanceBasis
+    old: AuthoringWorkspace
+    journal: BasisRefreshJournal
+
+    @property
+    def operation(self) -> Path:
+        return _operation_path(self.root, self.journal.operation_id)
 
 
 def _journal_path(root: Path, slug: str) -> Path:
@@ -95,11 +112,29 @@ def load_basis_refresh(root: Path, slug: str) -> BasisRefreshJournal | None:
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        if set(value) != set(BasisRefreshJournal.__dataclass_fields__):
+        mapping = require_dict(value, field="Basis Refresh journal")
+        if set(mapping) != set(BasisRefreshJournal.__dataclass_fields__):
             raise ValueError("invalid fields")
-        journal = BasisRefreshJournal(**value)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        journal = _parse_journal(mapping)
+    except (BoundaryError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise BasisRefreshError(f"Basis Refresh journal is invalid: {path}") from exc
+    _validate_journal(journal, slug, path)
+    return journal
+
+
+def _parse_journal(value: dict[str, Any]) -> BasisRefreshJournal:
+    return BasisRefreshJournal(
+        require_int(value.get("schema"), field="Basis Refresh journal.schema"),
+        require_str(value, "operation_id"),
+        require_str(value, "generation"),
+        require_str(value, "slug"),
+        require_str(value, "old_basis_id"),
+        require_str(value, "state"),
+        require_dict(value.get("new_basis"), field="Basis Refresh journal.new_basis"),
+    )
+
+
+def _validate_journal(journal: BasisRefreshJournal, slug: str, path: Path) -> None:
     if (
         journal.schema != 1
         or journal.slug != slug
@@ -114,9 +149,8 @@ def load_basis_refresh(root: Path, slug: str) -> BasisRefreshJournal | None:
             AcceptanceBasis.from_mapping(journal.new_basis)
         except AcceptanceBasisError as exc:
             raise BasisRefreshError("Basis Refresh journal has an invalid new basis") from exc
-    elif journal.new_basis or journal.receipt:
+    elif journal.new_basis:
         raise BasisRefreshError("building Basis Refresh journal contains published output")
-    return journal
 
 
 def _new_journal(root: Path, slug: str, old_basis: AcceptanceBasis) -> BasisRefreshJournal:
@@ -133,49 +167,9 @@ def _new_journal(root: Path, slug: str, old_basis: AcceptanceBasis) -> BasisRefr
         old_basis.basis_id,
         "building",
         {},
-        {},
     )
     _write_journal(root, journal)
     return journal
-
-
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise BasisRefreshError(f"git {' '.join(args)} failed in {repository}: {detail}")
-    return result.stdout.strip()
-
-
-def _require_untouched(root: Path, basis: AcceptanceBasis, slug: str) -> AuthoringWorkspace:
-    outer = resolve_project_dir(root) / "worktrees" / slug
-    paired = paired_project_repository(outer)
-    project = paired.worktree if paired is not None else None
-    repositories = {"outer": outer}
-    if project is not None:
-        repositories["project"] = project
-    if set(repositories) != {row.role for row in basis.participants}:
-        raise BasisRefreshError("waiting Ticket workspace participants changed")
-    for participant in basis.participants:
-        repository = repositories[participant.role]
-        if _git(repository, "rev-parse", "HEAD") != participant.authoring_sha:
-            raise BasisRefreshError("waiting Ticket workspace was already executed or changed")
-        if _git(repository, "status", "--porcelain", "--untracked-files=all"):
-            raise BasisRefreshError("waiting Ticket workspace is not pristine")
-    project_base = basis.participant("project").destination_sha if project is not None else ""
-    return AuthoringWorkspace(
-        outer,
-        project,
-        basis.participant("outer").destination_sha,
-        project_base,
-    )
 
 
 def _reapply_targets(old: Path, new: Path, plan: TargetPlan | None) -> None:
@@ -201,19 +195,6 @@ def _reapply_targets(old: Path, new: Path, plan: TargetPlan | None) -> None:
                 raise BasisRefreshError(str(exc)) from exc
 
 
-def _toml_table_block(content: str, key: str) -> str:
-    header = re.compile(rf"(?m)^\[{re.escape(key)}\]\s*(?:#.*)?$")
-    match = header.search(content)
-    if match is None:
-        quoted = re.compile(rf'(?m)^\["{re.escape(key)}"\]\s*(?:#.*)?$')
-        match = quoted.search(content)
-    if match is None:
-        raise BasisRefreshError(f"approved tests.toml table {key!r} disappeared")
-    following = re.search(r"(?m)^\[[^[][^]]*\]\s*(?:#.*)?$", content[match.end() :])
-    end = match.end() + following.start() if following is not None else len(content)
-    return content[match.start() : end].strip() + "\n"
-
-
 def _reapply_test_tables(old: Path, new: Path, plan: TargetPlan | None) -> None:
     if plan is None:
         return
@@ -233,25 +214,27 @@ def _reapply_test_tables(old: Path, new: Path, plan: TargetPlan | None) -> None:
     for entry in plan.entries:
         bare = entry.target.rsplit("#", 1)[-1]
         key = entry.target if entry.target in old_tables else bare
-        if key not in old_tables or key in new_tables:
+        if key not in old_tables:
             continue
-        additions.append(_toml_table_block(old_text, key))
+        if key in new_tables:
+            if new_tables[key] != old_tables[key]:
+                raise BasisRefreshError(
+                    f"approved tests.toml table {key!r} conflicts with current destination"
+                )
+            continue
+        try:
+            additions.append(toml_table_block(old_text, key))
+        except TargetSurfaceEditError as exc:
+            raise BasisRefreshError(str(exc)) from exc
     if additions:
         new_path.parent.mkdir(parents=True, exist_ok=True)
         prefix = new_path.read_text(encoding="utf-8").rstrip() if new_path.is_file() else ""
-        new_path.write_text("\n\n".join([prefix, *additions]).lstrip() + "\n", encoding="utf-8")
+        content = "\n\n".join([prefix, *additions]).lstrip() + "\n"
+        atomic_replace_bytes(new_path, content.encode(), mode=0o644)
 
 
 def _changed_paths(repository: Path, participant: Any) -> tuple[str, ...]:
-    output = _git(
-        repository,
-        "diff",
-        "--name-only",
-        participant.destination_sha,
-        participant.authoring_sha,
-        "--",
-    )
-    return tuple(line for line in output.splitlines() if line)
+    return basis_changed_paths(repository, participant.destination_sha, participant.authoring_sha)
 
 
 def _reapply_placeholders(
@@ -323,49 +306,6 @@ def _verify_providers(
     return tuple(sorted(refreshed))
 
 
-def _relocate_workspace(
-    root: Path,
-    slug: str,
-    journal: BasisRefreshJournal,
-    old: AuthoringWorkspace | None,
-    new: AuthoringWorkspace,
-    *,
-    has_project: bool,
-) -> None:
-    canonical = resolve_project_dir(root) / "worktrees" / slug
-    branch = _generation_branch(journal.generation, slug)
-    operation = _operation_path(root, journal.operation_id)
-    project_source = resolve_inner_project_repo(root)
-    holding = operation / "new-project-moving"
-    canonical_is_new = canonical.is_dir() and _worktree_owns_branch(root, canonical, branch)
-    if not canonical_is_new:
-        new_paired = paired_project_repository(new.outer) if new.outer.is_dir() else None
-        if new_paired is not None:
-            if project_source is None:
-                raise BasisRefreshError("paired project repository is unavailable")
-            if not holding.exists():
-                _require_git(
-                    project_source,
-                    "worktree",
-                    "move",
-                    str(new_paired.worktree),
-                    str(holding),
-                )
-        if canonical.exists():
-            old_paired = paired_project_repository(canonical)
-            _remove_authoring_worktrees(root, canonical, old_paired, project_source)
-        if not new.outer.is_dir():
-            raise BasisRefreshError("refreshed Ticket workspace disappeared during relocation")
-        _require_git(root, "worktree", "move", str(new.outer), str(canonical))
-    if holding.exists() and project_source is not None:
-        destination = ticket_project_worktree(canonical)
-        _require_git(project_source, "worktree", "move", str(holding), str(destination))
-    if has_project and paired_project_repository(canonical) is None:
-        raise BasisRefreshError("refreshed paired project workspace is unavailable")
-    if not has_project and old is not None and old.project is not None:
-        raise BasisRefreshError("Basis Refresh changed repository participation")
-
-
 def _resume_prepared_refresh(
     root: Path,
     slug: str,
@@ -391,11 +331,11 @@ def _resume_prepared_refresh(
         basis.participant("project").destination_sha if has_project else "",
         journal.generation,
     )
-    _relocate_workspace(
+    relocate_refresh_workspace(
         root,
         slug,
-        journal,
-        None,
+        journal.generation,
+        operation,
         workspace,
         has_project=has_project,
     )
@@ -409,6 +349,17 @@ def prepare_waiting_basis_refresh(
 ) -> tuple[AcceptanceBasis | None, str]:
     """Prepare and relocate a refreshed basis; Board publication remains with the caller."""
     root = project_root.resolve()
+    try:
+        return _prepare_waiting_basis_refresh(root, ticket_path, slug)
+    except BasisRefreshError:
+        raise
+    except (AcceptanceBasisOperationError, BasisPublicationError, OSError, ValueError) as exc:
+        raise BasisRefreshError(str(exc)) from exc
+
+
+def _prepare_waiting_basis_refresh(
+    root: Path, ticket_path: Path, slug: str
+) -> tuple[AcceptanceBasis | None, str]:
     fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
     pending = load_basis_refresh(root, slug)
     if pending is not None and pending.state == "prepared":
@@ -419,56 +370,69 @@ def prepare_waiting_basis_refresh(
         raise BasisRefreshError(str(exc)) from exc
     if not old_basis.providers:
         return None, ""
-    old = _require_untouched(root, old_basis, slug)
     journal = _new_journal(root, slug, old_basis)
     operation = _operation_path(root, journal.operation_id)
-    new_outer = operation / "new-outer"
     effective_fields = dict(fields)
     effective_fields.pop("acceptance_basis", None)
-    try:
-        workspace = _open_generation(
-            root,
-            ticket_path,
-            slug,
-            effective_fields,
-            journal.generation,
-            new_outer,
-        )
-        provider_bindings = _verify_providers(root, workspace.outer, old_basis)
-        _reapply_targets(old.outer, workspace.outer, old_basis.target_plan)
-        _reapply_test_tables(old.outer, workspace.outer, old_basis.target_plan)
-        _reapply_placeholders(old, workspace, old_basis, slug)
-        if journal.state == "building":
-            basis, operation_id = prepare_replacement_acceptance_basis(
-                root,
-                ticket_path,
-                slug,
-                workspace,
-                provider_bindings,
-                operation_id=journal.operation_id,
-            )
-            receipt = write_basis_receipt(
-                root,
-                slug,
-                basis,
-                source_sha256=hashlib.sha256(ticket_path.read_bytes()).hexdigest(),
-                operation_id=operation_id,
-            )
-            journal = journal.prepared(basis, receipt)
-            _write_journal(root, journal)
-        else:
-            basis = AcceptanceBasis.from_mapping(journal.new_basis)
-        _relocate_workspace(
-            root,
-            slug,
-            journal,
-            old,
-            workspace,
-            has_project=any(row.role == "project" for row in basis.participants),
-        )
-    except (AcceptanceBasisOperationError, OSError, ValueError) as exc:
-        raise BasisRefreshError(str(exc)) from exc
+    old = load_refresh_source_workspace(root, old_basis, slug, operation)
+    workspace, provider_bindings = _build_refresh_workspace(
+        _RefreshBuild(root, ticket_path, slug, effective_fields, old_basis, old, journal)
+    )
+    basis, journal = _publish_refresh_basis(
+        root, ticket_path, slug, workspace, provider_bindings, journal
+    )
+    relocate_refresh_workspace(
+        root,
+        slug,
+        journal.generation,
+        operation,
+        workspace,
+        has_project=any(row.role == "project" for row in basis.participants),
+    )
     return basis, journal.operation_id
+
+
+def _build_refresh_workspace(
+    refresh: _RefreshBuild,
+) -> tuple[AuthoringWorkspace, tuple[ProviderTargetBinding, ...]]:
+    workspace = open_authoring_generation(
+        refresh.root,
+        refresh.ticket,
+        refresh.slug,
+        refresh.fields,
+        refresh.journal.generation,
+        refresh.operation / "new-outer",
+    )
+    provider_bindings = _verify_providers(refresh.root, workspace.outer, refresh.old_basis)
+    _reapply_targets(refresh.old.outer, workspace.outer, refresh.old_basis.target_plan)
+    _reapply_test_tables(refresh.old.outer, workspace.outer, refresh.old_basis.target_plan)
+    _reapply_placeholders(refresh.old, workspace, refresh.old_basis, refresh.slug)
+    return workspace, provider_bindings
+
+
+def _publish_refresh_basis(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    workspace: AuthoringWorkspace,
+    providers: tuple[ProviderTargetBinding, ...],
+    journal: BasisRefreshJournal,
+) -> tuple[AcceptanceBasis, BasisRefreshJournal]:
+    if journal.state != "building":
+        return AcceptanceBasis.from_mapping(journal.new_basis), journal
+    basis, operation_id = prepare_replacement_acceptance_basis(
+        root, ticket, slug, workspace, providers, operation_id=journal.operation_id
+    )
+    write_basis_receipt(
+        root,
+        slug,
+        basis,
+        source_sha256=hashlib.sha256(ticket.read_bytes()).hexdigest(),
+        operation_id=operation_id,
+    )
+    prepared = journal.prepared(basis)
+    _write_journal(root, prepared)
+    return basis, prepared
 
 
 def finish_basis_refresh(root: Path, slug: str, operation_id: str) -> None:
@@ -481,7 +445,26 @@ def finish_basis_refresh(root: Path, slug: str, operation_id: str) -> None:
     from .basis_publication import finish_basis_publication
 
     finish_basis_publication(root, slug, operation_id)
+    safe_rmtree(_operation_path(root, operation_id))
     _journal_path(root, slug).unlink()
+
+
+def discard_basis_refresh(root: Path, slug: str) -> None:
+    """Abandon a failed refresh so the Ticket can return to draft."""
+    journal = load_basis_refresh(root, slug)
+    if journal is None:
+        return
+    operation = _operation_path(root, journal.operation_id)
+    try:
+        repositories = discard_refresh_workspace(root, slug, journal.generation, operation)
+        from .basis_publication import abandon_basis_publication
+
+        abandon_basis_publication(root, slug, journal.operation_id, repositories)
+        discard_generation_refs(repositories, slug, journal.generation)
+        safe_rmtree(operation, protect_git_root=False)
+        _journal_path(root, slug).unlink()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BasisRefreshError(str(exc)) from exc
 
 
 def recover_published_basis_refreshes(root: Path, tickets: list[dict[str, Any]]) -> None:

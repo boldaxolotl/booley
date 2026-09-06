@@ -23,6 +23,7 @@ from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
+    requires_return_to_draft,
 )
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.helpers import tickets_dir_from_project_root
@@ -33,6 +34,7 @@ from booley.ticket_board.paths import (
     ticket_log_dir,
     ticket_runtime_dir,
 )
+from booley.ticket_board.scanner import find_ticket_file
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -357,12 +359,18 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         FatalError: On validation failures or missing dependencies.
     """
     if not ticket_path_or_slug:
+        _promote_waiting_before_auto_select(project_root)
         ticket_path_or_slug = _auto_select_ticket(project_root)
 
     ticket_path, slug = _resolve_and_validate(project_root, ticket_path_or_slug)
+    ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
 
     parsed = ticket_cli.parse_ticket(project_root, str(ticket_path))
     fields = parsed.get("fields", {})
+    if requires_return_to_draft(fields):
+        raise FatalError(
+            f"Ticket '{slug}' has changed Acceptance Basis inputs; use return-to-draft"
+        )
 
     ctx = _build_context(project_root, ticket_path, slug, fields)
     _check_dependencies(ctx)
@@ -380,6 +388,37 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         ctx.criteria_state_needs_init = criteria_state_needs_init
 
     return ctx
+
+
+def _promote_waiting_before_auto_select(project_root: Path) -> None:
+    tickets_dir = tickets_dir_from_project_root(project_root)
+    waiting = tickets_dir / "board" / "waiting"
+    if not waiting.is_dir() or not any(waiting.glob("*.md")):
+        return
+    from booley.ticket_board.operations import op_promote_waiting
+
+    op_promote_waiting(TicketIO(tickets_dir, project_root=project_root))
+
+
+def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str) -> Path:
+    if ticket_path.parent.name != "waiting":
+        return ticket_path
+    from booley.ticket_board.operations import op_promote_waiting
+
+    tickets_dir = tickets_dir_from_project_root(project_root)
+    tio = TicketIO(tickets_dir, project_root=project_root)
+    op_promote_waiting(tio)
+    promoted, status = find_ticket_file(tickets_dir, slug)
+    if promoted is None or status != "queued":
+        raise FatalError(
+            "Waiting Ticket could not be refreshed and promoted before intake",
+            slug=slug,
+        )
+    validation = ticket_cli.validate_ticket(project_root, str(promoted), check_git=False)
+    if not validation.get("valid", False):
+        errors = validation.get("errors", ["unknown validation error"])
+        raise FatalError(f"Ticket validation failed: {'; '.join(errors)}", slug=slug)
+    return promoted
 
 
 def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:

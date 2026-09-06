@@ -82,6 +82,8 @@ def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> Non
         'tests = ["old"]\n\n'
         '["acme:lib:toy:1.0#baseline".env]\n'
         'FLAVOR = "compact"\n\n'
+        '[["acme:lib:toy:1.0#baseline".cases]]\n'
+        'name = "slow"\n\n'
         "# candidate comment stays byte-for-byte\n"
         "[candidate]\n"
         'tests = ["new"]\n',
@@ -181,3 +183,20 @@ def test_qualified_target_rejects_ambiguous_bare_tests_registration(tmp_path: Pa
 
     with pytest.raises(TargetFinalizationError, match=r"ambiguous bare tests\.toml section"):
         plan_target_removals(tmp_path, (canonical,), _binding(canonical))
+
+
+def test_removal_preserves_another_targets_qualified_test_table(tmp_path: Path) -> None:
+    _write_core(tmp_path / "a.core", vlnv="acme:lib:a:1.0", targets="  same: {}\n")
+    _write_core(tmp_path / "b.core", vlnv="acme:lib:b:1.0", targets="  same: {}\n")
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    tests = project / "tests.toml"
+    original = '["acme:lib:b:1.0#same"]\ntests = ["keep"]\n'
+    tests.write_text(original, encoding="utf-8")
+    removed = "acme:lib:a:1.0#same"
+
+    plan = plan_target_removals(tmp_path, (removed,), _binding(removed))
+    apply_target_removals(tmp_path, plan)
+
+    assert tests.read_text(encoding="utf-8") == original
+    assert fusesoc_registry.resolve_ref(tmp_path, "acme:lib:b:1.0#same")

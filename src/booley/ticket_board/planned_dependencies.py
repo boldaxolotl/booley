@@ -12,22 +12,34 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.project_config import TEST_LISTS_TABLE
+from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.core.models import TargetPlanRole
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
+from booley.targets.target import inspect_target_selector
 
 from .acceptance_basis import (
     AcceptanceBasisError,
     ProviderTargetBinding,
     canonical_json,
     load_acceptance_basis,
-    materialize_current_ticket_checkout,
+    materialize_basis_checkout,
+    provider_binding_from_mapping,
+    selector_matches_canonical,
 )
-from .acceptance_targets import criterion_targets
+from .acceptance_targets import (
+    criterion_targets,
+    deferable_rtl_or_tb_input,
+    scope_allows_new_path,
+)
 from .frontmatter import parse_frontmatter
 from .persistence import atomic_replace_bytes
-from .scanner import find_ticket_file
-from .target_surface_edit import TargetSurfaceEditError, merge_target_definition
+from .scanner import find_ticket_file, scan_all_tickets
+from .target_surface_edit import (
+    TargetSurfaceEditError,
+    merge_target_definition,
+    toml_table_block,
+)
 
 _PROVIDER_STATES = frozenset({"waiting", "queued", "running", "blocked", "review"})
 
@@ -45,6 +57,8 @@ class ProviderMaterialization:
     exported_targets: frozenset[str] = frozenset()
     test_tables: frozenset[str] = frozenset()
     surface_digests: tuple[tuple[str, str], ...] = ()
+    dependencies: tuple[str, ...] = ()
+    placeholder_paths: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -78,15 +92,21 @@ def _owned_tests(checkout: Path, target: str) -> tuple[str, Any]:
         raise PlannedDependencyError(f"cannot read provider tests.toml: {exc}") from exc
     bare = target.rsplit("#", 1)[-1]
     if target in raw:
-        return target, raw[target]
+        return _owned_test_table(target, raw[target])
     if bare in raw:
         declarations = fusesoc_registry.target_declarations(checkout).get(bare, [])
         if len(declarations) != 1:
             raise PlannedDependencyError(
                 f"provider Target {target!r} has ambiguous bare tests.toml ownership"
             )
-        return bare, raw[bare]
+        return _owned_test_table(bare, raw[bare])
     return "", None
+
+
+def _owned_test_table(key: str, value: Any) -> tuple[str, Any]:
+    if not isinstance(value, dict):
+        raise PlannedDependencyError(f"provider tests.toml entry {key!r} is not a table")
+    return key, value
 
 
 def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
@@ -99,8 +119,9 @@ def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
     if not isinstance(targets, dict) or ref.name not in targets:
         raise PlannedDependencyError(f"provider Target {target!r} has no declaration")
     tests_key, tests = _owned_tests(checkout, target)
+    controls = {key: value for key, value in document.items() if key != "targets"}
     digest = hashlib.sha256(
-        canonical_json({"target": targets[ref.name], "tests": tests})
+        canonical_json({"controls": controls, "target": targets[ref.name], "tests": tests})
     ).hexdigest()
     try:
         core_path = ref.core_file.resolve().relative_to(checkout.resolve())
@@ -171,19 +192,6 @@ def _merge_provider_target(source: Path, destination: Path, relative: Path, targ
         raise PlannedDependencyError(str(exc)) from exc
 
 
-def _toml_table_block(content: str, key: str) -> str:
-    patterns = (
-        re.compile(rf"(?m)^\[{re.escape(key)}\]\s*(?:#.*)?$"),
-        re.compile(rf'(?m)^\["{re.escape(key)}"\]\s*(?:#.*)?$'),
-    )
-    match = next((found for pattern in patterns if (found := pattern.search(content))), None)
-    if match is None:
-        raise PlannedDependencyError(f"provider tests.toml table {key!r} disappeared")
-    following = re.search(r"(?m)^\[[^[][^]]*\]\s*(?:#.*)?$", content[match.end() :])
-    end = match.end() + following.start() if following is not None else len(content)
-    return content[match.start() : end].strip() + "\n"
-
-
 def _merge_provider_test_table(source: Path, destination: Path, key: str) -> bool:
     if not key:
         return False
@@ -191,14 +199,18 @@ def _merge_provider_test_table(source: Path, destination: Path, key: str) -> boo
     destination_tests = resolve_checkout_project_dir(destination) / "tests.toml"
     if key in _tests_tables(destination_tests):
         return False
-    block = _toml_table_block(source_tests.read_text(encoding="utf-8"), key)
+    try:
+        block = toml_table_block(source_tests.read_text(encoding="utf-8"), key)
+    except TargetSurfaceEditError as exc:
+        raise PlannedDependencyError(str(exc)) from exc
     prefix = (
         destination_tests.read_text(encoding="utf-8").rstrip()
         if destination_tests.is_file()
         else ""
     )
     destination_tests.parent.mkdir(parents=True, exist_ok=True)
-    destination_tests.write_text("\n\n".join([prefix, block]).lstrip() + "\n", encoding="utf-8")
+    content = "\n\n".join([prefix, block]).lstrip() + "\n"
+    atomic_replace_bytes(destination_tests, content.encode(), mode=0o644)
     return True
 
 
@@ -213,54 +225,111 @@ def _serialize(materialization: ProviderMaterialization) -> bytes:
                 {"target": target, "sha256": digest}
                 for target, digest in materialization.surface_digests
             ],
+            "dependencies": list(materialization.dependencies),
+            "placeholder_paths": sorted(materialization.placeholder_paths),
         }
     )
 
 
 def _load_marker(path: Path) -> ProviderMaterialization:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
+        raw = require_dict(json.loads(payload), field="provider marker")
+        expected = {
+            "bindings",
+            "materialized_targets",
+            "exported_targets",
+            "test_tables",
+            "surface_digests",
+            "dependencies",
+            "placeholder_paths",
+        }
+        if set(raw) != expected:
+            raise BoundaryError("provider marker has invalid fields")
         bindings = tuple(
-            ProviderTargetBinding(
-                str(row["provider"]),
-                str(row["basis_id"]),
-                str(row["target"]),
-                str(row["role"]),
-                str(row["surface_sha256"]),
-            )
-            for row in raw["bindings"]
+            provider_binding_from_mapping(row)
+            for row in require_list(raw.get("bindings"), field="provider marker.bindings")
         )
         result = ProviderMaterialization(
             tuple(sorted(bindings)),
-            frozenset(str(item) for item in raw["materialized_targets"]),
-            frozenset(str(item) for item in raw["exported_targets"]),
-            frozenset(str(item) for item in raw["test_tables"]),
-            tuple(
-                sorted(
-                    (str(row["target"]), str(row["sha256"]))
-                    for row in raw["surface_digests"]
-                    if set(row) == {"target", "sha256"}
-                )
-            ),
+            frozenset(_marker_strings(raw, "materialized_targets")),
+            frozenset(_marker_strings(raw, "exported_targets")),
+            frozenset(_marker_strings(raw, "test_tables")),
+            tuple(sorted(_marker_digests(raw))),
+            tuple(_marker_strings(raw, "dependencies")),
+            frozenset(_marker_strings(raw, "placeholder_paths")),
         )
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        AcceptanceBasisError,
+        BoundaryError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         raise PlannedDependencyError(
             f"provider materialization marker is invalid: {path}"
         ) from exc
-    if (
-        result.surface_digests != tuple(sorted(set(result.surface_digests)))
-        or any(not target for target, _digest in result.surface_digests)
-        or any(
-            re.fullmatch(r"[0-9a-f]{64}", digest) is None
-            for _target, digest in result.surface_digests
-        )
-    ):
+    if not _valid_marker_digests(result.surface_digests):
         raise PlannedDependencyError(
             f"provider materialization marker has invalid surface digests: {path}"
         )
-    if _serialize(result) != path.read_bytes():
+    _validate_materialization(result)
+    if _serialize(result) != payload:
         raise PlannedDependencyError(f"provider materialization marker is not canonical: {path}")
     return result
+
+
+def _valid_marker_digests(digests: tuple[tuple[str, str], ...]) -> bool:
+    return (
+        digests == tuple(sorted(set(digests)))
+        and all(target for target, _digest in digests)
+        and all(re.fullmatch(r"[0-9a-f]{64}", digest) for _target, digest in digests)
+    )
+
+
+def _validate_materialization(materialization: ProviderMaterialization) -> None:
+    bindings = {binding.target: binding for binding in materialization.bindings}
+    if len(bindings) != len(materialization.bindings):
+        raise PlannedDependencyError("provider materialization has duplicate Target bindings")
+    digests = dict(materialization.surface_digests)
+    targets = set(bindings)
+    if not (
+        targets
+        == set(digests)
+        == set(materialization.materialized_targets)
+        == set(materialization.exported_targets)
+    ):
+        raise PlannedDependencyError("provider materialization Target sets do not align")
+    if any(binding.surface_sha256 != digests[target] for target, binding in bindings.items()):
+        raise PlannedDependencyError("provider materialization binding digest does not align")
+    if {binding.provider for binding in bindings.values()} - set(materialization.dependencies):
+        raise PlannedDependencyError("provider materialization binding is not a dependency")
+    if any(not _valid_relative_path(path) for path in materialization.placeholder_paths):
+        raise PlannedDependencyError("provider materialization has invalid placeholder paths")
+
+
+def _valid_relative_path(path: str) -> bool:
+    candidate = Path(path)
+    return bool(path) and not candidate.is_absolute() and ".." not in candidate.parts
+
+
+def _marker_strings(raw: dict[Any, Any], key: str) -> tuple[str, ...]:
+    values = require_list(raw.get(key), field=f"provider marker.{key}")
+    if not all(isinstance(value, str) and value for value in values):
+        raise BoundaryError(f"provider marker.{key} must contain non-empty strings")
+    return tuple(values)
+
+
+def _marker_digests(raw: dict[Any, Any]) -> tuple[tuple[str, str], ...]:
+    rows = require_list(raw.get("surface_digests"), field="provider marker.surface_digests")
+    result = []
+    for value in rows:
+        row = require_dict(value, field="provider marker.surface digest")
+        if set(row) != {"target", "sha256"}:
+            raise BoundaryError("provider marker surface digest has invalid fields")
+        result.append((require_str(row, "target"), require_str(row, "sha256")))
+    return tuple(result)
 
 
 def _validate_replacement_owners(providers: list[_Provider]) -> None:
@@ -284,39 +353,28 @@ def _materialize_provider(
     workspace: Path,
     removals: set[str],
     offered: dict[str, str],
+    effective_targets: set[str],
 ) -> ProviderMaterialization:
     exports = tuple(
-        entry
-        for entry in provider.basis.target_plan.entries
-        if entry.role in {TargetPlanRole.PERSISTENT, TargetPlanRole.REPLACEMENT}
+        entry for entry in _provider_exports(provider) if entry.target in effective_targets
     )
     bindings = []
     materialized_targets: set[str] = set()
     test_tables: set[str] = set()
     surface_digests: list[tuple[str, str]] = []
+    placeholder_paths: set[str] = set()
     with tempfile.TemporaryDirectory(prefix=f"booley-provider-{provider.slug}-") as directory:
-        checkout = materialize_current_ticket_checkout(
-            root, provider.basis, Path(directory) / "checkout"
-        )
+        checkout = materialize_basis_checkout(root, provider.basis, Path(directory) / "checkout")
         for entry in exports:
-            previous = offered.get(entry.target)
-            if previous is not None:
-                raise PlannedDependencyError(
-                    f"provider Targets are ambiguous: {entry.target!r} is offered by "
-                    f"{previous!r} and {provider.slug!r}"
-                )
-            if entry.target in removals:
-                raise PlannedDependencyError(
-                    f"provider Target {entry.target!r} is removed by another dependency"
-                )
+            _claim_provider_export(provider, entry, removals, offered)
             core_path, tests_key, digest = _surface(checkout, entry.target)
-            offered[entry.target] = provider.slug
             _merge_provider_target(checkout, workspace, core_path, entry.target)
             materialized_targets.add(entry.target)
             _merge_provider_test_table(checkout, workspace, tests_key)
             if tests_key:
                 test_tables.add(tests_key)
             surface_digests.append((entry.target, digest))
+            placeholder_paths.update(_provider_placeholders(checkout, provider, entry.target))
             bindings.append(
                 ProviderTargetBinding(
                     provider.slug,
@@ -326,25 +384,221 @@ def _materialize_provider(
                     digest,
                 )
             )
+    return _provider_materialization(
+        bindings,
+        materialized_targets,
+        exports,
+        test_tables,
+        surface_digests,
+        placeholder_paths,
+    )
+
+
+def _claim_provider_export(
+    provider: _Provider,
+    entry: Any,
+    removals: set[str],
+    offered: dict[str, str],
+) -> None:
+    previous = offered.get(entry.target)
+    if previous is not None:
+        raise PlannedDependencyError(
+            f"provider Targets are ambiguous: {entry.target!r} is offered by "
+            f"{previous!r} and {provider.slug!r}"
+        )
+    if entry.target in removals:
+        raise PlannedDependencyError(
+            f"provider Target {entry.target!r} is removed by another dependency"
+        )
+    offered[entry.target] = provider.slug
+
+
+def _provider_materialization(
+    bindings: list[ProviderTargetBinding],
+    materialized_targets: set[str],
+    exports: tuple[Any, ...],
+    test_tables: set[str],
+    surface_digests: list[tuple[str, str]],
+    placeholder_paths: set[str],
+) -> ProviderMaterialization:
     return ProviderMaterialization(
         tuple(bindings),
         frozenset(materialized_targets),
         frozenset(entry.target for entry in exports),
         frozenset(test_tables),
         tuple(sorted(surface_digests)),
+        (),
+        frozenset(placeholder_paths),
     )
 
 
-def _criterion_bound_identities(fields: dict[str, Any], workspace: Path) -> set[str]:
-    bound = set()
-    for binding in criterion_targets(fields.get("criteria")):
-        for selector in (binding.baseline, binding.target):
-            try:
-                ref = fusesoc_registry.resolve_ref(workspace, selector)
-            except fusesoc_registry.FuseSocError:
+def _provider_placeholders(checkout: Path, provider: _Provider, target: str) -> tuple[str, ...]:
+    scope = provider.fields.get("scope")
+    if not isinstance(scope, list) or not any(
+        isinstance(item, str) and item.endswith(" [new]") for item in scope
+    ):
+        return ()
+    try:
+        inputs = inspect_target_selector(checkout, target).inputs
+    except (OSError, fusesoc_registry.FuseSocError) as exc:
+        raise PlannedDependencyError(
+            f"cannot inspect provider Target {target!r} inputs: {exc}"
+        ) from exc
+    placeholders = []
+    for item in inputs:
+        path = item.path.replace("\\", "/").removeprefix("./")
+        candidate = checkout / path
+        if not scope_allows_new_path(scope, path):
+            continue
+        if not candidate.is_file() or candidate.stat().st_size != 0:
+            continue
+        if not deferable_rtl_or_tb_input(item):
+            raise PlannedDependencyError(
+                f"provider Target {target!r} defers non-RTL/TB input {path!r}"
+            )
+        try:
+            candidate.resolve().relative_to(checkout.resolve())
+        except ValueError as exc:
+            raise PlannedDependencyError(
+                f"provider Target {target!r} placeholder escapes its checkout: {path}"
+            ) from exc
+        placeholders.append(path)
+    return tuple(sorted(set(placeholders)))
+
+
+def _provider_exports(provider: _Provider) -> tuple[Any, ...]:
+    return tuple(
+        entry
+        for entry in provider.basis.target_plan.entries
+        if entry.role in {TargetPlanRole.PERSISTENT, TargetPlanRole.REPLACEMENT}
+    )
+
+
+def _ticket_dependencies(fields: dict[str, Any]) -> tuple[str, ...]:
+    dependencies = fields.get("dependencies", ())
+    if not isinstance(dependencies, (list, tuple)) or not all(
+        isinstance(item, str) and item for item in dependencies
+    ):
+        raise PlannedDependencyError("Ticket dependencies are not canonical strings")
+    return tuple(dependencies)
+
+
+def _require_marker_dependencies(
+    materialization: ProviderMaterialization, dependencies: tuple[str, ...]
+) -> ProviderMaterialization:
+    if materialization.dependencies != dependencies:
+        raise PlannedDependencyError(
+            "Ticket dependencies changed after provider materialization; recreate the workspace"
+        )
+    return materialization
+
+
+def _active_providers(root: Path, tickets_dir: Path) -> list[_Provider]:
+    providers = []
+    for ticket in scan_all_tickets(tickets_dir):
+        if ticket.get("status") not in _PROVIDER_STATES:
+            continue
+        slug = Path(str(ticket.get("file", ""))).stem
+        provider = _provider(root, tickets_dir, slug)
+        if provider is not None:
+            providers.append(provider)
+    return providers
+
+
+def _export_owners(providers: list[_Provider]) -> dict[str, str]:
+    offered: dict[str, str] = {}
+    for provider in providers:
+        for entry in _provider_exports(provider):
+            previous = offered.get(entry.target)
+            if previous is not None and previous != provider.slug:
+                raise PlannedDependencyError(
+                    f"provider Targets are ambiguous: {entry.target!r} is offered by "
+                    f"{previous!r} and {provider.slug!r}"
+                )
+            offered[entry.target] = provider.slug
+    by_slug = {provider.slug: provider for provider in providers}
+    for remover in providers:
+        for target in remover.basis.removal_targets:
+            owner = offered.get(target)
+            if owner is None or owner == remover.slug:
                 continue
-            bound.add(f"{ref.vlnv}#{ref.name}")
-    return bound
+            if not _provider_depends_on(remover, owner, by_slug):
+                raise PlannedDependencyError(
+                    f"provider Target {target!r} is offered by {owner!r} "
+                    f"and removed by {remover.slug!r}"
+                )
+            offered.pop(target)
+    return offered
+
+
+def _provider_depends_on(
+    provider: _Provider, dependency: str, providers: dict[str, _Provider]
+) -> bool:
+    pending = list(provider.fields.get("dependencies", ()))
+    visited = set()
+    while pending:
+        slug = pending.pop()
+        if slug == dependency:
+            return True
+        if slug in visited:
+            continue
+        visited.add(slug)
+        nested = providers.get(slug)
+        if nested is not None:
+            pending.extend(nested.fields.get("dependencies", ()))
+    return False
+
+
+def _required_provider_slugs(fields: dict[str, Any], providers: list[_Provider]) -> set[str]:
+    owners = _export_owners(providers)
+    required = set()
+    for binding in criterion_targets(fields.get("criteria")):
+        for selector in (binding.target, binding.baseline):
+            matches = {
+                provider
+                for target, provider in owners.items()
+                if selector_matches_canonical(selector, target)
+            }
+            if len(matches) > 1:
+                raise PlannedDependencyError(
+                    f"criterion Target {selector!r} is offered by ambiguous providers"
+                )
+            required.update(matches)
+    return required
+
+
+def _validate_provider_dependencies(
+    fields: dict[str, Any], dependencies: tuple[str, ...], providers: list[_Provider]
+) -> None:
+    _validate_retiring_provider_targets(fields, providers)
+    missing = sorted(_required_provider_slugs(fields, providers) - set(dependencies))
+    if missing:
+        raise PlannedDependencyError(
+            "Ticket is missing provider dependencies: " + ", ".join(missing)
+        )
+
+
+def _validate_retiring_provider_targets(
+    fields: dict[str, Any], providers: list[_Provider]
+) -> None:
+    retiring = {
+        target: provider.slug
+        for provider in providers
+        for target in provider.basis.removal_targets
+    }
+    for binding in criterion_targets(fields.get("criteria")):
+        for selector in (binding.target, binding.baseline):
+            matches = [
+                (target, provider)
+                for target, provider in retiring.items()
+                if selector_matches_canonical(selector, target)
+            ]
+            if matches:
+                target, provider = matches[0]
+                raise PlannedDependencyError(
+                    f"criterion Target {selector!r} names {provider!r}'s retiring "
+                    f"provider Target {target!r}"
+                )
 
 
 def materialize_planned_dependencies(
@@ -355,41 +609,119 @@ def materialize_planned_dependencies(
     workspace: Path,
 ) -> ProviderMaterialization:
     """Materialize active dependency exports once for one draft generation."""
+    fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    dependencies = _ticket_dependencies(fields)
+    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
+    active = _active_providers(root, tickets_dir)
+    _validate_replacement_owners(active)
+    _validate_provider_dependencies(fields, dependencies, active)
+    providers = _dependency_providers(root, tickets_dir, dependencies, active)
     marker = _marker_path(root, slug, generation)
     if marker.is_file():
-        return _load_marker(marker)
-    fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
-    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
-    providers = [
-        provider
-        for dependency in fields.get("dependencies", ())
-        if (provider := _provider(root, tickets_dir, str(dependency))) is not None
-    ]
+        materialization = _require_marker_dependencies(_load_marker(marker), dependencies)
+        _restore_materialized_surfaces(root, providers, workspace, materialization)
+        validate_materialized_surfaces(workspace, materialization)
+        return materialization
+    result = _compose_providers(root, providers, workspace, dependencies)
+    _validate_materialization(result)
+    atomic_replace_bytes(marker, _serialize(result))
+    return result
+
+
+def _restore_materialized_surfaces(
+    root: Path,
+    providers: list[_Provider],
+    workspace: Path,
+    materialization: ProviderMaterialization,
+) -> None:
+    by_slug = {provider.slug: provider for provider in providers}
+    bindings: dict[str, list[ProviderTargetBinding]] = {}
+    for binding in materialization.bindings:
+        bindings.setdefault(binding.provider, []).append(binding)
+    missing = sorted(set(bindings) - set(by_slug))
+    if missing:
+        raise PlannedDependencyError(
+            "planned provider Tickets are no longer basis-published: " + ", ".join(missing)
+        )
+    for provider_slug, rows in bindings.items():
+        _restore_provider_surfaces(root, by_slug[provider_slug], rows, workspace)
+
+
+def _restore_provider_surfaces(
+    root: Path,
+    provider: _Provider,
+    bindings: list[ProviderTargetBinding],
+    workspace: Path,
+) -> None:
+    exported = {(entry.target, entry.role.value) for entry in _provider_exports(provider)}
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=f"booley-provider-restore-{provider.slug}-"
+        ) as directory:
+            checkout = materialize_basis_checkout(
+                root, provider.basis, Path(directory) / "checkout"
+            )
+            _validate_refreshed_bindings(provider, bindings, exported, checkout)
+            for binding in bindings:
+                core_path, tests_key, _digest = _surface(checkout, binding.target)
+                _merge_provider_target(checkout, workspace, core_path, binding.target)
+                _merge_provider_test_table(checkout, workspace, tests_key)
+    except (AcceptanceBasisError, OSError, TargetSurfaceEditError) as exc:
+        raise PlannedDependencyError(
+            f"cannot restore planned provider {provider.slug!r}: {exc}"
+        ) from exc
+
+
+def _dependency_providers(
+    root: Path,
+    tickets_dir: Path,
+    dependencies: tuple[str, ...],
+    active: list[_Provider],
+) -> list[_Provider]:
+    by_slug = {provider.slug: provider for provider in active}
+    providers = []
+    for dependency in dependencies:
+        provider = by_slug.get(dependency) or _provider(root, tickets_dir, dependency)
+        if provider is not None:
+            providers.append(provider)
     _validate_replacement_owners(providers)
+    return providers
+
+
+def _compose_providers(
+    root: Path,
+    providers: list[_Provider],
+    workspace: Path,
+    dependencies: tuple[str, ...],
+) -> ProviderMaterialization:
     bindings: list[ProviderTargetBinding] = []
     materialized_targets: set[str] = set()
     exported_targets: set[str] = set()
     test_tables: set[str] = set()
     surface_digests: dict[str, str] = {}
+    placeholder_paths: set[str] = set()
     removals = {target for provider in providers for target in provider.basis.removal_targets}
+    effective_targets = set(_export_owners(providers))
     offered: dict[str, str] = {}
     for provider in _ordered_providers(providers):
-        materialized = _materialize_provider(root, provider, workspace, removals, offered)
+        materialized = _materialize_provider(
+            root, provider, workspace, removals, offered, effective_targets
+        )
         bindings.extend(materialized.bindings)
         materialized_targets.update(materialized.materialized_targets)
         exported_targets.update(materialized.exported_targets)
         test_tables.update(materialized.test_tables)
         surface_digests.update(materialized.surface_digests)
-    bound = _criterion_bound_identities(fields, workspace)
-    result = ProviderMaterialization(
-        tuple(sorted(binding for binding in bindings if binding.target in bound)),
+        placeholder_paths.update(materialized.placeholder_paths)
+    return ProviderMaterialization(
+        tuple(sorted(bindings)),
         frozenset(materialized_targets),
         frozenset(exported_targets),
         frozenset(test_tables),
         tuple(sorted(surface_digests.items())),
+        dependencies,
+        frozenset(placeholder_paths),
     )
-    atomic_replace_bytes(marker, _serialize(result))
-    return result
 
 
 def load_planned_dependencies(root: Path, slug: str, generation: str) -> ProviderMaterialization:
@@ -404,37 +736,83 @@ def validate_planned_dependencies(
     root: Path,
     slug: str,
     generation: str,
+    ticket_path: Path,
 ) -> ProviderMaterialization:
     """Require every generation pin to still name the provider's current basis."""
     materialization = load_planned_dependencies(root, slug, generation)
+    fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    dependencies = _ticket_dependencies(fields)
+    _require_marker_dependencies(materialization, dependencies)
+    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
+    active = _active_providers(root, tickets_dir)
+    _validate_replacement_owners(active)
+    _validate_provider_dependencies(fields, dependencies, active)
+    providers = _dependency_providers(root, tickets_dir, dependencies, active)
+    _export_owners(providers)
     if not materialization.bindings:
         return materialization
-    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
-    basis_by_provider: dict[str, str] = {}
+    by_slug = {provider.slug: provider for provider in providers}
+    by_provider: dict[str, list[ProviderTargetBinding]] = {}
     for binding in materialization.bindings:
-        basis_id = basis_by_provider.get(binding.provider)
-        if basis_id is None:
-            provider = _provider(root, tickets_dir, binding.provider)
-            if provider is None:
-                raise PlannedDependencyError(
-                    f"planned provider {binding.provider!r} is no longer basis-published"
-                )
-            basis_id = provider.basis.basis_id
-            basis_by_provider[binding.provider] = basis_id
-        if binding.basis_id != basis_id:
+        by_provider.setdefault(binding.provider, []).append(binding)
+    for slug_key, bindings in by_provider.items():
+        provider = by_slug.get(slug_key)
+        if provider is None:
             raise PlannedDependencyError(
-                f"planned provider {binding.provider!r} published a different Acceptance Basis"
+                f"planned provider {slug_key!r} is no longer basis-published"
             )
+        if any(binding.basis_id != provider.basis.basis_id for binding in bindings):
+            _validate_refreshed_provider(root, provider, bindings)
     return materialization
+
+
+def _validate_refreshed_provider(
+    root: Path, provider: _Provider, bindings: list[ProviderTargetBinding]
+) -> None:
+    exported = {(entry.target, entry.role.value) for entry in _provider_exports(provider)}
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=f"booley-provider-check-{provider.slug}-"
+        ) as directory:
+            checkout = materialize_basis_checkout(
+                root, provider.basis, Path(directory) / "checkout"
+            )
+            _validate_refreshed_bindings(provider, bindings, exported, checkout)
+    except (AcceptanceBasisError, OSError) as exc:
+        raise PlannedDependencyError(
+            f"cannot validate refreshed provider {provider.slug!r}: {exc}"
+        ) from exc
+
+
+def _validate_refreshed_bindings(
+    provider: _Provider,
+    bindings: list[ProviderTargetBinding],
+    exported: set[tuple[str, str]],
+    checkout: Path,
+) -> None:
+    for binding in bindings:
+        if (binding.target, binding.role) not in exported:
+            raise PlannedDependencyError(
+                f"planned provider {provider.slug!r} no longer exports {binding.target!r}"
+            )
+        if target_surface_sha256(checkout, binding.target) != binding.surface_sha256:
+            raise PlannedDependencyError(
+                f"planned provider Target {binding.target!r} changed after pinning"
+            )
 
 
 def validate_materialized_surfaces(
     workspace: Path, materialization: ProviderMaterialization
 ) -> None:
     """Reject edits to any Target surface copied from a planned provider."""
+    test_tables = set()
     for target, expected in materialization.surface_digests:
-        actual = target_surface_sha256(workspace, target)
+        _core, test_table, actual = _surface(workspace, target)
         if actual != expected:
             raise PlannedDependencyError(
                 f"materialized provider Target {target!r} changed after composition"
             )
+        if test_table:
+            test_tables.add(test_table)
+    if test_tables != set(materialization.test_tables):
+        raise PlannedDependencyError("materialized provider tests.toml ownership changed")

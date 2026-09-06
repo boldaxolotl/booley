@@ -112,17 +112,18 @@ the authoring worktree with the exact destination baseline. Enforce that:
 3. no existing Target was modified or deleted directly;
 4. persistent and ephemeral entries have no baseline;
 5. each replacement baseline exists on the destination baseline;
-6. all planned Targets and replacement baselines are bound by Ticket Criteria;
-7. replacement baselines resolve and are runnable enough to collect evidence;
-8. Target-owned test-table additions and changes match the approved plan;
-9. omission of `target_plan` accompanies no current-Ticket-authored Target or
+6. a replacement and its baseline are drivable by the same Booley Flow family;
+7. all planned Targets and replacement baselines are bound by Ticket Criteria;
+8. replacement baselines resolve and are runnable enough to collect evidence;
+9. Target-owned test-table additions and changes match the approved plan;
+10. omission of `target_plan` accompanies no current-Ticket-authored Target or
     owned-test-table delta;
-10. the authoring repositories contain no other non-placeholder changes; and
-11. the published participant commits contain every validated authoring change.
+11. the authoring repositories contain no other non-placeholder changes; and
+12. the published participant commits contain every validated authoring change.
 
 "Same build intent" remains a ticket-creation and approval judgment. Machine
-validation enforces structural consequences but does not pretend to infer product
-intent from `.core` syntax.
+validation enforces the Flow-family and structural consequences but does not
+pretend to infer product intent from `.core` syntax.
 
 ### Derived acceptance behavior
 
@@ -383,8 +384,8 @@ Primary files:
 - Changed `.core` files containing untouched sibling Targets do not
   misclassify those siblings as authored.
 - Owned tests tables publish; unplanned or ambiguously owned changes fail.
-- Replacement baseline existence, resolution, Criterion binding, and minimum
-  runnability are enforced.
+- Replacement baseline existence, resolution, Criterion binding, Flow-family
+  compatibility, and minimum runnability are enforced.
 - A planned candidate may defer only already-supported Scope `[new]` RTL/TB
   paths.
 

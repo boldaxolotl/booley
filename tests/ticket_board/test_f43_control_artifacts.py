@@ -243,9 +243,7 @@ def test_json_shaped_criterion_string_round_trips_as_a_string() -> None:
     assert parse_criteria_section(render_criteria_section(criteria)) == criteria
 
 
-def test_review_completion_ignores_its_board_rename_but_not_product_edits(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _review_completion_case(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "booley.ticket_board.operations._completion_acceptance_valid",
         lambda *_: SimpleNamespace(participant_heads=None),
@@ -275,14 +273,19 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
         str(unrelated_ticket.relative_to(root)),
     )
     _commit_all(root, "queue ticket")
-
     review = queue.parent.parent / "review" / queue.name
     review.parent.mkdir(parents=True, exist_ok=True)
     queue.rename(review)
     monkeypatch.chdir(root)
-
     source = root / "rtl" / "toy.sv"
     original = source.read_text(encoding="utf-8")
+    return root, tio, unrelated_ticket, source, original
+
+
+def test_review_completion_ignores_its_board_rename_but_not_product_edits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, tio, unrelated_ticket, source, original = _review_completion_case(tmp_path, monkeypatch)
     source.write_text("module toy; wire unrelated_product_edit; endmodule\n", encoding="utf-8")
     assert op_complete(tio, "change-target") is False
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"

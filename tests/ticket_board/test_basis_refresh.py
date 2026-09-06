@@ -1,8 +1,11 @@
 """Basis Refresh reconstructs only approved consumer-authored controls."""
 
+import json
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from booley.core.models import TargetPlan, TargetPlanRole
@@ -13,9 +16,13 @@ from booley.ticket_board.acceptance_basis import (
     ProviderTargetBinding,
 )
 from booley.ticket_board.basis_refresh import (
+    BasisRefreshError,
     _reapply_placeholders,
     _reapply_targets,
+    _reapply_test_tables,
     _verify_providers,
+    load_basis_refresh,
+    prepare_waiting_basis_refresh,
 )
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
@@ -58,6 +65,36 @@ def test_reapply_targets_keeps_current_destination_and_approved_candidate(
     targets = yaml.safe_load((new / "toy.core").read_text(encoding="utf-8"))["targets"]
     assert set(targets) == {"accepted_provider", "concurrent", "consumer"}
     assert "provider_ephemeral" not in targets
+
+
+def test_reapply_test_tables_rejects_current_destination_conflict(tmp_path: Path) -> None:
+    old = tmp_path / "old/.booley_project"
+    new = tmp_path / "new/.booley_project"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "tests.toml").write_text("[future]\nmodule = 'accepted'\n", encoding="utf-8")
+    (new / "tests.toml").write_text("[future]\nmodule = 'concurrent'\n", encoding="utf-8")
+    plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
+
+    with pytest.raises(BasisRefreshError, match="conflicts with current destination"):
+        _reapply_test_tables(old.parent, new.parent, plan)
+
+
+def test_reapply_test_tables_includes_nested_owned_tables(tmp_path: Path) -> None:
+    old = tmp_path / "old/.booley_project"
+    new = tmp_path / "new/.booley_project"
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "tests.toml").write_text(
+        "[future]\nmodule = 'accepted'\n[future.env]\nMODE = 'fast'\n",
+        encoding="utf-8",
+    )
+    plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
+
+    _reapply_test_tables(old.parent, new.parent, plan)
+    tables = tomllib.loads((new / "tests.toml").read_text(encoding="utf-8"))
+
+    assert tables["future"]["env"] == {"MODE": "fast"}
 
 
 def test_reapply_placeholders_skips_machine_owned_basis_record(
@@ -139,3 +176,88 @@ def _participant() -> BasisParticipant:
         "refs/heads/main",
         "b" * 40,
     )
+
+
+def test_journal_boundary_rejects_non_string_identity(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "refresh.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "operation_id": [],
+                "generation": "a" * 16,
+                "slug": "ticket",
+                "old_basis_id": "b" * 64,
+                "state": "building",
+                "new_basis": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(basis_refresh, "_journal_path", lambda *_args: path)
+
+    with pytest.raises(BasisRefreshError, match="journal is invalid"):
+        load_basis_refresh(tmp_path, "ticket")
+
+
+def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nacceptance_basis: {}\n---\n", encoding="utf-8")
+    provider = ProviderTargetBinding(
+        "provider", "c" * 64, "acme:lib:toy:1.0#future", "persistent", "d" * 64
+    )
+    old_basis = AcceptanceBasis((_participant(),), providers=(provider,))
+    new_basis = AcceptanceBasis((_participant(),), providers=(provider,))
+    journal_path = tmp_path / "refresh.json"
+    operations = tmp_path / "operations"
+    monkeypatch.setattr(basis_refresh, "_journal_path", lambda *_args: journal_path)
+    monkeypatch.setattr(
+        basis_refresh, "_operation_path", lambda _root, operation: operations / operation
+    )
+    monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda root: root)
+    monkeypatch.setattr(
+        basis_refresh,
+        "load_acceptance_basis",
+        lambda _root, _slug, fields, _body: (
+            new_basis if fields.get("acceptance_basis") not in ({}, None) else old_basis
+        ),
+    )
+
+    monkeypatch.setattr(
+        basis_refresh,
+        "load_refresh_source_workspace",
+        lambda *_args: AuthoringWorkspace(tmp_path / "old", None, "b" * 40, ""),
+    )
+    workspace = AuthoringWorkspace(tmp_path / "new", None, "b" * 40, "", "a" * 16)
+    monkeypatch.setattr(
+        basis_refresh, "_build_refresh_workspace", lambda _refresh: (workspace, (provider,))
+    )
+    monkeypatch.setattr(
+        basis_refresh,
+        "prepare_replacement_acceptance_basis",
+        lambda *_args, **kwargs: (new_basis, kwargs["operation_id"]),
+    )
+    monkeypatch.setattr(basis_refresh, "write_basis_receipt", lambda *_args, **_kwargs: {})
+    calls = []
+
+    def fail_once(*args, **_kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise OSError("relocation interrupted")
+
+    monkeypatch.setattr(basis_refresh, "relocate_refresh_workspace", fail_once)
+    return ticket, new_basis, calls
+
+
+def test_public_refresh_recovers_after_prepared_relocation_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ticket, new_basis, calls = _stub_refresh_recovery(tmp_path, monkeypatch)
+
+    with pytest.raises(BasisRefreshError, match="relocation interrupted"):
+        prepare_waiting_basis_refresh(tmp_path, ticket, "ticket")
+    recovered, operation = prepare_waiting_basis_refresh(tmp_path, ticket, "ticket")
+
+    assert recovered == new_basis
+    assert operation
+    assert len(calls) == 2

@@ -616,56 +616,58 @@ def _create_target_plan(args, on_success: dict[str, Any] | None):
 
 
 def _cmd_create_file(tio, args):
-    # Parse criteria: --criteria-file takes precedence over --criteria
-    criteria = None
-    if args.criteria_file:
-        try:
-            criteria = json.loads(Path(args.criteria_file).read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"Error: invalid --criteria-file: {e}", file=sys.stderr)
-            return 2
-    elif args.criteria:
-        try:
-            criteria = json.loads(args.criteria)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid --criteria JSON: {e}", file=sys.stderr)
-            return 2
-
+    criteria, error = _create_file_criteria(args)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     on_success = None
     if args.on_success is not None:
         on_success, error = _parse_on_success_arg(args.on_success)
         if error:
             print(f"Error: invalid --on-success: {error}", file=sys.stderr)
             return 2
-
     target_plan, error = _create_target_plan(args, on_success)
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
-
-    # Read body from file if --body-file given
-    body = args.body
-    if args.body_file:
-        body = Path(args.body_file).read_text(encoding="utf-8")
-
     result = tio.create_ticket_file(
         args.slug,
-        TicketFileSpec(
-            summary=args.summary,
-            ticket_type=args.ticket_type,
-            branch=args.branch,
-            project_destination_ref=args.project_destination_ref,
-            scope=args.scope,
-            spec=args.spec,
-            dependencies=args.dependencies,
-            priority=args.priority,
-            criteria=criteria,
-            target_plan=target_plan,
-            on_success=on_success,
-            body=body,
-        ),
+        _create_file_spec(args, criteria, target_plan, on_success),
     )
     return 0 if result else 2
+
+
+def _create_file_criteria(args) -> tuple[Any, str | None]:
+    """Parse create-file criteria with file input taking precedence."""
+    if args.criteria_file:
+        try:
+            return json.loads(Path(args.criteria_file).read_text(encoding="utf-8")), None
+        except (json.JSONDecodeError, OSError) as e:
+            return None, f"invalid --criteria-file: {e}"
+    if args.criteria:
+        try:
+            return json.loads(args.criteria), None
+        except json.JSONDecodeError as e:
+            return None, f"invalid --criteria JSON: {e}"
+    return None, None
+
+
+def _create_file_spec(args, criteria, target_plan, on_success) -> TicketFileSpec:
+    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else args.body
+    return TicketFileSpec(
+        summary=args.summary,
+        ticket_type=args.ticket_type,
+        branch=args.branch,
+        project_destination_ref=args.project_destination_ref,
+        scope=args.scope,
+        spec=args.spec,
+        dependencies=args.dependencies,
+        priority=args.priority,
+        criteria=criteria,
+        target_plan=target_plan,
+        on_success=on_success,
+        body=body,
+    )
 
 
 def _cmd_return_to_draft(tio, args):

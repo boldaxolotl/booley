@@ -30,6 +30,18 @@ def _completed(
     return subprocess.CompletedProcess(list(args), returncode, stdout, stderr)
 
 
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
 def _attachment(tmp_path: Path) -> workspace_ops._OpenAttachment:
     return workspace_ops._OpenAttachment(
         tmp_path / "repository",
@@ -62,6 +74,7 @@ def _authoring_workspace(
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_pin_authoring_bases", lambda *_args: ("a" * 40, ""))
     monkeypatch.setattr(
         workspace_ops,
         "prepare_project",
@@ -139,6 +152,96 @@ def test_authoring_change_validation_rejects_non_acceptance_paths(
         workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
 
 
+def test_authoring_change_validation_rejects_modified_protected_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, ticket, outer = _authoring_workspace(tmp_path, monkeypatch)
+    source = outer / "rtl/design.sv"
+    source.parent.mkdir(parents=True)
+    source.write_text("module changed; endmodule\n", encoding="utf-8")
+    monkeypatch.setattr(workspace_ops, "_status_paths", lambda _repository: ["rtl/design.sv"])
+    monkeypatch.setattr(
+        workspace_ops,
+        "_local_manifest_paths",
+        lambda _surface, _project_repository: {"rtl/design.sv"},
+    )
+    monkeypatch.setattr(workspace_ops, "_git", lambda *_args, **_kwargs: _completed("git"))
+
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
+        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+
+
+def test_authoring_change_validation_rejects_unscoped_empty_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, ticket, outer = _authoring_workspace(tmp_path, monkeypatch)
+    source = outer / "rtl/new_design.sv"
+    source.parent.mkdir(parents=True)
+    source.touch()
+    monkeypatch.setattr(workspace_ops, "_status_paths", lambda _repo: ["rtl/new_design.sv"])
+    monkeypatch.setattr(
+        workspace_ops,
+        "_local_manifest_paths",
+        lambda _surface, _project: {"rtl/new_design.sv"},
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", returncode=1),
+    )
+
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
+        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+
+
+def test_authoring_path_allows_untracked_scoped_empty_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placeholder = tmp_path / "rtl/new_design.sv"
+    placeholder.parent.mkdir()
+    placeholder.touch()
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", returncode=1),
+    )
+
+    assert workspace_ops._is_authoring_path(
+        tmp_path, "rtl/new_design.sv", set(), ["rtl/new_design.sv [new]"]
+    )
+
+
+def test_project_authoring_path_uses_outer_scope_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    placeholder = project / "rtl/new_design.sv"
+    placeholder.parent.mkdir(parents=True)
+    placeholder.touch()
+    monkeypatch.setattr(workspace_ops, "_status_paths", lambda _repo: ["rtl/new_design.sv"])
+    monkeypatch.setattr(workspace_ops, "_local_manifest_paths", lambda *_args: set())
+    monkeypatch.setattr(
+        workspace_ops,
+        "paired_project_repository",
+        lambda _root: SimpleNamespace(path_prefix=".booley_project"),
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", returncode=1),
+    )
+
+    changes = workspace_ops._validate_authoring_changes(
+        project,
+        tmp_path,
+        project_repository=True,
+        recovery_paths=set(),
+        scope=[".booley_project/rtl/new_design.sv [new]"],
+    )
+
+    assert changes == ["rtl/new_design.sv"]
+
+
 def test_authoring_preparation_materializes_submodules_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,7 +276,7 @@ def test_changed_core_targets_report_shape_and_identity_errors(
     monkeypatch.setattr(
         workspace_ops, "_local_manifest_paths", lambda *_args, **_kwargs: {core.name}
     )
-    monkeypatch.setattr("booley.ticket_board.target_plan._git_file", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_baseline_surface_file", lambda *_args: None)
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="is not a mapping"):
         workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
 
@@ -320,11 +423,13 @@ def test_current_and_project_branch_validation(
         project=None,
         outer_changes=[],
         project_changes=[],
+        outer_base_sha="a" * 40,
+        project_base_sha="",
     )
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
     monkeypatch.setattr(workspace_ops, "_prepare_basis_inputs", lambda *_args: ((), ()))
-    monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: ("a" * 40, "b" * 40))
+    monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: "b" * 40)
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args, **_kwargs: "")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="detached"):
@@ -577,7 +682,7 @@ def test_draft_generation_reuses_valid_descriptor(
         tmp_path / "outer", None, "a" * 40, "", "0123456789abcdef"
     )
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(workspace_ops, "_open_generation", lambda *_args: expected)
+    monkeypatch.setattr(workspace_ops, "open_authoring_generation", lambda *_args: expected)
     assert workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket") == expected
 
 
@@ -644,3 +749,77 @@ def test_reset_project_source_validation_rejects_repository_mismatches(
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
     plan = workspace_ops.preflight_basis_reset(tmp_path, "ticket", paired, "main")
     assert plan.project_source == tmp_path
+
+
+def test_missing_refresh_workspace_rejects_advanced_execution_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-q", "-b", "main")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "source.txt").write_text("basis\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-qm", "basis")
+    authoring = _git(repository, "rev-parse", "HEAD")
+    ticket_branch = "booley-generation/0123456789abcdef/ticket"
+    _git(repository, "switch", "-qc", ticket_branch)
+    (repository / "source.txt").write_text("executed\n", encoding="utf-8")
+    _git(repository, "commit", "-qam", "execution")
+    _git(repository, "switch", "-q", "main")
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                authoring,
+                f"refs/heads/{ticket_branch}",
+                "refs/heads/main",
+                authoring,
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "project-data"
+    )
+
+    with pytest.raises(
+        workspace_ops.AcceptanceBasisOperationError,
+        match="acceptance-input-change-required",
+    ):
+        workspace_ops.load_refresh_source_workspace(
+            repository, basis, "ticket", tmp_path / "operation"
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("new.core", "CAPI=2:\nname: acme:lib:new:1.0\ntargets: {}\n"),
+        ("rtl/new.sv", "module new; endmodule\n"),
+    ],
+)
+def test_authoring_basis_rejects_commits_beyond_destination(
+    tmp_path: Path, path: str, content: str
+) -> None:
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    _git(repository, "init", "-q", "-b", "main")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-qm", "baseline")
+    _git(repository, "worktree", "add", "-qb", "ticket", str(worktree), "main")
+    authored = worktree / path
+    authored.parent.mkdir(parents=True, exist_ok=True)
+    authored.write_text(content, encoding="utf-8")
+    _git(worktree, "add", ".")
+    _git(worktree, "commit", "-qm", "unauthorized authoring commit")
+
+    with pytest.raises(
+        workspace_ops.AcceptanceBasisOperationError,
+        match="commits beyond the destination baseline",
+    ):
+        workspace_ops._pin_authoring_bases(repository, worktree, None, {"branch": "main"})

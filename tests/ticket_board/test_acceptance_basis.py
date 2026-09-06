@@ -23,6 +23,7 @@ from booley.ticket_board import (
 from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
+    basis_refresh,
     draft_transition,
     enqueue_publication,
     workspace_ops,
@@ -1161,6 +1162,42 @@ def _blocked_ticket(tmp_path: Path, slug: str = "blocked-again") -> tuple[Path, 
     return root, blocked, tio
 
 
+def test_return_to_draft_discards_failed_building_basis_refresh(tmp_path: Path) -> None:
+    root, blocked, tio = _blocked_ticket(tmp_path)
+    fields, _body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
+    old_basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    operation_id = "c" * 32
+    generation = "d" * 16
+    operation = basis_refresh._operation_path(root, operation_id)
+    candidate = operation / "new-outer"
+    branch = f"booley-generation/{generation}/blocked-again"
+    candidate.parent.mkdir(parents=True)
+    _git(root, "worktree", "add", "-b", branch, str(candidate), "main")
+    journal = basis_refresh.BasisRefreshJournal(
+        1,
+        operation_id,
+        generation,
+        "blocked-again",
+        old_basis.basis_id,
+        "building",
+        {},
+    )
+    basis_refresh._write_journal(root, journal)
+
+    reopened = tio.return_to_draft("blocked-again")
+
+    assert Path(reopened["outer_worktree"]).is_dir()
+    assert not basis_refresh._journal_path(root, "blocked-again").exists()
+    assert not operation.exists()
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+
+
 def test_invalid_enqueue_does_not_publish_basis_artifacts(tmp_path: Path) -> None:
     root, project_dir, tio = _prepared_ticket(tmp_path)
 
@@ -1173,8 +1210,8 @@ def test_invalid_enqueue_does_not_publish_basis_artifacts(tmp_path: Path) -> Non
     assert (project_dir / "tickets/board/drafts/transaction.md").exists()
 
 
-def test_enqueue_force_stages_ignored_manifest_input(tmp_path: Path) -> None:
-    root, project_dir, tio = _prepared_ticket(tmp_path)
+def test_enqueue_rejects_implementation_support_code(tmp_path: Path) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
     workspace = project_dir / "worktrees/transaction"
     config = workspace / ".booley_project/booley.toml"
     hook = workspace / ".booley_project/hooks/run.py"
@@ -1184,25 +1221,8 @@ def test_enqueue_force_stages_ignored_manifest_input(tmp_path: Path) -> None:
     )
     hook.parent.mkdir(parents=True)
     hook.write_text('print("run")\n', encoding="utf-8")
-    assert _git(workspace, "check-ignore", ".booley_project/hooks/run.py")
-
-    assert tio.enqueue_ticket("transaction") is True
-
-    basis = tio.load_basis("transaction")
-    result = subprocess.run(
-        [
-            "git",
-            "cat-file",
-            "-e",
-            f"{basis.outer_sha}:.booley_project/hooks/run.py",
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert result.returncode == 0
+    assert tio.enqueue_ticket("transaction") is False
+    assert (project_dir / "tickets/board/drafts/transaction.md").is_file()
 
 
 def test_enqueue_retry_finishes_interrupted_board_publication(

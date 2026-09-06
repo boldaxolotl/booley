@@ -77,21 +77,15 @@ def _tests_key(root: Path, handle: TargetHandle, catalog: TargetCatalog) -> str:
     canonical = handle.identity
     if canonical in raw:
         return canonical
-    matching = [key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == handle.name]
-    if not matching:
+    if handle.name not in raw:
         return ""
-    if len(matching) > 1:
-        raise TargetFinalizationError(
-            f"Target {canonical!r} matches multiple tests.toml sections: "
-            + ", ".join(repr(key) for key in sorted(matching))
-        )
-    declarations = [item for item in catalog.list() if item.name == handle.name]
-    if matching[0] == handle.name and len(declarations) > 1:
+    declarations = catalog.declaration_count(handle.name, include_private=True)
+    if declarations > 1:
         raise TargetFinalizationError(
             f"ambiguous bare tests.toml section [{handle.name}] is shared by "
-            f"{len(declarations)} cores; use a VLNV-qualified table before enqueue"
+            f"{declarations} cores; use a VLNV-qualified table before enqueue"
         )
-    return matching[0]
+    return handle.name
 
 
 def _require_participant_owned_target(
@@ -263,7 +257,7 @@ def _core_replacements(text: str, names: set[str], path: Path) -> list[tuple[int
     ]
 
 
-_TOML_HEADER_RE = re.compile(r"^\s*\[(?!\[)(.+)\]\s*(?:#.*)?$")
+_TOML_HEADER_RE = re.compile(r"^\s*(\[\[?[^\]\r\n]+\]\]?)\s*(?:#.*)?$")
 
 
 def _single_toml_path(value: Mapping[str, Any]) -> tuple[str, ...]:
@@ -287,7 +281,7 @@ def _toml_headers(text: str) -> list[tuple[int, tuple[str, ...]]]:
         match = _TOML_HEADER_RE.match(line.rstrip("\r\n"))
         if match:
             try:
-                parsed = tomllib.loads(f"[{match.group(1)}]\n")
+                parsed = tomllib.loads(match.group(1) + "\n")
             except tomllib.TOMLDecodeError as exc:
                 raise TargetFinalizationError(
                     f"unsupported tests.toml table header: {exc}"

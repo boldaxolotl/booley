@@ -2413,6 +2413,28 @@ class TestOpUnblock:
         progress = load_progress(tio.logs_dir, "my-ticket")
         assert progress["workspace_intent"] == "resume"
 
+    def test_acceptance_input_change_requires_return_to_draft(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+        )
+        make_progress(
+            tio,
+            "my-ticket",
+            {
+                "blocked_reason": "acceptance-input-change-required",
+                "blocked_step": "setup",
+            },
+        )
+
+        assert op_unblock(tio, "my-ticket") is False
+
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
+        assert "requires return-to-draft" in capsys.readouterr().err
+
 
 class TestOpApprove:
     def test_routes_through_validated_completion(self, tmp_path, monkeypatch):
@@ -2504,7 +2526,7 @@ class TestOpPromoteWaiting:
         assert finished == [(Path(tio._project_root), "child", "a" * 32)]
 
     def test_failed_refresh_blocks_waiting_ticket(self, tmp_path, monkeypatch, capsys):
-        from booley.ticket_board import basis_refresh
+        from booley.ticket_board import basis_publication, basis_refresh
 
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "done", "dep-a")
@@ -2519,14 +2541,53 @@ class TestOpPromoteWaiting:
         )
 
         def fail(*_args):
-            raise basis_refresh.BasisRefreshError("provider Target changed")
+            raise basis_publication.BasisPublicationError("publication interrupted")
 
-        monkeypatch.setattr(basis_refresh, "prepare_waiting_basis_refresh", fail)
+        monkeypatch.setattr(basis_refresh, "_prepare_waiting_basis_refresh", fail)
 
         assert op_promote_waiting(tio) == []
         _path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "blocked"
         assert "acceptance-input-change-required" in capsys.readouterr().err
+
+    def test_published_refresh_is_recovered_after_finish_failure(self, tmp_path, monkeypatch):
+        from booley.ticket_board import basis_refresh
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "done", "dep-a")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={
+                "dependencies": ["dep-a"],
+                "acceptance_basis": {"schema": 1, "participants": []},
+            },
+        )
+        refreshed = MagicMock()
+        refreshed.as_dict.return_value = {"schema": 1, "participants": [{"role": "outer"}]}
+        monkeypatch.setattr(
+            basis_refresh,
+            "prepare_waiting_basis_refresh",
+            lambda *_args: (refreshed, "a" * 32),
+        )
+        recovered = []
+        monkeypatch.setattr(
+            basis_refresh,
+            "recover_published_basis_refreshes",
+            lambda *_args: recovered.append(True),
+        )
+        monkeypatch.setattr(
+            basis_refresh,
+            "finish_basis_refresh",
+            lambda *_args: (_ for _ in ()).throw(OSError("finish interrupted")),
+        )
+
+        with pytest.raises(OSError, match="finish interrupted"):
+            op_promote_waiting(tio)
+        assert find_ticket_file(tio.tickets_dir, "child")[1] == "queued"
+        assert op_promote_waiting(tio) == []
+        assert recovered == [True, True]
 
 
 # ============================================================================
@@ -2609,6 +2670,25 @@ class TestOpReset:
         assert progress.get("error") is None
         assert progress.get("failed_step") is None
         assert progress["workspace_intent"] == "fresh"
+
+    def test_acceptance_input_change_cannot_reset_to_queue(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+        )
+        make_progress(
+            tio,
+            "my-ticket",
+            {"blocked_reason": "acceptance-input-change-required"},
+        )
+
+        assert op_reset(tio, "my-ticket") is False
+
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
+        assert "requires return-to-draft" in capsys.readouterr().err
 
     def test_git_backed_reset_rejects_any_executable_ticket_without_basis(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
@@ -5805,9 +5885,18 @@ class TestBoardMoveTerminalActionOverrides:
 
     @pytest.fixture(autouse=True)
     def _accepted_snapshot(self, monkeypatch):
+        from booley.ticket_board.acceptance_basis import AcceptanceBasis
+
         monkeypatch.setattr(
             "booley.ticket_board.operations._completion_acceptance_valid",
             lambda *_: SimpleNamespace(participant_heads=None),
+        )
+        monkeypatch.setattr(
+            TicketIO,
+            "load_basis",
+            lambda tio, slug: AcceptanceBasis.from_mapping(
+                tio.find_ticket(slug)["acceptance_basis"]
+            ),
         )
 
     @staticmethod
@@ -5846,6 +5935,42 @@ class TestBoardMoveTerminalActionOverrides:
         with patch("booley.ticket_board.completion.complete_review_ticket") as complete:
             assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
         complete.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"target": "acme:lib:toy:1.0#new", "role": "persistent"},
+            {
+                "target": "acme:lib:toy:1.0#new",
+                "role": "replacement",
+                "replaces": "acme:lib:toy:1.0#old",
+            },
+            {"target": "acme:lib:toy:1.0#probe", "role": "ephemeral"},
+        ],
+    )
+    def test_no_merge_rejects_target_plan(self, tmp_path, monkeypatch, capsys, entry):
+        from booley.core.models import TargetPlan
+        from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "review",
+            "my-ticket",
+            extra_fields={
+                "on_success": {"destination": "review", "merge": True, "cleanup": False},
+                "acceptance_basis": self._acceptance_basis(),
+            },
+        )
+        pointer = self._acceptance_basis()
+        hydrated = AcceptanceBasis(
+            (BasisParticipant(**pointer["participants"][0]),),
+            target_plan=TargetPlan.from_value([entry]),
+        )
+        monkeypatch.setattr(tio, "load_basis", lambda _slug: hydrated)
+
+        assert op_board_move(tio, "my-ticket", "done", no_merge=True) is False
+        assert "Target Plan acceptance requires merge" in capsys.readouterr().err
 
     def test_merge_still_runs_without_the_flag(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=False)

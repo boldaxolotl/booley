@@ -35,7 +35,7 @@ from .workspace_ops import (
     AuthoringWorkspace,
     _generation_branch,
     _generation_file,
-    _open_generation,
+    open_authoring_generation,
     validate_basis_refs,
 )
 
@@ -238,7 +238,7 @@ def _prepare_generation(root: Path, journal: DraftTransitionJournal) -> DraftTra
     operation = _operation_dir(root, journal.operation_id)
     candidate = operation / "draft.md"
     fields, _body = parse_frontmatter(candidate.read_text(encoding="utf-8"))
-    worktrees = _open_generation(
+    worktrees = open_authoring_generation(
         root,
         candidate,
         journal.slug,
@@ -296,7 +296,7 @@ def _git(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _worktree_for_ref(repository: Path, ref: str) -> Path:
+def _find_worktree_for_ref(repository: Path, ref: str) -> Path | None:
     path: Path | None = None
     for line in [*_git(repository, "worktree", "list", "--porcelain").splitlines(), ""]:
         if line.startswith("worktree "):
@@ -305,7 +305,14 @@ def _worktree_for_ref(repository: Path, ref: str) -> Path:
             return path
         elif not line:
             path = None
-    raise DraftTransitionError(f"worktree for {ref} is unavailable in {repository}")
+    return None
+
+
+def _worktree_for_ref(repository: Path, ref: str) -> Path:
+    path = _find_worktree_for_ref(repository, ref)
+    if path is None:
+        raise DraftTransitionError(f"worktree for {ref} is unavailable in {repository}")
+    return path
 
 
 def _move_worktree(repository: Path, ref: str, destination: Path) -> None:
@@ -316,6 +323,11 @@ def _move_worktree(repository: Path, ref: str, destination: Path) -> None:
         raise DraftTransitionError(f"worktree destination already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     _git(repository, "worktree", "move", str(source), str(destination))
+
+
+def _move_worktree_if_present(repository: Path, ref: str, destination: Path) -> None:
+    if _find_worktree_for_ref(repository, ref) is not None:
+        _move_worktree(repository, ref, destination)
 
 
 def _relocate_worktrees(
@@ -330,8 +342,10 @@ def _relocate_worktrees(
         if project_repository is None:
             raise DraftTransitionError("paired project repository is unavailable")
         old_project = basis.participant("project")
-        _move_worktree(project_repository, old_project.ticket_ref, operation / "old-project")
-    _move_worktree(root, old_outer.ticket_ref, operation / "old-outer")
+        _move_worktree_if_present(
+            project_repository, old_project.ticket_ref, operation / "old-project"
+        )
+    _move_worktree_if_present(root, old_outer.ticket_ref, operation / "old-outer")
     if journal.has_project and project_repository is not None:
         _move_worktree(project_repository, new_ref, operation / "new-project-moving")
     _move_worktree(root, new_ref, canonical_outer)

@@ -180,6 +180,21 @@ def test_ticket_create_hands_human_off_to_booley_run():
     assert "/booley-run-and-fix" not in skill
 
 
+def test_ticket_create_companions_cover_target_plan_decisions():
+    guidance = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
+    grilling = _skill_text("booley-ticket-create", "grilling.md")
+
+    assert "Criteria, Target Plan" in guidance
+    for required in (
+        "New Target lifecycle",
+        "coexist",
+        "replace a runnable baseline",
+        "evidence-only",
+        "persistent / replacement / ephemeral",
+    ):
+        assert required in grilling
+
+
 def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
     skill = _skill_text("booley-ticket-create")
     contract = " ".join(skill.split())
@@ -291,6 +306,21 @@ def test_ticket_create_fixes_target_plan_at_creation_time():
     ):
         assert required in contract
     assert "target_plan:" in template
+
+
+def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
+    skill = _skill_text("booley-ticket-create")
+    contract = " ".join(skill.split())
+
+    for required in (
+        "ordinary scope-overlap and interface-dependency inference",
+        "add that provider to `dependencies` in human mode",
+        "reject the request and name every missing provider dependency",
+        "After Criteria and the Target Plan are fully resolved, rerun §A",
+        "mandatory in both lightweight and detailed modes",
+        "After all inferred Criteria and Target Plan values are resolved, rerun §A",
+    ):
+        assert required in contract
 
 
 def test_ticket_creation_template_is_packaged_free_form_markdown():

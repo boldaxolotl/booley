@@ -107,6 +107,10 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 
 ### 2f: Approve the ticket
 
+After Criteria and the Target Plan are fully resolved, rerun §A and reconcile the
+final `dependencies` before showing the approval artifact. This final pass is
+mandatory in both lightweight and detailed modes.
+
 **MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
 body, excluding generated basis fields), followed by a **Target Plan** section. If the
 plan is omitted, show `Target Plan: none`. For persistent and ephemeral entries, show the
@@ -137,6 +141,8 @@ mechanics require no further user confirmation.
    `--target-plan` when the resolved plan is present
 7. **No grilling** — the calling agent must provide all details upfront
 8. Approval gate (2f) applies unless the caller passed `--no-confirm`; validation never does
+9. After all inferred Criteria and Target Plan values are resolved, rerun §A and reject
+   any missing provider dependency before the approval gate or `--no-confirm` creation
 
 ## Step 4: Author and Enqueue
 
@@ -165,7 +171,15 @@ repaired, report the actionable error without turning basis internals into user 
 CLASSIFIED=$(python -m booley.ticket_board classify)
 ```
 
-Check non-done tickets for scope overlap or interface dependencies.
+Inspect every non-done Ticket's published Acceptance Basis and Target Plan as well as
+its Scope. Preserve ordinary scope-overlap and interface-dependency inference for all
+non-done Tickets. If an active provider exports a persistent or replacement Target selected
+by the new Ticket's Criteria, add that provider to `dependencies` in human mode. In
+agent mode, reject the request and name every missing provider dependency. Reject
+ambiguous active exports (multiple providers offering the same selector) and any
+selector that one active provider offers while another removes it. Do not infer a
+dependency for ephemeral Targets or replacement baselines, because providers do not
+export them.
 
 ## §B. Field Inference
 

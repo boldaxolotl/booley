@@ -226,6 +226,11 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--priority", default="medium", choices=["low", "medium", "high"], help="Priority"
     )
+    _add_create_file_content_args(p)
+
+
+def _add_create_file_content_args(p: argparse.ArgumentParser) -> None:
+    """Register structured content inputs for create-file."""
     p.add_argument(
         "--criteria",
         default=None,

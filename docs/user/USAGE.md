@@ -704,7 +704,8 @@ on_success:
 Destructive completion cleanup requires `merge: true`, so the Acceptance Journal can
 pin the accepted source before removing its branch and worktree. To finish without
 merging, set both `merge: false` and `cleanup: false`; with CLI overrides, pair
-`--no-merge` with `--no-cleanup`.
+`--no-merge` with `--no-cleanup`. That override is unavailable for a Ticket with a
+Target Plan, because acceptance must publish its derived additions and removals.
 
 Most Tickets omit `target_plan` and use existing Targets. A Ticket that authors a new
 Target supplies a nonempty top-level plan and requires `merge: true`:
