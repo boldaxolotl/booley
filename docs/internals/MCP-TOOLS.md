@@ -40,7 +40,9 @@ The lifecycle sequence itself lives in the transport-independent
 process launched by the MCP adapter enter that coordinator; MCP remains
 responsible for discovery, schema validation, and wire payloads. The public
 base classes described below remain source-compatible facades for Project-local
-extensions.
+extensions. CLI argument parsing finishes before the coordinator receives its
+prepared request, so the shared execution interface has no CLI or MCP request
+shape in it.
 
 ## Overview
 
@@ -63,11 +65,18 @@ Every agent-facing call follows the same shape:
 1. The MCP registry discovers an implementation and exposes its declared arguments.
 2. The agent calls it by its discovered name.
 3. The MCP tool validates common and endpoint-specific arguments.
-4. A Booley Flow runs deterministic work inside the Session Runtime, a Specialist runs its agent loop, or a direct `McpTool` subclass performs its own orchestration.
-5. The implementation interprets raw output into a transport-neutral endpoint
+4. The shared coordinator checks Target binding before admission and holds any
+   admitted Job Class claim through completion.
+5. A Booley Flow runs deterministic work inside the Session Runtime, a Specialist runs its agent loop, or a direct `McpTool` subclass performs its own orchestration.
+6. The implementation interprets raw output into a transport-neutral endpoint
    outcome. `McpToolResult` is the source-compatible public name for that
    outcome in Project-local extensions.
-6. In Ticket Mode, it also records every Criterion verdict it evaluated; the Harness reads persistent Criterion state when deciding whether the ticket may advance.
+7. The coordinator calls the explicit acceptance-recorder interface before
+   mutable state/report persistence, then releases admission. In Ticket Mode,
+   normalized Criterion changes are appended before state is saved; Interactive
+   Mode has no persistent acceptance evidence. If acceptance recording fails,
+   mutable persistence is skipped while terminal reporting and admission cleanup
+   still run.
 
 Interactive Mode uses the same registry and implementations, but it has no Ticket state. The result is returned to the current session without persisting Criteria.
 

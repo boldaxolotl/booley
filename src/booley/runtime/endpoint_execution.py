@@ -54,10 +54,21 @@ class EndpointRejectedError(RuntimeError):
         self.outcome = outcome
 
 
-Prepared = TypeVar("Prepared")
+Prepared_contra = TypeVar("Prepared_contra", contravariant=True)
 
 
-class ExecutableEndpoint(Protocol[Prepared]):
+class AcceptanceRecorder(Protocol[Prepared_contra]):
+    """Record immutable acceptance evidence for one prepared request."""
+
+    def record_acceptance(self, prepared: Prepared_contra, outcome: EndpointOutcome) -> None:
+        """Record evidence before mutable persistence begins."""
+        ...
+
+
+class ExecutableEndpoint(
+    AcceptanceRecorder[Prepared_contra],
+    Protocol[Prepared_contra],
+):
     """Internal adapter interface consumed by :func:`execute_endpoint`.
 
     The interface describes lifecycle stages, not the implementation helpers
@@ -65,74 +76,69 @@ class ExecutableEndpoint(Protocol[Prepared]):
     different request representations while sharing the same execution order.
     """
 
-    def prepare_execution(self, argv: list[str] | None) -> Prepared | EndpointOutcome:
-        """Normalize the request and perform pre-state preparation."""
+    def admission(self, prepared: Prepared_contra) -> AbstractContextManager[None]:
+        """Validate and return the admission lifetime held through finish."""
+        ...
 
-    def reject_execution(self, prepared: Prepared) -> EndpointOutcome | None:
-        """Return a pre-admission rejection, if any."""
-
-    def admission(self, prepared: Prepared) -> AbstractContextManager[None]:
-        """Return the admission lifetime held around invocation and finish."""
-
-    def begin_invocation(self, prepared: Prepared) -> None:
-        """Capture state that must precede the execution clock."""
-
-    def invoke_endpoint(self, prepared: Prepared, *, started: float) -> EndpointOutcome:
+    def invoke_endpoint(
+        self,
+        prepared: Prepared_contra,
+        *,
+        started: float,
+    ) -> EndpointOutcome:
         """Run the endpoint implementation and finalize its raw outcome."""
-
-    def invocation_failed(self, exc: Exception) -> EndpointOutcome:
-        """Normalize an unexpected endpoint exception."""
+        ...
 
     def finish_execution(
         self,
-        prepared: Prepared,
+        prepared: Prepared_contra,
         outcome: EndpointOutcome,
         *,
         started: float | None,
+        acceptance_recorded: bool,
     ) -> int:
-        """Persist and publish the final outcome, returning its process code."""
+        """Publish completion, persisting mutable state only after acceptance."""
+        ...
 
 
-def _finish(
-    endpoint: ExecutableEndpoint[Prepared],
-    prepared: Prepared,
+def _record_and_finish(
+    endpoint: ExecutableEndpoint[Prepared_contra],
+    prepared: Prepared_contra,
     outcome: EndpointOutcome,
     *,
     started: float | None,
 ) -> ExecutionResult:
-    exit_code = endpoint.finish_execution(prepared, outcome, started=started)
+    acceptance_recorded = False
+    try:
+        endpoint.record_acceptance(prepared, outcome)
+        acceptance_recorded = True
+    finally:
+        exit_code = endpoint.finish_execution(
+            prepared,
+            outcome,
+            started=started,
+            acceptance_recorded=acceptance_recorded,
+        )
     return ExecutionResult(exit_code=exit_code, outcome=outcome)
 
 
 def execute_endpoint(
-    endpoint: ExecutableEndpoint[Prepared],
-    argv: list[str] | None = None,
+    endpoint: ExecutableEndpoint[Prepared_contra],
+    request: Prepared_contra,
 ) -> ExecutionResult:
     """Execute one endpoint with invariant lifecycle ordering.
 
-    Preparation rejection happens before admission.  Once admitted, the claim
-    remains held through final persistence/reporting and is released by the
-    supplied context manager on every exit path.
+    The transport adapter prepares *request* before calling this interface.
+    Admission includes pre-execution validation. Once admitted, the claim stays
+    held through acceptance recording and mutable persistence/reporting.
     """
-
-    prepared = endpoint.prepare_execution(argv)
-    if isinstance(prepared, EndpointOutcome):
-        return ExecutionResult(exit_code=prepared.exit_code, outcome=prepared)
-
-    rejection = endpoint.reject_execution(prepared)
-    if rejection is not None:
-        return _finish(endpoint, prepared, rejection, started=None)
 
     admission = ExitStack()
     try:
-        admission.enter_context(endpoint.admission(prepared))
+        admission.enter_context(endpoint.admission(request))
     except EndpointRejectedError as exc:
-        return _finish(endpoint, prepared, exc.outcome, started=None)
+        return _record_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
-        endpoint.begin_invocation(prepared)
         started = time.monotonic()
-        try:
-            outcome = endpoint.invoke_endpoint(prepared, started=started)
-        except Exception as exc:  # noqa: BLE001 - endpoint failures normalize to exit 2
-            outcome = endpoint.invocation_failed(exc)
-        return _finish(endpoint, prepared, outcome, started=started)
+        outcome = endpoint.invoke_endpoint(request, started=started)
+        return _record_and_finish(endpoint, request, outcome, started=started)

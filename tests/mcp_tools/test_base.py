@@ -32,7 +32,7 @@ from booley.mcp.base import (
     read_source_dirs_from_toml,
 )
 from booley.runtime import job_slots
-from booley.runtime.endpoint_execution import EndpointOutcome, execute_endpoint
+from booley.runtime.endpoint_execution import EndpointOutcome
 
 
 class ConcreteMcpTool(McpTool):
@@ -73,12 +73,46 @@ def test_mcp_adapter_preserves_structured_pre_state_rejection(capsys) -> None:
                 report_text="blocked before state",
             )
 
-    result = execute_endpoint(RejectingMcpTool(), [])
+    result = RejectingMcpTool().execute_cli([])
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail == {"acceptance_effect": "rejected"}
     assert result.outcome.report_text == "blocked before state"
     assert capsys.readouterr().err == "blocked before state\n"
+
+
+def test_mcp_adapter_promotes_neutral_outcome_before_extension_hooks() -> None:
+    class NeutralOutcomeMcpTool(ConcreteMcpTool):
+        finalized_type: type[object] | None = None
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome(report_text="ok")
+
+        def _finalize_result(self, result: McpToolResult) -> None:
+            self.finalized_type = type(result)
+
+    endpoint = NeutralOutcomeMcpTool()
+
+    assert endpoint.main([]) == EXIT_SUCCESS
+    assert endpoint.finalized_type is McpToolResult
+
+
+def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
+    class FinalizeFailingMcpTool(ConcreteMcpTool):
+        post_run_called = False
+
+        def _finalize_result(self, result: McpToolResult) -> None:
+            raise RuntimeError("finalization failed")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            self.post_run_called = True
+
+    endpoint = FinalizeFailingMcpTool()
+
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        endpoint.main([])
+
+    assert endpoint.post_run_called is False
 
 
 class SimLikeMcpTool(ConcreteMcpTool):
@@ -1152,6 +1186,43 @@ class TestMainDisplayEvents:
         # endpoint_end should report the error exit code
         end_evt = next(e for e in events if e["type"] == "endpoint_end")
         assert end_evt["exit_code"] == EXIT_ERROR
+
+    def test_acceptance_failure_emits_endpoint_end_without_mutable_persistence(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+
+        class AcceptanceFailingMcpTool(ConcreteMcpTool):
+            post_run_called = False
+
+            def _pre_save_hook(self, result: McpToolResult) -> None:
+                raise RuntimeError("acceptance failed")
+
+            def _post_run(self, result: McpToolResult, duration: float) -> None:
+                self.post_run_called = True
+
+        env = _env_with_state(state_file)
+        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        endpoint = AcceptanceFailingMcpTool()
+
+        with (
+            mock.patch.dict(os.environ, env),
+            pytest.raises(RuntimeError, match="acceptance failed"),
+        ):
+            endpoint.main([])
+
+        assert endpoint.post_run_called is False
+        events = [
+            json.loads(line)
+            for line in (logs_dir / ".runtime" / "display.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
 
     def test_display_tag_overrides_config(self, tmp_path: Path):
         """display_tag property overrides config_aware in display events."""
