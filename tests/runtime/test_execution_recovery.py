@@ -9,9 +9,15 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from tests.execution_test_support import (
+    start_supervisor_with_detached_descendant,
+    wait_for,
+    wait_for_value,
+)
 
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
@@ -23,7 +29,6 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.execution_recovery import (
     _matches_execution,
-    _scan_execution,
     recover_execution,
 )
 from booley.runtime.pid import (
@@ -35,58 +40,26 @@ from booley.runtime.pid import (
 )
 from booley.runtime.project_dir import reset_cache
 
-_SRC_ROOT = Path(__file__).parents[2] / "src"
 _PROCESS_TIMEOUT_SECONDS = 5.0
+_RECOVERY_TIMEOUT_SECONDS = 12.0
 
 
-def _runtime_env(project_dir: Path, execution_id: str) -> dict[str, str]:
-    python_path = os.environ.get("PYTHONPATH", "")
-    source_path = str(_SRC_ROOT)
-    if python_path:
-        source_path = f"{source_path}{os.pathsep}{python_path}"
-    return {
-        **os.environ,
-        "BOOLEY_PROJECT_DIR": str(project_dir),
-        "PYTHONPATH": source_path,
-        RUNTIME_EXECUTION_ENV: execution_id,
-    }
-
-
-def _start_supervisor(
-    project_dir: Path, execution_id: str, descendant_pid_file: Path
-) -> subprocess.Popen[str]:
-    descendant_script = (
-        "import os,signal,time\n"
-        "from pathlib import Path\n"
-        "signal.signal(signal.SIGINT,signal.SIG_IGN)\n"
-        f"Path({str(descendant_pid_file)!r}).write_text(str(os.getpid()),encoding='utf-8')\n"
-        "time.sleep(120)\n"
-    )
-    leader_script = (
-        "import subprocess,sys,time\n"
-        f"subprocess.Popen([sys.executable,'-c',{descendant_script!r}],start_new_session=True)\n"
-        "time.sleep(120)\n"
-    )
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "booley.runtime.execution_supervisor",
-            "run",
-            "--execution-id",
-            execution_id,
-            "--attachment-timeout-seconds",
-            "60",
-            "--",
-            sys.executable,
-            "-c",
-            leader_script,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        env=_runtime_env(project_dir, execution_id),
-    )
+def _marked_execution_identities(execution_id: ExecutionId) -> set[ProcessIdentity]:
+    marker = f"{RUNTIME_EXECUTION_ENV}={execution_id}".encode()
+    identities: set[ProcessIdentity] = set()
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        identity = capture_process_identity(int(proc.name))
+        if identity is None:
+            continue
+        try:
+            matches = marker in (proc / "environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if matches and observe_process(identity).state is RUNNING:
+            identities.add(identity)
+    return identities
 
 
 def _ready_execution_members(
@@ -108,42 +81,55 @@ def _ready_execution_members(
     return leader, descendant
 
 
-def _wait_for_ready_execution(
-    paths: ExecutionPaths, descendant_pid_file: Path
-) -> tuple[ProcessIdentity, ProcessIdentity]:
-    deadline = time.monotonic() + _PROCESS_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        members = _ready_execution_members(paths, descendant_pid_file)
-        if members is not None:
-            return members
-        time.sleep(0.02)
-    raise AssertionError("execution did not publish live leader and descendant identities")
-
-
 def _wait_for_stopped(identities: set[ProcessIdentity]) -> None:
-    deadline = time.monotonic() + _PROCESS_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if all(
+    wait_for(
+        lambda: all(
             observe_process(identity).state not in {RUNNING, UNKNOWN} for identity in identities
-        ):
-            return
-        time.sleep(0.02)
-    raise AssertionError("execution members did not stop before cleanup timeout")
+        ),
+        failure="execution members did not stop before cleanup timeout",
+        timeout_s=_PROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _recover_while_observing_terminal_order(
+    execution_id: ExecutionId,
+    paths: ExecutionPaths,
+    descendant: ProcessIdentity,
+) -> tuple[bool, bool]:
+    executor = ThreadPoolExecutor(max_workers=1)
+    recovery = executor.submit(recover_execution, execution_id)
+    deadline = time.monotonic() + _RECOVERY_TIMEOUT_SECONDS
+    terminal_while_running = False
+    try:
+        while not recovery.done() and time.monotonic() < deadline:
+            record = read_json(paths.record)
+            terminal_while_running = bool(
+                record is not None
+                and record.get("state") == "terminal"
+                and observe_process(descendant).state in {RUNNING, UNKNOWN}
+            )
+            if terminal_while_running:
+                break
+            time.sleep(0.01)
+        remaining = max(0.01, deadline - time.monotonic())
+        return recovery.result(timeout=remaining), terminal_while_running
+    finally:
+        executor.shutdown(wait=recovery.done(), cancel_futures=True)
 
 
 def _cleanup_identities(
-    execution_id: str,
+    execution_id: ExecutionId,
     paths: ExecutionPaths,
-    known: tuple[ProcessIdentity, ...],
+    known_identities: tuple[ProcessIdentity, ...],
 ) -> None:
-    identities = set(known)
+    identities = set(known_identities)
     record = read_json(paths.record)
     if record is not None:
         for field in ("supervisor", "leader"):
             identity = ProcessIdentity.from_payload(record.get(field))
             if identity is not None:
                 identities.add(identity)
-    identities.update(_scan_execution(ExecutionId(execution_id)).identities)
+    identities.update(_marked_execution_identities(execution_id))
     for identity in identities:
         if observe_process(identity).state is RUNNING:
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
@@ -152,16 +138,16 @@ def _cleanup_identities(
 
 
 def _cleanup_execution(
-    execution_id: str,
+    execution_id: ExecutionId,
     paths: ExecutionPaths,
-    known: tuple[ProcessIdentity, ...],
+    known_identities: tuple[ProcessIdentity, ...],
 ) -> None:
     reset_cache()
     try:
         recover_execution(execution_id)
     finally:
         try:
-            _cleanup_identities(execution_id, paths, known)
+            _cleanup_identities(execution_id, paths, known_identities)
         finally:
             reset_cache()
 
@@ -176,7 +162,7 @@ def _kill_and_reap(supervisor: subprocess.Popen[str]) -> None:
 def test_recovers_execution_after_supervisor_is_killed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    execution_id = uuid.uuid4().hex
+    execution_id = ExecutionId(uuid.uuid4().hex)
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     paths = execution_paths(execution_id, project_dir=project_dir)
@@ -185,20 +171,28 @@ def test_recovers_execution_after_supervisor_is_killed(
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
     reset_cache()
     write_attachment_heartbeat(paths, generation=1)
-    supervisor = _start_supervisor(project_dir, execution_id, descendant_pid_file)
-    known: tuple[ProcessIdentity, ...] = ()
+    supervisor = start_supervisor_with_detached_descendant(
+        project_dir, execution_id, descendant_pid_file
+    )
+    known_identities: tuple[ProcessIdentity, ...] = ()
     try:
-        leader, descendant = _wait_for_ready_execution(paths, descendant_pid_file)
-        known = (leader, descendant)
+        leader, descendant = wait_for_value(
+            lambda: _ready_execution_members(paths, descendant_pid_file),
+            failure="execution did not publish live leader and descendant identities",
+            timeout_s=_PROCESS_TIMEOUT_SECONDS,
+        )
+        known_identities = (leader, descendant)
         supervisor.kill()
         assert supervisor.wait(timeout=_PROCESS_TIMEOUT_SECONDS) == -signal.SIGKILL
 
         reset_cache()
-        assert recover_execution(execution_id) is True
+        recovered, terminal_while_running = _recover_while_observing_terminal_order(
+            execution_id, paths, descendant
+        )
+        assert terminal_while_running is False
+        assert recovered is True
 
-        processes = _scan_execution(ExecutionId(execution_id))
-        assert processes.complete is True
-        assert processes.identities == ()
+        assert _marked_execution_identities(execution_id) == set()
         assert observe_process(leader).state not in {RUNNING, UNKNOWN}
         assert observe_process(descendant).state not in {RUNNING, UNKNOWN}
         terminal = read_json(paths.record)
@@ -210,7 +204,7 @@ def test_recovers_execution_after_supervisor_is_killed(
         try:
             _kill_and_reap(supervisor)
         finally:
-            _cleanup_execution(execution_id, paths, known)
+            _cleanup_execution(execution_id, paths, known_identities)
 
 
 def test_import_does_not_require_sigkill() -> None:
