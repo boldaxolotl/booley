@@ -26,8 +26,6 @@ from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
 
 from .acceptance_targets import (
     AcceptanceTargetBinding,
-    canonical_acceptance_bindings,
-    criterion_targets,
 )
 
 
@@ -119,7 +117,7 @@ def _require_participant_owned_target(
         return
     relative = owner.relative_to(root).as_posix()
     raise TargetFinalizationError(
-        f"on_success.remove_targets target {canonical!r} is declared in nested "
+        f"Acceptance Basis removal Target {canonical!r} is declared in nested "
         f"repository {relative!r}; only outer and paired project participants can be finalized"
     )
 
@@ -146,12 +144,12 @@ def plan_target_removals(
         canonical = handle.identity
         if canonical not in allowed:
             raise TargetFinalizationError(
-                f"on_success.remove_targets target {canonical!r} is not bound by this "
+                f"Acceptance Basis removal Target {canonical!r} is not bound by this "
                 "Ticket's criteria"
             )
         if canonical in seen:
             raise TargetFinalizationError(
-                f"on_success.remove_targets resolves {canonical!r} more than once"
+                f"Acceptance Basis removal resolves {canonical!r} more than once"
             )
         seen.add(canonical)
         try:

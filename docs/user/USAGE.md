@@ -422,7 +422,7 @@ unstructured, and let the skill turn it into a precise contract:
    nothing. Ask to edit criteria, fields, plan, or scope in place; `scope` is what keeps
    the agent out of unrelated files.
 5. **Creation completes automatically.** After ticket approval, the skill authors any
-   required Target recipe in the Ticket Workspace, then enqueues the ticket. Enqueue
+   approved Target Plan in the Ticket Workspace, then enqueues the ticket. Enqueue
    publishes the immutable Acceptance Basis; its worktrees, commits, and receipt are
    internal mechanics rather than additional user approval gates.
 
@@ -446,7 +446,7 @@ for one Ticket win over Project guidance; ambiguous or unavailable requirements 
 surfaced rather than ignored or invented.
 
 Only `/booley-ticket-create` reads this file, and only while creating a Ticket. Its
-authority is limited to `criteria` and `on_success`; the resulting Ticket remains the
+authority is limited to `criteria`, optional `target_plan`, and `on_success`; the resulting Ticket remains the
 structured artifact validated by Booley. Editing the guidance never changes an
 existing Ticket. Projects initialized with the former `ticket_defaults.md` filename keep
 working: the skill reads it as free-form guidance when `ticket_creation.md` is absent and
@@ -697,7 +697,6 @@ on_success:
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
   triage_report: true     # add an LLM-generated HTML explanation to the review package
-  remove_targets: []      # criterion-bound Targets omitted from the accepted destination
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
@@ -707,14 +706,30 @@ pin the accepted source before removing its branch and worktree. To finish witho
 merging, set both `merge: false` and `cleanup: false`; with CLI overrides, pair
 `--no-merge` with `--no-cleanup`.
 
-`remove_targets` handles Targets that must exist while the Ticket runs—for example, a
-frozen comparison baseline—but must not remain in the accepted Project. It is fixed and
-bound into the Acceptance Basis during enqueue, requires `merge: true`, and may name only
-uniquely resolved Targets bound by that Ticket's Criteria. The Targets remain available
-throughout development and review.
-Acceptance prepares the normal merge candidate first, then removes only the declared
-Target definitions and their unambiguously-owned `tests.toml` tables before publication;
-shared filesets, sources, parameters, constraints, generators, and hooks remain.
+Most Tickets omit `target_plan` and use existing Targets. A Ticket that authors a new
+Target supplies a nonempty top-level plan and requires `merge: true`:
+
+```yaml
+target_plan:
+  - {target: lint_style, role: persistent}
+  - {target: sim_core_v2, role: replacement, replaces: sim_core}
+  - {target: ticket_probe, role: ephemeral}
+```
+
+Persistent Targets remain alongside the existing surface. Replacement candidates remain
+while their runnable baselines are removed. Ephemeral Targets exist only for Ticket
+evidence and are removed. Every planned selector and replacement baseline is Criteria-bound;
+enqueue compares definitions semantically against the exact destination, rejects edits or
+deletions of existing Targets, and records the canonical plan and derived removals in the
+committed Acceptance Basis record. Acceptance removes only those derived Target definitions
+and unambiguously owned `tests.toml` tables; shared filesets, sources, parameters,
+constraints, generators, and hooks remain.
+
+A waiting Ticket may consume a persistent or replacement Target from a basis-published
+dependency. Booley pins that future surface internally. After the dependency is accepted,
+a Basis Refresh verifies the surface, rebases the still-untouched consumer onto current
+destinations, republishes its basis, and promotes it atomically. Drift blocks and requires
+`return-to-draft`.
 
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views

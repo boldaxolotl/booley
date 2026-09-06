@@ -163,7 +163,7 @@ def test_authoring_preparation_materializes_submodules_first(
     assert calls == [f"materialize:{root}:{outer}", "prepare"]
 
 
-def test_changed_core_targets_report_parse_and_identity_errors(
+def test_changed_core_targets_report_shape_and_identity_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, ticket, outer = _authoring_workspace(tmp_path, monkeypatch)
@@ -173,17 +173,11 @@ def test_changed_core_targets_report_parse_and_identity_errors(
     monkeypatch.setattr(
         workspace_ops, "_local_manifest_paths", lambda *_args, **_kwargs: {core.name}
     )
-    monkeypatch.setattr(
-        workspace_ops.fusesoc_registry,
-        "read_core",
-        lambda _path: (_ for _ in ()).throw(
-            workspace_ops.fusesoc_registry.FuseSocError("invalid core")
-        ),
-    )
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="invalid core"):
+    monkeypatch.setattr("booley.ticket_board.target_plan._git_file", lambda *_args: None)
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="is not a mapping"):
         workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
 
-    monkeypatch.setattr(workspace_ops.fusesoc_registry, "read_core", lambda _path: {})
+    core.write_text("targets: {}\n", encoding="utf-8")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="no valid name"):
         workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
 
@@ -328,7 +322,7 @@ def test_current_and_project_branch_validation(
         project_changes=[],
     )
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args: prepared)
+    monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
     monkeypatch.setattr(workspace_ops, "_prepare_basis_inputs", lambda *_args: ((), ()))
     monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: ("a" * 40, "b" * 40))
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)

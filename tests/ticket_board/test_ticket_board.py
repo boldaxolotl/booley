@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -2465,6 +2465,69 @@ class TestOpPromoteWaiting:
         promoted = op_promote_waiting(tio)
         assert len(promoted) == 0
 
+    def test_refreshes_basis_before_promotion(self, tmp_path, monkeypatch):
+        from booley.ticket_board import basis_refresh
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "done", "dep-a")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={
+                "dependencies": ["dep-a"],
+                "acceptance_basis": {"schema": 1, "participants": []},
+            },
+        )
+        refreshed = MagicMock()
+        refreshed.as_dict.return_value = {
+            "schema": 1,
+            "participants": [{"role": "outer"}],
+        }
+        monkeypatch.setattr(
+            basis_refresh,
+            "prepare_waiting_basis_refresh",
+            lambda *_args: (refreshed, "a" * 32),
+        )
+        finished = []
+        monkeypatch.setattr(
+            basis_refresh,
+            "finish_basis_refresh",
+            lambda *args: finished.append(args),
+        )
+
+        assert op_promote_waiting(tio) == [{"slug": "child", "summary": "child"}]
+        path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "queued"
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fields["acceptance_basis"] == refreshed.as_dict()
+        assert finished == [(Path(tio._project_root), "child", "a" * 32)]
+
+    def test_failed_refresh_blocks_waiting_ticket(self, tmp_path, monkeypatch, capsys):
+        from booley.ticket_board import basis_refresh
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "done", "dep-a")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={
+                "dependencies": ["dep-a"],
+                "acceptance_basis": {"schema": 1, "participants": []},
+            },
+        )
+
+        def fail(*_args):
+            raise basis_refresh.BasisRefreshError("provider Target changed")
+
+        monkeypatch.setattr(basis_refresh, "prepare_waiting_basis_refresh", fail)
+
+        assert op_promote_waiting(tio) == []
+        _path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "blocked"
+        assert "acceptance-input-change-required" in capsys.readouterr().err
+
 
 # ============================================================================
 # Harness-driven transition enforcement
@@ -4337,7 +4400,7 @@ class TestOpReturnValues:
         assert op_complete(tio, "t1") is False
         assert "review package binding" in capsys.readouterr().err
 
-    def test_op_complete_rejects_no_merge_with_target_removal(self, tmp_path, capsys):
+    def test_op_complete_rejects_retired_target_removal_field(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(
             tio,
@@ -4355,7 +4418,7 @@ class TestOpReturnValues:
         )
 
         assert op_complete(tio, "t1", no_merge=True) is False
-        assert "cannot remove Targets when merge is disabled" in capsys.readouterr().err
+        assert "on_success.remove_targets is unsupported" in capsys.readouterr().err
 
 
 class TestDraftsDirectory:
@@ -4387,7 +4450,6 @@ class TestDraftsDirectory:
             "merge": False,
             "cleanup": False,
             "triage_report": False,
-            "remove_targets": [],
         }
         path = tio.create_ticket_file(
             "custom-handoff",
@@ -4433,7 +4495,68 @@ class TestDraftsDirectory:
         assert rc == 0
         path = tickets_dir / "board" / "drafts" / "cli-defaults.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"] == {**on_success, "remove_targets": []}
+        assert fields["on_success"] == on_success
+
+    def test_create_file_cli_round_trips_target_plan(self, tmp_path, monkeypatch):
+        tickets_dir = tmp_path / "tickets"
+        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
+        plan = [
+            {"target": "lint_new", "role": "persistent"},
+            {"target": "sim_new", "role": "replacement", "replaces": "sim_old"},
+            {"target": "probe", "role": "ephemeral"},
+        ]
+
+        rc = main(
+            argv=[
+                "create-file",
+                "planned-targets",
+                "--summary",
+                "Planned Targets",
+                "--type",
+                "feature",
+                "--branch",
+                "main",
+                "--target-plan",
+                json.dumps(plan),
+            ]
+        )
+
+        assert rc == 0
+        path = tickets_dir / "board" / "drafts" / "planned-targets.md"
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fields["target_plan"] == sorted(plan, key=lambda item: item["target"])
+
+    def test_create_file_cli_rejects_target_plan_without_merge(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tickets_dir = tmp_path / "tickets"
+        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
+        on_success = {
+            "destination": "done",
+            "merge": False,
+            "cleanup": False,
+            "triage_report": False,
+        }
+
+        rc = main(
+            argv=[
+                "create-file",
+                "invalid-plan",
+                "--summary",
+                "Invalid plan",
+                "--type",
+                "feature",
+                "--branch",
+                "main",
+                "--target-plan",
+                '[{"target":"probe","role":"ephemeral"}]',
+                "--on-success",
+                json.dumps(on_success),
+            ]
+        )
+
+        assert rc == 2
+        assert "target_plan requires on_success.merge: true" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         ("on_success", "error"),
@@ -4452,6 +4575,17 @@ class TestDraftsDirectory:
                         "cleanup": False,
                         "triage_report": False,
                         "remove_targets": [],
+                    }
+                ),
+                "on_success.remove_targets is unsupported",
+            ),
+            (
+                json.dumps(
+                    {
+                        "destination": "done",
+                        "merge": False,
+                        "cleanup": False,
+                        "triage_report": False,
                         "unexpected": True,
                     }
                 ),
@@ -4464,7 +4598,6 @@ class TestDraftsDirectory:
                         "merge": "no",
                         "cleanup": True,
                         "triage_report": False,
-                        "remove_targets": [],
                     }
                 ),
                 "on_success.merge must be true or false",

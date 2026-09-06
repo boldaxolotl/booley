@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.models import TargetPlan
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime.project_dir import reset_cache
@@ -31,6 +32,7 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasisError,
     AcceptancePathPolicy,
     BasisParticipant,
+    ProviderTargetBinding,
     assert_inputs_unchanged,
     assert_live_inputs_unchanged,
     authored_ticket_record,
@@ -233,13 +235,13 @@ def test_authored_record_pins_complete_ticket_projection() -> None:
         "branch": "main",
         "scope": ["rtl/demo.sv"],
         "criteria": {"mandatory": {"review_rtl_bugs": True}},
-        "on_success": {"destination": "review", "remove_targets": []},
+        "on_success": {"destination": "review"},
         "priority": "medium",
     }
 
     record = authored_ticket_record(fields, "exact body", ())
 
-    assert record["schema"] == 1
+    assert record["schema"] == 2
     pinned = record["ticket"]["frontmatter"]
     assert pinned["summary"] == fields["summary"]
     assert pinned["criteria"] == fields["criteria"]
@@ -249,14 +251,110 @@ def test_authored_record_pins_complete_ticket_projection() -> None:
     assert record["ticket"]["body"] == "exact body"
 
 
-def test_authored_record_rejects_malformed_remove_targets() -> None:
-    with pytest.raises(AcceptanceBasisError, match="remove_targets"):
+def test_authored_record_keeps_target_plan_in_record_not_basis_frontmatter() -> None:
+    raw_plan = [
+        {
+            "target": "acme:lib:toy:1.0#candidate",
+            "role": "replacement",
+            "replaces": "acme:lib:toy:1.0#baseline",
+        }
+    ]
+    plan = TargetPlan.from_value(raw_plan)
+    record = authored_ticket_record(
+        {
+            "summary": "demo",
+            "type": "feature",
+            "branch": "main",
+            "target_plan": raw_plan,
+        },
+        "body",
+        (),
+        target_plan=plan,
+        removal_targets=("acme:lib:toy:1.0#baseline",),
+    )
+    pointer = AcceptanceBasis((_participant(),))
+
+    hydrated = pointer.with_record(record)
+
+    assert set(pointer.as_dict()) == {"schema", "participants"}
+    assert hydrated.target_plan == plan
+    assert hydrated.removal_targets == ("acme:lib:toy:1.0#baseline",)
+
+
+def test_record_accepts_normalized_plan_with_authored_shorthand() -> None:
+    record = authored_ticket_record(
+        {
+            "summary": "demo",
+            "type": "feature",
+            "branch": "main",
+            "target_plan": [
+                {"target": "candidate", "role": "replacement", "replaces": "baseline"}
+            ],
+        },
+        "body",
+        (),
+        target_plan=TargetPlan.from_value(
+            [
+                {
+                    "target": "acme:lib:toy:1.0#candidate",
+                    "role": "replacement",
+                    "replaces": "acme:lib:toy:1.0#baseline",
+                }
+            ]
+        ),
+        removal_targets=("acme:lib:toy:1.0#baseline",),
+    )
+
+    acceptance_basis_module._validate_record(record)
+
+
+def test_record_rejects_normalized_plan_for_different_authored_selector() -> None:
+    record = authored_ticket_record(
+        {
+            "summary": "demo",
+            "type": "feature",
+            "branch": "main",
+            "target_plan": [{"target": "candidate", "role": "persistent"}],
+        },
+        "body",
+        (),
+        target_plan=TargetPlan.from_value(
+            [{"target": "acme:lib:toy:1.0#different", "role": "persistent"}]
+        ),
+    )
+
+    with pytest.raises(AcceptanceBasisError, match="differs from authored"):
+        acceptance_basis_module._validate_record(record)
+
+
+def test_record_pins_internal_provider_binding() -> None:
+    provider = ProviderTargetBinding(
+        "provider-ticket",
+        "a" * 64,
+        "acme:lib:toy:1.0#future",
+        "persistent",
+        "b" * 64,
+    )
+    record = authored_ticket_record(
+        {"summary": "consumer", "type": "feature", "branch": "main"},
+        "body",
+        (),
+        providers=(provider,),
+    )
+
+    acceptance_basis_module._validate_record(record)
+    hydrated = AcceptanceBasis((_participant(),)).with_record(record)
+    assert hydrated.providers == (provider,)
+
+
+def test_authored_record_rejects_retired_remove_targets() -> None:
+    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
         authored_ticket_record(
             {
                 "summary": "demo",
                 "type": "feature",
                 "branch": "main",
-                "on_success": {"remove_targets": 7},
+                "on_success": {"remove_targets": []},
             },
             "body",
             (),
@@ -273,7 +371,7 @@ def test_record_rejects_boolean_schema_and_empty_binding() -> None:
     with pytest.raises(AcceptanceBasisError, match="must be an integer"):
         acceptance_basis_module._validate_record(record)
 
-    record["schema"] = 1
+    record["schema"] = 2
     record["bindings"] = [
         {
             "flow": "",
@@ -948,31 +1046,6 @@ def test_worktree_discovery_rejects_existing_path_with_wrong_git_identity(
         worktree_for_ref(mounted_root, "refs/heads/demo")
 
 
-def test_changed_targets_ignore_non_public_doctor_selftests(tmp_path: Path) -> None:
-    (tmp_path / "public.core").write_text(
-        "CAPI=2:\nname: ::public:0\ntargets:\n  lint_public:\n    flow: lint\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "doctor.core").write_text(
-        "CAPI=2:\n"
-        "name: ::doctor:0\n"
-        "targets:\n"
-        "  lint_selftest_bad:\n"
-        "    flow: lint\n"
-        "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
-        encoding="utf-8",
-    )
-    assert workspace_ops.fusesoc_registry.core_schema_errors(tmp_path / "public.core") == []
-    assert workspace_ops.fusesoc_registry.core_schema_errors(tmp_path / "doctor.core") == []
-
-    assert workspace_ops._changed_targets(
-        tmp_path,
-        ["public.core", "doctor.core"],
-        None,
-        [],
-    ) == {"::public:0#lint_public"}
-
-
 def test_validate_ticket_recreates_missing_authoring_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1254,7 +1327,6 @@ def test_enqueue_retry_rejects_changed_effective_fields(
         "merge": True,
         "cleanup": True,
         "triage_report": True,
-        "remove_targets": [],
     }
     second_policy = {**first_policy, "cleanup": False}
 

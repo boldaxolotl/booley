@@ -482,6 +482,21 @@ def _validate_on_success(value: Any) -> list[str]:
     return OnSuccess.from_dict(value).validate()
 
 
+def _validate_target_plan(value: Any, on_success: Any) -> list[str]:
+    """Validate an optional Target Plan at the authored Ticket seam."""
+    if value is None:
+        return []
+    from booley.core.models import TargetPlan, TargetPlanError
+
+    try:
+        TargetPlan.from_value(value)
+    except TargetPlanError as exc:
+        return [str(exc)]
+    if not isinstance(on_success, dict) or on_success.get("merge", True) is not True:
+        return ["target_plan requires on_success.merge: true"]
+    return []
+
+
 def _validate_no_duplicated_source_roots(
     scope: list[str],
     project_root: str | Path | None,
@@ -1212,6 +1227,7 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
+    errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
     errors.extend(_validate_acceptance_basis_field(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)

@@ -9,9 +9,10 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
-from booley.core.models import OnSuccess
+from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
@@ -544,7 +545,7 @@ def _cmd_init(tio, args):
 
 
 _ON_SUCCESS_REQUIRED_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
-_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS | {"remove_targets"}
+_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS
 
 
 def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
@@ -558,6 +559,12 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         mapping = require_dict(parsed, field="--on-success")
     except BoundaryError as exc:
         return None, str(exc)
+    if "remove_targets" in mapping:
+        return (
+            None,
+            "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
+            "recreate the Ticket",
+        )
 
     missing = _ON_SUCCESS_REQUIRED_KEYS - mapping.keys()
     unknown = mapping.keys() - _ON_SUCCESS_KEYS
@@ -569,7 +576,6 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
     if key_errors:
         return None, "; ".join(key_errors)
 
-    mapping.setdefault("remove_targets", [])
     model = OnSuccess.from_dict(mapping)
     errors = model.validate()
     if errors:
@@ -579,8 +585,34 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         "merge": model.merge,
         "cleanup": model.cleanup,
         "triage_report": model.triage_report,
-        "remove_targets": list(model.remove_targets),
     }, None
+
+
+def _parse_target_plan_arg(value: str) -> tuple[list[dict[str, str]] | None, str | None]:
+    """Parse and canonicalize a Target Plan from the CLI boundary."""
+    try:
+        parsed = json.loads(value)
+        plan = TargetPlan.from_value(parsed)
+    except (json.JSONDecodeError, TargetPlanError) as exc:
+        return None, str(exc)
+    return plan.as_list(), None
+
+
+def _create_target_plan(args, on_success: dict[str, Any] | None):
+    source = args.target_plan
+    if args.target_plan_file:
+        try:
+            source = Path(args.target_plan_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            return None, f"invalid --target-plan-file: {exc}"
+    if source is None:
+        return None, None
+    plan, error = _parse_target_plan_arg(source)
+    if error:
+        return None, f"invalid Target Plan: {error}"
+    if on_success is not None and on_success["merge"] is not True:
+        return None, "invalid Target Plan: target_plan requires on_success.merge: true"
+    return plan, None
 
 
 def _cmd_create_file(tio, args):
@@ -606,6 +638,11 @@ def _cmd_create_file(tio, args):
             print(f"Error: invalid --on-success: {error}", file=sys.stderr)
             return 2
 
+    target_plan, error = _create_target_plan(args, on_success)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
     # Read body from file if --body-file given
     body = args.body
     if args.body_file:
@@ -623,6 +660,7 @@ def _cmd_create_file(tio, args):
             dependencies=args.dependencies,
             priority=args.priority,
             criteria=criteria,
+            target_plan=target_plan,
             on_success=on_success,
             body=body,
         ),
@@ -647,14 +685,12 @@ def _cmd_enqueue(tio, args):
     merge = getattr(args, "merge", None)
     cleanup = getattr(args, "cleanup", None)
     triage_report = getattr(args, "triage_report", None)
-    remove_targets = getattr(args, "remove_targets", None)
-    if any(value is not None for value in (dest, merge, cleanup, triage_report, remove_targets)):
+    if any(value is not None for value in (dest, merge, cleanup, triage_report)):
         on_success = {
             "destination": dest or "review",
             "merge": merge if merge is not None else True,
             "cleanup": cleanup if cleanup is not None else True,
             "triage_report": triage_report if triage_report is not None else True,
-            "remove_targets": remove_targets or [],
         }
     success = tio.enqueue_ticket(
         args.slug,

@@ -247,6 +247,10 @@ _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Acceptance Basis**:
 The immutable authored Ticket inputs and repository identities for one executable Ticket generation, published automatically when that Ticket is enqueued. It includes the canonicalized **Target Plan** and derived Target dispositions, and is the authority for execution, baseline comparison, protected acceptance controls, and completion.
+
+**Basis Refresh**:
+
+A recoverable, automatic replacement of an untouched waiting Ticket's **Acceptance Basis** after its dependencies are accepted. It rebases the unchanged approved authoring inputs onto current destinations, retains the old basis as evidence, and promotes the Ticket only when publication and the Board transition complete together. Drift requires a new **Authoring Generation** through `return-to-draft`.
 _Avoid_: Target Contract, target snapshot, config patch, mutable recipe
 
 **Authoring Generation**:

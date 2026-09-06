@@ -492,7 +492,7 @@ def _format_field(key, val, lines):
         else:
             lines.append(f"{key}:")
             for item in val:
-                lines.append(f"  - {item}")
+                lines.append(f"  - {_yaml_inline_value(item)}")
     elif isinstance(val, dict):
         if not val:
             lines.append(f"{key}: {{}}")

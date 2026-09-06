@@ -791,6 +791,9 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
     tickets = scan_all_tickets(tio.tickets_dir)
+    from .basis_refresh import recover_published_basis_refreshes
+
+    recover_published_basis_refreshes(Path(tio._project_root), tickets)
 
     done_slugs = compute_done_slugs(tickets)
 
@@ -804,21 +807,76 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
             continue
         slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
         summary = t.get("summary", slug)
-        # Move waiting/ → queue/
+        refresh_updates: dict[str, Any] = {}
+        refresh_state = {"operation": "", "failed": False}
+
+        def refresh_basis(
+            ticket: dict[str, Any] = t,
+            ticket_slug: str = slug,
+            updates: dict[str, Any] = refresh_updates,
+            state: dict[str, Any] = refresh_state,
+        ) -> bool:
+            from .basis_refresh import BasisRefreshError, prepare_waiting_basis_refresh
+
+            if ticket.get("acceptance_basis") is None:
+                return True
+            path = Path(ticket["file"])
+            if not path.is_absolute():
+                path = Path(tio.tickets_dir) / path
+            try:
+                basis, operation = prepare_waiting_basis_refresh(
+                    Path(tio._project_root), path, ticket_slug
+                )
+            except BasisRefreshError as exc:
+                state["failed"] = True
+                print(
+                    f"Error: cannot promote '{ticket_slug}': "
+                    f"acceptance-input-change-required: {exc}",
+                    file=sys.stderr,
+                )
+                return False
+            if basis is not None:
+                updates["acceptance_basis"] = basis.as_dict()
+                state["operation"] = operation
+            return True
+
+        # Refresh and move waiting/ → queue/ under the same Ticket lock.
         ok = _op_move_and_log(
             tio,
             slug,
             "queue",
-            {},
+            refresh_updates,
             (
                 "waiting:init",
                 "queued:init",
                 "ticket-board",
                 "dependencies satisfied — promoted to queue",
             ),
+            before_move=refresh_basis,
         )
         if ok:
+            if refresh_state["operation"]:
+                from .basis_refresh import finish_basis_refresh
+
+                finish_basis_refresh(Path(tio._project_root), slug, refresh_state["operation"])
             promoted.append({"slug": slug, "summary": summary})
+        elif refresh_state["failed"]:
+            _op_move_and_log(
+                tio,
+                slug,
+                "blocked",
+                {
+                    "blocked_reason": "acceptance-input-change-required",
+                    "blocked_step": "setup",
+                },
+                (
+                    "waiting:init",
+                    "blocked:setup",
+                    "ticket-board",
+                    "Basis Refresh failed — acceptance inputs require revision",
+                ),
+                expected_status="waiting",
+            )
 
     return promoted
 
@@ -953,12 +1011,6 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     slug = Path(str(entry["file"])).stem
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
-    if on_success.remove_targets and not on_success.merge:
-        print(
-            f"Error: cannot remove Targets when merge is disabled for '{slug}'",
-            file=sys.stderr,
-        )
-        return False
     policy_errors = on_success.validate()
     if policy_errors:
         print(f"Error: cannot complete '{slug}': {policy_errors[0]}", file=sys.stderr)

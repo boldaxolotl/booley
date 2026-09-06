@@ -21,6 +21,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.models import TargetPlan, TargetPlanError, TargetPlanRole
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
@@ -38,7 +39,7 @@ from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
-RECORD_SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 2
 TICKET_REF_PREFIX = "refs/heads/booley-generation"
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -53,6 +54,7 @@ _AUTHORED_FIELDS = (
     "dependencies",
     "priority",
     "criteria",
+    "target_plan",
     "on_success",
     "auto_approve",
     "synthesis",
@@ -81,7 +83,6 @@ _AUTHORED_DEFAULTS: dict[str, Any] = {
         "merge": True,
         "cleanup": True,
         "triage_report": True,
-        "remove_targets": [],
     },
 }
 
@@ -136,6 +137,26 @@ class BasisParticipant:
         }
 
 
+@dataclass(frozen=True, order=True)
+class ProviderTargetBinding:
+    """One basis-pinned Target exported by a dependency Ticket."""
+
+    provider: str
+    basis_id: str
+    target: str
+    role: str
+    surface_sha256: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            "basis_id": self.basis_id,
+            "target": self.target,
+            "role": self.role,
+            "surface_sha256": self.surface_sha256,
+        }
+
+
 @dataclass(frozen=True)
 class AcceptanceBasis:
     """Minimal immutable pointer stored in Ticket frontmatter."""
@@ -144,6 +165,8 @@ class AcceptanceBasis:
     bindings: tuple[AcceptanceTargetBinding, ...] = ()
     removal_targets: tuple[str, ...] = ()
     schema: int = SCHEMA_VERSION
+    target_plan: TargetPlan | None = None
+    providers: tuple[ProviderTargetBinding, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -220,11 +243,21 @@ class AcceptanceBasis:
         if not isinstance(frontmatter, Mapping):
             raise AcceptanceBasisError("Acceptance Basis record frontmatter is invalid")
         _validate_record_routing(self, frontmatter)
-        on_success = frontmatter.get("on_success", {})
-        removals = (
-            tuple(on_success.get("remove_targets", ())) if isinstance(on_success, Mapping) else ()
+        raw_plan = record.get("target_plan", [])
+        try:
+            plan = TargetPlan.from_value(raw_plan) if raw_plan else None
+        except TargetPlanError as exc:
+            raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
+        removals = _record_string_tuple(record, "removal_targets")
+        providers = tuple(_provider_from_record(row) for row in record.get("providers", ()))
+        return AcceptanceBasis(
+            self.participants,
+            bindings,
+            removals,
+            self.schema,
+            plan,
+            providers,
         )
-        return AcceptanceBasis(self.participants, bindings, removals, self.schema)
 
 
 def _validate_record_routing(basis: AcceptanceBasis, frontmatter: Mapping[str, Any]) -> None:
@@ -296,7 +329,15 @@ def canonical_json(value: Any) -> bytes:
     ).encode()
 
 
-def authored_ticket_record(fields: Mapping[str, Any], body: str, bindings: Any) -> dict[str, Any]:
+def authored_ticket_record(
+    fields: Mapping[str, Any],
+    body: str,
+    bindings: Any,
+    *,
+    target_plan: TargetPlan | None = None,
+    removal_targets: tuple[str, ...] = (),
+    providers: tuple[ProviderTargetBinding, ...] = (),
+) -> dict[str, Any]:
     """Build the canonical committed input record, rejecting unknown authored fields."""
     retired = sorted(_RETIRED_FIELDS & set(fields))
     if retired:
@@ -308,11 +349,19 @@ def authored_ticket_record(fields: Mapping[str, Any], body: str, bindings: Any) 
     if unknown:
         raise AcceptanceBasisError(f"unknown authored Ticket field(s): {', '.join(unknown)}")
     frontmatter = _canonical_authored_fields(fields)
+    if target_plan is None and frontmatter.get("target_plan") is not None:
+        try:
+            target_plan = TargetPlan.from_value(frontmatter["target_plan"])
+        except TargetPlanError as exc:
+            raise AcceptanceBasisError(str(exc)) from exc
     rows = [_binding_to_record(row) for row in bindings]
     return {
         "schema": RECORD_SCHEMA_VERSION,
         "ticket": {"frontmatter": frontmatter, "body": body},
         "bindings": rows,
+        "target_plan": target_plan.as_list() if target_plan is not None else [],
+        "removal_targets": list(removal_targets),
+        "providers": [provider.as_dict() for provider in sorted(providers)],
     }
 
 
@@ -348,8 +397,13 @@ def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
         "merge": configured.merge,
         "cleanup": configured.cleanup,
         "triage_report": configured.triage_report,
-        "remove_targets": list(configured.remove_targets),
     }
+    if "target_plan" in canonical:
+        try:
+            plan = TargetPlan.from_value(canonical["target_plan"])
+        except TargetPlanError as exc:
+            raise AcceptanceBasisError(str(exc)) from exc
+        canonical["target_plan"] = plan.as_list()
     return canonical
 
 
@@ -376,6 +430,32 @@ def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
         ).validate_persisted()
     except (BoundaryError, ValueError) as exc:
         raise AcceptanceBasisError(str(exc)) from exc
+    return binding
+
+
+def _provider_from_record(value: Any) -> ProviderTargetBinding:
+    expected = {"provider", "basis_id", "target", "role", "surface_sha256"}
+    try:
+        mapping = require_dict(value, field="Acceptance Basis provider binding")
+        if set(mapping) != expected:
+            raise BoundaryError("Acceptance Basis provider binding has an invalid schema")
+        binding = ProviderTargetBinding(
+            provider=require_str(mapping, "provider").strip(),
+            basis_id=require_str(mapping, "basis_id").strip(),
+            target=require_str(mapping, "target").strip(),
+            role=require_str(mapping, "role").strip(),
+            surface_sha256=require_str(mapping, "surface_sha256").strip(),
+        )
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    if not binding.provider or not binding.target:
+        raise AcceptanceBasisError("Acceptance Basis provider names must be non-empty")
+    if binding.role not in {TargetPlanRole.PERSISTENT.value, TargetPlanRole.REPLACEMENT.value}:
+        raise AcceptanceBasisError("Acceptance Basis provider role is not exportable")
+    if not re.fullmatch(r"[0-9a-f]{64}", binding.basis_id):
+        raise AcceptanceBasisError("Acceptance Basis provider basis_id is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", binding.surface_sha256):
+        raise AcceptanceBasisError("Acceptance Basis provider surface_sha256 is invalid")
     return binding
 
 
@@ -425,9 +505,25 @@ def _validate_record(value: Any) -> None:
         )
         body = require_str(ticket, "body")
         bindings = require_list(record.get("bindings"), field="Acceptance Basis record.bindings")
+        raw_plan = require_list(
+            record.get("target_plan"), field="Acceptance Basis record.target_plan"
+        )
+        removals = require_list(
+            record.get("removal_targets"), field="Acceptance Basis record.removal_targets"
+        )
+        providers = require_list(
+            record.get("providers"), field="Acceptance Basis record.providers"
+        )
     except BoundaryError as exc:
         raise AcceptanceBasisError(str(exc)) from exc
-    if set(record) != {"schema", "ticket", "bindings"}:
+    if set(record) != {
+        "schema",
+        "ticket",
+        "bindings",
+        "target_plan",
+        "removal_targets",
+        "providers",
+    }:
         raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
     try:
         schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
@@ -446,6 +542,10 @@ def _validate_record(value: Any) -> None:
         raise AcceptanceBasisError("Acceptance Basis record authored defaults are not canonical")
     for binding in bindings:
         _binding_from_record(binding)
+    provider_bindings = tuple(_provider_from_record(provider) for provider in providers)
+    if provider_bindings != tuple(sorted(set(provider_bindings))):
+        raise AcceptanceBasisError("Acceptance Basis record providers must be sorted and unique")
+    _validate_record_target_plan(frontmatter, raw_plan, removals)
     on_success = frontmatter.get("on_success")
     if on_success is not None and not isinstance(on_success, Mapping):
         raise AcceptanceBasisError("Acceptance Basis record on_success must be a mapping")
@@ -455,6 +555,102 @@ def _validate_record(value: Any) -> None:
         errors = OnSuccess.from_dict(dict(on_success)).validate()
         if errors:
             raise AcceptanceBasisError(f"Acceptance Basis record {errors[0]}")
+
+
+def _validate_record_target_plan(
+    frontmatter: Mapping[str, Any], raw_plan: list[Any], removals: list[Any]
+) -> None:
+    try:
+        plan = TargetPlan.from_value(raw_plan) if raw_plan else None
+    except TargetPlanError as exc:
+        raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
+    canonical_removals = _string_tuple(removals, "Acceptance Basis record.removal_targets")
+    authored_plan = frontmatter.get("target_plan")
+    try:
+        authored = TargetPlan.from_value(authored_plan) if authored_plan is not None else None
+    except TargetPlanError as exc:
+        raise AcceptanceBasisError(f"Acceptance Basis record authored {exc}") from exc
+    if not _plan_selectors_match(authored, plan):
+        raise AcceptanceBasisError(
+            "Acceptance Basis record Target Plan differs from authored Ticket frontmatter"
+        )
+    if canonical_removals != _target_plan_removals(plan):
+        raise AcceptanceBasisError(
+            "Acceptance Basis record removal_targets do not match its Target Plan"
+        )
+
+
+def _selector_matches_canonical(authored: str, canonical: str) -> bool:
+    authored_qualifier, separator, authored_target = authored.rpartition("#")
+    if not separator:
+        authored_target = authored
+        authored_qualifier = ""
+    canonical_qualifier, separator, canonical_target = canonical.rpartition("#")
+    if not separator or authored_target != canonical_target:
+        return False
+    if not authored_qualifier:
+        return True
+
+    def identity_segments(value: str) -> list[str]:
+        parts = value.split(":")
+        return parts[:3] if len(parts) >= 3 else parts
+
+    authored_segments = identity_segments(authored_qualifier)
+    canonical_segments = identity_segments(canonical_qualifier)
+    return (
+        len(authored_segments) <= len(canonical_segments)
+        and canonical_segments[-len(authored_segments) :] == authored_segments
+    )
+
+
+def _plan_selectors_match(authored: TargetPlan | None, canonical: TargetPlan | None) -> bool:
+    if authored is None or canonical is None:
+        return authored is canonical
+    remaining = list(canonical.entries)
+    for entry in authored.entries:
+        matches = [
+            candidate
+            for candidate in remaining
+            if candidate.role is entry.role
+            and _selector_matches_canonical(entry.target, candidate.target)
+            and (
+                entry.role is not TargetPlanRole.REPLACEMENT
+                or _selector_matches_canonical(entry.replaces, candidate.replaces)
+            )
+        ]
+        if len(matches) != 1:
+            return False
+        remaining.remove(matches[0])
+    return not remaining
+
+
+def _string_tuple(values: list[Any], field: str) -> tuple[str, ...]:
+    try:
+        result = tuple(require_str({"value": item}, "value").strip() for item in values)
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(f"{field} must contain strings") from exc
+    if any(not item for item in result) or tuple(sorted(set(result))) != result:
+        raise AcceptanceBasisError(f"{field} must contain sorted unique non-empty strings")
+    return result
+
+
+def _record_string_tuple(record: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    try:
+        values = require_list(record.get(key), field=f"Acceptance Basis record.{key}")
+    except BoundaryError as exc:
+        raise AcceptanceBasisError(str(exc)) from exc
+    return _string_tuple(values, f"Acceptance Basis record.{key}")
+
+
+def _target_plan_removals(plan: TargetPlan | None) -> tuple[str, ...]:
+    if plan is None:
+        return ()
+    removals = {
+        entry.target if entry.role is TargetPlanRole.EPHEMERAL else entry.replaces
+        for entry in plan.entries
+        if entry.role is not TargetPlanRole.PERSISTENT
+    }
+    return tuple(sorted(removals))
 
 
 def load_acceptance_basis(

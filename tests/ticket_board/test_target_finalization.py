@@ -15,7 +15,6 @@ from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
     plan_target_removals,
-    validate_acceptance_removals,
 )
 
 
@@ -123,26 +122,18 @@ def test_last_target_leaves_valid_empty_targets_mapping(tmp_path: Path) -> None:
     assert fusesoc_registry.read_core(core)["targets"] == {}
 
 
-def test_enqueue_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
+def test_finalizer_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
     _write_core(
         tmp_path / "toy.core",
         vlnv="acme:lib:toy:1.0",
         targets="  baseline: {flow: lint}\n  unrelated: {flow: lint}\n",
     )
-    fields = {
-        "on_success": {"remove_targets": ["unrelated"]},
-        "criteria": {"mandatory": {"lint_clean": ["baseline"]}},
-    }
-
-    errors = validate_acceptance_removals(fields, tmp_path)
-
-    assert errors == [
-        "on_success.remove_targets target 'acme:lib:toy:1.0#unrelated' is not bound "
-        "by this Ticket's criteria"
-    ]
+    baseline = "acme:lib:toy:1.0#baseline"
+    with pytest.raises(TargetFinalizationError, match="not bound by this Ticket's criteria"):
+        plan_target_removals(tmp_path, ("unrelated",), _binding(baseline))
 
 
-def test_enqueue_rejects_submodule_owned_target_removal(tmp_path: Path) -> None:
+def test_finalizer_rejects_submodule_owned_target_removal(tmp_path: Path) -> None:
     dependency = tmp_path / "dependency"
     _init_repository(dependency)
     _write_core(
@@ -165,31 +156,19 @@ def test_enqueue_rejects_submodule_owned_target_removal(tmp_path: Path) -> None:
     )
     _git(root, "commit", "-qm", "project")
     canonical = "acme:lib:toy:1.0#obsolete"
-    fields = {
-        "on_success": {"remove_targets": [canonical]},
-        "criteria": {"mandatory": {"lint_clean": [canonical]}},
-    }
-
-    errors = validate_acceptance_removals(fields, root)
-
-    assert errors == [
-        f"on_success.remove_targets target {canonical!r} is declared in nested repository "
-        "'vendor/dependency'; only outer and paired project participants can be finalized"
-    ]
+    with pytest.raises(
+        TargetFinalizationError,
+        match="only outer and paired project participants can be finalized",
+    ):
+        plan_target_removals(root, (canonical,), _binding(canonical))
 
 
-def test_enqueue_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
+def test_finalizer_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
     _write_core(tmp_path / "a.core", vlnv="acme:lib:a:1.0", targets="  synth: {}\n")
     _write_core(tmp_path / "b.core", vlnv="acme:lib:b:1.0", targets="  synth: {}\n")
-    fields = {
-        "on_success": {"remove_targets": ["synth"]},
-        "criteria": {"mandatory": {"synthesis_ok": {"targets": ["a#synth"]}}},
-    }
-
-    errors = validate_acceptance_removals(fields, tmp_path)
-
-    assert len(errors) == 1
-    assert "Target 'synth' is declared by 2 cores" in errors[0]
+    canonical = "acme:lib:a:1.0#synth"
+    with pytest.raises(TargetFinalizationError, match="declared by 2 cores"):
+        plan_target_removals(tmp_path, ("synth",), _binding(canonical))
 
 
 def test_qualified_target_rejects_ambiguous_bare_tests_registration(tmp_path: Path) -> None:

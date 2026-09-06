@@ -148,7 +148,9 @@ sources declared Scope `[new]`.
 `return-to-draft` preserves the old identity and evidence, then starts a new
 Authoring Generation from committed destination refs.
 Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
-Authoring Generation so enqueue can publish an Acceptance Basis before execution.
+Authoring Generation so enqueue can publish an Acceptance Basis before execution. The
+only automatic replacement is a Basis Refresh for an untouched waiting Ticket after its
+dependencies are accepted; drift still requires `return-to-draft`.
 
 ### Shared run logs and artifacts
 

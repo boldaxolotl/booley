@@ -36,6 +36,7 @@ class TicketFileSpec:
     dependencies: list[str] | None = None
     priority: str = "medium"
     criteria: dict[str, Any] | None = None
+    target_plan: list[dict[str, str]] | None = None
     on_success: dict[str, Any] | None = None
     body: str = ""
 
@@ -579,7 +580,6 @@ class TicketIO:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
-                "remove_targets": [],
             }
         fields = {
             "summary": spec.summary,
@@ -592,6 +592,8 @@ class TicketIO:
         }
         if spec.project_destination_ref:
             fields["project_destination_ref"] = spec.project_destination_ref
+        if spec.target_plan is not None:
+            fields["target_plan"] = spec.target_plan
         if spec.spec:
             fields["spec"] = spec.spec
         # Legacy escape hatch for pre-authored plans. Normal tickets should let

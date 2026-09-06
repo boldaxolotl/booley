@@ -21,10 +21,10 @@ booley-ticket-create --agent <structured input>   # agent mode — no interactio
 
 ## Output Boundary
 
-Ticket creation authors only the Ticket, any new Target definitions approved at the
-Step 2f gate, and empty placeholder files for Scope paths marked `[new]`. A new Target
-definition may be added to an existing Target-definition file, but existing Targets
-remain unchanged.
+Ticket creation authors only the Ticket, Target definitions and unambiguously owned
+`tests.toml` tables approved at the Step 2f gate, and empty placeholder files for Scope
+paths marked `[new]`. A planned Target may be added to an existing Target-definition
+file, but existing Targets remain unchanged.
 
 The developer who runs the Ticket authors its implementation. A placeholder is a
 zero-byte file: do not put declarations, modules, packages, assertions, stimulus,
@@ -108,10 +108,13 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 ### 2f: Approve the ticket
 
 **MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
-body, excluding generated basis fields), followed by a **New Targets** section containing every
-Target that ticket creation will author. For each new Target, show its name, destination
-file, and complete proposed definition. If creation adds no Targets, show
-`New Targets: none`. Ask: *"Create this ticket and these Targets? (yes / edit / cancel)"*
+body, excluding generated basis fields), followed by a **Target Plan** section. If the
+plan is omitted, show `Target Plan: none`. For persistent and ephemeral entries, show the
+role, canonical name, destination file, acceptance result, complete Target definition,
+and complete owned `tests.toml` table. For a replacement, show its baseline and candidate,
+destination file, acceptance result, a focused Target-definition diff, and a focused
+owned-table diff. If either focused diff cannot be produced unambiguously, stop with an
+approval blocker. Ask: *"Create this ticket and Target Plan? (yes / edit / cancel)"*
 
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket or Target definitions and show the entire review
@@ -126,18 +129,19 @@ mechanics require no further user confirmation.
 1. All fields required — return an error listing the missing fields (no interactive questions)
 2. Same dependency scan (§A) and validation (§C) as human mode
 3. Inference (§B) only for fields marked `"infer"`; missing without `"infer"` → error
-4. Explicit `criteria` or `on_success` values win for that field. For each field marked
+4. Explicit `criteria`, `target_plan`, or `on_success` values win for that field. For each field marked
    `"infer"`, build the §B/§D fallback and apply the relevant §E guidance
 5. Ambiguous, conflicting, or unresolvable applicable guidance is a non-interactive error;
    identify the prose that could not be translated
-6. Always pass the resolved `--criteria` and `--on-success` values to `create-file`
+6. Always pass the resolved `--criteria` and `--on-success` values to `create-file`, plus
+   `--target-plan` when the resolved plan is present
 7. **No grilling** — the calling agent must provide all details upfront
 8. Approval gate (2f) applies unless the caller passed `--no-confirm`; validation never does
 
 ## Step 4: Author and Enqueue
 
 Follow §C end to end after ticket approval: create the draft and workspace, author only
-the approved new Target definitions there, validate, and enqueue. Author the new Targets
+the approved planned Target definitions and owned test tables there, validate, and enqueue. Author them
 exactly as approved at the 2f gate and create only empty placeholders for `[new]` Scope
 paths; do not implement any part of the Ticket. Basis publication remains an internal
 implementation detail: do not expose its SHAs or pause for another
@@ -175,7 +179,8 @@ only how to *infer* a value from the conversation and the repo.
 | `branch` | `git branch --show-current` |
 | `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
 | `spec` | Include when an arch spec exists near scope |
-| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Destructive cleanup also requires `merge: true`, because journaled publication pins the accepted source before branch removal. Benchmark: `{destination: done, merge: false, cleanup: false, triage_report: true, remove_targets: []}` |
+| `target_plan` | Prefer omission. Classify every Target this Ticket must author as `persistent`, `replacement` with one `replaces` baseline, or `ephemeral`, according to the intended post-acceptance Target surface. Planned entries and replacement baselines must be Criteria-bound. An active provider may supply only persistent or replacement candidates through a declared dependency. |
+| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. A Target Plan requires `merge: true`. Destructive cleanup also requires `merge: true`, because journaled publication pins the accepted source before branch removal. Benchmark: `{destination: done, merge: false, cleanup: false, triage_report: true}` |
 | `dependencies` | From scan (§A) + grilling; user confirms |
 | `priority` | Default `medium` |
 | `criteria` | Start with §D defaults, then apply relevant §E guidance; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |
@@ -208,7 +213,8 @@ python -m booley.ticket_board create-file "$SLUG" \
   --scope rtl/foo.sv tb/foo_tb.sv \      # nargs="*" — space-separated; omit for []
   [--spec "$SPEC"] [--dependencies dep-slug-a dep-slug-b] [--priority "$PRIORITY"] \
   --criteria "$CRITERIA_JSON" \          # JSON: {"mandatory":{...},"optional":{...}}
-  --on-success "$ON_SUCCESS_JSON" \      # JSON: all five on_success fields
+  [--target-plan "$TARGET_PLAN_JSON"] \  # optional nonempty JSON list
+  --on-success "$ON_SUCCESS_JSON" \      # JSON: all four on_success fields
   --body-file "$BODY"
 
 # E4. Add only approved new Target definitions in the workspace printed by create-file.
@@ -321,17 +327,18 @@ the candidate determines the expanded Criterion name.
   its Scope `[new]` RTL/TB paths.
 - If a blocked ticket needs different authored inputs, use `return-to-draft`; it
   preserves the old basis and evidence and starts a new authoring generation.
-- Decide `on_success.remove_targets` during Ticket creation. Every selector must resolve
-  uniquely and name a Target bound by that Ticket's Criteria. The Target remains fixed and
-  available through development and review; acceptance removes only its `.core` definition
-  and unambiguously-owned `tests.toml` tables from the prepared merge candidate. Shared
-  filesets, sources, parameters, constraints, generators, and hooks are retained. Do not use
-  this field as general file cleanup.
+- Decide the Target Plan during Ticket creation. `persistent` retains the new Target;
+  `replacement` retains its candidate and removes its runnable baseline; `ephemeral`
+  removes its candidate. Every selector resolves uniquely and is bound by Criteria.
+  Acceptance removes only the derived Target definitions and unambiguously owned
+  `tests.toml` tables; shared filesets, sources, parameters, constraints, generators,
+  and hooks remain.
 
 ## §E. Ticket Creation Guidance
 
 Ticket Creation Guidance is Project-owned, free-form Markdown consumed **only here, during
-creation**. Its authority is limited to the proposed Ticket's `criteria` and `on_success`.
+creation**. Its authority is limited to the proposed Ticket's `criteria`, optional
+`target_plan`, and `on_success`.
 It cannot change scope, priority, dependencies, ticket depth or body, approval gates,
 Acceptance Basis publication, or an existing Ticket.
 

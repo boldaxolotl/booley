@@ -12,7 +12,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import resolve_project_dir, runtime_dir
 from booley.runtime.project_prepare import prepare_project
@@ -49,6 +48,14 @@ from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
 from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
+from .planned_dependencies import (
+    PlannedDependencyError,
+    ProviderMaterialization,
+    materialize_planned_dependencies,
+    validate_materialized_surfaces,
+    validate_planned_dependencies,
+)
+from .target_plan import TargetPlanAnalysis, TargetPlanValidationError, analyze_target_plan
 from .validation import validate_ticket_fields
 
 _GENERATION_PREFIX = "booley-generation"
@@ -87,6 +94,8 @@ class _BasisPreparation:
     outer_changes: list[str]
     project: Path | None
     project_changes: list[str]
+    target_plan: TargetPlanAnalysis
+    providers: ProviderMaterialization
 
 
 @dataclass(frozen=True)
@@ -527,7 +536,18 @@ def ensure_ticket_workspace(
         raise AcceptanceBasisOperationError("ticket has no destination branch")
     generation = _draft_generation(root, slug)
     outer = resolve_project_dir(root) / "worktrees" / slug
-    return _open_generation(root, Path(ticket_path), slug, fields, generation, outer)
+    workspace = _open_generation(root, Path(ticket_path), slug, fields, generation, outer)
+    try:
+        materialize_planned_dependencies(
+            root,
+            Path(ticket_path),
+            slug,
+            generation,
+            workspace.outer,
+        )
+    except PlannedDependencyError as exc:
+        raise AcceptanceBasisOperationError(str(exc)) from exc
+    return workspace
 
 
 def _open_generation(
@@ -745,9 +765,6 @@ def _basis_validation(
         check_tb_files=False,
     )
     errors.extend(validate_criterion_targets(fields, worktree))
-    from .target_finalization import validate_acceptance_removals
-
-    errors.extend(validate_acceptance_removals(fields, worktree))
     if errors:
         return errors
     with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
@@ -762,45 +779,22 @@ def _basis_validation(
     return errors
 
 
-def _changed_targets(
-    outer: Path,
-    outer_changes: list[str],
-    project: Path | None,
-    project_changes: list[str],
-) -> set[str]:
-    """Return qualified selectors declared by changed, still-present core files."""
-    selectors: set[str] = set()
-    for repository, changes in ((outer, outer_changes), (project, project_changes)):
-        if repository is None:
-            continue
-        for path in changes:
-            core_file = repository / path
-            if core_file.suffix.casefold() != ".core" or not core_file.is_file():
-                continue
-            try:
-                doc = fusesoc_registry.read_core(core_file)
-            except fusesoc_registry.FuseSocError as exc:
-                raise AcceptanceBasisOperationError(str(exc)) from exc
-            vlnv = doc.get("name")
-            if not isinstance(vlnv, str) or not vlnv:
-                raise AcceptanceBasisOperationError(
-                    f"changed .core has no valid name: {core_file}"
-                )
-            selectors.update(
-                f"{vlnv}#{target}"
-                for target in fusesoc_registry.core_target_names(doc)
-                if not fusesoc_registry.core_target_is_doctor_selftest(doc, target)
-            )
-    return selectors
-
-
 def _prepare_basis(
-    project_root: Path | str, ticket_path: Path | str, slug: str
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    *,
+    effective_fields: dict[str, object] | None = None,
+    workspace: Path | None = None,
+    generation: str | None = None,
+    provider_materialization: ProviderMaterialization | None = None,
 ) -> _BasisPreparation:
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    outer = resolve_project_dir(root) / "worktrees" / slug
+    if effective_fields is not None:
+        fields = dict(effective_fields)
+    outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
     if not outer.is_dir():
         raise AcceptanceBasisOperationError(f"Ticket Workspace is not open: {outer}")
     _prepare_workspace_project(root, outer, ticket, slug)
@@ -827,17 +821,43 @@ def _prepare_basis(
         if project is not None
         else []
     )
-    errors = _basis_validation(
-        fields,
-        body,
-        outer,
-        _changed_targets(outer, outer_changes, project, project_changes),
-    )
+    repository_changes = [(outer, tuple(outer_changes))]
+    if project is not None:
+        repository_changes.append((project, tuple(project_changes)))
+    try:
+        providers = provider_materialization
+        if providers is None:
+            providers = validate_planned_dependencies(
+                root,
+                slug,
+                generation or _draft_generation(root, slug),
+            )
+        validate_materialized_surfaces(outer, providers)
+        target_plan = analyze_target_plan(
+            fields,
+            outer,
+            tuple(repository_changes),
+            provider_targets=providers.materialized_targets,
+            exported_provider_targets=providers.exported_targets,
+            provider_test_tables=providers.test_tables,
+        )
+    except (PlannedDependencyError, TargetPlanValidationError) as exc:
+        raise AcceptanceBasisOperationError(f"Acceptance Basis validation failed: {exc}") from exc
+    errors = _basis_validation(fields, body, outer, set(target_plan.authored_targets))
     if errors:
         raise AcceptanceBasisOperationError(
             "Acceptance Basis validation failed: " + "; ".join(errors)
         )
-    return _BasisPreparation(ticket, fields, outer, outer_changes, project, project_changes)
+    return _BasisPreparation(
+        ticket,
+        fields,
+        outer,
+        outer_changes,
+        project,
+        project_changes,
+        target_plan,
+        providers,
+    )
 
 
 def _participant_preparations(
@@ -910,7 +930,16 @@ def _write_authored_record(
     binding_specs = criterion_targets(fields.get("criteria"))
     bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
     try:
-        payload = canonical_json(authored_ticket_record(fields, body, bindings))
+        payload = canonical_json(
+            authored_ticket_record(
+                fields,
+                body,
+                bindings,
+                target_plan=prepared.target_plan.plan,
+                removal_targets=prepared.target_plan.removal_targets,
+                providers=prepared.providers.bindings,
+            )
+        )
     except AcceptanceBasisError as exc:
         raise AcceptanceBasisOperationError(str(exc)) from exc
     path, project_owner = _record_path(prepared, slug)
@@ -954,7 +983,12 @@ def prepare_acceptance_basis(
             effective_sha256,
             _authoring_repositories(root, slug),
         )
-    prepared = _prepare_basis(project_root, ticket_path, slug)
+    prepared = _prepare_basis(
+        project_root,
+        ticket_path,
+        slug,
+        effective_fields=fields,
+    )
     basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
     bindings, removals = basis_inputs
     participants = _participant_preparations(slug, fields, prepared)
@@ -971,15 +1005,71 @@ def prepare_acceptance_basis(
     )
 
 
+def prepare_replacement_acceptance_basis(
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    workspace: AuthoringWorkspace,
+    provider_bindings: tuple,
+    *,
+    operation_id: str,
+) -> tuple[AcceptanceBasis, str]:
+    """Publish a refreshed basis from a prepared, destination-current workspace."""
+    root = Path(project_root).resolve()
+    ticket = Path(ticket_path)
+    source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    fields = dict(fields)
+    fields.pop("acceptance_basis", None)
+    effective_sha256 = hashlib.sha256(canonical_json({"fields": fields, "body": body})).hexdigest()
+    repositories = {"outer": workspace.outer}
+    if workspace.project is not None:
+        repositories["project"] = workspace.project
+    existing = load_basis_publication(root, slug)
+    if existing is not None:
+        if existing.operation_id != operation_id:
+            raise AcceptanceBasisOperationError(
+                "Basis Refresh and basis publication operation IDs disagree"
+            )
+        return publish_basis_commits(
+            root,
+            slug,
+            source_sha256,
+            effective_sha256,
+            repositories,
+        )
+    providers = ProviderMaterialization(bindings=provider_bindings)
+    prepared = _prepare_basis(
+        root,
+        ticket,
+        slug,
+        effective_fields=fields,
+        workspace=workspace.outer,
+        generation=workspace.generation,
+        provider_materialization=providers,
+    )
+    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, body)
+    participants = _participant_preparations(slug, fields, prepared)
+    return publish_basis_commits(
+        root,
+        slug,
+        source_sha256,
+        effective_sha256,
+        repositories,
+        operation_id=operation_id,
+        participants=participants,
+        bindings=bindings,
+        removal_targets=removals,
+    )
+
+
 def _prepare_basis_inputs(
     prepared: _BasisPreparation,
     slug: str,
     fields: dict[str, object],
     body: str,
 ) -> tuple[tuple, tuple[str, ...]]:
-    from .target_finalization import canonical_remove_targets
-
-    removals = tuple(canonical_remove_targets(fields, prepared.outer))
+    removals = prepared.target_plan.removal_targets
     bindings = tuple(_write_authored_record(prepared, slug, fields, body))
     return bindings, removals
 
