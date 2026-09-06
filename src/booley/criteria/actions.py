@@ -1,4 +1,4 @@
-"""Derive copyable endpoint invocations from sealed criterion state."""
+"""Derive copyable endpoint invocations from recorded criterion state."""
 
 from __future__ import annotations
 
@@ -81,10 +81,10 @@ def planned_invocation(key: str, entry: Any) -> str | None:
         return None
     command, _per_target = _endpoint_contracts()[family]
     params = getattr(entry, "params", {}) or {}
-    sealed_selector = params.get("_target_selector")
+    recorded_selector = params.get("_target_selector")
     target = (
-        sealed_selector
-        if isinstance(sealed_selector, str) and sealed_selector
+        recorded_selector
+        if isinstance(recorded_selector, str) and recorded_selector
         else criterion_target(key, entry, family)
     )
     if target and "--target" not in command:

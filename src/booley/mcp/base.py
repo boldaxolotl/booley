@@ -383,7 +383,7 @@ class McpTool(ABC):
             action="store_true",
             help=(
                 "Run without satisfying Ticket criteria. In Ticket Mode this "
-                "is required for a Flow/Target combination outside the sealed contract."
+                "is required for a Flow/Target combination outside the Acceptance Basis."
             ),
         )
 
@@ -475,14 +475,15 @@ class McpTool(ABC):
         raw_logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
         if not raw_logs_dir:
             return
-        target_contract: dict[str, Any] = {}
+        acceptance_basis: dict[str, Any] = {}
         raw_ticket_file = os.environ.get("BOOLEY_TICKET_FILE")
         if raw_ticket_file and Path(raw_ticket_file).is_file():
-            from booley.ticket_board.target_contract import load_ticket_contract
+            from booley.ticket_board.frontmatter import parse_frontmatter
 
-            contract = load_ticket_contract(raw_ticket_file)
-            if contract is not None:
-                target_contract = contract.as_dict()
+            fields, _body = parse_frontmatter(Path(raw_ticket_file).read_text(encoding="utf-8"))
+            raw_basis = fields.get("acceptance_basis")
+            if isinstance(raw_basis, dict):
+                acceptance_basis = raw_basis
         from booley.ticket_board.acceptance_ledger import record_changes
 
         record_changes(
@@ -492,7 +493,7 @@ class McpTool(ABC):
             invocation_id=os.environ.get("BOOLEY_RUN_ID") or self._invocation_id,
             producer=self.name,
             execution_id=os.environ.get("BOOLEY_EXECUTION_ID", ""),
-            target_contract=target_contract,
+            acceptance_basis=acceptance_basis,
         )
 
     def _criterion_key_for_source(self, key: str, source_target: str | None) -> str:
@@ -778,7 +779,7 @@ class McpTool(ABC):
         return targets
 
     def _bound_criterion_keys(self, target: str) -> list[str]:
-        """Return sealed criteria this endpoint/Target invocation can update."""
+        """Return basis-bound criteria this endpoint/Target invocation can update."""
         criterion_target = target
         target_identity: str | None = None
         try:
@@ -885,8 +886,8 @@ class McpTool(ABC):
                 "unbound_targets": missing,
             },
             report_text=(
-                f"{self.name}: Target(s) {', '.join(missing)} do not bind a sealed "
-                f"Ticket criterion.\nPending compatible criteria:\n{pending_text}\n"
+                f"{self.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
+                f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
                 "Use --diagnostic only when this is intentionally a non-acceptance run."
             ),
         )

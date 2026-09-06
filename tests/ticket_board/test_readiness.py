@@ -7,17 +7,37 @@ from pathlib import Path
 
 import pytest
 
-from booley.fusesoc import fusesoc_registry
+from booley.runtime.project_dir import reset_cache
+from booley.ticket_board import acceptance_basis as acceptance_basis_module
 from booley.ticket_board import readiness as readiness_module
-from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
-from booley.ticket_board.target_contract import ContractParticipant, build_contract
+
+
+@pytest.fixture(autouse=True)
+def _clear_project_dir_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    yield
+    reset_cache()
 
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+
+def _remove_ticket_worktree(root: Path) -> Path:
+    paths = [
+        Path(line.removeprefix("worktree "))
+        for line in _git(root, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    ]
+    [workspace] = [path for path in paths if path.resolve() != root.resolve()]
+    _git(root, "worktree", "remove", "--force", str(workspace))
+    return workspace
 
 
 def test_check_ticket_ready_prepares_generated_target_input(
@@ -66,38 +86,26 @@ targets:
     )
     (project / "tickets" / "board" / "queue").mkdir(parents=True)
     _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project/booley.toml", ".booley_project/hooks")
     _git(root, "commit", "-m", "demo")
-    head = _git(root, "rev-parse", "HEAD")
-    participant = ContractParticipant(
-        "outer",
-        head,
-        "refs/heads/main",
-        "refs/heads/main",
-        head,
-    )
-    contract = build_contract(
-        root,
-        outer_sha=head,
-        targets=["sim_toy"],
-        participants=[participant],
-    )
     criteria = {"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_toy @ smoke @ pass -> pass"]}}
-    ticket = project / "tickets" / "board" / "queue" / "demo.md"
-    ticket.write_text(
-        format_frontmatter(
-            {
-                "summary": "Demo",
-                "type": "verification",
-                "branch": "main",
-                "scope": ["rtl/toy.sv"],
-                "base_sha": head,
-                "target_contract": contract.as_dict(),
-                "criteria": criteria,
-            },
-            "## Description\n\nVerify the demo.\n",
+    tio = TicketIO(project / "tickets", project_root=root)
+    draft = tio.create_ticket_file(
+        "demo",
+        TicketFileSpec(
+            summary="Demo",
+            ticket_type="verification",
+            branch="main",
+            scope=["rtl/toy.sv"],
+            criteria=criteria,
+            body="## Description\n\nVerify the demo.\n",
         ),
-        encoding="utf-8",
     )
+    assert draft is not None
+    assert tio.enqueue_ticket("demo") is True
+    workspace = _remove_ticket_worktree(root)
+    assert not workspace.exists()
+    ticket = project / "tickets" / "board" / "queue" / "demo.md"
     ticket_before = ticket.read_bytes()
     resolved_roots: list[Path] = []
 
@@ -118,8 +126,7 @@ targets:
     assert resolved_roots == [root.resolve()]
     assert ticket.read_bytes() == ticket_before
     assert not (project / "tickets" / "board" / "active" / "demo.md").exists()
-    assert (root / "generated.hex").is_file()
-    assert "generated.hex" in fusesoc_registry.target_referenced_files(root, "sim_toy")
+    assert not (root / "generated.hex").exists()
     assert _git(root, "status", "--porcelain") == ""
 
 
@@ -139,3 +146,88 @@ def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.Mon
 
     with pytest.raises(RuntimeError, match="not a repository"):
         readiness_module._checkout_statuses(root)
+
+
+def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    project = root / ".booley_project"
+    (project / "tickets/board/drafts").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "initial")
+    tio = TicketIO(project / "tickets", project_root=root)
+    ticket = tio.create_ticket_file(
+        "changed-controls",
+        TicketFileSpec(
+            summary="Changed controls",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket("changed-controls") is True
+    workspace = project / "worktrees/changed-controls"
+    (workspace / ".booley_project/booley.toml").write_text(
+        "[flows]\nchanged = true\n", encoding="utf-8"
+    )
+    _git(workspace, "add", "-f", ".booley_project/booley.toml")
+    _git(workspace, "commit", "-m", "change protected input")
+    _remove_ticket_worktree(root)
+
+    result = check_ticket_ready(root, "changed-controls")
+
+    assert result.ready is False
+    assert any("protected path" in error for error in result.errors)
+
+
+def test_worktree_discovery_failure_is_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+
+    def failed_worktree(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["git", "worktree", "list"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: worktree metadata is unreadable",
+        )
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", failed_worktree)
+
+    with pytest.raises(AcceptanceBasisError, match="worktree metadata is unreadable"):
+        acceptance_basis_module.worktree_for_ref(root, "refs/heads/main")
+
+
+def test_executable_readiness_uses_authoritative_basis_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    (root / ".git").mkdir(parents=True)
+    tickets = root / ".booley_project/tickets"
+
+    def reject_missing_receipt(*_args: object, **_kwargs: object) -> None:
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+        raise AcceptanceBasisError("Acceptance Basis receipt mismatch")
+
+    monkeypatch.setattr(TicketIO, "load_basis", reject_missing_receipt)
+    errors = readiness_module._validate_checkout_basis(
+        root,
+        tickets,
+        "demo",
+        {"acceptance_basis": {"schema": 1}},
+        "",
+    )
+
+    assert errors == ["Acceptance Basis receipt mismatch"]

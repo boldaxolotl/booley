@@ -1,4 +1,4 @@
-"""Recoverable publication of sealed Ticket repository participants."""
+"""Recoverable publication of Acceptance Basis repository participants."""
 
 from __future__ import annotations
 
@@ -7,12 +7,14 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -24,19 +26,18 @@ from booley.ticket_board.acceptance_journal._store import (
     FaultingAcceptanceStore,
     FileAcceptanceStore,
 )
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.target_contract import (
-    SCHEMA_VERSION,
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-    surface_digest,
-    surface_entries,
-)
+from booley.ticket_board.frontmatter import format_frontmatter
+
+ContractParticipant = BasisParticipant
 
 
 @pytest.fixture(autouse=True)
 def _reset_project_cache(monkeypatch: pytest.MonkeyPatch):
+    contracts: dict[Path, AcceptanceBasis] = {}
+
+    monkeypatch.setattr(_TicketIO, "_bases", contracts, raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     reset_cache()
     yield
@@ -76,6 +77,15 @@ def _repository(path: Path) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
+def _install_project_contract(repo: Path) -> str:
+    project_dir = repo / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    _git(repo, "add", "-f", ".booley_project/booley.toml")
+    _git(repo, "commit", "-m", "add project contract")
+    return _git(repo, "rev-parse", "HEAD")
+
+
 def _ticket_commit(repo: Path, branch: str, content: str) -> str:
     _git(repo, "switch", "-c", branch)
     (repo / "design.txt").write_text(content, encoding="utf-8")
@@ -95,7 +105,10 @@ class _Policy:
 
 
 class _TicketIO:
-    def __init__(self, root: Path, contract: TargetContract) -> None:
+    _bases: dict[Path, AcceptanceBasis]
+
+    def __init__(self, root: Path, basis: AcceptanceBasis) -> None:
+        self._bases = {root.resolve(): basis}
         self._project_root = root
         self.tickets_dir = root / ".booley_project" / "tickets"
         self.logs_dir = self.tickets_dir / "logs"
@@ -103,12 +116,27 @@ class _TicketIO:
             "file": "board/review/change-target.md",
             "status": "review",
             "branch": "main",
-            "target_contract": contract.as_dict(),
+            "acceptance_basis": {"schema": 1, "participants": []},
         }
+        ticket = self.tickets_dir / str(self.entry["file"])
+        ticket.parent.mkdir(parents=True, exist_ok=True)
+        ticket.write_text(
+            format_frontmatter(
+                {
+                    "branch": "main",
+                    "acceptance_basis": self.entry["acceptance_basis"],
+                },
+                "## Description\n\nTest completion.\n",
+            ),
+            encoding="utf-8",
+        )
         self.transitions: list[tuple[str, str, str, str]] = []
 
     def find_ticket(self, _slug: str) -> dict[str, Any]:
         return self.entry
+
+    def load_basis(self, _slug: str) -> AcceptanceBasis:
+        return self._bases[self._project_root.resolve()]
 
     def move_and_update(self, _slug: str, to_dir: str, _updates: dict[str, Any], **kwargs) -> bool:
         self.entry["status"] = "done"
@@ -125,46 +153,34 @@ class _BoundaryTicketIO:
     def find_ticket(self, _slug: str) -> dict[str, Any] | None:
         return self.entry
 
+    def load_basis(self, _slug: str) -> AcceptanceBasis:
+        return AcceptanceBasis.from_mapping((self.entry or {}).get("acceptance_basis"))
+
 
 def _contract(
     root: Path,
-    participants: tuple[ContractParticipant, ...],
-    *,
-    schema: int = SCHEMA_VERSION,
-) -> TargetContract:
-    outer = next(item for item in participants if item.role == "outer")
-    project = next((item for item in participants if item.role == "project"), None)
-    return TargetContract(
-        outer_sha=outer.sealed_sha,
-        project_sha=project.sealed_sha if project else "",
-        surface_digest=surface_digest(root, schema=schema),
-        targets=(),
+    participants: tuple[BasisParticipant, ...],
+) -> AcceptanceBasis:
+    del root
+    return AcceptanceBasis(
         participants=participants,
-        surface_entries=surface_entries(root),
-        schema=schema,
     )
 
 
-def _boundary_contract() -> TargetContract:
-    participant = ContractParticipant(
+def _boundary_contract() -> AcceptanceBasis:
+    participant = BasisParticipant(
         role="outer",
-        sealed_sha="a" * 40,
+        authoring_sha="a" * 40,
         ticket_ref="refs/heads/ticket",
         destination_ref="refs/heads/main",
         destination_sha="b" * 40,
     )
-    return TargetContract(
-        outer_sha=participant.sealed_sha,
-        project_sha="",
-        surface_digest="c" * 64,
-        targets=(),
-        participants=(participant,),
-    )
+    return AcceptanceBasis(participants=(participant,))
 
 
 def _paired_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, Path, _TicketIO, tuple[ContractParticipant, ...]]:
+) -> tuple[Path, Path, _TicketIO, tuple[BasisParticipant, ...]]:
     root = tmp_path / "rtl"
     outer_base = _repository(root)
     outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
@@ -269,7 +285,7 @@ def test_acceptance_ref_cas_rejects_symbolic_ref_without_moving_referent(
         (json.dumps({"ticket": "another", "participants": []}), "does not belong"),
         (
             json.dumps({"ticket": "change-target", "participants": []}),
-            "sealed repository participants changed",
+            "recorded repository participants changed",
         ),
     ],
 )
@@ -313,8 +329,8 @@ def test_acceptance_journal_rejects_corrupt_or_mismatched_state(
 def test_acceptance_journal_validates_every_recovery_field(
     tmp_path: Path, update: dict[str, Any], message: str
 ) -> None:
-    contract = _boundary_contract()
-    data = acceptance_impl._initial_journal("change-target", contract).as_dict()
+    basis = _boundary_contract()
+    data = acceptance_impl._initial_journal("change-target", basis).as_dict()
     candidates = update.get("candidates")
     if isinstance(candidates, dict) and "outer" in candidates:
         candidates["outer"]["staging_ref"] = candidates["outer"]["staging_ref"].format(
@@ -325,102 +341,19 @@ def test_acceptance_journal_validates_every_recovery_field(
     journal.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(completion.CompletionError, match=message):
-        acceptance_impl._load_journal(journal, "change-target", contract)
+        acceptance_impl._load_journal(journal, "change-target", basis)
 
 
-def test_schema_one_done_journal_resumes_cleanup_as_accepted(tmp_path: Path) -> None:
-    contract = _boundary_contract()
-    data = acceptance_impl._initial_journal("change-target", contract).as_dict()
-    transaction = data["transaction"]
-    data.update(
-        {
-            "schema": 1,
-            "state": "done",
-            "sources": {"outer": "a" * 40},
-            "candidates": {
-                "outer": {
-                    "sha": "d" * 40,
-                    "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-                    "expected_destination_sha": "e" * 40,
-                }
-            },
-            "published": ["outer"],
-        }
-    )
-    data.pop("policy")
-    data.pop("cleaned")
-    data.pop("removal_targets")
-    data.pop("removal_digest")
+@pytest.mark.parametrize("schema", [1, 2, 3, 4])
+def test_pre_basis_journal_schemas_are_rejected(tmp_path: Path, schema: int) -> None:
+    basis = _boundary_contract()
+    data = acceptance_impl._initial_journal("change-target", basis).as_dict()
+    data["schema"] = schema
     journal = tmp_path / "acceptance.json"
     journal.write_text(json.dumps(data), encoding="utf-8")
 
-    loaded = acceptance_impl._load_journal(
-        journal, "change-target", contract, cleanup=True
-    ).as_dict()
-
-    assert loaded["schema"] == 4
-    assert loaded["state"] == "accepted"
-    assert loaded["policy"] == {"merge": True, "cleanup": True}
-    assert loaded["cleaned"] == []
-
-
-def test_finalization_schema_two_journal_upgrades_to_combined_schema(tmp_path: Path) -> None:
-    contract = _boundary_contract()
-    data = acceptance_impl._initial_journal("change-target", contract).as_dict()
-    data["schema"] = 2
-    data.pop("policy")
-    data.pop("cleaned")
-    data["finalized"] = True
-    journal = tmp_path / "acceptance.json"
-    journal.write_text(json.dumps(data), encoding="utf-8")
-
-    loaded = acceptance_impl._load_journal(journal, "change-target", contract).as_dict()
-
-    assert loaded["schema"] == 4
-    assert loaded["policy"] == {"merge": True, "cleanup": False}
-    assert loaded["cleaned"] == []
-
-
-def test_schema_three_finalized_removal_does_not_invent_prepared_identity(
-    tmp_path: Path,
-) -> None:
-    contract = _boundary_contract()
-    removal = "acme:lib:toy:1.0#baseline"
-    data = acceptance_impl._initial_journal(
-        "change-target", contract, removal_targets=(removal,)
-    ).as_dict()
-    transaction = data["transaction"]
-    finalized = "d" * 40
-    data.update(
-        schema=3,
-        state="prepared",
-        sources={"outer": "a" * 40},
-        candidates={
-            "outer": {
-                "sha": finalized,
-                "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-                "expected_destination_sha": "e" * 40,
-            }
-        },
-        finalized=True,
-    )
-    journal = tmp_path / "acceptance.json"
-    journal.write_text(json.dumps(data), encoding="utf-8")
-
-    loaded = acceptance_impl._load_journal(
-        journal,
-        "change-target",
-        contract,
-        removal_targets=(removal,),
-    ).as_dict()
-
-    assert loaded["schema"] == 4
-    assert loaded["candidates"]["outer"] == {
-        "prepared_sha": None,
-        "finalized_sha": finalized,
-        "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
-        "expected_destination_sha": "e" * 40,
-    }
+    with pytest.raises(completion.CompletionError, match="schema must be 5"):
+        acceptance_impl._load_journal(journal, "change-target", basis)
 
 
 def test_complete_requires_merge_policy() -> None:
@@ -443,28 +376,37 @@ def test_complete_reports_missing_ticket(capsys: pytest.CaptureFixture[str]) -> 
 def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str]) -> None:
     tio = _BoundaryTicketIO({"status": "review", "target_contract": {}})
 
-    assert complete_review_ticket(tio, "bad-contract", _Policy()) is False
-    assert "cannot complete 'bad-contract'" in capsys.readouterr().err
+    assert complete_review_ticket(tio, "bad-basis", _Policy()) is False
+    assert "cannot complete 'bad-basis'" in capsys.readouterr().err
 
 
-def test_complete_rejects_removal_policy_changed_after_sealing(
+def test_complete_rejects_removal_policy_changed_after_basis_publication(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    contract = _boundary_contract()
-    tio = _BoundaryTicketIO(
-        {
-            "file": "board/review/change-target.md",
-            "status": "review",
-            "branch": "main",
-            "target_contract": contract.as_dict(),
-        }
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    basis = _contract(
+        root,
+        (
+            ContractParticipant(
+                "outer",
+                ticket_sha,
+                "refs/heads/change-target",
+                "refs/heads/main",
+                base,
+            ),
+        ),
     )
+    tio = _TicketIO(root, basis)
 
     assert (
         complete_review_ticket(tio, "change-target", _Policy(remove_targets=("baseline",)))
         is False
     )
-    assert "changed after Target Contract sealing" in capsys.readouterr().err
+    assert "changed after Acceptance Basis publication" in capsys.readouterr().err
 
 
 def test_complete_rejects_legacy_contract_schema(
@@ -485,7 +427,7 @@ def test_complete_rejects_legacy_contract_schema(
     )
 
     assert complete_review_ticket(tio, "legacy", _Policy()) is False
-    assert "target_contract.schema must be one of [3, 4]" in capsys.readouterr().err
+    assert "legacy Target Contract tickets are unsupported" in capsys.readouterr().err
 
 
 def test_complete_rejects_retired_integration_metadata(
@@ -504,50 +446,41 @@ def test_complete_rejects_retired_integration_metadata(
     assert complete_review_ticket(tio, "ambiguous", _Policy()) is False
     error = capsys.readouterr().err
     assert "integration_base" in error
-    assert "schema-3 Tickets" in error
+    assert "Acceptance Basis Tickets" in error
 
 
 def test_complete_rejects_destination_ref_as_cleanup_target(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    contract = _boundary_contract()
-    participant = contract.participants[0]
-    unsafe = TargetContract(
-        outer_sha=contract.outer_sha,
-        project_sha="",
-        surface_digest=contract.surface_digest,
-        targets=(),
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    (root / ".booley_project").mkdir()
+    unsafe = AcceptanceBasis(
         participants=(
             ContractParticipant(
                 role="outer",
-                sealed_sha=participant.sealed_sha,
-                ticket_ref=participant.destination_ref,
-                destination_ref=participant.destination_ref,
-                destination_sha=participant.destination_sha,
+                authoring_sha=base,
+                ticket_ref="refs/heads/main",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
             ),
         ),
     )
-    tio = _BoundaryTicketIO(
-        {
-            "file": "board/review/unsafe.md",
-            "status": "review",
-            "branch": "main",
-            "target_contract": unsafe.as_dict(),
-        }
-    )
+    tio = _TicketIO(root, unsafe)
 
-    assert complete_review_ticket(tio, "unsafe", _Policy(cleanup=True)) is False
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
     assert "Ticket ref is also the destination ref" in capsys.readouterr().err
 
 
-def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:
+def test_complete_publishes_recorded_branch_before_approving(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     base = _repository(root)
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
@@ -572,17 +505,17 @@ def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_p
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
     )
-    contract = _contract(root, (participant,))
+    basis = _contract(root, (participant,))
     (root / "baseline.txt").write_text("advanced baseline\n", encoding="utf-8")
     _git(root, "add", "baseline.txt")
     _git(root, "commit", "-m", "advance baseline")
     advanced = _git(root, "rev-parse", "HEAD")
-    tio = _TicketIO(root, contract)
+    tio = _TicketIO(root, basis)
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
@@ -592,6 +525,47 @@ def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_p
     assert parents == [advanced, ticket_sha]
 
 
+def test_complete_rejects_destination_change_to_dynamically_referenced_hook(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    hooks = root / "hooks"
+    hooks.mkdir()
+    hook = hooks / "prepare.py"
+    hook.write_text("print('basis')\n", encoding="utf-8")
+    (root / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, pre_run: hooks/prepare.py}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "hooks/prepare.py", "toy.core")
+    _git(root, "commit", "-m", "add acceptance controls")
+    basis_sha = _git(root, "rev-parse", "HEAD")
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    hook.write_text("print('destination drift')\n", encoding="utf-8")
+    _git(root, "add", "hooks/prepare.py")
+    _git(root, "commit", "-m", "change acceptance hook")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        basis_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    basis = AcceptanceBasis(participants=(participant,))
+    tio = _TicketIO(root, basis)
+
+    assert ticket_sha != basis_sha
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert "protected path(s) changed: hooks/prepare.py" in capsys.readouterr().err
+
+
 def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     base = _repository(root)
@@ -599,7 +573,7 @@ def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) ->
     (root / ".booley_project").mkdir()
     participant = ContractParticipant(
         role="outer",
-        sealed_sha=ticket_sha,
+        authoring_sha=ticket_sha,
         ticket_ref="refs/heads/change-target",
         destination_ref="refs/heads/main",
         destination_sha=base,
@@ -622,6 +596,111 @@ def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) ->
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     assert journal["state"] == "done"
     assert journal["cleaned"] == ["outer"]
+
+
+def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.ticket_board import acceptance_basis as basis_module
+    from booley.ticket_board import acceptance_ledger, operations
+
+    root = tmp_path / "rtl"
+    _repository(root)
+    base = _install_project_contract(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    basis = _contract(
+        root,
+        (
+            ContractParticipant(
+                role="outer",
+                authoring_sha=ticket_sha,
+                ticket_ref="refs/heads/change-target",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
+            ),
+        ),
+    )
+    tio = _TicketIO(root, basis)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert acceptance_impl._ref_commit(root, "refs/heads/change-target") is None
+    receipt = {"basis_id": basis.basis_id}
+    monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
+    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
+
+    operations._validate_accepted_snapshot(
+        tio,
+        "change-target",
+        tmp_path / "logs",
+        SimpleNamespace(
+            acceptance_basis=receipt,
+            participant_heads={"outer": ticket_sha},
+        ),
+    )
+
+
+def test_materialized_basis_requires_project_owned_by_checkout(tmp_path: Path) -> None:
+    from booley.ticket_board import operations
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+    root = tmp_path / "rtl"
+    _repository(root)
+    (root / ".booley_project").mkdir()
+    basis = _boundary_contract()
+    tio = _TicketIO(root, basis)
+    checkout = tmp_path / "materialized"
+    checkout.mkdir()
+
+    with pytest.raises(
+        AcceptanceBasisError,
+        match="cannot prepare materialized Acceptance Basis",
+    ):
+        operations._prepare_materialized_basis_view(tio, "change-target", checkout, basis)
+
+
+def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.ticket_board import acceptance_basis as basis_module
+    from booley.ticket_board import acceptance_ledger, operations
+
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    basis = _contract(
+        root,
+        (
+            ContractParticipant(
+                role="outer",
+                authoring_sha=ticket_sha,
+                ticket_ref="refs/heads/change-target",
+                destination_ref="refs/heads/main",
+                destination_sha=base,
+            ),
+        ),
+    )
+    tio = _TicketIO(root, basis)
+    _git(root, "switch", "change-target")
+    (root / "design.txt").write_text("changed after handoff\n", encoding="utf-8")
+    _git(root, "add", "design.txt")
+    _git(root, "commit", "-m", "late change")
+    _git(root, "switch", "main")
+    receipt = {"basis_id": basis.basis_id}
+    monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
+    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
+
+    with pytest.raises(acceptance_ledger.AcceptanceLedgerError, match="Ticket heads changed"):
+        operations._validate_accepted_snapshot(
+            tio,
+            "change-target",
+            tmp_path / "logs",
+            SimpleNamespace(
+                acceptance_basis=receipt,
+                participant_heads={"outer": ticket_sha},
+            ),
+        )
 
 
 def test_retry_cannot_change_frozen_cleanup_policy(tmp_path: Path, capsys) -> None:
@@ -727,32 +806,7 @@ def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    root = tmp_path / "rtl"
-    outer_base = _repository(root)
-    outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
-    project = root / ".booley_project"
-    project_base = _repository(project)
-    project_ticket = _ticket_commit(
-        project, "booley-ticket/change-target", "project implementation\n"
-    )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
-    participants = (
-        ContractParticipant(
-            "outer",
-            outer_ticket,
-            "refs/heads/change-target",
-            "refs/heads/main",
-            outer_base,
-        ),
-        ContractParticipant(
-            "project",
-            project_ticket,
-            "refs/heads/booley-ticket/change-target",
-            "refs/heads/main",
-            project_base,
-        ),
-    )
-    tio = _TicketIO(root, _contract(root, participants))
+    root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
     faulting_store = FaultingAcceptanceStore(
         FileAcceptanceStore(), AcceptanceCheckpoint.PROJECT_CLEANED, "before"
     )
@@ -761,7 +815,10 @@ def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
     assert "cleanup is pending" in capsys.readouterr().err
     assert acceptance_impl._ref_commit(project, "refs/heads/booley-ticket/change-target") is None
-    assert acceptance_impl._ref_commit(root, "refs/heads/change-target") == outer_ticket
+    assert (
+        acceptance_impl._ref_commit(root, "refs/heads/change-target")
+        == participants[0].authoring_sha
+    )
 
     _install_acceptance_runner(monkeypatch)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
@@ -783,8 +840,9 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
         "refs/heads/main",
         base,
     )
-    contract = _contract(root, (participant,))
-    data = acceptance_impl._initial_journal("earlier", contract).as_dict()
+    basis = _contract(root, (participant,))
+    tio = _TicketIO(root, basis)
+    data = acceptance_impl._initial_journal("earlier", basis).as_dict()
     data["sources"] = {"outer": ticket_sha}
     data["candidates"] = {
         "outer": {
@@ -798,8 +856,6 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     acceptance = root / ".booley_project" / ".runtime" / "acceptance"
     acceptance.mkdir(parents=True)
     (acceptance / "earlier.json").write_text(json.dumps(data), encoding="utf-8")
-    tio = _TicketIO(root, contract)
-
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert "resume it first" in capsys.readouterr().err
     assert _git(root, "show", "main:design.txt") == "base"
@@ -886,11 +942,12 @@ def test_cleanup_validates_every_identity_before_removing_any_ref(
 
     assert "acceptance recovery is blocked" in capsys.readouterr().err
     assert (
-        acceptance_impl._ref_commit(root, participants[0].ticket_ref) == participants[0].sealed_sha
+        acceptance_impl._ref_commit(root, participants[0].ticket_ref)
+        == participants[0].authoring_sha
     )
     assert (
         acceptance_impl._ref_commit(project, participants[1].ticket_ref)
-        == participants[1].sealed_sha
+        == participants[1].authoring_sha
     )
     journal = _acceptance_journal(root)
     repositories = {"outer": root, "project": project}
@@ -955,7 +1012,46 @@ def test_retry_rejects_recreated_artifact_for_cleaned_participant(
     assert _acceptance_journal(root)["state"] == "cleanup-project"
 
 
-def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, str]:
+def _add_retained_submodule_target(root: Path, tmp_path: Path) -> None:
+    dependency = tmp_path / "retained-dependency"
+    _repository(dependency)
+    (dependency / "retained.core").write_text(
+        "CAPI=2:\nname: acme:lib:retained:1.0\ntargets:\n  retained: {flow: lint}\n",
+        encoding="utf-8",
+    )
+    _git(dependency, "add", "retained.core")
+    _git(dependency, "commit", "-m", "add retained target")
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/retained",
+    )
+    _git(
+        root,
+        "config",
+        "--file",
+        ".gitmodules",
+        "submodule.vendor/retained.url",
+        "git@example.invalid:private/retained.git",
+    )
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    (project / "tests.toml").write_text(
+        '["acme:lib:retained:1.0#retained"]\ntests = ["retained"]\n',
+        encoding="utf-8",
+    )
+    _git(root, "add", ".gitmodules", "vendor/retained")
+    _git(root, "add", "-f", ".booley_project/tests.toml")
+    _git(root, "commit", "-m", "add retained submodule target")
+
+
+def _single_target_removal_completion(
+    tmp_path: Path, *, retained_submodule: bool = False
+) -> tuple[Path, _TicketIO, str]:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -968,23 +1064,21 @@ def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, 
     )
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "add target pair")
+    if retained_submodule:
+        _add_retained_submodule_target(root, tmp_path)
     base = _git(root, "rev-parse", "HEAD")
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
-    (root / ".booley_project").mkdir()
+    (root / ".booley_project").mkdir(exist_ok=True)
     participant = ContractParticipant(
         "outer", ticket_sha, "refs/heads/change-target", "refs/heads/main", base
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    contract = TargetContract(
-        outer_sha=ticket_sha,
-        project_sha="",
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+    basis = AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 "lint",
-                "lint_clean",
+                "criteria.mandatory.lint_clean",
                 canonical,
                 "acme:lib:toy:1.0#candidate",
                 "baseline",
@@ -992,9 +1086,8 @@ def _single_target_removal_completion(tmp_path: Path) -> tuple[Path, _TicketIO, 
             ),
         ),
         participants=(participant,),
-        surface_entries=surface_entries(root),
     )
-    tio = _TicketIO(root, contract)
+    tio = _TicketIO(root, basis)
     return root, tio, canonical
 
 
@@ -1014,6 +1107,17 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
     assert journal["removal_targets"] == [canonical]
     candidate = journal["candidates"]["outer"]
     assert candidate["finalized_sha"] != candidate["prepared_sha"]
+
+
+def test_finalization_retains_submodule_target_and_test_registration(tmp_path: Path) -> None:
+    root, tio, canonical = _single_target_removal_completion(tmp_path, retained_submodule=True)
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+    retained = _git(root, "show", "main:.booley_project/tests.toml")
+    assert '"acme:lib:retained:1.0#retained"' in retained
 
 
 def test_complete_finalizes_target_in_project_repository_before_outer(
@@ -1057,16 +1161,12 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         ),
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    contract = TargetContract(
-        outer_sha=outer_ticket,
-        project_sha=project_ticket,
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+    basis = AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 "lint",
-                "lint_clean",
+                "criteria.mandatory.lint_clean",
                 canonical,
                 "acme:lib:toy:1.0#candidate",
                 "baseline",
@@ -1074,9 +1174,8 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
             ),
         ),
         participants=participants,
-        surface_entries=surface_entries(root),
     )
-    tio = _TicketIO(root, contract)
+    tio = _TicketIO(root, basis)
 
     assert (
         complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
@@ -1129,20 +1228,16 @@ def _project_target_removal_repository(
 
 def _target_removal_contract(
     root: Path,
-    participants: tuple[ContractParticipant, ...],
+    participants: tuple[BasisParticipant, ...],
     canonical: str,
-) -> TargetContract:
-    outer, project = participants
-    return TargetContract(
-        outer_sha=outer.sealed_sha,
-        project_sha=project.sealed_sha,
-        surface_digest=surface_digest(root),
-        targets=("baseline", "candidate"),
+) -> AcceptanceBasis:
+    del root
+    return AcceptanceBasis(
         removal_targets=(canonical,),
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 "lint",
-                "lint_clean",
+                "criteria.mandatory.lint_clean",
                 canonical,
                 "acme:lib:toy:1.0#candidate",
                 "baseline",
@@ -1150,7 +1245,6 @@ def _target_removal_contract(
             ),
         ),
         participants=participants,
-        surface_entries=surface_entries(root),
     )
 
 
@@ -1178,8 +1272,8 @@ def _paired_target_removal_completion(
         ),
     )
     canonical = "acme:lib:toy:1.0#baseline"
-    contract = _target_removal_contract(root, participants, canonical)
-    return root, project, _TicketIO(root, contract), participants, canonical
+    basis = _target_removal_contract(root, participants, canonical)
+    return root, project, _TicketIO(root, basis), participants, canonical
 
 
 def _acceptance_journal(root: Path) -> dict[str, Any]:
@@ -1215,11 +1309,12 @@ def _interrupt_finalized_ref_updates(monkeypatch: pytest.MonkeyPatch, message: s
     return update_finalized_refs
 
 
-def test_schema_two_retry_recovers_exact_prepared_staging_identity(
+def test_schema_two_retry_is_rejected_after_hard_cutoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, _project, tio, _participants, canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
@@ -1228,22 +1323,11 @@ def test_schema_two_retry_recovers_exact_prepared_staging_identity(
     policy = _Policy(remove_targets=(canonical,))
     assert complete_review_ticket(tio, "change-target", policy) is False
     journal = _acceptance_journal(root)
-    prepared = {
-        role: candidate["prepared_sha"] for role, candidate in journal["candidates"].items()
-    }
     _downgrade_to_finalization_schema_two(root, journal)
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert complete_review_ticket(tio, "change-target", policy) is True
-
-    recovered = _acceptance_journal(root)
-    repositories = {"outer": root, "project": project}
-    for role, candidate in recovered["candidates"].items():
-        assert candidate["prepared_sha"] == prepared[role]
-        assert (
-            acceptance_impl._ref_commit(repositories[role], candidate["staging_ref"])
-            == candidate["finalized_sha"]
-        )
+    assert complete_review_ticket(tio, "change-target", policy) is False
+    assert "acceptance journal schema must be 5" in capsys.readouterr().err
 
 
 def test_schema_two_retry_rejects_unrelated_staging_identity(
@@ -1692,11 +1776,11 @@ def test_staging_move_during_publication_leaves_its_destination_unmoved(
 
 
 def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
-    contract = _boundary_contract()
+    basis = _boundary_contract()
     journal_path = tmp_path / "acceptance.json"
     first = acceptance_impl._initial_journal(
         "change-target",
-        contract,
+        basis,
         removal_targets=("acme:lib:toy:1.0#baseline",),
     ).as_dict()
     journal_path.write_text(json.dumps(first), encoding="utf-8")
@@ -1705,7 +1789,7 @@ def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
         acceptance_impl._load_journal(
             journal_path,
             "change-target",
-            contract,
+            basis,
             removal_targets=("acme:lib:toy:1.0#candidate",),
         )
 
@@ -1904,7 +1988,7 @@ def test_ticket_ref_move_after_pinning_prevents_retained_ref_mismatch(
     assert tio.entry["status"] == "review"
 
 
-def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:
+def test_complete_rejects_target_control_drift_after_basis_publication(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -1913,24 +1997,24 @@ def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: 
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "add target")
     base = _git(root, "rev-parse", "HEAD")
-    sealed = _ticket_commit(root, "change-target", "implemented\n")
+    recorded = _ticket_commit(root, "change-target", "implemented\n")
     participant = ContractParticipant(
         "outer",
-        sealed,
+        recorded,
         "refs/heads/change-target",
         "refs/heads/main",
         base,
     )
-    contract = _contract(root, (participant,), schema=3)
+    basis = _contract(root, (participant,))
     (root / ".booley_project").mkdir()
     _git(root, "switch", "change-target")
     (root / "toy.core").write_text(
         "CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8"
     )
     _git(root, "add", "toy.core")
-    _git(root, "commit", "-m", "mutate sealed target")
+    _git(root, "commit", "-m", "mutate recorded target")
     _git(root, "switch", "main")
-    tio = _TicketIO(root, contract)
+    tio = _TicketIO(root, basis)
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
 
@@ -1951,21 +2035,21 @@ def test_complete_rejects_concurrent_change_to_same_control_path(tmp_path: Path)
     core.write_text("CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "ticket target change")
-    sealed = _git(root, "rev-parse", "HEAD")
+    recorded = _git(root, "rev-parse", "HEAD")
     participant = ContractParticipant(
         "outer",
-        sealed,
+        recorded,
         "refs/heads/change-target",
         "refs/heads/main",
         base,
     )
-    contract = _contract(root, (participant,))
+    basis = _contract(root, (participant,))
     _git(root, "switch", "main")
     core.write_text("CAPI=2:\nname: acme:lib:toy:3.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "concurrent target change")
     (root / ".booley_project").mkdir()
-    tio = _TicketIO(root, contract)
+    tio = _TicketIO(root, basis)
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
 

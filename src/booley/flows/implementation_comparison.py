@@ -11,11 +11,8 @@ from booley.core.boundary import as_dict, as_str
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target import TargetHandle, select_target
-from booley.ticket_board.target_contract import (
-    SCHEMA_VERSION,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.ticket_board.acceptance_basis import AcceptanceBasis
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 
 class ImplementationComparisonError(ValueError):
@@ -41,7 +38,7 @@ class TargetPairPlan:
     flow: str
     baseline: TargetExecutionRef
     candidate: TargetExecutionRef
-    binding: ContractTargetBinding | None
+    binding: AcceptanceTargetBinding | None
     _factory_key: InitVar[object]
 
     def __post_init__(self, _factory_key: object) -> None:
@@ -49,7 +46,7 @@ class TargetPairPlan:
             raise TypeError("TargetPairPlan values are created by the pair-plan factory")
 
     @property
-    def sealed(self) -> bool:
+    def basis_bound(self) -> bool:
         """Whether a unique persisted binding is this plan's authority."""
         return self.binding is not None
 
@@ -70,7 +67,7 @@ def _make_plan(
     flow: str,
     baseline: TargetExecutionRef,
     candidate: TargetExecutionRef,
-    binding: ContractTargetBinding | None,
+    binding: AcceptanceTargetBinding | None,
 ) -> TargetPairPlan:
     return TargetPairPlan(flow, baseline, candidate, binding, _PLAN_FACTORY_KEY)
 
@@ -115,9 +112,9 @@ def _criterion_matches_candidate(
     }:
         return True
     params = _entry_params(entry) or {}
-    sealed_selector = as_str(params.get("_target_selector"))
+    basis_selector = as_str(params.get("_target_selector"))
     authored_target = as_str(params.get("target"))
-    return sealed_selector == candidate.selector or authored_target in (
+    return basis_selector == candidate.selector or authored_target in (
         candidate.selector,
         candidate.identity,
     )
@@ -163,28 +160,28 @@ def _select_execution_ref(
 
 
 def _binding_for_candidate(
-    contract: TargetContract,
+    basis: AcceptanceBasis,
     flow: str,
     criterion: str,
     candidate: TargetExecutionRef,
-) -> ContractTargetBinding:
+) -> AcceptanceTargetBinding:
     matches = tuple(
         binding
-        for binding in contract.bindings
+        for binding in basis.bindings
         if binding.flow == flow
-        and binding.criterion == criterion
+        and binding.criterion_key == criterion
         and binding.candidate == candidate.identity
     )
     if len(matches) != 1:
         raise ImplementationComparisonError(
-            f"sealed contract has no unique {flow}/{criterion} binding for "
+            f"Acceptance Basis has no unique {flow}/{criterion} binding for "
             f"candidate Target {candidate.selector!r}"
         )
     return matches[0]
 
 
-def _sealed_plan(
-    contract: TargetContract,
+def _basis_plan(
+    basis: AcceptanceBasis,
     project_root: Path | str,
     flow: str,
     criterion: str,
@@ -192,17 +189,15 @@ def _sealed_plan(
     candidate: TargetExecutionRef,
 ) -> TargetPairPlan:
     state_baseline = _select_execution_ref(project_root, state_pair.baseline, flow)
-    binding = _binding_for_candidate(contract, flow, criterion, candidate)
+    binding = _binding_for_candidate(basis, flow, criterion, candidate)
     if state_baseline.identity != binding.baseline:
         raise ImplementationComparisonError(
             f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
-            "match the sealed contract"
+            "match the Acceptance Basis"
         )
-    if contract.schema < SCHEMA_VERSION:
-        return _make_plan(flow, state_baseline, candidate, binding)
     if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
         raise ImplementationComparisonError(
-            f"sealed {flow}/{criterion} binding for {candidate.identity!r} "
+            f"Acceptance Basis {flow}/{criterion} binding for {candidate.identity!r} "
             "has an empty callable selector"
         )
     baseline = _select_execution_ref(
@@ -211,17 +206,17 @@ def _sealed_plan(
         flow,
         execution_selector=binding.baseline_selector,
     )
-    sealed_candidate = _select_execution_ref(
+    basis_candidate = _select_execution_ref(
         project_root,
         binding.candidate_selector,
         flow,
         execution_selector=binding.candidate_selector,
     )
-    if baseline.identity != binding.baseline or sealed_candidate.identity != binding.candidate:
+    if baseline.identity != binding.baseline or basis_candidate.identity != binding.candidate:
         raise ImplementationComparisonError(
-            f"sealed {flow}/{criterion} selectors do not resolve to their sealed identities"
+            f"Acceptance Basis {flow}/{criterion} selectors do not resolve to recorded identities"
         )
-    return _make_plan(flow, baseline, sealed_candidate, binding)
+    return _make_plan(flow, baseline, basis_candidate, binding)
 
 
 def target_pair_plans_for_handles(
@@ -230,7 +225,7 @@ def target_pair_plans_for_handles(
     candidates: Sequence[TargetHandle],
     *,
     flow: str,
-    contract: TargetContract | None = None,
+    basis: AcceptanceBasis | None = None,
 ) -> tuple[TargetPairPlan, ...]:
     """Build plans from already-normalized public Flow candidates."""
     plans: list[TargetPairPlan] = []
@@ -242,13 +237,13 @@ def target_pair_plans_for_handles(
             )
         candidate = _execution_ref(handle)
         state_pair = _state_pair_for_candidate(criteria, criterion_prefix, candidate)
-        if contract is not None:
+        if basis is not None:
             if handle.doctor_private:
                 raise ImplementationComparisonError(
-                    f"Doctor-private Target {handle.identity!r} cannot enter a sealed plan"
+                    f"Doctor-private Target {handle.identity!r} cannot enter a basis-bound plan"
                 )
-            plan = _sealed_plan(
-                contract,
+            plan = _basis_plan(
+                basis,
                 handle.project_root,
                 flow,
                 criterion_prefix.removesuffix("_"),
@@ -281,7 +276,7 @@ def target_pair_plans_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    contract: TargetContract | None = None,
+    basis: AcceptanceBasis | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:
@@ -290,13 +285,13 @@ def target_pair_plans_for_candidates(
     seen: set[str] = set()
     for candidate in candidates:
         state_pair = _state_pair(criteria, criterion_prefix, candidate)
-        if contract is not None:
+        if basis is not None:
             if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    "Target contract comparison requires project root and flow"
+                    "Acceptance Basis comparison requires project root and flow"
                 )
-            plan = _sealed_plan(
-                contract,
+            plan = _basis_plan(
+                basis,
                 project_root,
                 flow,
                 criterion_prefix.removesuffix("_"),
@@ -326,7 +321,7 @@ def target_pairs_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    contract: TargetContract | None = None,
+    basis: AcceptanceBasis | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:
@@ -335,7 +330,7 @@ def target_pairs_for_candidates(
         criteria,
         criterion_prefix,
         candidates,
-        contract=contract,
+        basis=basis,
         project_root=project_root,
         flow=flow,
     )
@@ -358,14 +353,14 @@ def target_plan_for_handle(
     handle: TargetHandle,
     *,
     flow: str,
-    sealed: bool,
+    basis_bound: bool,
 ) -> TargetPairPlan:
     """Look up a canonical plan, defaulting only for standalone execution."""
     if plans:
         return target_pair_for_candidate(plans, handle.identity)
-    if sealed:
+    if basis_bound:
         raise ImplementationComparisonError(
-            f"sealed {flow} execution has no Target pair plan for {handle.selector!r}"
+            f"basis-bound {flow} execution has no Target pair plan for {handle.selector!r}"
         )
     candidate = _execution_ref(handle)
     return _make_plan(flow, candidate, candidate, None)

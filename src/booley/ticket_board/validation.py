@@ -552,11 +552,11 @@ def _validate_criteria(
     errors.extend(_validate_retired_criteria(criteria))
     errors.extend(_validate_known_mandatory_criteria(criteria, project_root))
 
-    # Structured sim entry validation. Sealed Tickets resolve Targets only after
-    # setup materializes their contract checkout; project_root is the destination
+    # Structured sim entry validation. Basis-bound Tickets resolve Targets only after
+    # setup materializes their Ticket Workspace; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
-    if project_root and fields.get("target_contract") is None:
+    if project_root and fields.get("acceptance_basis") is None:
         errors.extend(_validate_sim_targets(criteria, fields, body, project_root))
 
     # Type-specific criteria rules (warnings only, no structural errors)
@@ -1188,6 +1188,19 @@ def _validate_git_state(
     return errors
 
 
+def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
+    raw_basis = fields.get("acceptance_basis")
+    if raw_basis is None:
+        return []
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+
+    try:
+        AcceptanceBasis.from_mapping(raw_basis)
+    except AcceptanceBasisError as exc:
+        return [str(exc)]
+    return []
+
+
 def validate_ticket_fields(
     fields: dict[str, Any],
     body: str,
@@ -1206,12 +1219,7 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
-    from .target_contract import validate_contract_fields
-
-    # Generic Ticket Board validation may run from the destination branch,
-    # while the sealed Targets exist only in the ticket's contract worktree.
-    # Direction is resolved there by intake and every Flow gate.
-    errors.extend(validate_contract_fields(fields))
+    errors.extend(_validate_acceptance_basis_field(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

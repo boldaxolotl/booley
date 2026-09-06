@@ -31,7 +31,7 @@ zero-byte file: do not put declarations, modules, packages, assertions, stimulus
 functions, comments, or any other content in it. Leave existing RTL (including
 Verilog/SystemVerilog/VHDL), HDL testbenches, firmware, Python, scripts, constraints,
 generators, build hooks, and every other implementation or support-code file unchanged.
-If validation or sealing would require code beyond an approved new Target definition,
+If validation or enqueue would require code beyond an approved new Target definition,
 stop and report the blocker; creating that code is outside this skill.
 
 ## Step 1: Parse Input
@@ -108,7 +108,7 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 ### 2f: Approve the ticket
 
 **MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
-body, excluding seal fields), followed by a **New Targets** section containing every
+body, excluding generated basis fields), followed by a **New Targets** section containing every
 Target that ticket creation will author. For each new Target, show its name, destination
 file, and complete proposed definition. If creation adds no Targets, show
 `New Targets: none`. Ask: *"Create this ticket and these Targets? (yes / edit / cancel)"*
@@ -116,7 +116,7 @@ file, and complete proposed definition. If creation adds no Targets, show
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket or Target definitions and show the entire review
 artifact again; keep the review at this gate rather than falling back to summaries or partial
-previews. Approval authorizes the complete creation transaction in Step 4; Target-contract
+previews. Approval authorizes the complete creation transaction in Step 4; Acceptance-Basis
 mechanics require no further user confirmation.
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.
@@ -134,17 +134,17 @@ mechanics require no further user confirmation.
 7. **No grilling** — the calling agent must provide all details upfront
 8. Approval gate (2f) applies unless the caller passed `--no-confirm`; validation never does
 
-## Step 4: Author and Seal
+## Step 4: Author and Enqueue
 
-Follow §C end to end after ticket approval: create the draft, open its contract
-worktrees, author only the approved new Target definitions there, validate, seal, and
-enqueue. Author the new Targets exactly as approved at the 2f gate and create only empty
-placeholders for `[new]` Scope paths; do not implement any part of the Ticket. Sealing
-remains an internal implementation detail: do not expose its SHAs or pause for another
+Follow §C end to end after ticket approval: create the draft and workspace, author only
+the approved new Target definitions there, validate, and enqueue. Author the new Targets
+exactly as approved at the 2f gate and create only empty placeholders for `[new]` Scope
+paths; do not implement any part of the Ticket. Basis publication remains an internal
+implementation detail: do not expose its SHAs or pause for another
 confirmation. New-Target authoring is part of ticket creation, never deferred to the
 developer. If authoring or validation requires changing an approved Target definition,
 return to 2f. If it requires implementation code or a mechanical failure cannot be
-repaired, report the actionable error without turning contract internals into user choices.
+repaired, report the actionable error without turning basis internals into user choices.
 
 ## Step 5: Report
 
@@ -175,24 +175,24 @@ only how to *infer* a value from the conversation and the repo.
 | `branch` | `git branch --show-current` |
 | `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
 | `spec` | Include when an arch spec exists near scope |
-| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Benchmark: `{destination: done, merge: false, cleanup: true, triage_report: true, remove_targets: []}` |
+| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Destructive cleanup also requires `merge: true`, because journaled publication pins the accepted source before branch removal. Benchmark: `{destination: done, merge: false, cleanup: false, triage_report: true, remove_targets: []}` |
 | `dependencies` | From scan (§A) + grilling; user confirms |
 | `priority` | Default `medium` |
 | `criteria` | Start with §D defaults, then apply relevant §E guidance; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |
 
 **Bugfix, not yet reproducible?** Recommend a split: feature ticket (create the failing test) + bugfix ticket (fix the RTL, depends on the feature).
 
-Runtime and seal fields are *not* inferred: `target_contract` and `base_sha` are
-stamped from Git by `contract-seal`, `created` by `enqueue`, `feature_branch` by
-`init`. `integration_base` is unsupported and must not be authored for
-schema-4 Tickets; their sealed participant manifest names the
-destination of each Ticket Branch directly.
+Runtime fields are *not* inferred: `acceptance_basis` and `created` are published
+atomically by `enqueue`, and `feature_branch` is written by `init`. Never author
+those fields or a SHA. `integration_base`, `target_contract`, and `base_sha` are
+unsupported after the hard cutoff.
 
 ## §C. CLI Workflow
 
 `create-file` generates the frontmatter (including `criteria` and `on_success`) from its
-flags — do **not** hand-write the YAML or any SHA. `contract-seal` stamps
-`target_contract` and `base_sha`; `created` is stamped later by `enqueue`.
+flags and creates the ordinary Ticket Workspace. Do **not** hand-write runtime YAML or
+any SHA. `enqueue` validates and commits authoring state, publishes the Acceptance Basis,
+stamps `created`, and moves the Ticket to queue or waiting as one operation.
 
 ```bash
 # E1. Generate slug
@@ -211,23 +211,17 @@ python -m booley.ticket_board create-file "$SLUG" \
   --on-success "$ON_SUCCESS_JSON" \      # JSON: all five on_success fields
   --body-file "$BODY"
 
-# E4. Open isolated outer and paired project-data authoring worktrees.
-python -m booley.ticket_board contract-open "$SLUG"
-
-# E5. Add only the approved new Target definitions in the returned worktree(s).
+# E4. Add only approved new Target definitions in the workspace printed by create-file.
 #     A Scope [new] path may be absent or a zero-byte placeholder. Leave all other
 #     implementation/support-code files unchanged. Existing sources may make a new
 #     relative-QoR Target fully executable; otherwise report the blocker instead of
 #     creating code to make the Target runnable.
 
-# E6. Validate — a path, not a slug. Fix and re-run until clean.
+# E5. Validate — a path, not a slug. Fix and re-run until clean.
 python -m booley.ticket_board validate-ticket \
   .booley_project/tickets/board/drafts/$SLUG.md [--check-git]
 
-# E7. Validate, commit, and publish the immutable seal without another user gate.
-python -m booley.ticket_board contract-seal "$SLUG"
-
-# E8. Enqueue (refuses an absent/stale seal; preserves on_success; stamps created)
+# E6. Enqueue. This automatically publishes the immutable Acceptance Basis.
 python -m booley.ticket_board enqueue "$SLUG"
 ```
 
@@ -289,14 +283,14 @@ means "clean under whatever linter that Target names"; there is no separate styl
 `cycle_count` is a list of mappings, never a `sim_pass` numeric parameter. Every item must
 name one `target` and registered `test`, plus at least one threshold. Absolute
 `cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
-forms automatically compare the same Target/test at `base_sha`; consult
+forms automatically compare the same Target/test at the Acceptance Basis; consult
 `booley cheat --criteria` for the complete signed-bound vocabulary.
 Write every percentage value with an explicit `%` suffix (for example,
 `cycle_count_reduce_at_least: 8%`); bare numbers are invalid for percentage thresholds.
 
 `synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
 absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`
-(compared against the ticket's `base_sha`). Common ones: `cell_count_max`, `fmax_mhz_min`,
+(compared against the Ticket's Acceptance Basis). Common ones: `cell_count_max`, `fmax_mhz_min`,
 `cell_count_reduce_at_least` (ASIC); `lut_count_max`, `ff_count_max`, `fmax_mhz_min`
 (FPGA). Don't hardcode a subset here — for the full per-metric matrix and which pairs are
 mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
@@ -305,7 +299,7 @@ The baseline-relative values are percentages and therefore require the `%` suffi
 
 For a relative threshold, use a plain Target name when baseline and candidate are the same.
 When the ticket intentionally needs different frozen Targets, put
-`{baseline: <before>, candidate: <after>}` in `targets:`. Author both Targets before sealing;
+`{baseline: <before>, candidate: <after>}` in `targets:`. Author both Targets before enqueue;
 the candidate determines the expanded Criterion name.
 
 ### Rules
@@ -317,18 +311,18 @@ the candidate determines the expanded Criterion name.
   and is shown to the user regardless of severity.
 - Project-defined criterion types are allowed when the live Project catalog registers them
 - A criterion may name a new Target only when ticket creation authors it in the
-  contract worktree before sealing. Do not put contract controls in developer
+  Ticket Workspace before enqueue. Do not put acceptance controls in Developer
   Scope merely to permit later edits: every `.core`, tests/Target-selection
   configuration, selected constraint, generator, and build hook is immutable
-  after sealing.
+  after enqueue.
 - A future non-relative Target may reference missing RTL/TB paths only when every
   path is declared Scope `[new]`. For relative QoR, the baseline Target must resolve and
-  dry-run completely at the sealed baseline; a distinct frozen candidate may defer only
+  dry-run completely at the basis baseline; a distinct frozen candidate may defer only
   its Scope `[new]` RTL/TB paths.
-- If a blocked ticket needs a different Target recipe, use `revise-contract`; it
-  archives the old identity, discards execution evidence, and restarts authoring.
+- If a blocked ticket needs different authored inputs, use `return-to-draft`; it
+  preserves the old basis and evidence and starts a new authoring generation.
 - Decide `on_success.remove_targets` during Ticket creation. Every selector must resolve
-  uniquely and name a Target bound by that Ticket's Criteria. The Target remains sealed and
+  uniquely and name a Target bound by that Ticket's Criteria. The Target remains fixed and
   available through development and review; acceptance removes only its `.core` definition
   and unambiguously-owned `tests.toml` tables from the prepared merge candidate. Shared
   filesets, sources, parameters, constraints, generators, and hooks are retained. Do not use
@@ -339,7 +333,7 @@ the candidate determines the expanded Criterion name.
 Ticket Creation Guidance is Project-owned, free-form Markdown consumed **only here, during
 creation**. Its authority is limited to the proposed Ticket's `criteria` and `on_success`.
 It cannot change scope, priority, dependencies, ticket depth or body, approval gates,
-Target sealing, or an existing Ticket.
+Acceptance Basis publication, or an existing Ticket.
 
 Resolve the Project directory through Booley rather than assuming its location. Read
 `ticket_creation.md` when it exists. For Projects created before that filename was

@@ -16,6 +16,7 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
+from booley.dev_support.toolchain_provenance import validate_toolchain_provenance
 
 __all__ = [
     "DemoContract",
@@ -61,6 +62,8 @@ class DemoContract:
     project_ref: str
     ticket_fixture: str
     ticket_slug: str
+    toolchain_url: str
+    toolchain_sha256: str
     required_targets: tuple[str, ...]
     required_bindings: tuple[RequiredBinding, ...]
     generated_inputs: tuple[GeneratedInput, ...]
@@ -94,6 +97,16 @@ def _require_ticket_slug(document: Mapping[str, Any]) -> str:
     if not _SAFE_TICKET_SLUG_RE.fullmatch(value):
         raise BoundaryError("ticket_slug must be a safe Ticket slug")
     return value
+
+
+def _parse_toolchain_provenance(document: Mapping[str, Any]) -> tuple[str, str]:
+    url = _require_trimmed_str(document, "toolchain_url")
+    sha256 = _require_trimmed_str(document, "toolchain_sha256")
+    try:
+        validate_toolchain_provenance(url, sha256)
+    except ValueError as exc:
+        raise BoundaryError(str(exc)) from exc
+    return url, sha256
 
 
 def _require_unique_strings(value: Any, *, field: str) -> tuple[str, ...]:
@@ -199,6 +212,7 @@ def load_contract(path: Path | str) -> DemoContract:
         )
         ticket_fixture = _safe_relative_path(document, "ticket_fixture", field="ticket_fixture")
         ticket_slug = _require_ticket_slug(document)
+        toolchain_url, toolchain_sha256 = _parse_toolchain_provenance(document)
         bindings = _parse_bindings(document, required_targets)
         generated_inputs = _parse_generated_inputs(document, required_targets)
     except BoundaryError as exc:
@@ -212,6 +226,8 @@ def load_contract(path: Path | str) -> DemoContract:
         project_ref=project_ref,
         ticket_fixture=ticket_fixture,
         ticket_slug=ticket_slug,
+        toolchain_url=toolchain_url,
+        toolchain_sha256=toolchain_sha256,
         required_targets=required_targets,
         required_bindings=bindings,
         generated_inputs=generated_inputs,

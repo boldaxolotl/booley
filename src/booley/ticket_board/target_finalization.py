@@ -23,9 +23,9 @@ from booley.config.project_config import TEST_LISTS_TABLE, normalize_tests_toml
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 
-from .target_contract import (
-    ContractTargetBinding,
-    canonical_contract_bindings,
+from .acceptance_targets import (
+    AcceptanceTargetBinding,
+    canonical_acceptance_bindings,
     criterion_targets,
 )
 
@@ -50,7 +50,7 @@ class PlannedTargetRemoval:
 
 @dataclass(frozen=True)
 class TargetRemovalPlan:
-    """A deterministic, seal-validated set of acceptance-time removals."""
+    """A deterministic, basis-validated set of acceptance-time removals."""
 
     targets: tuple[PlannedTargetRemoval, ...]
 
@@ -59,7 +59,7 @@ class TargetRemovalPlan:
         return tuple(item.canonical for item in self.targets)
 
 
-def _bound_targets(bindings: Iterable[ContractTargetBinding]) -> set[str]:
+def _bound_targets(bindings: Iterable[AcceptanceTargetBinding]) -> set[str]:
     return {target for row in bindings for target in (row.baseline, row.candidate)}
 
 
@@ -90,15 +90,43 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
     if matching[0] == ref.name and len(declarations) > 1:
         raise TargetFinalizationError(
             f"ambiguous bare tests.toml section [{ref.name}] is shared by "
-            f"{len(declarations)} cores; use a VLNV-qualified table before sealing"
+            f"{len(declarations)} cores; use a VLNV-qualified table before enqueue"
         )
     return matching[0]
+
+
+def _require_participant_owned_target(
+    root: Path,
+    ref: fusesoc_registry.TargetRef,
+    canonical: str,
+) -> None:
+    from booley.runtime.ticket_repositories import (
+        TicketWorkspaceError,
+        ticket_repositories,
+    )
+
+    owner = ref.core_file.resolve().parent
+    while owner != root and owner.is_relative_to(root):
+        if (owner / ".git").exists():
+            break
+        owner = owner.parent
+    try:
+        participants = {row.worktree.resolve() for row in ticket_repositories(root)}
+    except TicketWorkspaceError as exc:
+        raise TargetFinalizationError(str(exc)) from exc
+    if owner in participants:
+        return
+    relative = owner.relative_to(root).as_posix()
+    raise TargetFinalizationError(
+        f"on_success.remove_targets target {canonical!r} is declared in nested "
+        f"repository {relative!r}; only outer and paired project participants can be finalized"
+    )
 
 
 def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
-    bindings: Iterable[ContractTargetBinding],
+    bindings: Iterable[AcceptanceTargetBinding],
 ) -> TargetRemovalPlan:
     """Resolve selectors and prove every edit is criterion-bound and unambiguous."""
     root = Path(project_root).resolve()
@@ -127,6 +155,7 @@ def plan_target_removals(
             raise TargetFinalizationError(
                 f"Target {canonical!r} is declared outside the project checkout"
             ) from exc
+        _require_participant_owned_target(root, ref, canonical)
         removals.append(
             PlannedTargetRemoval(canonical, ref.name, core_path, _tests_key(root, ref))
         )
@@ -145,14 +174,14 @@ def canonical_remove_targets(
     selectors = on_success.get("remove_targets", [])
     if not isinstance(selectors, list) or not selectors:
         return ()
-    bindings = canonical_contract_bindings(project_root, criterion_targets(fields.get("criteria")))
+    bindings = canonical_acceptance_bindings(
+        project_root, criterion_targets(fields.get("criteria"))
+    )
     return plan_target_removals(project_root, selectors, bindings).canonical_targets
 
 
-def validate_remove_targets_for_seal(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> list[str]:
-    """Return seal-time diagnostics for acceptance-time Target removal."""
+def validate_acceptance_removals(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
+    """Return enqueue-time diagnostics for acceptance-time Target removal."""
     try:
         canonical_remove_targets(fields, project_root)
     except (TargetFinalizationError, fusesoc_registry.FuseSocError) as exc:

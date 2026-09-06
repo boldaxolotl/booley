@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -15,6 +13,7 @@ from typing import Literal, Protocol
 from booley.runtime.file_lock import nonblocking_file_lock
 from booley.runtime.project_dir import runtime_dir
 
+from ..persistence import atomic_replace_bytes
 from ._model import AcceptanceJournal, load_journal, load_persisted_journal
 
 
@@ -26,7 +25,6 @@ class AcceptanceCheckpoint(StrEnum):
     CANDIDATES_PREPARED = "candidates-prepared"
     PREPARATION_COMPLETE = "preparation-complete"
     CANDIDATES_FINALIZED = "candidates-finalized"
-    LEGACY_PREPARED_RECOVERED = "legacy-prepared-recovered"
     PROJECT_PUBLISHED = "project-published"
     OUTER_PUBLISHED = "outer-published"
     ACCEPTED = "accepted"
@@ -50,24 +48,8 @@ def write_journal(
     """Atomically persist and fsync one semantic recovery checkpoint."""
     del checkpoint
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(journal.as_dict(), handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary_path.replace(path)
-        if os.name != "nt":
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+    payload = (json.dumps(journal.as_dict(), indent=2, sort_keys=True) + "\n").encode()
+    atomic_replace_bytes(path, payload)
 
 
 class AcceptanceStore(Protocol):

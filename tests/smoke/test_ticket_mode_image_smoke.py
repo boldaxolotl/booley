@@ -23,8 +23,8 @@ from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board.contract_ops import open_contract, seal_contract
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.io import TicketIO
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_TICKET_MODE_SMOKE") != "1",
@@ -126,6 +126,7 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
         "summary": f"Production-image smoke for {slug}",
         "type": "verification",
         "branch": "main",
+        "project_destination_ref": "refs/heads/main",
         "scope": scope,
         "criteria": criteria,
         "on_success": {
@@ -137,11 +138,12 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
         "priority": "high",
     }
     content = format_frontmatter(fields, "## Description\nExercise real Ticket Mode boundaries.\n")
-    queue = project / ".booley_project" / "tickets" / "board" / "queue"
-    ticket = queue / f"{slug}.md"
+    tickets = project / ".booley_project" / "tickets"
+    draft = tickets / "board" / "drafts"
+    draft.mkdir(exist_ok=True)
+    ticket = draft / f"{slug}.md"
     ticket.write_text(content, encoding="utf-8")
-    open_contract(project, ticket, slug)
-    seal_contract(project, ticket, slug)
+    assert TicketIO(tickets, project_root=project).enqueue_ticket(slug)
 
 
 def _success_criteria() -> dict[str, Any]:
@@ -380,9 +382,17 @@ def _assert_retained_worktree(project: Path, slug: str, expected_diff: list[str]
     worktree = project / ".booley_project" / "worktrees" / slug
     assert worktree.is_dir()
     assert _run_git(worktree, "status", "--porcelain").stdout == ""
-    changed = _run_git(project, "diff", "--name-only", f"main...{slug}").stdout.splitlines()
+    tickets = project / ".booley_project" / "tickets"
+    basis = TicketIO(tickets, project_root=project).load_basis(slug)
+    participant = basis.participant("outer")
+    changed = _run_git(
+        project,
+        "diff",
+        "--name-only",
+        f"{participant.destination_ref}...{participant.ticket_ref}",
+    ).stdout.splitlines()
     assert changed == expected_diff
-    assert _run_git(project, "branch", "--list", slug).stdout.strip().endswith(slug)
+    assert _run_git(worktree, "symbolic-ref", "HEAD").stdout.strip() == participant.ticket_ref
 
 
 def _assert_board_state(project: Path, slug: str, expected: str) -> None:

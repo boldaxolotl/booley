@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
+    checkout_runtime_dir,
     project_dir_for_init,
     reset_cache,
     resolve_checkout_project_dir,
@@ -90,6 +91,38 @@ class TestEnvVarOverride:
 
         assert detect_project_root() == tmp_path.resolve()
 
+    def test_detect_project_root_prefers_ticket_control_plane(self, tmp_path, monkeypatch):
+        control_root = tmp_path / "control"
+        monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(control_root))
+        monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "test-override"))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "authored-project"))
+
+        assert detect_project_root() == control_root
+
+    def test_detect_project_root_recovers_control_plane_from_runtime_ticket(
+        self, tmp_path, monkeypatch
+    ):
+        control_root = tmp_path / "control"
+        runtime_ticket = (
+            control_root / ".booley_project" / "tickets" / "logs" / "ticket-a" / "ticket.md"
+        )
+        misleading_worktree = control_root / ".booley_project" / "worktrees" / "ticket-a"
+        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(runtime_ticket))
+        monkeypatch.setenv("PROJECT_ROOT", str(misleading_worktree))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(misleading_worktree / ".booley_project"))
+
+        assert detect_project_root() == control_root
+
+    def test_detect_project_root_rejects_unrelated_tickets_path(self, tmp_path, monkeypatch):
+        fallback = tmp_path / "fallback"
+        unrelated = tmp_path / "example" / "tickets" / "logs" / "ticket-a" / "ticket.md"
+        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(unrelated))
+        monkeypatch.setenv("PROJECT_ROOT", str(fallback))
+
+        assert detect_project_root() == fallback
+
     def test_checkout_local_snapshot_overrides_session_global_dir(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"
         session_dir.mkdir()
@@ -100,6 +133,16 @@ class TestEnvVarOverride:
         assert resolve_project_dir() == session_dir.resolve()  # pre-warm global cache
 
         assert resolve_checkout_project_dir(checkout) == local.resolve()
+
+    def test_checkout_runtime_dir_ignores_session_global_dir(self, tmp_path, monkeypatch):
+        selected = tmp_path / "selected"
+        selected_project = selected / ".booley_project"
+        selected_project.mkdir(parents=True)
+        global_project = tmp_path / "global" / ".booley_project"
+        global_project.mkdir(parents=True)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(global_project))
+
+        assert checkout_runtime_dir(selected) == selected_project / ".runtime"
 
     def test_checkout_local_config_overrides_warmed_global_cache(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"
