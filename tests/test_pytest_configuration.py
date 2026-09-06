@@ -209,6 +209,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "--cov-report=" in command
     assert "--ci-shard-count" in command
     assert coverage_config["branch"] is True
+    assert coverage_config["relative_files"] is True
     assert "--cov-fail-under=0" in command
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["coverage"]["steps"])
     assert "coverage combine" in rendered_steps

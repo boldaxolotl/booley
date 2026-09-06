@@ -284,6 +284,10 @@ filterwarnings = [
 source = ["booley"]
 omit = ["tests/*"]
 branch = true
+# Raw shard artifacts are reported from a different runner. Canonical relative
+# paths also fold subprocess imports from temporary source checkouts back onto
+# the repository's src/ tree instead of retaining vanished absolute paths.
+relative_files = true
 # pytest-cov 7 removed its implicit .pth subprocess hook. Coverage.py's patch
 # starts measurement in Python child processes and writes combinable data.
 patch = ["subprocess"]
