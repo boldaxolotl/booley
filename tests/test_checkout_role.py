@@ -74,6 +74,17 @@ def test_distribution_name_alone_does_not_classify_downstream(tmp_path: Path) ->
     assert not is_booley_source_checkout(tmp_path)
 
 
+def test_nested_repository_is_not_classified_from_enclosing_source(tmp_path: Path) -> None:
+    source = tmp_path / "booley-source"
+    _write_source_checkout(source)
+    nested = source / "demo"
+    nested.mkdir()
+    (nested / ".git").mkdir()
+
+    assert source_checkout_root(nested) is None
+    assert source_checkout_root(nested / "rtl") is None
+
+
 def test_source_repository_contract_has_no_project_state_directory() -> None:
     source_root = Path(__file__).resolve().parents[1]
 

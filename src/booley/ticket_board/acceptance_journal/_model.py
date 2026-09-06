@@ -17,7 +17,7 @@ from booley.core.boundary import BoundaryError, require_dict, require_list, requ
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _PARTICIPANT_FIELDS = {
     "role",
-    "sealed_sha",
+    "authoring_sha",
     "ticket_ref",
     "destination_ref",
     "destination_sha",
@@ -33,11 +33,6 @@ _BASE_JOURNAL_FIELDS = {
     "published",
 }
 _CLEANUP_FIELDS = {"policy", "cleaned"}
-_FINALIZATION_FIELDS = {
-    "removal_targets",
-    "removal_digest",
-    "finalized",
-}
 _JOURNAL_FIELDS = (
     _BASE_JOURNAL_FIELDS
     | _CLEANUP_FIELDS
@@ -61,16 +56,12 @@ class Candidate:
         """Retain compact field access inside repository mechanics."""
         return getattr(self, key)
 
-    def with_prepared(self, sha: str) -> Candidate:
-        """Return this candidate with its recovered prepared identity."""
-        return replace(self, prepared_sha=sha)
-
     def with_finalized(self, sha: str) -> Candidate:
         """Return this candidate with its finalized identity."""
         return replace(self, finalized_sha=sha)
 
     def as_dict(self) -> dict[str, str | None]:
-        """Return the schema-4 serialization shape."""
+        """Return the schema-5 candidate serialization shape."""
         return {
             "prepared_sha": self.prepared_sha,
             "finalized_sha": self.finalized_sha,
@@ -154,11 +145,11 @@ class AcceptanceJournal:
     cleaned: tuple[str, ...]
     removal_targets: tuple[str, ...]
     removal_digest: str
-    schema: int = 4
+    schema: int = 5
 
     @property
     def roles(self) -> tuple[str, ...]:
-        """Return participant roles in contract order."""
+        """Return participant roles in Acceptance Basis order."""
         return tuple(item["role"] for item in self.participants)
 
     @property
@@ -193,12 +184,6 @@ class AcceptanceJournal:
             raise AcceptanceJournalError("candidate preparation is not legal in this state")
         candidates = dict(self.candidates)
         candidates[role] = candidate
-        return replace(self, candidates=MappingProxyType(candidates))
-
-    def with_prepared_identity(self, role: str, sha: str) -> AcceptanceJournal:
-        """Restore a prepared identity omitted by an older journal schema."""
-        candidates = dict(self.candidates)
-        candidates[role] = candidates[role].with_prepared(sha)
         return replace(self, candidates=MappingProxyType(candidates))
 
     def with_finalized_identity(self, role: str, sha: str) -> AcceptanceJournal:
@@ -268,7 +253,7 @@ class AcceptanceJournal:
         return replace(self, state=JournalState.DONE)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return an independent schema-4 JSON object."""
+        """Return an independent schema-5 JSON object."""
         return {
             "schema": self.schema,
             "transaction": self.transaction,
@@ -320,7 +305,7 @@ def _validated_participants(value: Any) -> list[dict[str, str]]:
         strings = {key: require_str(item, key) for key in _PARTICIPANT_FIELDS}
         if strings["role"] not in {"outer", "project"}:
             raise BoundaryError(f"acceptance journal participant {index} has invalid role")
-        for key in ("sealed_sha", "destination_sha"):
+        for key in ("authoring_sha", "destination_sha"):
             if not _SHA_RE.fullmatch(strings[key]):
                 raise BoundaryError(f"acceptance journal participant {index}.{key} is invalid")
         for key in ("ticket_ref", "destination_ref"):
@@ -380,6 +365,11 @@ def _optional_sha(candidate: dict[str, Any], role: str, key: str) -> str | None:
 def _validate_candidate(candidate: Candidate, role: str, transaction: str) -> None:
     if candidate.prepared_sha is None and candidate.finalized_sha is None:
         raise BoundaryError(f"acceptance journal candidate {role!r} has no recorded identity")
+    if candidate.prepared_sha is None and candidate.finalized_sha is not None:
+        raise BoundaryError(
+            f"acceptance journal candidate {role!r} has a finalized identity "
+            "without its prepared identity"
+        )
     expected_destination = candidate.expected_destination_sha
     if not _SHA_RE.fullmatch(expected_destination):
         raise BoundaryError(
@@ -485,11 +475,11 @@ def validate_journal(
     if require_str(journal, "ticket") != slug:
         raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
     if journal.get("participants") != participants:
-        raise BoundaryError("sealed repository participants changed after acceptance began")
+        raise BoundaryError("recorded repository participants changed after acceptance began")
     if set(journal) != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
-    if journal.get("schema") != 4:
-        raise BoundaryError("acceptance journal schema must be 4")
+    if journal.get("schema") != 5:
+        raise BoundaryError("acceptance journal schema must be 5")
     transaction = require_str(journal, "transaction")
     if not re.fullmatch(r"[0-9a-f]{32}", transaction):
         raise BoundaryError("acceptance journal transaction is invalid")
@@ -562,70 +552,6 @@ def _normalized(
     )
 
 
-def upgrade_legacy_journal(
-    value: Any, *, cleanup: bool, removal_targets: tuple[str, ...] = ()
-) -> Any:
-    """Upgrade historical journal shapes without inventing a prepared identity."""
-    if not isinstance(value, dict) or value.get("schema") not in {1, 2, 3}:
-        return value
-    fields = set(value)
-    schema = value["schema"]
-    is_schema_one = schema == 1 and fields == _BASE_JOURNAL_FIELDS
-    is_cleanup_two = schema == 2 and fields == _BASE_JOURNAL_FIELDS | _CLEANUP_FIELDS
-    is_finalization_two = schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS
-    is_schema_three = (
-        schema == 3 and fields == _BASE_JOURNAL_FIELDS | _CLEANUP_FIELDS | _FINALIZATION_FIELDS
-    )
-    if not (is_schema_one or is_cleanup_two or is_finalization_two or is_schema_three):
-        return value
-    upgraded = dict(value)
-    if is_finalization_two:
-        stored = tuple(upgraded.get("removal_targets", ()))
-        if removal_targets and stored != removal_targets:
-            return value
-        upgraded.update(policy={"merge": True, "cleanup": cleanup}, cleaned=[])
-    elif is_schema_one or is_cleanup_two:
-        if removal_targets:
-            return value
-        if is_schema_one:
-            upgraded.update(policy={"merge": True, "cleanup": cleanup}, cleaned=[])
-        upgraded.update(
-            removal_targets=[],
-            removal_digest=_removal_digest(()),
-            finalized=True,
-        )
-    elif removal_targets and tuple(upgraded.get("removal_targets", ())) != removal_targets:
-        return value
-    stored_removals = tuple(upgraded.get("removal_targets", ()))
-    finalized = upgraded.pop("finalized")
-    candidates = upgraded.get("candidates")
-    if isinstance(candidates, dict):
-        upgraded["candidates"] = {
-            role: _upgrade_legacy_candidate(raw, bool(stored_removals), finalized)
-            for role, raw in candidates.items()
-        }
-    upgraded["schema"] = 4
-    if upgraded["state"] == "done" and cleanup and (is_schema_one or is_cleanup_two):
-        upgraded["state"] = JournalState.ACCEPTED
-    return upgraded
-
-
-def _upgrade_legacy_candidate(raw: Any, has_removals: bool, finalized: Any) -> Any:
-    if not isinstance(raw, dict) or set(raw) != {
-        "sha",
-        "staging_ref",
-        "expected_destination_sha",
-    }:
-        return raw
-    sha = raw["sha"]
-    return {
-        "prepared_sha": None if has_removals and finalized is True else sha,
-        "finalized_sha": sha if finalized is True else None,
-        "staging_ref": raw["staging_ref"],
-        "expected_destination_sha": raw["expected_destination_sha"],
-    }
-
-
 def read_json(path: Path) -> Any:
     """Read one journal file, failing loudly on filesystem or JSON errors."""
     try:
@@ -642,10 +568,8 @@ def load_journal(
     cleanup: bool,
     removal_targets: tuple[str, ...] = (),
 ) -> AcceptanceJournal:
-    """Read and validate one Ticket's journal, including schema-1 recovery."""
-    value = upgrade_legacy_journal(
-        read_json(path), cleanup=cleanup, removal_targets=removal_targets
-    )
+    """Read and validate one Ticket's current-schema journal."""
+    value = read_json(path)
     try:
         return validate_journal(
             value,
@@ -659,16 +583,15 @@ def load_journal(
 
 
 def load_persisted_journal(path: Path) -> AcceptanceJournal:
-    """Read and fully validate a journal when its Ticket contract is unavailable."""
+    """Read and fully validate a journal when its Acceptance Basis is unavailable."""
     value = read_json(path)
     try:
         mapping = require_dict(value, field="acceptance journal")
         slug = require_str(mapping, "ticket")
         participants = _validated_participants(mapping.get("participants"))
         cleanup = _persisted_cleanup(mapping)
-        upgraded = upgrade_legacy_journal(mapping, cleanup=cleanup)
         return validate_journal(
-            upgraded,
+            mapping,
             slug,
             participants,
             cleanup=cleanup,
@@ -679,12 +602,8 @@ def load_persisted_journal(path: Path) -> AcceptanceJournal:
 
 
 def _persisted_cleanup(journal: dict[str, Any]) -> bool:
-    schema = journal.get("schema")
-    fields = set(journal)
-    if schema == 1 or (schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS):
-        return False
-    if schema not in {2, 3, 4}:
-        raise BoundaryError("acceptance journal schema must be 1, 2, 3, or 4")
+    if journal.get("schema") != 5:
+        raise BoundaryError("acceptance journal schema must be 5")
     return _validated_policy(journal.get("policy"), cleanup=None)
 
 

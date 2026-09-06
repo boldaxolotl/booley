@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 from booley.ticket_board.validation import validate_ticket_fields
 
@@ -128,22 +127,29 @@ def test_unknown_sim_target_names_eligible_correction(tmp_path: Path) -> None:
     )
 
 
-def test_sealed_sim_target_is_not_resolved_in_destination_view(tmp_path: Path) -> None:
+def test_recorded_sim_target_is_not_resolved_in_destination_view(tmp_path: Path) -> None:
     project = _project(tmp_path)
     fields = _fields("contract_only")
-    fields["target_contract"] = {"sealed": True}
+    fields["acceptance_basis"] = {
+        "schema": 1,
+        "participants": [
+            {
+                "role": "outer",
+                "authoring_sha": "a" * 40,
+                "ticket_ref": "refs/heads/booley-generation/1234567890abcdef/ticket",
+                "destination_ref": "refs/heads/main",
+                "destination_sha": "b" * 40,
+            }
+        ],
+    }
 
-    with patch(
-        "booley.ticket_board.target_contract.validate_contract_fields",
-        return_value=[],
-    ):
-        errors = validate_ticket_fields(
-            fields,
-            "## Description\nExercise sealed target validation.",
-            check_files=True,
-            check_tb_files=False,
-            project_root=project,
-        )
+    errors = validate_ticket_fields(
+        fields,
+        "## Description\nExercise recorded target validation.",
+        check_files=True,
+        check_tb_files=False,
+        project_root=project,
+    )
 
     assert not any("contract_only" in error for error in errors)
 

@@ -25,9 +25,7 @@ _FM_FIELD_ORDER = [
     # Immutable runtime (set once, never mutated during execution)
     "feature_branch",
     "created",
-    "base_sha",
-    "target_contract",
-    "target_contract_history",
+    "acceptance_basis",
 ]
 
 # Chars that require quoting a YAML string value.
@@ -334,7 +332,7 @@ def _parse_inline_value(val: str) -> Any:  # noqa: PLR0911 — one early return 
 
 
 # Keys that use nested block-dict format (2-level indentation)
-_NESTED_BLOCK_KEYS = frozenset({"criteria", "on_success", "target_contract"})
+_NESTED_BLOCK_KEYS = frozenset({"criteria", "on_success", "acceptance_basis"})
 
 
 def _extract_fm_block(text):
@@ -465,9 +463,9 @@ def _format_nested_dict(key, val, lines):  # noqa: PLR0912 - bounded YAML subset
             lines.append(f"  {section_name}: {_yaml_scalar(section_val)}")
 
 
-def _format_target_contract(val, lines):
-    """Format the schema's one-level mapping with an inline Target list."""
-    lines.append("target_contract:")
+def _format_acceptance_basis(val, lines):
+    """Format the schema's one-level mapping with inline participant rows."""
+    lines.append("acceptance_basis:")
     for field_name, field_value in val.items():
         if isinstance(field_value, list):
             items = ", ".join(_yaml_inline_value(item) for item in field_value)
@@ -498,8 +496,8 @@ def _format_field(key, val, lines):
     elif isinstance(val, dict):
         if not val:
             lines.append(f"{key}: {{}}")
-        elif key == "target_contract":
-            _format_target_contract(val, lines)
+        elif key == "acceptance_basis":
+            _format_acceptance_basis(val, lines)
         elif key in _NESTED_BLOCK_KEYS:
             _format_nested_dict(key, val, lines)
         else:

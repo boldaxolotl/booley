@@ -48,7 +48,7 @@ class TestTicketContext:
         )
         assert ctx.logs_dir == tmp_path / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
 
-    def test_sealed_contract_fields_requires_contract(self, tmp_path: Path) -> None:
+    def test_acceptance_basis_fields_requires_basis(self, tmp_path: Path) -> None:
         ctx = TicketContext(
             slug="my-ticket",
             ticket_path=Path("/t.md"),
@@ -58,8 +58,8 @@ class TestTicketContext:
             project_root=tmp_path,
         )
 
-        with pytest.raises(ValueError, match="no sealed Target contract"):
-            ctx.sealed_contract_fields()
+        with pytest.raises(ValueError, match="no Acceptance Basis"):
+            ctx.acceptance_basis_fields()
 
 
 class TestOnSuccess:
@@ -121,8 +121,16 @@ class TestOnSuccess:
         assert errors == ["on_success.triage_report must be true or false"]
 
     def test_remove_targets_requires_merge(self):
-        errors = OnSuccess(merge=False, remove_targets=("baseline",)).validate()
+        errors = OnSuccess(
+            merge=False,
+            cleanup=False,
+            remove_targets=("baseline",),
+        ).validate()
         assert errors == ["on_success.remove_targets requires on_success.merge: true"]
+
+    def test_cleanup_requires_merge(self):
+        errors = OnSuccess(merge=False, cleanup=True).validate()
+        assert errors == ["on_success.cleanup requires on_success.merge: true"]
 
     def test_remove_targets_must_be_unique_non_empty_strings(self):
         errors = OnSuccess(remove_targets=("baseline", "", "baseline")).validate()

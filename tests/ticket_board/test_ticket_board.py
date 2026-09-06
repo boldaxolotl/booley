@@ -10,6 +10,7 @@ Adapted for the filesystem-based ticket system (no board.json).
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -256,32 +257,27 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
 
 class TestAcceptanceProgress:
     def test_find_and_scan_expose_validated_journal_state(self, tmp_path):
+        from booley.ticket_board.acceptance_journal import initial_journal
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "partial")
         acceptance = tmp_path / ".runtime" / "acceptance"
         acceptance.mkdir(parents=True)
         (acceptance / "partial.json").write_text(
             json.dumps(
-                {
-                    "schema": 2,
-                    "transaction": "a" * 32,
-                    "ticket": "partial",
-                    "state": "initializing",
-                    "policy": {"merge": True, "cleanup": True},
-                    "participants": [
+                initial_journal(
+                    "partial",
+                    [
                         {
                             "role": "outer",
-                            "sealed_sha": "b" * 40,
-                            "ticket_ref": "refs/heads/partial",
+                            "authoring_sha": "b" * 40,
+                            "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/partial",
                             "destination_ref": "refs/heads/main",
                             "destination_sha": "c" * 40,
                         }
                     ],
-                    "sources": {},
-                    "candidates": {},
-                    "published": [],
-                    "cleaned": [],
-                }
+                    cleanup=True,
+                ).as_dict()
             ),
             encoding="utf-8",
         )
@@ -554,8 +550,8 @@ class TestValidateTicketFields:
         errors = validate_ticket_fields(fields, "## Description\nSome text")
 
         assert errors == [
-            "Deprecated field 'integration_base': schema-3 Tickets publish their "
-            "sealed Ticket refs directly to destination refs"
+            "Deprecated field 'integration_base': Acceptance Basis Tickets publish their "
+            "recorded refs directly to destination refs"
         ]
 
     def test_missing_fields(self):
@@ -1248,7 +1244,8 @@ class TestScanAllTickets:
             tio.logs_dir / "t1",
             state,
             execution_id="generation-1",
-            target_contract=None,
+            acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
 
@@ -1449,31 +1446,74 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
     _write_transitions_log(tio, slug, lines)
 
 
-class TestOpHandoff:
-    def test_freezes_live_acceptance_before_review(self, tmp_path):
-        import json
+def _handoff_basis_receipt():
+    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 
-        from booley.criteria.state import DevelopmentState
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/booley-generation/1234567890abcdef/t1",
+                "refs/heads/main",
+                "b" * 40,
+            ),
+        )
+    )
+    receipt = {
+        "schema": 1,
+        "basis_id": basis.basis_id,
+        "participants": [basis.participant("outer").as_dict()],
+        "record": {"role": "outer", "locator": "record.json", "sha256": "c" * 64},
+        "source_sha256": "d" * 64,
+        "operation_id": "e" * 32,
+    }
+    return basis, receipt
+
+
+def _write_ready_acceptance_state(tio: TicketIO) -> None:
+    from booley.criteria.state import DevelopmentState
+
+    basis, _receipt = _handoff_basis_receipt()
+    state = DevelopmentState.load(runtime_file(tio.logs_dir, "t1", "booley_state.json"))
+    state.slug = "t1"
+    state.ticket_type = "feature"
+    state.init_criteria({"sim_pass": True, "_report_submitted": True})
+    state.set_criterion("sim_pass", True)
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
+    prep_dir.mkdir(parents=True)
+    briefing = prep_dir / "briefing.json"
+    briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
+    (prep_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "briefing_path": str(briefing),
+                "acceptance_basis_id": basis.basis_id,
+                "head_sha": "a" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestOpHandoff:
+    def test_freezes_live_acceptance_before_review(self, tmp_path, monkeypatch):
+        from booley.ticket_board import acceptance_basis as basis_module
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
-        state = DevelopmentState.load(state_path)
-        state.slug = "t1"
-        state.ticket_type = "feature"
-        state.init_criteria({"sim_pass": True, "_report_submitted": True})
-        state.set_criterion("sim_pass", True)
-        state.set_criterion("_report_submitted", True)
-        state.save()
-        prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
-        prep_dir.mkdir(parents=True)
-        briefing = prep_dir / "briefing.json"
-        briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
-        (prep_dir / "manifest.json").write_text(
-            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
-            encoding="utf-8",
+        basis, receipt = _handoff_basis_receipt()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._handoff_basis_heads",
+            lambda *_args: {"outer": "a" * 40},
         )
+        _write_ready_acceptance_state(tio)
 
         assert op_handoff(tio, "t1") is True
 
@@ -1481,6 +1521,8 @@ class TestOpHandoff:
         assert accepted.kind == "accepted"
         assert accepted.snapshot is not None
         assert accepted.snapshot.criteria["sim_pass"]["met"] is True
+        assert accepted.snapshot.acceptance_basis == receipt
+        assert accepted.snapshot.participant_heads == {"outer": "a" * 40}
         binding = json.loads(
             (tio.logs_dir / "t1" / "acceptance" / "review-package.json").read_text(
                 encoding="utf-8"
@@ -1488,13 +1530,62 @@ class TestOpHandoff:
         )
         assert binding["snapshot_digest"] == accepted.snapshot.digest
 
-    def test_moves_and_updates(self, tmp_path):
+    def test_rejects_handoff_when_basis_validation_fails(self, tmp_path, monkeypatch, capsys):
+        from booley.ticket_board import acceptance_basis as basis_module
+
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        op_handoff(tio, "t1")
-        assert (tio.tickets_dir / "board" / "review" / "t1.md").exists()
+        basis, _receipt = _handoff_basis_receipt()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+
+        def reject_drift(*_args, **_kwargs):
+            raise basis_module.AcceptanceBasisError(
+                "acceptance-input-change-required: destination ref was rewritten"
+            )
+
+        monkeypatch.setattr(basis_module, "validate_current_basis_refs", reject_drift)
+
+        assert op_handoff(tio, "t1") is False
+        assert "destination ref was rewritten" in capsys.readouterr().err
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
-        assert status == "review"
+        assert status == "running"
+
+    def test_rejects_existing_snapshot_after_ticket_ref_advances(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from booley.ticket_board import acceptance_basis as basis_module
+        from booley.ticket_board import operations
+
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        basis, receipt = _handoff_basis_receipt()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
+        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
+        monkeypatch.setattr(
+            operations,
+            "_handoff_basis_heads",
+            lambda *_args: {"outer": "a" * 40},
+        )
+        _write_ready_acceptance_state(tio)
+        assert op_handoff(tio, "t1") is True
+
+        assert (
+            operations._bind_existing_handoff_snapshot(
+                tio.logs_dir / "t1",
+                "t1",
+                {"outer": "f" * 40},
+            )
+            is False
+        )
+        assert "Ticket heads changed after acceptance freeze" in capsys.readouterr().err
+
+    def test_rejects_handoff_without_durable_acceptance_state(self, tmp_path):
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        assert op_handoff(tio, "t1") is False
+        assert not (tio.tickets_dir / "board" / "review" / "t1.md").exists()
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
 
     def test_rejects_stale_execution_generation(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
@@ -1512,10 +1603,13 @@ class TestOpHandoff:
         assert "execution changed concurrently" in capsys.readouterr().err
         assert not (tio.logs_dir / "t1" / "acceptance" / "accepted.json").exists()
 
-    def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys):
+    def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys, monkeypatch):
         """cleanup:true + destination:review keeps the worktree — say so (F-55)."""
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         assert op_handoff(tio, "t1") is True
 
         out = capsys.readouterr().out
@@ -1573,15 +1667,18 @@ class TestOpHandoff:
         result = op_handoff(tio, "t3")
         assert result is False
 
-    def test_handoff_passes_with_valid_transitions(self, tmp_path):
+    def test_handoff_passes_with_valid_transitions(self, tmp_path, monkeypatch):
         """Handoff succeeds when transitions.log matches steps_completed."""
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t4")
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         result = op_handoff(tio, "t4")
         assert result is True
         assert (tio.tickets_dir / "board" / "review" / "t4.md").exists()
 
-    def test_handoff_with_extra_stages_in_transitions(self, tmp_path):
+    def test_handoff_with_extra_stages_in_transitions(self, tmp_path, monkeypatch):
         """Handoff succeeds when transitions.log has all steps_completed covered."""
         tio = make_tio(tmp_path)
         stages = ["setup", "planning", "implementation", "sim-debug-loop", "summary"]
@@ -1605,6 +1702,9 @@ class TestOpHandoff:
             )
             prev = s
         _write_transitions_log(tio, "t5", lines)
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+        )
         result = op_handoff(tio, "t5")
         assert result is True
 
@@ -1683,9 +1783,8 @@ class TestEnqueueTicket:
         # File already exists with 'created' stamp -> duplicate guard kicks in
         assert result is False
 
-    def test_enqueue_stamps_frontmatter(self, tmp_path):
-        """enqueue_ticket stamps created/last_update when file exists but hasn't
-        been stamped yet (no 'created' field)."""
+    def test_enqueue_requires_git_before_stamping_frontmatter(self, tmp_path):
+        """A filesystem-only Ticket cannot become executable."""
         tio = make_tio(tmp_path)
         # Write the file directly without a 'created' field
         content = (
@@ -1706,15 +1805,9 @@ class TestEnqueueTicket:
         result = tio.enqueue_ticket(
             "add-thing", "A completely different summary here", "feature", "master"
         )
-        # File exists but has no 'created' stamp -> re-enqueue allowed, stamps it
-        assert result is True
-        # Verify frontmatter was stamped (created is a spec field)
+        assert result is False
         fields, _ = parse_frontmatter((queue_dir / "add-thing.md").read_text(encoding="utf-8"))
-        assert fields.get("created") is not None
-        # last_update is a runtime field, now in progress.json
-        progress = load_progress(tio.logs_dir, "add-thing")
-        assert progress is not None
-        assert progress.get("last_update") not in (None, "")
+        assert fields.get("created") is None
 
     def test_enqueue_transition_log(self, tmp_path):
         """Verify transition log creation via append_transition (used by enqueue)."""
@@ -2322,16 +2415,20 @@ class TestOpUnblock:
 
 
 class TestOpApprove:
-    def test_moves_to_done_complete(self, tmp_path):
+    def test_routes_through_validated_completion(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "my-ticket")
-        make_progress(tio, "my-ticket", {"step": "summary"})
-        op_approve(tio, "my-ticket")
+        calls = []
+        monkeypatch.setattr(
+            operations,
+            "op_complete",
+            lambda selected, slug: calls.append((selected, slug)) or True,
+        )
 
-        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "done"
-        progress = load_progress(tio.logs_dir, "my-ticket")
-        assert progress["step"] == "complete"
+        assert op_approve(tio, "my-ticket") is True
+        assert calls == [(tio, "my-ticket")]
 
 
 class TestOpPromoteWaiting:
@@ -2449,6 +2546,70 @@ class TestOpReset:
         assert progress.get("error") is None
         assert progress.get("failed_step") is None
         assert progress["workspace_intent"] == "fresh"
+
+    def test_git_backed_reset_rejects_any_executable_ticket_without_basis(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        (tmp_path / ".git").mkdir()
+        queue = make_ticket_in_dir(tio, "queue", "legacy-queue")
+
+        assert op_reset(tio, "legacy-queue") is False
+        assert queue.exists()
+        assert "has no Acceptance Basis" in capsys.readouterr().err
+
+    def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations as operations_module
+        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+            extra_fields={"acceptance_basis": {"schema": 1}},
+        )
+        monkeypatch.setattr(
+            tio,
+            "_load_basis_unlocked",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AcceptanceBasisError("receipt mismatch")
+            ),
+        )
+        monkeypatch.setattr(
+            operations_module,
+            "_reset_runtime_state",
+            lambda *_args: pytest.fail("runtime mutation preceded basis validation"),
+        )
+
+        assert op_reset(tio, "my-ticket") is False
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
+
+    def test_reset_preflights_basis_refs_before_runtime_mutation(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations as operations_module
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "blocked",
+            "my-ticket",
+            extra_fields={"acceptance_basis": {"schema": 1}},
+        )
+        basis = object()
+        monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args: basis)
+        monkeypatch.setattr(
+            operations_module,
+            "_preflight_reset_branches",
+            lambda *_args: None,
+        )
+        monkeypatch.setattr(
+            operations_module,
+            "_reset_runtime_state",
+            lambda *_args: pytest.fail("runtime mutation preceded basis-ref preflight"),
+        )
+
+        assert op_reset(tio, "my-ticket") is False
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "blocked"
 
     def test_reset_force_deletes_the_ticket_branch(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -3499,7 +3660,7 @@ class TestEnqueueOnSuccess:
 
     def test_enqueue_with_on_success(self, tmp_path):
         tio = make_tio(tmp_path)
-        on_success = {"destination": "done", "merge": False, "cleanup": True}
+        on_success = {"destination": "done", "merge": False, "cleanup": False}
         make_ticket_in_dir(
             tio,
             "queue",
@@ -3511,7 +3672,7 @@ class TestEnqueueOnSuccess:
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields["on_success"]["destination"] == "done"
         assert fields["on_success"]["merge"] is False
-        assert fields["on_success"]["cleanup"] is True
+        assert fields["on_success"]["cleanup"] is False
 
     def test_enqueue_default_no_on_success(self, tmp_path):
         """Without on_success param, field should not be stamped by enqueue."""
@@ -3533,33 +3694,18 @@ class TestEnqueueOnSuccess:
         assert "integration_base" not in fields
 
 
-class TestOpApproveActorDetail:
-    """Test that op_approve logs custom actor and detail in transitions."""
+class TestOpApproveBoundary:
+    """Approval cannot bypass the terminal validation boundary."""
 
-    def test_default_actor_and_detail(self, tmp_path):
+    def test_default_actor_and_detail_are_not_a_direct_transition(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "my-ticket", extra_fields={"step": "summary"})
-        op_approve(tio, "my-ticket")
+        monkeypatch.setattr(operations, "op_complete", lambda *_args: False)
 
-        log = human_log_file(tio.logs_dir, "my-ticket", "transitions.log").read_text()
-        assert "ticket-triage" in log
-        assert "user approved merge" in log
-
-    def test_custom_actor_and_detail(self, tmp_path):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "review", "auto-ticket")
-        make_progress(tio, "auto-ticket", {"step": "summary"})
-
-        op_approve(tio, "auto-ticket", actor="ticket-execute", detail="auto-approved and merged")
-
-        log = human_log_file(tio.logs_dir, "auto-ticket", "transitions.log").read_text()
-        assert "ticket-execute" in log
-        assert "auto-approved and merged" in log
-        # Verify ticket moved to done
-        _path, status = find_ticket_file(tio.tickets_dir, "auto-ticket")
-        assert status == "done"
-        progress = load_progress(tio.logs_dir, "auto-ticket")
-        assert progress["step"] == "complete"
+        assert op_approve(tio, "my-ticket") is False
+        assert not human_log_file(tio.logs_dir, "my-ticket", "transitions.log").exists()
 
 
 class TestCLIEnqueueOnSuccess:
@@ -3630,10 +3776,10 @@ class TestCLIEnqueueOnSuccess:
         assert rc == 2
 
 
-class TestCLIApproveActorDetail:
-    """Test CLI approve --actor and --detail flags."""
+class TestCLIApproveBoundary:
+    """Retired direct-transition metadata is rejected."""
 
-    def test_cli_approve_custom_actor(self, tmp_path, capsys):
+    def test_cli_approve_custom_actor_still_requires_acceptance(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
         for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
@@ -3642,8 +3788,11 @@ class TestCLIApproveActorDetail:
         tio = TicketIO(tickets_dir)
         make_ticket_in_dir(tio, "review", "t", extra_fields={"step": "summary"})
 
-        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
-            rc = main(
+        with (
+            patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir),
+            pytest.raises(SystemExit, match="2"),
+        ):
+            main(
                 argv=[
                     "approve",
                     "t",
@@ -3653,10 +3802,8 @@ class TestCLIApproveActorDetail:
                     "auto-approved and merged",
                 ]
             )
-        assert rc == 0
-        log = human_log_file(tio.logs_dir, "t", "transitions.log").read_text()
-        assert "ticket-execute" in log
-        assert "auto-approved and merged" in log
+        assert "unrecognized arguments" in capsys.readouterr().err
+        assert not human_log_file(tio.logs_dir, "t", "transitions.log").exists()
 
 
 class TestClassifyAutoApproved:
@@ -4114,9 +4261,12 @@ class TestOpReturnValues:
         make_ticket_in_dir(tio, "active", "t1")
         assert op_fail(tio, "t1", "boom", "sim-debug-loop") is True
 
-    def test_op_approve_success(self, tmp_path):
+    def test_op_approve_success(self, tmp_path, monkeypatch):
+        from booley.ticket_board import operations
+
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "t1")
+        monkeypatch.setattr(operations, "op_complete", lambda *_args: True)
         assert op_approve(tio, "t1") is True
 
     def test_complete_rejects_corrupt_accepted_snapshot(self, tmp_path, capsys):
@@ -4136,7 +4286,8 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis=None,
+            participant_heads={"outer": "a" * 40},
         )
         snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
         snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
@@ -4162,14 +4313,22 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            target_contract=None,
+            acceptance_basis={"basis_id": "f" * 64},
+            participant_heads={"outer": "a" * 40},
         )
         prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
         prep_dir.mkdir(parents=True)
         briefing = prep_dir / "briefing.json"
         briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
         (prep_dir / "manifest.json").write_text(
-            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+            json.dumps(
+                {
+                    "status": "ready",
+                    "briefing_path": str(briefing),
+                    "acceptance_basis_id": "f" * 64,
+                    "head_sha": "a" * 40,
+                }
+            ),
             encoding="utf-8",
         )
         assert bind_review_package(tio.logs_dir / "t1", snapshot)
@@ -4250,7 +4409,7 @@ class TestDraftsDirectory:
         on_success = {
             "destination": "done",
             "merge": False,
-            "cleanup": True,
+            "cleanup": False,
             "triage_report": False,
         }
 
@@ -4290,7 +4449,7 @@ class TestDraftsDirectory:
                     {
                         "destination": "done",
                         "merge": False,
-                        "cleanup": True,
+                        "cleanup": False,
                         "triage_report": False,
                         "remove_targets": [],
                         "unexpected": True,
@@ -4529,16 +4688,16 @@ class TestCollectAllMessagesRecovered:
 
 
 class TestEnqueueAppliesParams:
-    """Test that enqueue_ticket writes on_success to frontmatter."""
+    """Test that failed filesystem-only enqueue leaves authored input unchanged."""
 
     def test_on_success_applied(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "queue", "t1", extra_fields={"summary": "t1"})
-        on_success = {"destination": "done", "merge": False, "cleanup": True}
+        on_success = {"destination": "done", "merge": False, "cleanup": False}
         # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
         # In normal workflow, enqueue is called before find_ticket_file can find it.
         with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
-            tio.enqueue_ticket(
+            result = tio.enqueue_ticket(
                 "t1",
                 "t1",
                 "feature",
@@ -4547,8 +4706,8 @@ class TestEnqueueAppliesParams:
             )
         path = tio.tickets_dir / "board" / "queue" / "t1.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"]["destination"] == "done"
-        assert fields["on_success"]["merge"] is False
+        assert result is False
+        assert "on_success" not in fields
 
     def test_no_on_success_by_default(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -5418,14 +5577,14 @@ class TestOpResetPreservesBlockedMd:
 class TestOpBoardMove:
     """Test op_board_move enforces valid state transitions."""
 
-    def test_draft_to_queue(self, tmp_path):
-        """draft -> queue is a valid transition."""
+    def test_draft_to_queue_requires_git_backing(self, tmp_path):
+        """draft -> queue cannot publish without Git identities."""
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "drafts", "my-ticket")
         result = op_board_move(tio, "my-ticket", "queue")
-        assert result is True
+        assert result is False
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "queued"
+        assert status == "draft"
 
     def test_blocked_to_queue(self, tmp_path):
         """blocked -> queue is a valid transition (unblock)."""
@@ -5454,19 +5613,15 @@ class TestOpBoardMove:
             "my-ticket",
             extra_fields={
                 "on_success": {"destination": "review", "merge": False, "cleanup": False},
-                "target_contract": {
-                    "schema": 3,
-                    "outer_sha": "a" * 40,
-                    "project_sha": "",
-                    "surface_digest": "b" * 64,
-                    "targets": [],
-                    "bindings": [],
-                    "surface_entries": [],
+                "acceptance_basis": {
+                    "schema": 1,
                     "participants": [
                         {
                             "role": "outer",
-                            "sealed_sha": "a" * 40,
-                            "ticket_ref": "refs/heads/my-ticket",
+                            "authoring_sha": "a" * 40,
+                            "ticket_ref": (
+                                "refs/heads/booley-generation/0123456789abcdef/my-ticket"
+                            ),
                             "destination_ref": "refs/heads/main",
                             "destination_sha": "c" * 40,
                         }
@@ -5476,9 +5631,9 @@ class TestOpBoardMove:
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
         result = op_board_move(tio, "my-ticket", "done")
-        assert result is True
+        assert result is False
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert status == "done"
+        assert status == "review"
 
     def test_running_to_queue(self, tmp_path):
         """running -> queue is a valid transition (requeue)."""
@@ -5512,24 +5667,25 @@ class TestBoardMoveTerminalActionOverrides:
 
     Both flags used to be accepted, documented in --help, and then silently
     dropped: the worktree was destroyed anyway. These pin the wiring end to
-    end plus the two coupling traps (the merge step tears the worktree down
-    itself; the cleanup step branches on the merge decision)."""
+    end and require destructive cleanup to remain journaled with merge
+    publication."""
+
+    @pytest.fixture(autouse=True)
+    def _accepted_snapshot(self, monkeypatch):
+        monkeypatch.setattr(
+            "booley.ticket_board.operations._completion_acceptance_valid",
+            lambda *_: SimpleNamespace(participant_heads=None),
+        )
 
     @staticmethod
-    def _target_contract():
+    def _acceptance_basis():
         return {
-            "schema": 3,
-            "outer_sha": "a" * 40,
-            "project_sha": "",
-            "surface_digest": "b" * 64,
-            "targets": [],
-            "bindings": [],
-            "surface_entries": [],
+            "schema": 1,
             "participants": [
                 {
                     "role": "outer",
-                    "sealed_sha": "a" * 40,
-                    "ticket_ref": "refs/heads/my-ticket",
+                    "authoring_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/my-ticket",
                     "destination_ref": "refs/heads/main",
                     "destination_sha": "c" * 40,
                 }
@@ -5546,7 +5702,7 @@ class TestBoardMoveTerminalActionOverrides:
             extra_fields={
                 "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
                 "feature_branch": "feat/my-ticket",
-                "target_contract": TestBoardMoveTerminalActionOverrides._target_contract(),
+                "acceptance_basis": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
@@ -5592,45 +5748,33 @@ class TestBoardMoveTerminalActionOverrides:
 
     def test_no_cleanup_skips_the_cleanup_step(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=False, cleanup=True)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
-        do_cleanup.assert_not_called()
+        assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
 
     def test_no_cleanup_keeps_the_worktree_even_when_merging(self, tmp_path):
         """Trap: the merge step removes the worktree and branch itself, so
         --no-cleanup has to reach into it too."""
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with (
-            patch(
-                "booley.ticket_board.completion.complete_review_ticket", return_value=True
-            ) as complete,
-            patch("booley.ticket_board.operations._do_cleanup") as do_cleanup,
-        ):
+        with patch(
+            "booley.ticket_board.completion.complete_review_ticket", return_value=True
+        ) as complete:
             assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
         assert complete.call_args.args[2].cleanup is False
-        do_cleanup.assert_not_called()
 
-    def test_cleanup_sees_the_effective_merge_decision(self, tmp_path):
-        """Trap: _do_cleanup force-deletes the feature branch only when the
-        run did NOT merge — so it must read the overridden value, not the
-        ticket's frontmatter."""
+    def test_no_merge_rejects_configured_destructive_cleanup(self, tmp_path, capsys):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
-        assert do_cleanup.call_args.args[2].merge is False
+        assert op_board_move(tio, "my-ticket", "done", no_merge=True) is False
+        assert "on_success.cleanup requires on_success.merge: true" in capsys.readouterr().err
 
     def test_overrides_never_enable_a_declined_action(self, tmp_path):
         """Subtractive only: a ticket that opted out of merging does not start
         merging because the flags were left off."""
         tio = self._review_ticket(tmp_path, merge=False, cleanup=False)
-        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
-            assert op_board_move(tio, "my-ticket", "done") is True
-        do_cleanup.assert_not_called()
+        assert op_board_move(tio, "my-ticket", "done") is True
 
     def test_flags_are_announced_as_ignored_on_other_edges(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "drafts", "my-ticket")
-        assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is True
+        assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is False
         assert "apply to the review->done move only" in capsys.readouterr().err
 
 

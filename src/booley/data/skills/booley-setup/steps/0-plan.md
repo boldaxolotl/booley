@@ -381,24 +381,27 @@ script lines) as you go.
   *global* flag and must come **before** `run` — after it, fusesoc 2.4.6 exits
   with `unrecognized arguments: --cores-root`. For a stealth authored core the
   dir is `.booley_project/cores`; for an in-tree `.core` it is the repo root.
-- **Git submodules.** Run `git submodule status`. If the repo has any, add a
+- **Git submodules.** Run `git submodule status` in the outer repository and,
+  when `.booley_project` is a standalone Git repository, run
+  `git -C .booley_project submodule status` too. If either has any, add a
   decision row — but a short one: ticket worktrees get their submodules
-  reconstructed from local Git objects at the same Project path, never cloned,
-  so private SSH URLs are not consulted (mechanics in CONFIG.md →
-  "Submodules"). What the plan owes is the precondition and, if the repo has
-  heavy submodules nothing builds against, the explicit list:
+  reconstructed from local Git objects at the same repository path, never
+  cloned, so private SSH URLs are not consulted (mechanics in CONFIG.md →
+  "Submodules"). What the plan owes is the precondition and, if the outer repo
+  has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
-    the required pinned commit objects** in the main Project before any
-    ticket runs — one host-side `git submodule update --init --recursive` at
-    setup, and no uncommitted work left inside a submodule. Worktree setup hard-
-    errors otherwise with the missing path, dirty checkout, shallow history, or
-    incomplete local-object cause.
+    the required pinned commit objects** in its owning repository before any
+    ticket runs — host-side `git submodule update --init --recursive` in the
+    outer repo and `git -C .booley_project submodule update --init --recursive`
+    in a standalone paired repo, with no uncommitted submodule work left.
+    Worktree setup hard-errors otherwise with the missing path, dirty checkout,
+    shallow history, or incomplete local-object cause.
   - Destination gitlinks are authoritative, so historical pins are preserved.
     `.gitmodules` discovery is the default and needs no config. To materialize
-    only some top-level entries, set `[submodules].paths` in `booley.toml`; an
-    explicit empty list selects none, and a non-empty list is intersected with
-    the selected revision's gitlinks. Nested gitlinks below a selected entry are
-    still recursive.
+    only some outer-repository entries, set `[submodules].paths` in
+    `booley.toml`; an explicit empty list selects none, and a non-empty list is
+    intersected with the selected revision's gitlinks. Every top-level gitlink
+    in a paired project repo is materialized. Nested gitlinks are recursive.
   - Execution-time check: a ticket worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
@@ -723,9 +726,10 @@ separate columns (see "How a row resolves"). The standard checklist:
 
 Then add the **repo-specific rows**, numbering on from 22 — everything Part A
 surfaced that the standard list doesn't name: generator steps, **git
-submodules** (a row whenever `git submodule status` is non-empty: the host-side
+submodules** (a row whenever either participating repository's
+`git submodule status` is non-empty: the host-side
 initialized/clean/full-history precondition, and `[submodules].paths` if only
-some should reach ticket worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+some outer gitlinks should reach ticket worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.

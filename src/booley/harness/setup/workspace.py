@@ -20,9 +20,12 @@ from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
-    materialize_submodules,
+    materialize_ticket_submodules,
 )
-from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
+from booley.runtime.ticket_repositories import (
+    paired_project_repository,
+    project_repository_scope,
+)
 from booley.ticket_board.git_status import parse_porcelain_v1_z
 
 from ..models import StepResult, TicketContext
@@ -69,7 +72,7 @@ def _install_scope_hook(
     scope: list[str],
     *,
     project_root: Path | None = None,
-    contract_surface_root: Path | None = None,
+    acceptance_surface_root: Path | None = None,
 ) -> None:
     """Write .scope.json and install the scope pre-commit hook (always) plus the
     stealth commit-msg hook (unless ``[stealth] enabled = false``)."""
@@ -78,9 +81,9 @@ def _install_scope_hook(
 
         require_project_checkout(project_root)
     scope_file = worktree_path / ".scope.json"
-    controls = _hook_contract_controls(worktree_path, contract_surface_root)
+    controls = _hook_acceptance_controls(worktree_path, acceptance_surface_root)
     scope_file.write_text(
-        json.dumps({"scope": scope, "contract_control": controls}, indent=2) + "\n",
+        json.dumps({"scope": scope, "acceptance_control": controls}, indent=2) + "\n",
         encoding="utf-8",
     )
     logger.debug("Wrote scope file: %s (%d entries)", scope_file, len(scope))
@@ -120,15 +123,15 @@ def _install_scope_hook(
         _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
 
 
-def _hook_contract_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
-    """Translate sealed surface paths for the repository receiving the hook."""
+def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
+    """Translate basis-bound surface paths for the repository receiving the hook."""
     root = surface_root or worktree_path
     try:
-        from booley.ticket_board.target_contract import contract_control_paths
+        from booley.ticket_board.acceptance_targets import acceptance_control_paths
 
-        controls = contract_control_paths(root)
+        controls = acceptance_control_paths(root)
     except (OSError, ValueError):
-        logger.warning("Could not enumerate Target contract controls for %s", root)
+        logger.warning("Could not enumerate Acceptance Basis controls for %s", root)
         return []
     if worktree_path == root:
         return [path for path in controls if not path.startswith(".booley_project/")]
@@ -403,7 +406,7 @@ def _create_feature_branch(
     worktree_path: Path,
     base_ref: str,
 ) -> StepResult | None:
-    """Create the Ticket-owned feature branch from its sealed revision."""
+    """Create the Ticket-owned feature branch from its basis revision."""
     branch_name = ctx.slug
     logger.info("Feature branch from %s", base_ref)
     existing = git_run(
@@ -481,13 +484,32 @@ def _prepare_branch(
     )
 
 
+def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult | None:
+    """Require the outer checkout to remain on its generation-qualified basis ref."""
+    basis = ctx.acceptance_basis
+    if basis is None:
+        raise ValueError("Acceptance Basis is unavailable")
+    expected_ref = basis.participant("outer").ticket_ref
+    result = git_run(worktree_path, ["symbolic-ref", "--quiet", "HEAD"], timeout=10)
+    current_ref = result.stdout.strip()
+    if result.returncode != 0 or current_ref != expected_ref:
+        return StepResult(
+            block_reason=(
+                f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
+                f"expected Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
+    return None
+
+
 def _materialize_worktree_submodules(
     project_root: Path,
     worktree_path: Path,
 ) -> StepResult | None:
     """Populate the selected branch's gitlinks from local Project objects."""
     try:
-        materialize_submodules(project_root, worktree_path)
+        materialize_ticket_submodules(project_root, worktree_path)
     except SubmoduleMaterializationError as exc:
         return StepResult(block_reason=f"Submodule setup failed: {exc}")
     return None
@@ -671,23 +693,22 @@ def _current_ticket_path(ctx: TicketContext) -> Path | None:
     return ticket
 
 
-def _validate_materialized_target_contract(
+def _validate_materialized_acceptance_basis(
     ctx: TicketContext, worktree_path: Path
 ) -> StepResult | None:
-    """Validate the sealed surface after disposable checkouts are materialized."""
-    if ctx.target_contract is None:
+    """Validate the basis-bound surface after disposable checkouts are materialized."""
+    if ctx.acceptance_basis is None:
         return None
-    from booley.ticket_board.target_contract import (
-        CONTRACT_BLOCK_REASON,
-        validate_materialized_contract,
+    from booley.ticket_board.acceptance_basis import (
+        BLOCK_REASON,
+        AcceptanceBasisError,
+        assert_inputs_unchanged,
     )
 
-    errors = validate_materialized_contract(ctx.sealed_contract_fields(), worktree_path)
-    if errors:
-        detail = "; ".join(errors)
-        prefix = f"{CONTRACT_BLOCK_REASON}:"
-        reason = detail if detail.startswith(prefix) else f"{prefix} {detail}"
-        return StepResult(block_reason=reason)
+    try:
+        assert_inputs_unchanged(ctx.acceptance_basis, worktree_path)
+    except (OSError, AcceptanceBasisError) as exc:
+        return StepResult(block_reason=f"{BLOCK_REASON}: {exc}")
     return None
 
 
@@ -696,7 +717,7 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     _prune_stale_worktree_locks(project_root)
     expected_wt = (
         resolve_project_dir(project_root) / "worktrees" / ctx.slug
-        if ctx.target_contract is not None
+        if ctx.acceptance_basis is not None
         else project_root / ".booley_project" / "worktrees" / ctx.slug
     )
     if not _try_reuse_worktree(ctx, project_root, expected_wt):
@@ -704,9 +725,12 @@ def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
         if fail:
             return fail
     worktree_path = ctx.worktree_path
-    base_ref = ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
+    if ctx.acceptance_basis is not None:
+        return _attach_basis_branch(ctx, worktree_path) or _materialize_worktree_submodules(
+            project_root, worktree_path
+        )
     logger.info("Worktree ready")
-    return _prepare_branch(ctx, worktree_path, base_ref) or _materialize_worktree_submodules(
+    return _prepare_branch(ctx, worktree_path, ctx.branch) or _materialize_worktree_submodules(
         project_root, worktree_path
     )
 
@@ -721,9 +745,9 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
 
-    contract_failure = _validate_materialized_target_contract(ctx, worktree_path)
-    if contract_failure is not None:
-        return contract_failure
+    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
+    if basis_failure is not None:
+        return basis_failure
 
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
     if project_worktree is not None:
@@ -731,7 +755,7 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
             project_worktree,
             project_repository_scope(ctx.scope_raw),
             project_root=project_root,
-            contract_surface_root=worktree_path,
+            acceptance_surface_root=worktree_path,
         )
     return None
 

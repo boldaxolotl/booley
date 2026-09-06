@@ -1,4 +1,4 @@
-"""Ticket Board policy for accepting sealed review Tickets."""
+"""Ticket Board policy for accepting review Tickets with an Acceptance Basis."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_str
 from booley.runtime.file_lock import LockContentionError
 
+from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .acceptance_journal import (
     AcceptanceJournalError,
     AcceptanceOperationError,
@@ -18,29 +20,29 @@ from .acceptance_journal import (
     AcceptanceRequest,
     advance_acceptance,
 )
-from .target_contract import TargetContract, TargetContractError
 from .validation import retired_ticket_field_errors
 
 CompletionError = AcceptanceOperationError
 
 
-def _destination_branch(entry: Mapping[str, Any], contract: TargetContract) -> str:
-    branch = entry.get("branch")
-    if not isinstance(branch, str) or not branch:
-        raise CompletionError("Ticket has no destination branch")
-    outer = next(item for item in contract.participants if item.role == "outer")
+def _destination_branch(entry: Mapping[str, Any], basis: AcceptanceBasis) -> str:
+    try:
+        branch = require_str(entry, "branch")
+    except BoundaryError as exc:
+        raise CompletionError("Ticket has no destination branch") from exc
+    outer = next(item for item in basis.participants if item.role == "outer")
     if outer.destination_ref != f"refs/heads/{branch}":
         raise CompletionError(
-            f"Ticket destination branch {branch!r} differs from sealed "
+            f"Ticket destination branch {branch!r} differs from recorded "
             f"destination {outer.destination_ref!r}"
         )
     return branch
 
 
-def _validate_completion_plan(contract: TargetContract, *, cleanup: bool) -> None:
+def _validate_completion_plan(basis: AcceptanceBasis, *, cleanup: bool) -> None:
     if not cleanup:
         return
-    for participant in contract.participants:
+    for participant in basis.participants:
         if participant.ticket_ref == participant.destination_ref:
             raise CompletionError(
                 f"cannot clean {participant.role} participant because its Ticket ref "
@@ -50,7 +52,7 @@ def _validate_completion_plan(contract: TargetContract, *, cleanup: bool) -> Non
 
 def _completion_inputs(
     tio: Any, slug: str, effective_policy: Any
-) -> tuple[Mapping[str, Any], TargetContract] | None:
+) -> tuple[Mapping[str, Any], AcceptanceBasis] | None:
     if getattr(effective_policy, "merge", None) is not True:
         raise CompletionError("journaled completion requires merge policy to be true")
     if not isinstance(getattr(effective_policy, "cleanup", None), bool):
@@ -72,26 +74,27 @@ def _completion_inputs(
         print(f"Error: cannot complete '{slug}': {retired_errors[0]}", file=sys.stderr)
         return None
     try:
-        contract = TargetContract.from_mapping(entry.get("target_contract"))
-        if removal_targets != contract.removal_targets:
-            raise TargetContractError(
-                "on_success.remove_targets changed after Target Contract sealing"
+        basis = tio.load_basis(slug)
+        if removal_targets != basis.removal_targets:
+            raise AcceptanceBasisError(
+                "on_success.remove_targets changed after Acceptance Basis publication"
             )
-        _destination_branch(entry, contract)
-        _validate_completion_plan(contract, cleanup=effective_policy.cleanup)
-    except (CompletionError, TargetContractError) as exc:
+        _destination_branch(entry, basis)
+        _validate_completion_plan(basis, cleanup=effective_policy.cleanup)
+    except (AcceptanceBasisError, CompletionError) as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
-    return entry, contract
+    return entry, basis
 
 
 def _request(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    contract: TargetContract,
+    basis: AcceptanceBasis,
     *,
     cleanup: bool,
+    expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
     ticket_name = Path(str(entry["file"])).name
     allowed_board_rename = (
@@ -101,10 +104,11 @@ def _request(
     return AcceptanceRequest(
         root=Path(tio._project_root).resolve(),
         slug=slug,
-        contract=contract,
+        basis=basis,
         cleanup=cleanup,
         ticket_status=entry["status"],
         allowed_board_rename=allowed_board_rename,
+        expected_sources=expected_sources,
     )
 
 
@@ -146,9 +150,10 @@ def _finish_progress(
     tio: Any,
     slug: str,
     entry: Mapping[str, Any],
-    contract: TargetContract,
+    basis: AcceptanceBasis,
     cleanup: bool,
     progress: AcceptanceProgress,
+    expected_sources: Mapping[str, str] | None,
 ) -> AcceptanceProgress:
     if progress.outcome is not AcceptanceOutcome.APPROVAL_REQUIRED:
         return progress
@@ -166,7 +171,16 @@ def _finish_progress(
         if approval_error is not None:
             raise status_error from approval_error
         raise
-    return advance_acceptance(_request(tio, slug, current, contract, cleanup=cleanup))
+    return advance_acceptance(
+        _request(
+            tio,
+            slug,
+            current,
+            basis,
+            cleanup=cleanup,
+            expected_sources=expected_sources,
+        )
+    )
 
 
 def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
@@ -209,23 +223,37 @@ def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
     return False
 
 
-def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
+def complete_review_ticket(
+    tio: Any,
+    slug: str,
+    effective_policy: Any,
+    *,
+    expected_sources: Mapping[str, str] | None = None,
+) -> bool:
     """Apply Ticket Board policy around recoverable repository acceptance."""
     inputs = _completion_inputs(tio, slug, effective_policy)
     if inputs is None:
         return False
-    entry, contract = inputs
+    entry, basis = inputs
     try:
         progress = advance_acceptance(
-            _request(tio, slug, entry, contract, cleanup=effective_policy.cleanup)
+            _request(
+                tio,
+                slug,
+                entry,
+                basis,
+                cleanup=effective_policy.cleanup,
+                expected_sources=expected_sources,
+            )
         )
         progress = _finish_progress(
             tio,
             slug,
             entry,
-            contract,
+            basis,
             effective_policy.cleanup,
             progress,
+            expected_sources,
         )
     except LockContentionError:
         print("Error: another acceptance is already running", file=sys.stderr)

@@ -155,8 +155,8 @@ def _implementation_params_intro() -> list[str]:
         "threshold **params**. Each takes a `targets:` list, the per-target "
         "scoping key naming which project Targets to check (the key is "
         "`targets`, never `configs`), plus one or more metric params. Four "
-        "flavours per metric: two absolute, two relative to the ticket's "
-        "`base_sha` baseline:",
+        "flavours per metric: two absolute, two relative to the Ticket's "
+        "Acceptance Basis:",
         "",
         "| Flavour param suffix | Baseline? | Meaning |",
         "|----------------------|:---------:|---------|",
@@ -176,13 +176,13 @@ def _implementation_params_intro() -> list[str]:
         "Target name is backward-compatible shorthand for using that Target on both "
         "sides.",
         "",
-        "In Ticket Mode, ticket creation seals an immutable Target contract before "
-        "enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs "
-        "the pair's baseline Target at `base_sha` and its candidate Target at the "
-        "ticket head. Both Targets and their directed binding are sealed. "
-        "Developer execution cannot change contract controls; a missing or incorrect "
-        "Target blocks as `target-contract-change-required` for revision and "
-        "resealing. Missing or mismatched baseline evidence never skips a relative "
+        "In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A "
+        "baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's "
+        "baseline Target at the basis commit and its candidate Target at the Ticket "
+        "head. Both Targets and their directed binding are fixed. Developer execution "
+        "cannot change acceptance controls; a missing or incorrect Target blocks as "
+        "`acceptance-input-change-required` and requires `return-to-draft`. Missing or "
+        "mismatched baseline evidence never skips a relative "
         "check.",
         "",
     ]
@@ -221,7 +221,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
         "",
         "Use a list of mappings. Every item names one `target` and registered `test`, "
         "plus one or more thresholds; all thresholds on the item must pass. Relative "
-        "forms automatically compare the same Target/test at the ticket's pinned `base_sha`.",
+        "forms automatically compare the same Target/test at the Ticket's Acceptance Basis.",
         "",
         "| Parameter | Baseline? | Unit | Passing relation |",
         "|-----------|:---------:|------|------------------|",

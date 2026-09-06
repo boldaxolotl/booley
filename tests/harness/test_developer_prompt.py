@@ -196,7 +196,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
     def test_baseline_qor_rule_requires_relative_implementation_criterion(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"
         ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
-        phrase = "the sealed Target recipe is immutable"
+        phrase = "the recorded Target recipe is immutable"
 
         for criterion_name, threshold in (
             ("synthesis_ok", "cell_count_increase_at_most"),
@@ -221,8 +221,8 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             )
 
             assert phrase in system
-            assert "both `base_sha` and the ticket head with that identical recipe" in system
-            assert "target-contract-change-required" in system
+            assert "both the basis commit and the ticket head with that identical recipe" in system
+            assert "acceptance-input-change-required" in system
 
     def test_baseline_qor_rule_omitted_without_relative_implementation_criterion(
         self, tmp_path: Path
@@ -254,7 +254,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             )
 
             assert "BASELINE QoR CRITERIA" not in system
-            assert "the sealed Target recipe is immutable" not in system
+            assert "the recorded Target recipe is immutable" not in system
 
     def test_system_prompt_uses_targets_as_execution_boundary(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"

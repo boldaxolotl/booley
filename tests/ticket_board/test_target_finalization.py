@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
 from booley.fusesoc import fusesoc_registry
-from booley.ticket_board.target_contract import ContractTargetBinding
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
     plan_target_removals,
-    validate_remove_targets_for_seal,
+    validate_acceptance_removals,
 )
 
 
@@ -24,10 +25,29 @@ def _write_core(path: Path, *, vlnv: str, targets: str) -> None:
     )
 
 
-def _binding(*targets: str) -> tuple[ContractTargetBinding, ...]:
+def _binding(*targets: str) -> tuple[AcceptanceTargetBinding, ...]:
     return tuple(
-        ContractTargetBinding("synth", "synthesis_ok", target, target) for target in targets
+        AcceptanceTargetBinding("synth", "criteria.mandatory.synthesis_ok", target, target)
+        for target in targets
     )
+
+
+def _git(repository: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _init_repository(repository: Path) -> None:
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
 
 
 def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> None:
@@ -102,7 +122,7 @@ def test_last_target_leaves_valid_empty_targets_mapping(tmp_path: Path) -> None:
     assert fusesoc_registry.read_core(core)["targets"] == {}
 
 
-def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
+def test_enqueue_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:
     _write_core(
         tmp_path / "toy.core",
         vlnv="acme:lib:toy:1.0",
@@ -113,7 +133,7 @@ def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> Non
         "criteria": {"mandatory": {"lint_clean": ["baseline"]}},
     }
 
-    errors = validate_remove_targets_for_seal(fields, tmp_path)
+    errors = validate_acceptance_removals(fields, tmp_path)
 
     assert errors == [
         "on_success.remove_targets target 'acme:lib:toy:1.0#unrelated' is not bound "
@@ -121,7 +141,43 @@ def test_seal_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> Non
     ]
 
 
-def test_seal_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
+def test_enqueue_rejects_submodule_owned_target_removal(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repository(dependency)
+    _write_core(
+        dependency / "toy.core",
+        vlnv="acme:lib:toy:1.0",
+        targets="  obsolete: {flow: lint}\n",
+    )
+    _git(dependency, "add", "toy.core")
+    _git(dependency, "commit", "-qm", "dependency target")
+    root = tmp_path / "root"
+    _init_repository(root)
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(root, "commit", "-qm", "project")
+    canonical = "acme:lib:toy:1.0#obsolete"
+    fields = {
+        "on_success": {"remove_targets": [canonical]},
+        "criteria": {"mandatory": {"lint_clean": [canonical]}},
+    }
+
+    errors = validate_acceptance_removals(fields, root)
+
+    assert errors == [
+        f"on_success.remove_targets target {canonical!r} is declared in nested repository "
+        "'vendor/dependency'; only outer and paired project participants can be finalized"
+    ]
+
+
+def test_enqueue_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
     _write_core(tmp_path / "a.core", vlnv="acme:lib:a:1.0", targets="  synth: {}\n")
     _write_core(tmp_path / "b.core", vlnv="acme:lib:b:1.0", targets="  synth: {}\n")
     fields = {
@@ -129,7 +185,7 @@ def test_seal_rejects_ambiguous_bare_selector(tmp_path: Path) -> None:
         "criteria": {"mandatory": {"synthesis_ok": {"targets": ["a#synth"]}}},
     }
 
-    errors = validate_remove_targets_for_seal(fields, tmp_path)
+    errors = validate_acceptance_removals(fields, tmp_path)
 
     assert len(errors) == 1
     assert "Target 'synth' is declared by 2 cores" in errors[0]

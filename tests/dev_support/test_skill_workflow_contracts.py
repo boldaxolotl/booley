@@ -229,7 +229,7 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
         "Author the new Targets exactly as approved",
         "requires changing an approved Target definition, return to 2f",
         "require no further user confirmation",
-        "Sealing remains an internal implementation detail",
+        "Basis publication remains an internal implementation detail",
     ):
         assert required in contract
     for retired in (
@@ -288,7 +288,7 @@ def test_ticket_create_fixes_target_removal_at_creation_time():
     for required in (
         "Decide `on_success.remove_targets` during Ticket creation",
         "Every selector must resolve uniquely",
-        "Target remains sealed",
+        "Target remains fixed",
         "Do not use this field as general file cleanup",
     ):
         assert required in contract

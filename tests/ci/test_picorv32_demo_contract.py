@@ -29,8 +29,7 @@ from booley.dev_support.demo_contract import (
     _validate_generated_input,
     load_contract,
 )
-from booley.ticket_board.frontmatter import parse_frontmatter
-from booley.ticket_board.target_contract import TargetContract
+from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 
 CONTRACT = Path(".github/contracts/picorv32-demo.toml")
 PREPARE_ACTION = Path(".github/actions/prepare-picorv32-demo/action.yml")
@@ -47,6 +46,8 @@ OUTPUT_KEYS = (
     "project_ref",
     "ticket_fixture",
     "ticket_slug",
+    "toolchain_url",
+    "toolchain_sha256",
 )
 
 
@@ -148,6 +149,10 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
     assert contract.ticket_fixture == ".github/contracts/picorv32-demo-ticket.md"
     assert contract.ticket_slug == "add-opt-in-rv32-zbb-pcpi-co-processor"
+    assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
+    assert contract.toolchain_sha256 == (
+        "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
+    )
     assert contract.required_targets == (
         "lint_core",
         "sim_core",
@@ -162,17 +167,10 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     fixture = Path(contract.ticket_fixture)
     fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
-    sealed = TargetContract.from_mapping(fields["target_contract"])
-    assert sealed.schema == 4
-    assert sealed.project_sha == contract.project_ref
-    assert sealed.outer_sha == contract.upstream_ref
-    assert len(sealed.participants) == 2
-    assert sealed.surface_entries
-    assert sealed.targets == ("lint_core", "sim_core", "sim_wb", "synth_core")
-    project = next(item for item in sealed.participants if item.role == "project")
-    assert project.ticket_ref == "refs/heads/main"
-    assert project.destination_ref == "refs/heads/main"
-    assert project.destination_sha == contract.project_ref
+    assert "acceptance_basis" not in fields
+    assert "target_contract" not in fields
+    assert "base_sha" not in fields
+    assert "created" not in fields
 
     serialized = fixture.read_text(encoding="utf-8")
     assert "ci/agent-ticket-contract" not in serialized
@@ -201,6 +199,8 @@ upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ticket_slug = "demo"
+toolchain_url = "https://example.invalid/toolchain.tar.gz"
+toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = "sim"
 """,
         encoding="utf-8",
@@ -230,6 +230,7 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert checkouts[1]["with"]["repository"] == "${{ steps.contract.outputs.project_repository }}"
     assert checkouts[1]["with"]["ref"] == "${{ steps.contract.outputs.project_ref }}"
     assert installer["env"] == {
+        "PYTHONPATH": "${{ github.workspace }}/src",
         "TICKET_FIXTURE": "${{ steps.contract.outputs.ticket_fixture }}",
         "TICKET_SLUG": "${{ steps.contract.outputs.ticket_slug }}",
     }
@@ -238,7 +239,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         step for step in steps if step.get("name") == "Apply documented local checkout excludes"
     )
     ancestry = next(
-        step for step in steps if step.get("name") == "Require reviewed revisions on public refs"
+        step
+        for step in steps
+        if step.get("name") == "Require reviewed revisions and materialize destination refs"
     )
     assert steps.index(checkouts[1]) < steps.index(excludes) < steps.index(ancestry)
     assert "'/.booley_project'" in excludes["run"]
@@ -251,7 +254,7 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     references = {
         match.group(1)
         for value in action_strings
-        for match in re.finditer(r"steps\.contract\.outputs\.([a-z_]+)", value)
+        for match in re.finditer(r"steps\.contract\.outputs\.([a-z0-9_]+)", value)
     }
     assert references == set(OUTPUT_KEYS)
     assert all(contract[key] not in value for key in OUTPUT_KEYS for value in action_strings)
@@ -262,6 +265,15 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     )
     assert "PROJECT_CONTRACT_REF" not in action_strings
     assert "ci/agent-ticket-contract" not in action_strings
+    toolchain = next(
+        step for step in steps if step.get("name") == "Install host RISC-V preparation toolchain"
+    )
+    assert toolchain["env"] == {
+        "TOOLCHAIN_URL": "${{ steps.contract.outputs.toolchain_url }}",
+        "TOOLCHAIN_SHA256": "${{ steps.contract.outputs.toolchain_sha256 }}",
+    }
+    assert "curl --proto '=https' --tlsv1.2 -fsSL" in toolchain["run"]
+    assert "sha256sum -c -" in toolchain["run"]
 
 
 def test_every_workflow_consumer_uses_shared_preparation_outputs() -> None:
@@ -326,7 +338,45 @@ def _demo_project(tmp_path: Path) -> Path:
     return project
 
 
+def _git(repository: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _demo_git_project(tmp_path: Path) -> Path:
+    outer = tmp_path / "outer"
+    project = outer / ".booley_project"
+    project.mkdir(parents=True)
+    _git(project, "init", "-b", "main")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    (project / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "initial project")
+
+    _git(outer, "init", "-b", "main")
+    _git(outer, "config", "user.name", "Test")
+    _git(outer, "config", "user.email", "test@example.invalid")
+    (outer / "README.md").write_text("demo\n", encoding="utf-8")
+    (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
+    _git(outer, "add", "README.md")
+    _git(outer, "commit", "-m", "initial outer")
+    return project
+
+
 def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.CompletedProcess[str]:
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -340,6 +390,7 @@ def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.Comple
         ],
         capture_output=True,
         text=True,
+        env=os.environ | {"PYTHONPATH": python_path},
         check=False,
     )
 
@@ -379,19 +430,37 @@ def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
 
 
 def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -> None:
-    project = _demo_project(tmp_path)
+    project = _demo_git_project(tmp_path)
     fixture = tmp_path / "fixture.md"
-    fixture.write_text("fixture\n", encoding="utf-8")
+    fixture.write_text(
+        "---\n"
+        "summary: Demo\n"
+        "type: feature\n"
+        "branch: main\n"
+        "project_destination_ref: refs/heads/main\n"
+        "scope: [README.md]\n"
+        "criteria: {mandatory: {review_rtl_bugs: true}}\n"
+        "---\n\n"
+        "## Description\n\nDo the work.\n",
+        encoding="utf-8",
+    )
 
     result = _run_installer(project, fixture, "demo")
 
     destination = project / "tickets" / "board" / "queue" / "demo.md"
     assert result.returncode == 0
-    assert destination.read_bytes() == fixture.read_bytes()
+    fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
+    assert fields["summary"] == "Demo"
+    assert fields["acceptance_basis"]["schema"] == 1
+    assert "target_contract" not in fields
+    assert "- **review_rtl_bugs**" in body
+    assert body.endswith("## Description\n\nDo the work.")
     if os.name == "posix":
         assert destination.stat().st_mode & 0o777 == 0o644
     exclude = project / ".git" / "info" / "exclude"
-    assert exclude.read_text(encoding="utf-8") == "/tickets/board/queue/demo.md\n"
+    assert exclude.read_text(encoding="utf-8") == (
+        "/tickets/board/drafts/demo.md\n/tickets/board/queue/demo.md\n"
+    )
 
 
 def test_contract_exporter_emits_all_workflow_fields() -> None:
@@ -479,6 +548,8 @@ project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ticket_fixture = ".github/contracts/ticket.md"
 ticket_slug = "demo"
+toolchain_url = "https://example.invalid/toolchain.tar.gz"
+toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = ["sim"]
 
 [[required_binding]]
@@ -527,6 +598,15 @@ _INVALID_CONTRACT_CASES = [
         "project_ref must be a full lowercase Git commit SHA",
         id="project-revision",
     ),
+    pytest.param(
+        (
+            "https://example.invalid/toolchain.tar.gz",
+            "http://example.invalid/toolchain.tar.gz",
+        ),
+        "toolchain_url",
+        id="toolchain-url",
+    ),
+    pytest.param(("c" * 64, "ABC"), "toolchain_sha256", id="toolchain-digest"),
     pytest.param(
         ('ticket_slug = "demo"', 'ticket_slug = "../evil"'),
         "ticket_slug must be a safe Ticket slug",
@@ -722,19 +802,43 @@ def test_checkout_ticket_and_fixture_helpers(
     assert fields["summary"] == "Demo"
     assert found == ticket
 
-    contract_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
-    contract_path.parent.mkdir(parents=True)
+    acceptance_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
+    acceptance_path.parent.mkdir(parents=True)
     fixture_name = ".github/contracts/ticket.md"
-    assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == [
-        f"CI-owned ticket fixture is missing: {fixture_name}"
-    ]
+    assert demo_contract_module._validate_ticket_fixture(
+        acceptance_path, fixture_name, ticket
+    ) == [f"CI-owned ticket fixture is missing: {fixture_name}"]
     fixture = tmp_path / "repo" / fixture_name
     fixture.write_text("different\n", encoding="utf-8")
     assert (
         "does not match"
-        in demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket)[0]
+        in demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket)[0]
     )
     fixture.write_bytes(ticket.read_bytes())
+    assert (
+        demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket) == []
+    )
+
+
+def test_ticket_fixture_comparison_ignores_generated_publication_fields(tmp_path: Path) -> None:
+    contract_path = tmp_path / ".github/contracts/contract.toml"
+    fixture_name = ".github/contracts/ticket.md"
+    fixture = tmp_path / fixture_name
+    ticket = tmp_path / "published.md"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(format_frontmatter({"summary": "Demo"}, "Body\n"), encoding="utf-8")
+    ticket.write_text(
+        format_frontmatter(
+            {
+                "summary": "Demo",
+                "created": "2026-09-05T00:00:00Z",
+                "acceptance_basis": {"schema": 1, "participants": []},
+            },
+            "Body\n",
+        ),
+        encoding="utf-8",
+    )
+
     assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == []
 
 
@@ -831,6 +935,8 @@ def _demo_contract() -> DemoContract:
         project_ref="b" * 40,
         ticket_fixture=".github/contracts/ticket.md",
         ticket_slug="demo",
+        toolchain_url="https://example.invalid/toolchain.tar.gz",
+        toolchain_sha256="c" * 64,
         required_targets=("sim",),
         required_bindings=(RequiredBinding("criteria.mandatory.sim_pass", "sim"),),
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),
@@ -852,6 +958,7 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     )
     readiness = iter([SimpleNamespace(errors=["first"]), SimpleNamespace(errors=["second"])])
     monkeypatch.setattr(demo_contract_module, "check_ticket_ready", lambda *_args: next(readiness))
+    monkeypatch.setattr(demo_contract_module, "_prepare_demo_project", lambda *_args: [])
     monkeypatch.setattr(demo_contract_module, "_validate_targets", lambda *_args: ["target"])
     monkeypatch.setattr(demo_contract_module, "_validate_bindings", lambda *_args: ["binding"])
     generated = iter([(["generated"], {"image.hex": "one"}), (["again"], {"image.hex": "two"})])

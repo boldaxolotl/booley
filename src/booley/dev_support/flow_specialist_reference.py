@@ -220,7 +220,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "",
             "Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` "
             "reviews only the diff; repeatable `--steer` adds review context. "
-            "Ticket Mode defaults a TB review's sealed simulation Target; pass "
+            "Ticket Mode defaults a TB review's Acceptance Basis simulation Target; pass "
             "`--target` to disambiguate an interactive review. "
             "The `spec` focus needs the ticket/spec text: Ticket Mode resolves it "
             "automatically, while Interactive Mode uses `--ticket <path>`.",

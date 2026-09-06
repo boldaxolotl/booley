@@ -17,13 +17,10 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.fusesoc import fusesoc_registry
 from booley.harness.models import TicketContext
-from booley.harness.setup.intake import _apply_contract_selectors
+from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
-from booley.ticket_board.target_contract import (
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
@@ -85,16 +82,12 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def _sealed_contract() -> TargetContract:
-    return TargetContract(
-        outer_sha="a" * 40,
-        project_sha=None,
-        surface_digest="b" * 64,
-        targets=(_TARGET_IDENTITY,),
+def _acceptance_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
-                criterion="cycle_count",
+                criterion="criteria.mandatory.cycle_count",
                 baseline=_TARGET_IDENTITY,
                 candidate=_TARGET_IDENTITY,
                 baseline_selector=_TARGET_SELECTOR,
@@ -102,9 +95,9 @@ def _sealed_contract() -> TargetContract:
             ),
         ),
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
+                authoring_sha="a" * 40,
                 ticket_ref="refs/heads/ticket",
                 destination_ref="refs/heads/main",
                 destination_sha="c" * 40,
@@ -131,9 +124,9 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         branch="main",
         summary="Qualified Cycle Count Target",
         project_root=Path(),
-        target_contract=_sealed_contract(),
+        acceptance_basis=_acceptance_basis(),
     )
-    _apply_contract_selectors(context, template, expanded, params)
+    _apply_basis_selectors(context, template, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = object.__new__(SimulateFlow)

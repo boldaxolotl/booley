@@ -11,15 +11,16 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
+from .acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    assert_live_inputs_unchanged,
+    materialize_current_ticket_checkout,
+    validate_ticket_view,
+)
+from .acceptance_targets import resolve_commit
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
-from .target_contract import (
-    TargetContract,
-    TargetContractError,
-    resolve_commit,
-    validate_targets_for_seal,
-    verify_surface,
-)
 from .validation import validate_ticket_fields
 
 
@@ -65,25 +66,80 @@ def _checkout_statuses(root: Path) -> tuple[str, ...]:
     return tuple(statuses)
 
 
-def _validate_checkout_contract(root: Path, fields: dict[str, object]) -> list[str]:
-    """Validate a seal from a clean checkout without authoring worktrees."""
+def _validate_checkout_basis(
+    root: Path,
+    tickets_dir: Path,
+    slug: str,
+    fields: dict[str, object],
+    body: str,
+) -> list[str]:
+    """Validate one executable Ticket in its current Basis composite."""
     if not (root / ".git").exists():
         return []
-    raw = fields.get("target_contract")
-    if raw is None:
-        return ["target_contract.schema: 1 is required for readiness"]
+    if fields.get("target_contract") is not None:
+        return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
+    if fields.get("acceptance_basis") is None:
+        return ["executable Ticket has no Acceptance Basis"]
     try:
-        contract = TargetContract.from_mapping(raw)
-        resolve_commit(root, contract.outer_sha)
-        if contract.project_sha:
+        from .io import TicketIO
+
+        basis = TicketIO(tickets_dir, project_root=root).load_basis(slug)
+        resolve_commit(root, basis.outer_sha)
+        if basis.project_sha:
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
-                return ["target_contract.project_sha is set but project repository is missing"]
-            resolve_commit(project_repository, contract.project_sha)
-        verify_surface(contract, root)
-    except (TargetContractError, OSError, ValueError) as exc:
+                raise AcceptanceBasisError(
+                    "Acceptance Basis project participant repository is missing"
+                )
+            resolve_commit(project_repository, basis.project_sha)
+        ticket, _status = find_ticket_file(tickets_dir, slug)
+        if ticket is None:
+            raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during readiness")
+        validation_errors = _validate_current_ticket_view(
+            root,
+            ticket,
+            slug,
+            basis,
+            fields,
+            body,
+        )
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [str(exc)]
-    return []
+    return validation_errors
+
+
+def _validate_current_ticket_view(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    basis: AcceptanceBasis,
+    fields: dict[str, object],
+    body: str,
+) -> list[str]:
+    from booley.flows.execution import flow_enabled
+
+    with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
+        current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
+        preparation = prepare_project(
+            root,
+            current,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", current),
+        )
+        if not preparation.ok:
+            raise AcceptanceBasisError(preparation.error)
+        errors = validate_ticket_fields(
+            fields,
+            body,
+            check_files=True,
+            check_git=False,
+            project_root=current,
+            check_tb_files=True,
+        )
+        errors.extend(validate_ticket_view(current, basis, allow_generated=True))
+        assert_live_inputs_unchanged(basis, root, current)
+        return errors
 
 
 def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
@@ -95,36 +151,34 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         return ReadinessResult(None, (f"ticket {slug!r} not found",))
 
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    from booley.flows.execution import flow_enabled
+    if (root / ".git").exists():
+        results = _validate_checkout_basis(root, tickets_dir, slug, fields, body)
+    else:
+        from booley.flows.execution import flow_enabled
 
-    status_before = _checkout_statuses(root)
-    preparation = prepare_project(
-        root,
-        root,
-        slug=slug,
-        ticket_path=ticket,
-        sim_flow_enabled=flow_enabled("sim", root),
-    )
-    if not preparation.ok:
-        return ReadinessResult(ticket, (preparation.error,))
-    if _checkout_statuses(root) != status_before:
-        return ReadinessResult(
-            ticket,
-            ("project preparation changed Git-visible checkout state",),
+        status_before = _checkout_statuses(root)
+        preparation = prepare_project(
+            root,
+            root,
+            slug=slug,
+            ticket_path=ticket,
+            sim_flow_enabled=flow_enabled("sim", root),
         )
-
-    results = validate_ticket_fields(
-        fields,
-        body,
-        check_files=True,
-        check_git=False,
-        project_root=root,
-        check_tb_files=True,
-    )
+        if not preparation.ok:
+            return ReadinessResult(ticket, (preparation.error,))
+        if _checkout_statuses(root) != status_before:
+            return ReadinessResult(
+                ticket,
+                ("project preparation changed Git-visible checkout state",),
+            )
+        results = validate_ticket_fields(
+            fields,
+            body,
+            check_files=True,
+            check_git=False,
+            project_root=root,
+            check_tb_files=True,
+        )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
-    errors.extend(_validate_checkout_contract(root, fields))
-    if not errors:
-        with tempfile.TemporaryDirectory(prefix="booley-ready-") as build_root:
-            errors.extend(validate_targets_for_seal(fields, root, build_root))
     return ReadinessResult(ticket, tuple(errors), warnings)
