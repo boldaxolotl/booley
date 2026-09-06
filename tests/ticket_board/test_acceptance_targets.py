@@ -69,7 +69,7 @@ def _catalog_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     def resolve_target_handle(handle: SimpleNamespace, **kwargs: object) -> SimpleNamespace:
-        return acceptance_targets.fusesoc_registry.resolve_target(
+        return acceptance_targets.fusesoc_registry._resolve_target(
             handle.selector,
             project_root=handle.project_root if hasattr(handle, "project_root") else Path.cwd(),
             **kwargs,
@@ -632,7 +632,7 @@ def test_comparison_snapshots_dispatch_by_flow(
 ) -> None:
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda target, **_kwargs: SimpleNamespace(name=target),
     )
     monkeypatch.setattr("booley.flows.synth.recipe.default_recipe_args", SimpleNamespace)
@@ -664,7 +664,7 @@ def test_comparison_snapshots_dispatch_fpga(
 ) -> None:
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda target, **_kwargs: SimpleNamespace(name=target),
     )
     monkeypatch.setattr(
@@ -694,7 +694,7 @@ def test_dry_resolve_binding_reports_failure_and_missing_toplevel(
     monkeypatch.setattr(acceptance_targets, "_missing_target_sources", lambda *_args: [])
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
     assert (
@@ -703,7 +703,7 @@ def test_dry_resolve_binding_reports_failure_and_missing_toplevel(
     )
     monkeypatch.setattr(
         acceptance_targets.fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         lambda *_args, **_kwargs: SimpleNamespace(toplevel=""),
     )
     assert (

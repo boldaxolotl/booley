@@ -22,7 +22,8 @@ from booley.flows.lint.flow import (
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.domain import TargetHandle
+from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
@@ -38,18 +39,14 @@ def _target_handle(
     """Build a selected Target value for layer-focused Lint tests."""
     root = Path.cwd() if project_root is None else Path(project_root)
     target_vlnv = vlnv or f"::{selector}:0"
-    return TargetHandle(
-        identity=f"{target_vlnv}#{selector}",
-        selector=selector,
-        name=selector,
+    return make_target_handle(
+        root,
+        selector,
         vlnv=target_vlnv,
-        core_file=root.resolve() / f"{selector}.core",
         flow=flow,
         eda_tool=eda_tool,
         drivable_by=("lint",),
-        project_root=root.resolve(),
-        doctor_private=False,
-        _factory_key=_HANDLE_FACTORY_KEY,
+        core_file=root.resolve() / f"{selector}.core",
     )
 
 
@@ -65,52 +62,11 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    class LenientCatalog:
-        def __init__(self, project_root):
-            self.project_root = Path(project_root)
-
-        def select(self, token, *, for_flow=None):
-            try:
-                return _REAL_CATALOG_BUILD(self.project_root).select(token, for_flow=for_flow)
-            except fusesoc_registry.UnknownTargetError:
-                return _target_handle(token, project_root=self.project_root)
-
-        def select_many(self, target_arg, *, for_flow=None):
-            return tuple(
-                self.select(token.strip(), for_flow=for_flow)
-                for token in (target_arg or "").split(",")
-                if token.strip()
-            )
-
-        def inspect(self, handle):
-            catalog = _REAL_CATALOG_BUILD(self.project_root)
-            return catalog.inspect(catalog.select(handle.selector))
-
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        classmethod(lambda _cls, root: LenientCatalog(root)),
+    install_lenient_target_catalog(
+        monkeypatch,
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=lambda root, token: _target_handle(token, project_root=root),
     )
-
-    def resolve_handle(handle, **kwargs):
-        return fusesoc_registry.resolve_target(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
-
-    def setup_handle(handle, **kwargs):
-        return fusesoc_registry.setup_command(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +212,7 @@ class TestLintResolution:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=fake_resolve,
         ):
             cmd, resolved = flow._prepare_lint_command(
@@ -288,7 +244,7 @@ class TestLintResolution:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=fusesoc_registry.TargetResolutionError("boom"),
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
@@ -330,10 +286,10 @@ class TestLintResolution:
         else:
             fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
-        orig_resolve = fusesoc_registry.resolve_target
+        orig_resolve = fusesoc_registry._resolve_target
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: orig_resolve(
                 *a,
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
@@ -446,7 +402,7 @@ class TestDoctorTargetAuthority:
         )
         monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
 
-        with patch.object(fusesoc_registry, "resolve_target") as resolve:
+        with patch.object(fusesoc_registry, "_resolve_target") as resolve:
             exit_code = LintFlow().main(
                 [
                     "--work-dir",
@@ -485,7 +441,7 @@ class TestDoctorTargetAuthority:
         resolved = _stub_resolved("verible")
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", target.selector])
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved) as resolve:
+        with patch.object(fusesoc_registry, "_resolve_target", return_value=resolved) as resolve:
             flow._prepare_lint_command(target)
 
         resolve.assert_called_once_with(
@@ -496,7 +452,7 @@ class TestDoctorTargetAuthority:
             ),
             vlnv="acme:ip:doctor:1.0",
         )
-        setup = fusesoc_registry.setup_command(
+        setup = fusesoc_registry._setup_command(
             target.selector,
             project_root=tmp_path,
             build_root=tmp_path / "build",
@@ -683,7 +639,7 @@ class TestDryRun:
         """Dry-run previews ``fusesoc run --setup`` + ``make`` without resolving.
 
         The preview is sourced from a cheap ``.core`` YAML read; patching
-        ``resolve_target`` to fail proves dry-run never invokes fusesoc.
+        ``_resolve_target`` to fail proves dry-run never invokes fusesoc.
         """
         from booley.fusesoc import fusesoc_registry
 
@@ -697,7 +653,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()
@@ -724,7 +680,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "setup_command",
+            "_setup_command",
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
@@ -1703,7 +1659,7 @@ class TestVeribleTargets:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
         ):
             result = flow._run()

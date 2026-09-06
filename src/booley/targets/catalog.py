@@ -4,89 +4,30 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.fusesoc.target_inspection import TargetSourceInspector
+from booley.fusesoc.target_inspection import (
+    # Intentional private adapter seam: TargetCatalog is the only production
+    # owner allowed to drive source inspection.
+    _TargetSourceInspector,  # pyright: ignore[reportPrivateUsage]
+)
 from booley.targets.domain import (
-    _HANDLE_FACTORY_KEY,
+    # Intentional private construction key: only this catalog creates handles.
+    _HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
     TARGET_AWARE_FLOWS,
-    AmbiguousTargetError,
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
     TargetHandle,
     TargetInspection,
     TargetRef,
-    UnknownTargetError,
     flow_can_drive,
 )
-
-
-def _vlnv_key(vlnv: str) -> str:
-    parts = vlnv.split(":")
-    return ":".join(parts[:3]) if len(parts) >= 3 else vlnv
-
-
-def _vlnv_matches(query: str, vlnv: str) -> bool:
-    key_segments = _vlnv_key(vlnv).split(":")
-    query_segments = _vlnv_key(query).split(":")
-    return len(query_segments) <= len(key_segments) and (
-        key_segments[-len(query_segments) :] == query_segments
-    )
-
-
-def _split_selector(token: str) -> tuple[str | None, str]:
-    if "#" not in token:
-        return None, token
-    qualifier, _, name = token.rpartition("#")
-    return qualifier or None, name
-
-
-def _minimal_selector(ref: TargetRef, declaring: tuple[TargetRef, ...]) -> str:
-    if len(declaring) <= 1:
-        return ref.name
-    segments = _vlnv_key(ref.vlnv).split(":")
-    for length in range(1, len(segments) + 1):
-        qualifier = ":".join(segments[-length:])
-        if sum(_vlnv_matches(qualifier, candidate.vlnv) for candidate in declaring) == 1:
-            return f"{qualifier}#{ref.name}"
-    return f"{ref.vlnv}#{ref.name}"
-
-
-def _resolve(declarations: dict[str, tuple[TargetRef, ...]], token: str) -> TargetRef:
-    qualifier, name = _split_selector(token)
-    bucket = declarations.get(name)
-    if not bucket:
-        known = ", ".join(sorted(declarations)) or "(none authored)"
-        raise UnknownTargetError(f"Unknown target {token!r}; selectable Targets: {known}")
-    if qualifier is None:
-        if len(bucket) == 1:
-            return bucket[0]
-        candidates = sorted(ref.vlnv for ref in bucket)
-        hint = f"{_vlnv_key(candidates[0]).split(':')[-1]}#{name}"
-        raise AmbiguousTargetError(
-            f"Target {name!r} is declared by {len(bucket)} cores: "
-            f"{', '.join(candidates)}; qualify it as 'vlnv#name' (e.g. {hint!r})."
-        )
-    matches: tuple[TargetRef, ...] = tuple(
-        ref for ref in bucket if _vlnv_matches(qualifier, ref.vlnv)
-    )
-    if not matches:
-        candidates = ", ".join(sorted(ref.vlnv for ref in bucket))
-        raise UnknownTargetError(
-            f"no Target {name!r} in a core matching {qualifier!r}; "
-            f"cores declaring {name!r}: {candidates}"
-        )
-    if len(matches) > 1:
-        candidates = ", ".join(sorted(ref.vlnv for ref in matches))
-        raise AmbiguousTargetError(
-            f"{token!r} is ambiguous — {qualifier!r} matches {len(matches)} "
-            f"cores: {candidates}; use a longer VLNV qualifier."
-        )
-    return next(iter(matches))
+from booley.targets.selection import minimal_selector, resolve
 
 
 def _doctor_private_authority() -> bool:
@@ -95,7 +36,7 @@ def _doctor_private_authority() -> bool:
 
 @dataclass
 class _OperationalState:
-    inspector: TargetSourceInspector | None = None
+    inspector: _TargetSourceInspector | None = None
     documents: dict[Path, dict[str, Any]] = field(default_factory=lambda: {})
 
 
@@ -116,19 +57,33 @@ class TargetCatalog:
         """Build a read-only declaration snapshot without preparing FuseSoC."""
         root = Path(project_root).resolve()
         doctor_private = _doctor_private_authority()
-        snapshot_id = fusesoc_registry.target_snapshot_id(root)
         cache_key = (root, doctor_private)
+        snapshot_id = fusesoc_registry.target_snapshot_id(root)
         with cls._cache_lock:
             cached = cls._cache.get(cache_key)
             if cached is not None and cached.snapshot_id == snapshot_id:
                 return cached
-        declarations = fusesoc_registry.target_declarations(root)
+        # Intentional private adapter seam: discovery stays behind this catalog.
+        declarations = fusesoc_registry._target_declarations(  # pyright: ignore[reportPrivateUsage]
+            root
+        )
+        documents: dict[Path, dict[str, Any]] = {}
+        for core_file in fusesoc_registry.discover_cores(root):
+            try:
+                documents[core_file.resolve()] = fusesoc_registry.read_core(core_file.resolve())
+            except fusesoc_registry.FuseSocError:
+                continue
+        if fusesoc_registry.target_snapshot_id(root) != snapshot_id:
+            raise StaleTargetCatalogError(
+                f"Target inputs for {root} changed while the catalog was being built"
+            )
         frozen = tuple((name, tuple(refs)) for name, refs in sorted(declarations.items()))
         catalog = cls(
             root,
             snapshot_id,
             frozen,
             doctor_private,
+            _OperationalState(documents=documents),
         )
         with cls._cache_lock:
             existing = cls._cache.get(cache_key)
@@ -139,6 +94,7 @@ class TargetCatalog:
 
     def list(self, *, for_flow: str | None = None) -> tuple[TargetHandle, ...]:
         """List visible Targets from this snapshot, optionally by compatible Flow."""
+        self._require_fresh()
         for_flow = _canonical_flow(for_flow)
         handles: list[TargetHandle] = []
         for _name, refs in self._declarations:
@@ -151,9 +107,10 @@ class TargetCatalog:
 
     def select(self, token: str, *, for_flow: str | None = None) -> TargetHandle:
         """Resolve one authored token once and return its canonical handle."""
+        self._require_fresh()
         for_flow = _canonical_flow(for_flow)
         declarations = self._visible_declarations()
-        ref = _resolve(declarations, token)
+        ref = resolve(declarations, token)
         if for_flow is not None and not flow_can_drive(for_flow, ref):
             raise IncompatibleTargetError(
                 f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
@@ -177,8 +134,28 @@ class TargetCatalog:
         self._require_handle(handle)
         self._require_fresh()
         if self._state.inspector is None:
-            self._state.inspector = TargetSourceInspector(self.project_root)
-        return self._state.inspector.inspect_handle(handle)
+            self._state.inspector = _TargetSourceInspector(self.project_root)
+        return self._state.inspector.inspect_catalog_handle(handle)
+
+    def core_closure(
+        self,
+        handles: Collection[TargetHandle],
+    ) -> frozenset[Path] | None:
+        """Return dependency cores reachable from selected handles."""
+        self._require_fresh()
+        if not handles:
+            return None
+        for handle in handles:
+            self._require_handle(handle)
+        # Intentional private adapter seam: handles are authorized above and the
+        # walker receives only this catalog's frozen declaration documents.
+        closure = fusesoc_registry._selectable_core_closure_for_refs(  # pyright: ignore[reportPrivateUsage]
+            self.project_root,
+            handles,
+            documents=self._state.documents,
+        )
+        self._require_fresh()
+        return closure
 
     def _visible(self, refs: tuple[TargetRef, ...]) -> tuple[TargetRef, ...]:
         if self._doctor_private:
@@ -194,11 +171,10 @@ class TargetCatalog:
         core_file = ref.core_file.resolve()
         document = self._state.documents.get(core_file)
         if document is None:
-            document = fusesoc_registry.read_core(core_file)
-            self._state.documents[core_file] = document
+            raise RuntimeError(f"Target catalog snapshot omitted declaration document {core_file}")
         return TargetHandle(
             identity=f"{ref.vlnv}#{ref.name}",
-            selector=_minimal_selector(ref, bucket),
+            selector=minimal_selector(ref, bucket),
             name=ref.name,
             vlnv=ref.vlnv,
             core_file=core_file,

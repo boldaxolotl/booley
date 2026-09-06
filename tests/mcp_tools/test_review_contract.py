@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.fusesoc.fusesoc_registry import FuseSocError
-from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.specialists.review_contract import ReviewContractError, resolve_review_target
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 
 def _write_project(root: Path) -> None:
@@ -153,11 +153,12 @@ def test_scope_matching_uses_condition_selected_target_inputs(tmp_path: Path) ->
 
 def test_bound_target_ignores_unrelated_uninspectable_target(tmp_path: Path) -> None:
     _write_project(tmp_path)
+    real_inspect = TargetCatalog.inspect
 
     def inspect(handle):
         if handle.name == "sim_hdl":
             raise FuseSocError("missing optional dependency")
-        return TargetSourceInspector(tmp_path).inspect_handle(handle)
+        return real_inspect(TargetCatalog.build(tmp_path), handle)
 
     with patch("booley.targets.catalog.TargetCatalog.inspect", side_effect=inspect):
         contract = resolve_review_target(
@@ -190,11 +191,12 @@ def test_bound_target_reports_relevant_inspection_failure(tmp_path: Path) -> Non
 
 def test_unbound_candidate_failure_is_isolated_and_fails_closed(tmp_path: Path) -> None:
     _write_project(tmp_path)
+    real_inspect = TargetCatalog.inspect
 
     def inspect(handle):
         if handle.name == "sim_hdl":
             raise FuseSocError("missing optional dependency")
-        return TargetSourceInspector(tmp_path).inspect_handle(handle)
+        return real_inspect(TargetCatalog.build(tmp_path), handle)
 
     with (
         patch("booley.targets.catalog.TargetCatalog.inspect", side_effect=inspect),

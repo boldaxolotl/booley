@@ -36,26 +36,19 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.domain import TargetHandle
+from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
-_REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
-    root = Path(project_root).resolve()
-    return TargetHandle(
-        identity=f"::test:0#{selector}",
-        selector=selector,
-        name=selector,
-        vlnv="::test:0",
-        core_file=root / "test.core",
+    return make_target_handle(
+        project_root,
+        selector,
         flow="generic",
         eda_tool="vivado",
         drivable_by=("fpga",),
-        project_root=root,
-        doctor_private=False,
-        _factory_key=_HANDLE_FACTORY_KEY,
     )
 
 
@@ -71,52 +64,11 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    class LenientCatalog:
-        def __init__(self, project_root):
-            self.project_root = Path(project_root)
-
-        def select(self, token, *, for_flow=None):
-            try:
-                return _REAL_CATALOG_BUILD(self.project_root).select(token, for_flow=for_flow)
-            except fusesoc_registry.UnknownTargetError:
-                return _layer_target_handle(self.project_root, token)
-
-        def select_many(self, target_arg, *, for_flow=None):
-            return tuple(
-                self.select(token.strip(), for_flow=for_flow)
-                for token in (target_arg or "").split(",")
-                if token.strip()
-            )
-
-        def inspect(self, handle):
-            catalog = _REAL_CATALOG_BUILD(self.project_root)
-            return catalog.inspect(catalog.select(handle.selector))
-
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        classmethod(lambda _cls, root: LenientCatalog(root)),
+    install_lenient_target_catalog(
+        monkeypatch,
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=_layer_target_handle,
     )
-
-    def resolve_handle(handle, **kwargs):
-        return fusesoc_registry.resolve_target(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
-
-    def setup_handle(handle, **kwargs):
-        return fusesoc_registry.setup_command(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 
 
 @pytest.fixture()
@@ -366,7 +318,7 @@ def _fake_fpga_resolved(
 
 # Captured before the autouse fixture below patches the attribute, so the
 # real-fusesoc e2e can reach the genuine resolver.
-_REAL_RESOLVE = fusesoc_registry.resolve_target
+_REAL_RESOLVE = fusesoc_registry._resolve_target
 
 
 @pytest.fixture(autouse=True)
@@ -376,12 +328,12 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     The Edalize-path tests mock only the boundary executor; without this,
     ``_prepare_fpga_command`` would shell out to a real ``fusesoc run --setup``
     against a project with no ``.core``. Tests that exercise resolution itself
-    re-patch ``resolve_target`` inside a ``with`` block (that inner patch wins);
+    re-patch ``_resolve_target`` inside a ``with`` block (that inner patch wins);
     the e2e uses ``_REAL_RESOLVE``.
     """
     with patch.object(
         fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         side_effect=lambda target="default", **k: _fake_fpga_resolved(tmp_path, config=target),
     ):
         yield
@@ -434,11 +386,6 @@ def test_run_rejects_non_fpga_axis_before_setup(
         "    toplevel: dut_top\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        fusesoc_registry,
-        "resolve_target_selection",
-        _REAL_RESOLVE_TARGET_SELECTION,
-    )
     flow = _flow(tmp_path, state_file, "--target", "synth_core", "--dry-run")
 
     with pytest.raises(
@@ -486,7 +433,7 @@ def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
         return _fake_fpga_resolved(tmp_path, config=target)
 
     with (
-        patch.object(fusesoc_registry, "resolve_target", side_effect=resolve),
+        patch.object(fusesoc_registry, "_resolve_target", side_effect=resolve),
         patch.object(
             run_evidence,
             "capture_flow_source_evidence",
@@ -683,7 +630,7 @@ class TestFpgaResolution:
         tmp_path: Path,
         state_file: Path,
     ) -> None:
-        """resolve_target gets the config name, the project root, and an isolated
+        """_resolve_target gets the config name, the project root, and an isolated
         per-variant build dir distinct from the vivado configure() work_root."""
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
@@ -715,7 +662,7 @@ class TestFpgaResolution:
             run_p,
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=fake_resolve,
             ),
         ):
@@ -765,7 +712,7 @@ class TestTargetRecipeBoundary:
             build_p,
             cfg_p,
             run_p,
-            patch.object(fusesoc_registry, "resolve_target", return_value=resolved),
+            patch.object(fusesoc_registry, "_resolve_target", return_value=resolved),
             pytest.raises(
                 BoundaryError,
                 match="out_of_context",
@@ -832,7 +779,7 @@ class TestTargetRecipeBoundary:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=fusesoc_registry.TargetResolutionError("no such target"),
         ):
             result = flow._run()
@@ -914,7 +861,7 @@ class TestTargetRecipeBoundary:
             run_p,
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=lambda *a, **k: _REAL_RESOLVE(
                     *a,
                     **{**k, "fusesoc_cmd": fusesoc_cmd},

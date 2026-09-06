@@ -56,25 +56,19 @@ from booley.flows.synth.warnings import parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.domain import TargetHandle
+from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
-    root = Path(project_root).resolve()
-    return TargetHandle(
-        identity=f"::test:0#{selector}",
-        selector=selector,
-        name=selector,
-        vlnv="::test:0",
-        core_file=root / "test.core",
+    return make_target_handle(
+        project_root,
+        selector,
         flow="generic",
         eda_tool="yosys",
         drivable_by=("synth",),
-        project_root=root,
-        doctor_private=False,
-        _factory_key=_HANDLE_FACTORY_KEY,
     )
 
 
@@ -117,52 +111,11 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    class LenientCatalog:
-        def __init__(self, project_root):
-            self.project_root = Path(project_root)
-
-        def select(self, token, *, for_flow=None):
-            try:
-                return _REAL_CATALOG_BUILD(self.project_root).select(token, for_flow=for_flow)
-            except fusesoc_registry.UnknownTargetError:
-                return _layer_target_handle(self.project_root, token)
-
-        def select_many(self, target_arg, *, for_flow=None):
-            return tuple(
-                self.select(token.strip(), for_flow=for_flow)
-                for token in (target_arg or "").split(",")
-                if token.strip()
-            )
-
-        def inspect(self, handle):
-            catalog = _REAL_CATALOG_BUILD(self.project_root)
-            return catalog.inspect(catalog.select(handle.selector))
-
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        classmethod(lambda _cls, root: LenientCatalog(root)),
+    install_lenient_target_catalog(
+        monkeypatch,
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=_layer_target_handle,
     )
-
-    def resolve_handle(handle, **kwargs):
-        return fusesoc_registry.resolve_target(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve_handle)
-
-    def setup_handle(handle, **kwargs):
-        return fusesoc_registry.setup_command(
-            handle.selector,
-            project_root=handle.project_root,
-            vlnv=handle.vlnv,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +369,7 @@ def _write_syn_demo_project(work_dir: Path) -> None:
 
 # Captured before the autouse fixture below patches the attribute, so the
 # real-fusesoc e2e can reach the genuine resolver.
-_REAL_RESOLVE = fusesoc_registry.resolve_target
+_REAL_RESOLVE = fusesoc_registry._resolve_target
 
 
 @pytest.fixture(autouse=True)
@@ -426,13 +379,13 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     The execution-path tests (``TestSingleConfigRun`` etc.) mock only
     ``_execute``; without this, ``_build_synth_cmd`` would shell out to a real
     ``fusesoc run --setup`` against a project with no ``.core`` and fail. Tests
-    that exercise resolution itself re-patch ``resolve_target`` inside a ``with``
+    that exercise resolution itself re-patch ``_resolve_target`` inside a ``with``
     block — that inner patch takes precedence for its duration; the e2e uses
     ``_REAL_RESOLVE``.
     """
     with patch.object(
         fusesoc_registry,
-        "resolve_target",
+        "_resolve_target",
         side_effect=lambda target="lite", **k: _fake_synth_resolved(tmp_path, config=target),
     ):
         yield
@@ -1188,7 +1141,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
         ):
             result = flow._run()
@@ -1219,7 +1172,7 @@ class TestDryRun:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
         ):
             result = flow._run()
@@ -1264,7 +1217,7 @@ class TestDryRun:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *args, **kwargs: _REAL_RESOLVE(
                 *args,
                 **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
@@ -1368,7 +1321,7 @@ class TestSingleConfigRun:
             patch.object(flow, "_execute", side_effect=held_eda_run),
             patch.object(
                 fusesoc_registry,
-                "setup_command",
+                "_setup_command",
                 return_value=["fusesoc", "run", "--setup", "--target", "lite"],
             ),
             ThreadPoolExecutor(max_workers=1) as pool,
@@ -1420,7 +1373,7 @@ class TestSingleConfigRun:
             patch.object(shutil, "copy2", side_effect=held_copy),
             patch.object(
                 fusesoc_registry,
-                "setup_command",
+                "_setup_command",
                 return_value=["fusesoc", "run", "--setup", "--target", "lite"],
             ),
             ThreadPoolExecutor(max_workers=1) as pool,
@@ -2444,7 +2397,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2465,7 +2418,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2489,7 +2442,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2533,7 +2486,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2552,7 +2505,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2578,7 +2531,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _with_synth_mode(
                 _fake_synth_resolved(tmp_path), "physical"
             ),
@@ -2605,7 +2558,7 @@ class TestBuildSynthCmd:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=lambda *a, **k: no_sdc,
             ),
             pytest.raises(BoundaryError, match=r"no timing constraints"),
@@ -2635,7 +2588,7 @@ class TestBuildSynthCmd:
         no_sdc = _with_synth_mode(no_sdc, "physical")
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: no_sdc,
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2661,7 +2614,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2688,7 +2641,7 @@ class TestBuildSynthCmd:
             seen["stale_present"] = stale.exists()
             return _fake_synth_resolved(tmp_path)
 
-        with patch.object(fusesoc_registry, "resolve_target", side_effect=_resolve):
+        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_resolve):
             flow._build_synth_cmd("lite")
         assert seen["stale_present"] is False  # cleared before FuseSoC re-stages
 
@@ -2697,7 +2650,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2709,7 +2662,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2722,7 +2675,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2741,7 +2694,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2761,7 +2714,7 @@ class TestBuildSynthCmd:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
             ),
             pytest.raises(BoundaryError, match=r"frontend must be one of"),
@@ -2787,7 +2740,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2808,7 +2761,7 @@ class TestBuildSynthCmd:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
             ),
             pytest.raises(BoundaryError, match=r"slang_options must be a non-empty list"),
@@ -2826,7 +2779,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2858,7 +2811,7 @@ class TestBuildSynthCmd:
         resolved = _with_synth_mode(resolved, "physical")
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: resolved,
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2882,7 +2835,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2902,7 +2855,7 @@ class TestBuildSynthCmd:
         flow.read_state()
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -2913,7 +2866,7 @@ class TestBuildSynthCmd:
         flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
@@ -3357,7 +3310,7 @@ class TestSynthResolution:
         with (
             patch.object(
                 fusesoc_registry,
-                "resolve_target",
+                "_resolve_target",
                 side_effect=fusesoc_registry.TargetResolutionError("boom"),
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
@@ -3369,7 +3322,7 @@ class TestSynthResolution:
         flow, state_file = flow_and_state
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=fusesoc_registry.TargetResolutionError("no such target"),
         ):
             result = flow._run()
@@ -3384,7 +3337,7 @@ class TestSynthResolution:
         flow_and_state,
         tmp_path: Path,
     ):
-        """resolve_target gets the config name and asic_synthesize's own build root."""
+        """_resolve_target gets the config name and asic_synthesize's own build root."""
         flow, _ = flow_and_state
         handle = _layer_target_handle(tmp_path, "lite")
         flow._target_handles = {"lite": handle}
@@ -3404,7 +3357,7 @@ class TestSynthResolution:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=fake_resolve,
         ):
             flow._build_synth_cmd("lite")
@@ -3451,7 +3404,7 @@ class TestSynthResolution:
 
         with patch.object(
             fusesoc_registry,
-            "resolve_target",
+            "_resolve_target",
             side_effect=lambda *a, **k: _REAL_RESOLVE(
                 *a,
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
@@ -3985,9 +3938,6 @@ class TestIncompleteResourceResults:
             raise RuntimeError("simulated outer interruption")
 
         with (
-            patch.object(
-                fusesoc_registry, "resolve_target_selection", return_value=["asic_a", "asic_b"]
-            ),
             patch.object(flow, "_run_baseline_configs", return_value=({}, None)),
             patch.object(flow, "_run_single_config", side_effect=run_one),
             pytest.raises(RuntimeError, match="outer interruption"),

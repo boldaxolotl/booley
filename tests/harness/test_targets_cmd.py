@@ -152,7 +152,7 @@ class TestTargetsDetail:
             raise AssertionError("host detail must not invoke fusesoc")
 
         monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(fusesoc_registry, "resolve_target", unexpected_resolve)
+        monkeypatch.setattr(fusesoc_registry, "_resolve_target", unexpected_resolve)
 
         assert _run(project, "sim", "--json") == 0
         payload = json.loads(capsys.readouterr().out)

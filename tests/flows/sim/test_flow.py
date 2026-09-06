@@ -973,7 +973,7 @@ class TestDryRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch(
-        "booley.fusesoc.fusesoc_registry.resolve_target",
+        "booley.fusesoc.fusesoc_registry._resolve_target",
         side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
     )
     def test_dry_run_edalize_shows_fusesoc_setup_without_resolving(
@@ -986,7 +986,7 @@ class TestDryRun:
     ):
         # The edalize dry-run path shows the `fusesoc run --setup` command a real
         # run would execute, sourced from a cheap .core YAML read — no fusesoc
-        # invocation (patched resolve_target would fail the test if it fired).
+        # invocation (patched _resolve_target would fail the test if it fired).
         (tmp_path / "sim.core").write_text(
             "CAPI=2:\nname: ::sim_demo:0\ntargets:\n  lite:\n    flow: sim\n"
             "    toplevel: alu_tb\n    flow_options:\n      tool: verilator\n",

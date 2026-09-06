@@ -221,7 +221,6 @@ __all__ = [
     "TARGET_AWARE_FLOWS",
     "TARGET_IDENTITY_PARAM",
     "TARGET_SELECTOR_PARAM",
-    "_HANDLE_FACTORY_KEY",
     "AmbiguousTargetError",
     "CoreCollisionError",
     "CoreSources",

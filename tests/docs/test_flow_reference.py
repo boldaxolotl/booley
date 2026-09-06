@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import pytest
+from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
@@ -24,7 +25,6 @@ from booley.flows.sim.flow import (
     TestResult as SimTestResult,
 )
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
-from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
@@ -79,18 +79,12 @@ def _configured_flow(
     flow.parse_args(
         ["--target", target, "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
     )
-    handle = TargetHandle(
-        identity=f"::docs:0#{target}",
-        selector=target,
-        name=target,
+    handle = make_target_handle(
+        tmp_path,
+        target,
         vlnv="::docs:0",
-        core_file=tmp_path / "docs.core",
-        flow=None,
-        eda_tool=None,
         drivable_by=(flow.name,),
-        project_root=tmp_path.resolve(),
-        doctor_private=False,
-        _factory_key=_HANDLE_FACTORY_KEY,
+        core_file=tmp_path / "docs.core",
     )
     flow._target_handles = {target: handle}  # type: ignore[attr-defined]
     return flow, report_dir

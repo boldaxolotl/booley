@@ -26,11 +26,15 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
         "doctor_target_seed",
         "doctor_target_selectors",
         "enumerate_targets",
+        "enumerate_all",
+        "index_core_documents",
         "minimal_selector",
         "resolve_public_ref",
         "resolve_ref",
         "resolve_target",
         "resolve_target_selection",
+        "selectable_core_closure",
+        "selectable_core_closure_for_refs",
         "select_target",
         "select_targets",
         "setup_command",
@@ -38,11 +42,33 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
         "target_declarations",
         "target_eda_tools",
         "try_resolve_target",
+        "missing_target_sources",
+        "preflight_target_sources",
+        "sim_target_has_untagged_tb",
+        "target_referenced_files",
+        "target_source_files",
+        "TargetSourceInspector",
+        "_TargetSourceInspector",
+        "resolve",
+        "split_selector",
+        "vlnv_key",
     }
 )
 
-_LOW_LEVEL_MODULES = frozenset({"booley.fusesoc.fusesoc_registry"})
-_TARGET_ADAPTER_PATHS = frozenset({"fusesoc/fusesoc_registry.py", "targets/catalog.py"})
+_LOW_LEVEL_MODULES = frozenset(
+    {
+        "booley.fusesoc.fusesoc_registry",
+        "booley.fusesoc.target_inspection",
+        "booley.targets.selection",
+    }
+)
+_TARGET_ADAPTER_PATHS = frozenset(
+    {
+        "fusesoc/fusesoc_registry.py",
+        "fusesoc/target_inspection.py",
+        "targets/catalog.py",
+    }
+)
 
 
 def _target_mechanics_violations(path: Path, relative: str) -> list[str]:
@@ -60,20 +86,20 @@ def _target_mechanics_violations(path: Path, relative: str) -> list[str]:
             violations.extend(
                 f"{relative}:{node.lineno}: {alias.name}"
                 for alias in node.names
-                if alias.name in _LOW_LEVEL_TARGET_MECHANICS
+                if alias.name.lstrip("_") in _LOW_LEVEL_TARGET_MECHANICS
             )
         elif isinstance(node, ast.ImportFrom) and node.module == "booley.fusesoc":
             module_aliases.update(
                 alias.asname or alias.name
                 for alias in node.names
-                if alias.name == "fusesoc_registry"
+                if f"booley.fusesoc.{alias.name}" in _LOW_LEVEL_MODULES
             )
     for node in ast.walk(tree):
         dotted = _dotted_name(node)
         if (
             isinstance(node, ast.Attribute)
             and any(dotted == f"{module}.{node.attr}" for module in module_aliases)
-            and node.attr in _LOW_LEVEL_TARGET_MECHANICS
+            and node.attr.lstrip("_") in _LOW_LEVEL_TARGET_MECHANICS
         ):
             violations.append(f"{relative}:{node.lineno}: {node.attr}")
     return violations
@@ -110,6 +136,18 @@ def test_only_target_adapters_use_low_level_target_mechanics() -> None:
         "booley.fusesoc.fusesoc_registry.resolve_ref('.', 'sim')\n",
         "from booley.fusesoc import fusesoc_registry as registry\nregistry.resolve_ref('.', 'sim')\n",
         "from booley.fusesoc.fusesoc_registry import resolve_ref as choose\nchoose('.', 'sim')\n",
+        "from booley.fusesoc.target_inspection import TargetSourceInspector\n"
+        "TargetSourceInspector('.')\n",
+        "from booley.fusesoc.fusesoc_registry import _resolve_ref as choose\nchoose('.', 'sim')\n",
+        "from booley.fusesoc import fusesoc_registry as registry\n"
+        "registry._target_declarations('.')\n",
+        "from booley.fusesoc.fusesoc_registry import _enumerate_all as enumerate_all\n"
+        "enumerate_all('.')\n",
+        "from booley.fusesoc.fusesoc_registry import _selectable_core_closure_for_refs\n"
+        "_selectable_core_closure_for_refs('.', [])\n",
+        "from booley.fusesoc.fusesoc_registry import _index_core_documents\n"
+        "_index_core_documents('.')\n",
+        "from booley.targets.selection import resolve as choose\nchoose({}, 'sim')\n",
     ],
 )
 def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: str) -> None:

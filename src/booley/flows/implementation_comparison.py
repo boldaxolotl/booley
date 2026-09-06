@@ -400,10 +400,11 @@ def baseline_execution_context(
     """Reselect and identity-check every planned baseline in its checkout."""
     handles: dict[str, TargetHandle] = {}
     references: dict[str, TargetExecutionRef] = {}
+    catalog = TargetCatalog.build(project_root)
     for plan in plans:
         ref = plan.baseline
         try:
-            handle = TargetCatalog.build(project_root).select(ref.selector, for_flow=plan.flow)
+            handle = catalog.select(ref.selector, for_flow=plan.flow)
         except FuseSocError as exc:
             raise ImplementationComparisonError(
                 f"baseline Target {ref.selector!r} cannot be selected: {exc}"

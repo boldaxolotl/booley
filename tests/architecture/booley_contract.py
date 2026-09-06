@@ -164,7 +164,10 @@ DIRECTION_RULES = (
     ),
     DirectionRule(
         "D12",
-        (exact("booley.targets.domain"),),
+        (
+            exact("booley.targets.domain"),
+            exact("booley.targets.selection"),
+        ),
         (prefix("booley.fusesoc"),),
         _D12_REASON,
     ),

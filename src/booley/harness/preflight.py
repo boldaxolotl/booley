@@ -210,15 +210,11 @@ def _check_ticket_board(project_root: Path) -> list[str]:
 
 def _doctor_core_files(project_root: Path) -> set[Path]:
     """Core files in Doctor-selected Target dependency closures."""
-    from booley.fusesoc import fusesoc_registry
     from booley.targets.catalog import TargetCatalog
 
-    seeds = [
-        handle.selector
-        for handle in TargetCatalog.build(project_root).list()
-        if handle.doctor_flows
-    ]
-    closure = fusesoc_registry.selectable_core_closure(project_root, seeds)
+    catalog = TargetCatalog.build(project_root)
+    seeds = [handle for handle in catalog.list() if handle.doctor_flows]
+    closure = catalog.core_closure(seeds)
     return set(closure or ())
 
 

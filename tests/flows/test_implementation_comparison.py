@@ -410,7 +410,7 @@ def test_baseline_flow_mismatch_is_rejected_before_setup(
     _basis_project(tmp_path)
     candidate = select_target(tmp_path, "synth_after", for_flow="synth")
     setup = Mock(side_effect=AssertionError("FuseSoC setup must not run"))
-    monkeypatch.setattr(fusesoc_registry, "resolve_target", setup)
+    monkeypatch.setattr(fusesoc_registry, "_resolve_target", setup)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "lint_only"})
     }

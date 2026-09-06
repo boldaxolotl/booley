@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from booley.flows.baseline_worktree import baseline_worktree
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.fusesoc_trace_overlay import write_trace_overlay
+from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     AmbiguousTargetError,
@@ -35,6 +39,25 @@ def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _init_repository(root: Path) -> None:
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
 
 
 @pytest.fixture
@@ -127,7 +150,13 @@ def test_catalog_rejects_same_root_drift(project: Path) -> None:
     )
 
     with pytest.raises(StaleTargetCatalogError):
+        catalog.list()
+    with pytest.raises(StaleTargetCatalogError):
+        catalog.select("lint_a")
+    with pytest.raises(StaleTargetCatalogError):
         catalog.inspect(handle)
+    with pytest.raises(StaleTargetCatalogError):
+        catalog.core_closure([handle])
     with pytest.raises(StaleTargetCatalogError):
         fusesoc_registry.setup_command_for_handle(handle, build_root=project / "build")
 
@@ -156,6 +185,8 @@ def test_catalog_rejects_handle_from_another_snapshot(project: Path) -> None:
 
     with pytest.raises(ForeignTargetHandleError):
         second.inspect(handle)
+    with pytest.raises(ForeignTargetHandleError):
+        second.core_closure([handle])
 
 
 def test_catalog_reuses_condition_safe_inspection(
@@ -205,42 +236,158 @@ def test_cached_inspection_mappings_are_deeply_immutable(project: Path) -> None:
     assert "mutated" not in cached.inputs[0].attributes
 
 
-def test_independent_checkout_surfaces_use_independent_catalogs(tmp_path: Path) -> None:
-    roots = {
-        name: tmp_path / name
-        for name in ("active", "baseline-worktree", "paired-external", "provider-prospective")
-    }
-    catalogs: dict[str, TargetCatalog] = {}
-    handles = {}
-    for index, (name, root) in enumerate(roots.items()):
-        (root / "rtl").mkdir(parents=True)
-        (root / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
-        (root / "rtl" / "b.sv").write_text("module b; endmodule\n", encoding="utf-8")
-        _write_core(
-            root,
-            "surface.core",
-            f"acme:surface:{index}:1.0",
-            """
-            sim:
-              flow: sim
-              flow_options: {tool: icarus}
-              filesets: [rtl]
-              toplevel: a
-            """,
-        )
-        catalogs[name] = TargetCatalog.build(root)
-        handles[name] = catalogs[name].select("sim", for_flow="sim")
+def test_inspection_normalizes_windows_fileset_paths_on_posix(tmp_path: Path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    (tmp_path / "portable.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:portable:path:1.0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files: ['rtl\\\\a.sv']\n"
+        "targets:\n"
+        "  lint:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "    toplevel: a\n",
+        encoding="utf-8",
+    )
 
-    assert {handle.project_root for handle in handles.values()} == {
-        root.resolve() for root in roots.values()
-    }
-    for catalog_name, catalog in catalogs.items():
-        for handle_name, handle in handles.items():
-            if catalog_name != handle_name:
-                with pytest.raises(ForeignTargetHandleError):
-                    catalog.inspect(handle)
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("lint", for_flow="lint"))
 
-    prospective = roots["provider-prospective"]
+    assert inspection.rtl_files == ("rtl/a.sv",)
+
+
+def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    _init_repository(root)
+    (root / ".gitignore").write_text("/.booley_project/\n", encoding="utf-8")
+    (root / "rtl").mkdir()
+    (root / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    _write_core(
+        root,
+        "design.core",
+        "acme:worktree:design:1.0",
+        """
+        lint:
+          flow: lint
+          flow_options: {tool: verilator}
+          filesets: [rtl]
+          toplevel: baseline_top
+        """,
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "baseline")
+    baseline_sha = _git(root, "rev-parse", "HEAD")
+    core = root / "design.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("baseline_top", "active_top"),
+        encoding="utf-8",
+    )
+    _git(root, "add", "design.core")
+    _git(root, "commit", "-m", "active")
+    active_catalog = TargetCatalog.build(root)
+    active = active_catalog.select("lint")
+
+    with baseline_worktree(root, baseline_sha) as checkout:
+        baseline_catalog = TargetCatalog.build(checkout)
+        baseline = baseline_catalog.select("lint")
+
+        assert active.declared_toplevel == "active_top"
+        assert baseline.declared_toplevel == "baseline_top"
+        assert baseline.project_root == checkout.resolve()
+        with pytest.raises(ForeignTargetHandleError):
+            active_catalog.inspect(baseline)
+
+
+def test_paired_project_worktree_targets_belong_to_outer_checkout(tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    _init_repository(outer)
+    (outer / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (outer / "README.md").write_text("outer\n", encoding="utf-8")
+    _git(outer, "add", ".")
+    _git(outer, "commit", "-m", "outer")
+
+    project = tmp_path / "project-data"
+    _init_repository(project)
+    (project / "cores" / "rtl").mkdir(parents=True)
+    (project / "cores" / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    _write_core(
+        project / "cores",
+        "paired.core",
+        "acme:paired:design:1.0",
+        """
+        lint:
+          flow: lint
+          flow_options: {tool: verilator}
+          filesets: [rtl]
+          toplevel: a
+        """,
+    )
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "project data")
+    _git(project, "worktree", "add", "--detach", str(outer / ".booley_project"), "HEAD")
+
+    paired = paired_project_repository(outer)
+    assert paired is not None
+    catalog = TargetCatalog.build(outer)
+    handle = catalog.select("lint", for_flow="lint")
+
+    assert paired.worktree == outer / ".booley_project"
+    assert handle.project_root == outer.resolve()
+    assert handle.core_file == (paired.worktree / "cores" / "paired.core").resolve()
+
+
+def test_external_project_directory_does_not_retarget_catalog_root(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    external = tmp_path / "project-data"
+    external.mkdir()
+    (checkout / "booley.toml").write_text('[project]\ndir = "../project-data"\n', encoding="utf-8")
+    (checkout / "rtl").mkdir()
+    (checkout / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    _write_core(
+        checkout,
+        "external.core",
+        "acme:external:checkout:1.0",
+        """
+        lint:
+          flow: lint
+          flow_options: {tool: verilator}
+          filesets: [rtl]
+          toplevel: a
+        """,
+    )
+
+    catalog = TargetCatalog.build(checkout)
+    handle = catalog.select("lint", for_flow="lint")
+
+    assert resolve_checkout_project_dir(checkout) == external.resolve()
+    assert handle.project_root == checkout.resolve()
+    assert handle.core_file == (checkout / "external.core").resolve()
+
+
+def test_prospective_surface_refresh_rebuilds_its_catalog(tmp_path: Path) -> None:
+    prospective = tmp_path / "prospective"
+    (prospective / "rtl").mkdir(parents=True)
+    (prospective / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    (prospective / "rtl" / "b.sv").write_text("module b; endmodule\n", encoding="utf-8")
+    _write_core(
+        prospective,
+        "surface.core",
+        "acme:surface:prospective:1.0",
+        """
+        sim:
+          flow: sim
+          flow_options: {tool: icarus}
+          filesets: [rtl]
+          toplevel: a
+        """,
+    )
+    catalog = TargetCatalog.build(prospective)
+    handle = catalog.select("sim", for_flow="sim")
     _write_core(
         prospective,
         "provider-composed.core",
@@ -254,7 +401,7 @@ def test_independent_checkout_surfaces_use_independent_catalogs(tmp_path: Path) 
         """,
     )
     with pytest.raises(StaleTargetCatalogError):
-        catalogs["provider-prospective"].inspect(handles["provider-prospective"])
+        catalog.inspect(handle)
     refreshed = TargetCatalog.build(prospective)
     assert refreshed.select("lint", for_flow="lint").identity.endswith("#lint")
 
@@ -268,7 +415,7 @@ def test_handle_setup_does_not_resolve_selector_again(
     def unexpected_resolution(*_args, **_kwargs):
         raise AssertionError("execution re-resolved an authored token")
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_ref", unexpected_resolution)
+    monkeypatch.setattr(fusesoc_registry, "_resolve_ref", unexpected_resolution)
 
     command = fusesoc_registry.setup_command_for_handle(
         handle,

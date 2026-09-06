@@ -353,7 +353,6 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         edam_path=tmp_path / "core.eda.yml",
         flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
     )
-    monkeypatch.setattr(fusesoc_registry, "resolve_ref", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         fusesoc_registry,
         "resolve_target_handle",

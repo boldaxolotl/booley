@@ -2858,7 +2858,7 @@ class TestTraceTestPlusargs:
 
 
 class TestBuildEdalizeTraceCmd:
-    """_build_edalize_trace_cmd composes resolve_target → make && verilator_run."""
+    """_build_edalize_trace_cmd composes _resolve_target → make && verilator_run."""
 
     @pytest.fixture(autouse=True)
     def _catalog_target(self, monkeypatch):

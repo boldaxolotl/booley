@@ -45,7 +45,7 @@ from booley.fusesoc.core_projection import (
     projected_core_path,
     projection_enabled,
 )
-from booley.targets.domain import TargetHandle, TargetRef
+from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -349,20 +349,10 @@ def write_trace_overlay(
     )
 
     project_root = require_current_target_handle(handle)
-    ref = TargetRef(
-        name=handle.name,
-        vlnv=handle.vlnv,
-        core_file=handle.core_file,
-        flow=handle.flow,
-        eda_tool=handle.eda_tool,
-        cocotb_module=handle.cocotb_module,
-        doctor_flows=handle.doctor_flows,
-        doctor_selftest=handle.doctor_private,
-    )
     target = handle.name
     flow = handle.flow
     eda_tool = handle.eda_tool
-    doc = read_core(ref.core_file)
+    doc = read_core(handle.core_file)
     if flow != "sim" or eda_tool not in ("verilator", "icarus"):
         raise FuseSocError(
             f"trace overlay unsupported for Target {target!r} "
@@ -371,7 +361,7 @@ def write_trace_overlay(
         )
 
     overlay_doc = copy.deepcopy(doc)
-    overlay_vlnv = trace_overlay_vlnv(ref.vlnv)
+    overlay_vlnv = trace_overlay_vlnv(handle.vlnv)
     overlay_doc["name"] = overlay_vlnv
     target_def = overlay_doc["targets"][target]
     flow_options = target_def.setdefault("flow_options", {})
@@ -396,7 +386,7 @@ def write_trace_overlay(
             overlay_doc,
             doc,
             target,
-            ref,
+            handle,
             flow_options,
             project_root,
         )
@@ -408,8 +398,8 @@ def write_trace_overlay(
         relative = injected.relative_to(Path(project_root)).as_posix()
         overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"] = [{relative: attrs}]
 
-    overlay_path = ref.core_file.with_name(
-        f"{ref.core_file.stem}{TRACE_OVERLAY_MARKER}{ref.core_file.suffix}"
+    overlay_path = handle.core_file.with_name(
+        f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}{handle.core_file.suffix}"
     )
     _write_overlay_core_file(overlay_path, overlay_doc)
     if projection_enabled(project_root):

@@ -37,7 +37,6 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_eda_tool,
     discover_cores,
     read_core,
-    selectable_core_closure,
 )
 from booley.runtime.git import scope_matches_file
 from booley.targets import target_naming
@@ -335,7 +334,7 @@ def validate_project_cores(
     project_root: Path | str,
     *,
     scope: list[str] | None = None,
-    seed_targets: Collection[str] | None = None,
+    audit_scope: Collection[Path] | None = None,
 ) -> list[CoreViolation]:
     """Validate the authored ``.core`` files under *project_root* (decision 21).
 
@@ -344,19 +343,17 @@ def validate_project_cores(
     agent's write Scope) to additionally enforce script provenance; omit it for a
     structural-only audit.
 
-    When *seed_targets* names the project's Doctor-selected Targets, the audit
-    is restricted to the cores reachable
-    from those Targets' dependency closures
-    (:func:`fusesoc_registry.selectable_core_closure`) — on a 208-core monorepo an
+    When *audit_scope* contains the catalog-computed dependency closure, the
+    audit is restricted to those cores — on a 208-core monorepo an
     unselectable core's in-Scope generator script must not FAIL doctor (SETUP-19).
     With no seed the closure is ``None`` and every discovered core is audited,
     exactly as before.
     """
     root = Path(project_root)
-    audit_scope = selectable_core_closure(root, seed_targets)
+    selected = frozenset(audit_scope) if audit_scope is not None else None
     violations: list[CoreViolation] = []
     for core_file in discover_cores(root):
-        if audit_scope is not None and core_file not in audit_scope:
+        if selected is not None and core_file not in selected:
             continue  # not reachable from any selectable Target — out of audit scope
         try:
             doc = read_core(core_file)

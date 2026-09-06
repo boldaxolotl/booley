@@ -587,7 +587,7 @@ def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
     """Stub the edalize build+run mutation_tester drives (Unit A.3).
 
     Behaviour:
-      * ``resolve_target`` → fake (no FuseSoC CLI).
+      * ``_resolve_target`` → fake (no FuseSoC CLI).
       * a ``make`` build returns rc=0.
       * a ``verilator_run`` per-mutant invocation returns the chosen rc, so
         baseline + pinned + sweep all "pass" by default.

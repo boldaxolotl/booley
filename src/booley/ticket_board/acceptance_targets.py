@@ -693,8 +693,8 @@ def canonical_acceptance_bindings(
     """Resolve bindings to durable identities and current callable selectors."""
     root = Path(project_root)
     rows: set[AcceptanceTargetBinding] = set()
+    catalog = TargetCatalog.build(root)
     for binding in bindings:
-        catalog = TargetCatalog.build(root)
         baseline = catalog.select(binding.baseline)
         candidate = catalog.select(binding.target)
         rows.add(
@@ -716,13 +716,14 @@ def validate_binding_selectors(
     """Require every persisted selector to resolve to its persisted identity."""
     root = Path(project_root)
     errors: list[str] = []
+    catalog = TargetCatalog.build(root)
     for binding in bindings:
         for role, selector, identity in (
             ("baseline", binding.baseline_selector, binding.baseline),
             ("candidate", binding.candidate_selector, binding.candidate),
         ):
             try:
-                resolved = TargetCatalog.build(root).select(selector)
+                resolved = catalog.select(selector)
             except (FuseSocError, OSError, ValueError) as exc:
                 errors.append(
                     f"{binding.criterion}: {role} selector {selector!r} cannot be resolved: {exc}"

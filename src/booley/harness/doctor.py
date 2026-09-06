@@ -53,7 +53,6 @@ from booley.fusesoc import (
     selftest_overlay,
 )
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
-from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
 from booley.harness import (
@@ -115,7 +114,7 @@ from booley.runtime.project_dir import (
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import CoreSources, FuseSocError, TargetHandle
+from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
@@ -250,18 +249,18 @@ class _CoreAuditInputs:
 
     def __init__(
         self,
-        root: Path,
-        refs: dict[str, fusesoc_registry.TargetRef],
+        catalog: TargetCatalog,
+        refs: dict[str, TargetHandle],
     ) -> None:
+        self.catalog = catalog
         self.refs = refs
         self._sources: dict[str, fusesoc_registry.CoreSources] = {}
-        self._inspector = TargetSourceInspector(root)
 
     def sources_for(self, name: str) -> fusesoc_registry.CoreSources:
         """Return one Target partition, reading it once per audit."""
         if name not in self._sources:
-            ref = self.refs[name]
-            self._sources[name] = self._inspector.inspect(ref)
+            handle = self.refs[name]
+            self._sources[name] = self.catalog.inspect(handle).sources
         return self._sources[name]
 
 
@@ -4147,9 +4146,13 @@ def _runtime_probe_binaries(
     if flow_name == "fpga":
         return ["vivado"]
     binaries: list[str] = []
+    try:
+        catalog = TargetCatalog.build(project.project_root)
+    except FuseSocError:
+        return binaries
     for target in targets:
         try:
-            handle = TargetCatalog.build(project.project_root).select(target)
+            handle = catalog.select(target)
         except FuseSocError:
             continue
         binary = _EDA_TOOL_BINARIES.get((handle.eda_tool or "").lower())
@@ -4212,11 +4215,16 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     unfollowable for a repo that must stay byte-identical to upstream.
     """
     owned: set[Path] = set()
-    for token in _project_target_matrix(project).seed_targets:
-        try:
-            owned.add(TargetCatalog.build(root).select(token).core_file)
-        except FuseSocError:
-            continue  # unresolvable config tokens are their own doctor finding
+    try:
+        catalog = TargetCatalog.build(root)
+    except FuseSocError:
+        catalog = None
+    if catalog is not None:
+        for token in _project_target_matrix(project).seed_targets:
+            try:
+                owned.add(catalog.select(token).core_file)
+            except FuseSocError:
+                continue  # unresolvable config tokens are their own doctor finding
     state_cores = fusesoc_registry.state_cores_dir(root)
     for core_file in fusesoc_registry.discover_cores(root):
         if state_cores in core_file.parents:
@@ -4235,9 +4243,13 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
     each caller.
     """
     selected: set[tuple[Path, str]] = set()
+    try:
+        catalog = TargetCatalog.build(root)
+    except FuseSocError:
+        return selected
     for token in _project_target_matrix(project).seed_targets:
         try:
-            handle = TargetCatalog.build(root).select(token)
+            handle = catalog.select(token)
         except FuseSocError:
             continue  # target-resolution diagnostics report this elsewhere
         selected.add((handle.core_file, handle.name))
@@ -4306,9 +4318,14 @@ def _check_core_setup_hazards(
     """Catch offline-provider and recursive-symlink failures before FuseSoC."""
     note_sink = _note or _pass
     owned_cores = _owned_core_files(project, root)
-    selected_closure = fusesoc_registry.selectable_core_closure(
-        root, _project_target_matrix(project).seed_targets
-    )
+    catalog = TargetCatalog.build(root)
+    selected_handles = []
+    for selector in _project_target_matrix(project).seed_targets:
+        try:
+            selected_handles.append(catalog.select(selector))
+        except FuseSocError:
+            continue
+    selected_closure = catalog.core_closure(selected_handles)
     required_cores = owned_cores | set(selected_closure or ())
     hazards = fusesoc_registry.core_setup_hazards(root)
     if not hazards:
@@ -4397,10 +4414,11 @@ def _enumerate_core_audit_targets(
     root: Path,
     _pass: Check,
     _fail: Fail,
-) -> dict[str, TargetHandle] | None:
+) -> tuple[TargetCatalog, dict[str, TargetHandle]] | None:
     """Enumerate selectable Targets, reporting structural failures."""
     try:
-        handles = TargetCatalog.build(root).list()
+        catalog = TargetCatalog.build(root)
+        handles = catalog.list()
     except FuseSocError as exc:
         _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
         return None
@@ -4415,7 +4433,7 @@ def _enumerate_core_audit_targets(
         )
     else:
         _pass(f".core Targets enumerated: {', '.join(sorted(refs))}")
-    return refs
+    return catalog, refs
 
 
 @dataclass(frozen=True)
@@ -4437,7 +4455,7 @@ class _CoreAuditContext:
 
 def _check_target_metadata(
     audit: _CoreAuditContext,
-    refs: dict[str, fusesoc_registry.TargetRef],
+    refs: dict[str, TargetHandle],
 ) -> None:
     """Check Target declarations that do not need source partitions."""
     _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
@@ -4454,7 +4472,7 @@ def _check_target_metadata(
 
 def _check_target_sources(
     audit: _CoreAuditContext,
-    refs: dict[str, fusesoc_registry.TargetRef],
+    refs: dict[str, TargetHandle],
     inputs: _CoreAuditInputs,
 ) -> None:
     """Run Target checks that share source partitions."""
@@ -4481,13 +4499,14 @@ def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
 
 def _run_core_security_audit(
     audit: _CoreAuditContext,
-    refs: dict[str, fusesoc_registry.TargetRef],
+    refs: dict[str, TargetHandle],
 ) -> None:
     """Report authored-core provenance and confinement violations."""
+    catalog = TargetCatalog.build(audit.root)
     violations = core_security.validate_project_cores(
         audit.root,
         scope=_project_write_scope(audit.root),
-        seed_targets=_project_target_matrix(audit.project).seed_targets,
+        audit_scope=catalog.core_closure(tuple(refs.values())),
     )
     for violation in violations:
         target = f" target '{violation.target}'" if violation.target else ""
@@ -4526,11 +4545,12 @@ def _run_core_audit(
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
     _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note)
     _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
-    refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
-    if refs is None:
+    catalog_and_refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
+    if catalog_and_refs is None:
         return
+    catalog, refs = catalog_and_refs
     if refs:
-        inputs = _CoreAuditInputs(audit.root, refs)
+        inputs = _CoreAuditInputs(catalog, refs)
         _check_target_metadata(audit, refs)
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
@@ -4624,7 +4644,7 @@ def _check_sim_verdict_setup(
     project: ProjectAudit,
     root: Path,
     name: str,
-    ref: fusesoc_registry.TargetRef,
+    ref: TargetRef | TargetHandle,
     _pass: Check,
     _warn: Check,
     *,
@@ -4898,7 +4918,7 @@ _ICARUS_SV_FLAGS = frozenset({"-g2005-sv", "-g2009", "-g2012"})
 
 def _icarus_sv_flag_state(
     name: str,
-    ref: fusesoc_registry.TargetRef,
+    ref: TargetRef | TargetHandle,
     sources: fusesoc_registry.CoreSources,
 ) -> bool | None:
     """Return SV-flag presence, or ``None`` when the check does not apply."""
@@ -4919,7 +4939,7 @@ def _icarus_sv_flag_state(
 
 def _report_missing_icarus_sv_flag(
     name: str,
-    ref: fusesoc_registry.TargetRef,
+    ref: TargetRef | TargetHandle,
     selected_targets: set[str] | None,
     _note: Check,
     _warn: Check,
@@ -4965,7 +4985,7 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
-    inputs = _inputs or _CoreAuditInputs(root, refs)
+    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in icarus_targets:
         try:
             sources = inputs.sources_for(name)
@@ -5117,7 +5137,7 @@ def _target_interface_ports(
     root: Path,
     inputs: _CoreAuditInputs,
     name: str,
-    ref: fusesoc_registry.TargetRef,
+    ref: TargetRef | TargetHandle,
 ) -> tuple[str, list[str]] | None:
     """Return an auditable Target's toplevel and interface ports."""
     try:
@@ -5144,7 +5164,7 @@ def _check_toplevel_interface_ports(
     _inputs: _CoreAuditInputs | None = None,
 ) -> None:
     """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
-    inputs = _inputs or _CoreAuditInputs(root, refs)
+    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue
@@ -5505,7 +5525,7 @@ def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
 
 
 def _cocotb_module_file(
-    ref: fusesoc_registry.TargetRef,
+    ref: TargetRef | TargetHandle,
     module: str,
 ) -> tuple[Path, bool] | None:
     """Locate the Target's cocotb module file among its filesets.
@@ -5555,7 +5575,7 @@ _COCOTB_GENERATED_TEST_RE = re.compile(
 
 def _check_cocotb_targets(
     project: ProjectAudit,
-    refs: dict[str, fusesoc_registry.TargetRef],
+    refs: dict[str, TargetRef | TargetHandle],
     _pass: Check,
     _warn: Fail,
     _skip: Check,
@@ -5750,9 +5770,12 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
         return
     root = project.project_root
     sources: list[str] = []
+    try:
+        catalog = TargetCatalog.build(root)
+    except FuseSocError:
+        return
     for token in seeds:
         try:
-            catalog = TargetCatalog.build(root)
             sources.extend(catalog.inspect(catalog.select(token)).rtl_files)
         except FuseSocError:
             continue  # an unresolvable Target is already reported elsewhere

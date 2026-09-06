@@ -23,7 +23,6 @@ from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     classified_sources,
     discover_cores,
-    selectable_core_closure,
     source_dirs_from_core,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
@@ -146,8 +145,9 @@ def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
     cores = discover_cores(root)
     if target is None or not cores:
         return cores
-    handle = TargetCatalog.build(root).select(target)
-    closure = selectable_core_closure(root, [handle.selector])
+    catalog = TargetCatalog.build(root)
+    handle = catalog.select(target)
+    closure = catalog.core_closure([handle])
     if not closure:
         raise FuseSocError(f"Target {target!r} resolved without a core dependency closure")
     return sorted(closure)
