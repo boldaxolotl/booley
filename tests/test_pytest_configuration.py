@@ -414,10 +414,17 @@ def test_exhaustive_recovery_marker_retains_a_pr_subset() -> None:
     ]
 
     def collect(expression: str) -> set[str]:
+        env = os.environ.copy()
+        # A nested pytest process must not impersonate its parent xdist worker:
+        # tests/conftest.py would otherwise delete the parent's private temp
+        # root when the nested collection session exits.
+        env.pop("PYTEST_XDIST_WORKER", None)
+        env.pop("PYTEST_XDIST_TESTRUNUID", None)
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", expression, *paths],
             cwd=REPOSITORY_ROOT,
             capture_output=True,
+            env=env,
             text=True,
             check=False,
         )
