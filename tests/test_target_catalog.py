@@ -189,6 +189,22 @@ def test_catalog_rejects_handle_from_another_snapshot(project: Path) -> None:
         second.core_closure([handle])
 
 
+def test_catalog_rejects_unknown_flow_filter(project: Path) -> None:
+    with pytest.raises(ValueError, match="target-aware"):
+        TargetCatalog.build(project).list(for_flow="unknown")
+
+
+def test_catalog_fails_loudly_when_frozen_document_is_missing(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = TargetCatalog.build(project)
+    monkeypatch.setattr(catalog._state, "documents", {})  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(RuntimeError, match="omitted declaration document"):
+        catalog.list()
+
+
 def test_catalog_reuses_condition_safe_inspection(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -300,6 +316,11 @@ def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) 
         assert baseline.project_root == checkout.resolve()
         with pytest.raises(ForeignTargetHandleError):
             active_catalog.inspect(baseline)
+        with pytest.raises(ForeignTargetHandleError):
+            fusesoc_registry.require_current_target_handle(
+                active,
+                project_root=baseline.project_root,
+            )
 
 
 def test_paired_project_worktree_targets_belong_to_outer_checkout(tmp_path: Path) -> None:
