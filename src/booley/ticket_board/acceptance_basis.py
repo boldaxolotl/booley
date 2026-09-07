@@ -102,7 +102,12 @@ class AcceptancePathPolicy:
 
     schema: int = SCHEMA_VERSION
 
-    def discover(self, project_root: Path | str) -> tuple[str, ...]:
+    def discover(
+        self,
+        project_root: Path | str,
+        *,
+        git_owner: Path | None = None,
+    ) -> tuple[str, ...]:
         if (
             not isinstance(self.schema, int)
             or isinstance(self.schema, bool)
@@ -112,7 +117,9 @@ class AcceptancePathPolicy:
         from .acceptance_targets import acceptance_control_paths
 
         try:
-            return acceptance_control_paths(project_root)
+            root = Path(project_root)
+            command = tuple(_worktree_git_command(root, git_owner)) if git_owner else ("git",)
+            return acceptance_control_paths(root, git_command=command)
         except (OSError, ValueError) as exc:
             raise AcceptanceBasisError(
                 f"{BLOCK_REASON}: protected-input discovery failed in {project_root}: {exc}"
@@ -971,7 +978,10 @@ def assert_candidate_inputs_unchanged(
     project = next((item for item in basis.participants if item.role == "project"), None)
     project_state = _candidate_project_worktree(root, live, prefix, project)
     _prefix, outer_protected, project_protected = _candidate_protected_inputs(
-        live, reference, basis
+        live,
+        reference,
+        basis,
+        git_owner=root,
     )
     _assert_repository_inputs_unchanged(
         live,
@@ -1048,8 +1058,10 @@ def _candidate_protected_inputs(
     live: Path,
     reference: Path,
     basis: AcceptanceBasis,
+    *,
+    git_owner: Path,
 ) -> tuple[str, set[str], set[str]]:
-    protected = set(PATH_POLICY.discover(live))
+    protected = set(PATH_POLICY.discover(live, git_owner=git_owner))
     protected.update(PATH_POLICY.discover(reference))
     return _partition_discovered_inputs(reference, basis, protected)
 

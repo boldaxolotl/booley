@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import argparse
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.fusesoc.core_projection import (
     isolated_registry_root,
     reconcile_isolated_registry,
     reconcile_projected_cores,
 )
+from booley.harness import developer
+from booley.harness.models import TicketContext
+from booley.mcp.base import McpToolResult
+from booley.runtime import runtime_context
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_basis as acceptance_basis_module
 from booley.ticket_board import acceptance_validation
@@ -25,6 +33,20 @@ from booley.ticket_board.acceptance_validation import (
     assert_ticket_worktree_inputs_unchanged,
 )
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+
+
+class _AcceptanceFlow(BooleyFlow):
+    name = "sim"
+    description = "Acceptance guard test Flow"
+
+    def _add_args(self, parser: argparse.ArgumentParser) -> None:
+        pass
+
+    def _build_command(self) -> list[str]:
+        return []
+
+    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+        return McpToolResult()
 
 
 @pytest.fixture(autouse=True)
@@ -166,6 +188,45 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBas
     return root, project_dir / "worktrees/generated-input", tio.load_basis("generated-input")
 
 
+def _simulate_host_recorded_outer_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    workspace: Path,
+    basis: AcceptanceBasis,
+) -> Path:
+    dot_git = workspace / ".git"
+    admin_name = Path(dot_git.read_text(encoding="utf-8").partition(":")[2].strip()).name
+    host_primary = root.parent / "host-only-project"
+    host_worktree = host_primary / ".booley_project/worktrees/generated-input"
+    dot_git.chmod(dot_git.stat().st_mode | stat.S_IWRITE)
+    dot_git.replace(dot_git.with_name(".git-local"))
+    dot_git.write_text(
+        f"gitdir: {host_primary / '.git/worktrees' / admin_name}\n",
+        encoding="utf-8",
+    )
+    participant = basis.participant("outer")
+    listing = (
+        f"worktree {host_primary}\nHEAD {_git(root, 'rev-parse', 'main')}\n"
+        "branch refs/heads/main\n\n"
+        f"worktree {host_worktree}\nHEAD {participant.authoring_sha}\n"
+        f"branch {participant.ticket_ref}\n\n"
+    )
+    real_run = subprocess.run
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cwd = kwargs.get("cwd")
+        if (
+            command[-3:] == ["worktree", "list", "--porcelain"]
+            and cwd is not None
+            and Path(str(cwd)).resolve() == root
+        ):
+            return subprocess.CompletedProcess(command, 0, listing, "")
+        return real_run(command, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(acceptance_basis_module.subprocess, "run", run)
+    return host_worktree
+
+
 def test_unchanged_generated_projection_passes_live_guard(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
@@ -263,6 +324,33 @@ def test_mismatched_live_checkout_fails_closed(tmp_path: Path) -> None:
         assert_ticket_worktree_inputs_unchanged(root, basis, root)
 
 
+def test_unregistered_live_checkout_fails_closed(tmp_path: Path) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    unregistered = tmp_path / "unregistered-workspace"
+    workspace.rename(unregistered)
+    _git(root, "worktree", "prune")
+
+    with pytest.raises(AcceptanceBasisError, match="no registered worktree"):
+        assert_ticket_worktree_inputs_unchanged(root, basis, unregistered)
+
+
+def test_verified_bind_mount_alias_passes_worktree_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
+    reconcile_projected_cores(workspace)
+    reconcile_isolated_registry(workspace)
+    recorded = _simulate_host_recorded_outer_worktree(monkeypatch, root, workspace, basis)
+    for projection in isolated_registry_root(workspace).glob("*.core"):
+        projection.write_text(
+            projection.read_text(encoding="utf-8").replace(str(workspace), str(recorded)),
+            encoding="utf-8",
+        )
+
+    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+
+
 def test_paired_participants_accept_root_and_isolated_projections(tmp_path: Path) -> None:
     root, workspace, basis = _paired_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
@@ -316,6 +404,81 @@ def test_setup_guard_uses_generated_reference_without_double_prefix(tmp_path: Pa
     assert blocked.block_reason.count("acceptance-input-change-required") == 1
 
 
+def test_flow_entry_uses_real_generated_projection_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: root)
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    flow = _AcceptanceFlow()
+    flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
+
+    assert flow._pre_state_gate() is None
+    projection = workspace / ".booley-projected-demo.core"
+    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    blocked = flow._pre_state_gate()
+
+    assert blocked is not None
+    assert blocked.exit_code != 0
+    assert blocked.report_text.count("acceptance-input-change-required") == 1
+
+
+def test_developer_handoff_uses_real_generated_projection_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    ctx = TicketContext(
+        slug="generated-input",
+        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Accept generated input",
+        project_root=root,
+        acceptance_basis=basis,
+        worktree_path=workspace,
+    )
+
+    assert developer._block_changed_acceptance_basis(ctx, run_index=1) is False
+    projection = workspace / ".booley-projected-demo.core"
+    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    block = MagicMock()
+    monkeypatch.setattr(developer, "block_ticket", block)
+
+    assert developer._block_changed_acceptance_basis(ctx, run_index=2) is True
+    reason = block.call_args.args[1]
+    assert reason.count("acceptance-input-change-required") == 1
+
+
+def test_resumed_setup_uses_real_generated_projection_validation(tmp_path: Path) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    ctx = TicketContext(
+        slug="generated-input",
+        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Accept generated input",
+        project_root=root,
+        acceptance_basis=basis,
+        worktree_path=workspace,
+    )
+
+    assert developer._resumed_basis_failure(ctx) is None
+    projection = workspace / ".booley-projected-demo.core"
+    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+
+    failure = developer._resumed_basis_failure(ctx)
+    assert failure is not None
+    assert failure.count("acceptance-input-change-required") == 1
+
+
 def test_live_guard_materializes_once_without_running_project_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -344,6 +507,41 @@ def test_live_guard_materializes_once_without_running_project_setup(
     )
 
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+
+    assert len(destinations) == 1
+    assert not destinations[0].parent.exists()
+
+
+def test_live_guard_cleans_materialized_reference_after_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    projection = workspace / ".booley-projected-demo.core"
+    projection.write_text(
+        projection.read_text(encoding="utf-8") + "# drift\n",
+        encoding="utf-8",
+    )
+    destinations: list[Path] = []
+    materialize = acceptance_validation.materialize_basis_checkout
+
+    def record_materialization(
+        project_root: Path | str,
+        acceptance_basis: AcceptanceBasis,
+        destination: Path | str,
+    ) -> Path:
+        destinations.append(Path(destination))
+        return materialize(project_root, acceptance_basis, destination)
+
+    monkeypatch.setattr(
+        acceptance_validation,
+        "materialize_basis_checkout",
+        record_materialization,
+    )
+
+    with pytest.raises(AcceptanceBasisError, match="acceptance-input-change-required"):
+        assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
     assert len(destinations) == 1
     assert not destinations[0].parent.exists()
