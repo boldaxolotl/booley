@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.core.models import TargetPlanRole
+from booley.ticket_board import target_plan
 from booley.ticket_board.target_plan import TargetPlanValidationError, analyze_target_plan
 from booley.ticket_board.workspace_ops import target_surface_files
 
@@ -475,4 +476,78 @@ def test_new_tests_file_must_define_owned_planned_table(repository: Path, conten
             {},
             repository,
             ((repository, (".booley_project/tests.toml",)),),
+        )
+
+
+def test_surface_parsers_reject_malformed_core_and_test_documents() -> None:
+    assert target_plan._core_document(None, path="missing.core") == {}
+    with pytest.raises(TargetPlanValidationError, match=r"cannot parse \.core"):
+        target_plan._core_document(b"targets: [", path="bad.core")
+    with pytest.raises(TargetPlanValidationError, match="mapping-valued targets"):
+        target_plan._core_targets(b"name: acme:lib:toy:1.0\ntargets: []\n", path="bad.core")
+    with pytest.raises(TargetPlanValidationError, match="non-string Target name"):
+        target_plan._core_targets(b"name: acme:lib:toy:1.0\ntargets: {1: {}}\n", path="bad.core")
+    with pytest.raises(TargetPlanValidationError, match="cannot parse"):
+        target_plan._table_mapping(b"[broken", path="tests.toml")
+
+
+def test_source_boundaries_handle_absence_and_decode_failures() -> None:
+    missing_core = target_plan.TargetSurfaceFile("toy.core", None, None)
+    target_plan._validate_core_source_boundary(missing_core, ())
+    missing_tests = target_plan.TargetSurfaceFile("tests.toml", None, None)
+    target_plan._validate_tests_source_boundary(missing_tests, ())
+
+    bad_core = target_plan.TargetSurfaceFile("toy.core", b"name: old\n", b"\xff")
+    with pytest.raises(TargetPlanValidationError):
+        target_plan._validate_core_source_boundary(bad_core, ("future",))
+    bad_tests = target_plan.TargetSurfaceFile("tests.toml", b"", b"\xff")
+    with pytest.raises(TargetPlanValidationError):
+        target_plan._validate_tests_source_boundary(bad_tests, ("future",))
+
+
+def test_test_table_policy_rejects_shared_changed_and_unplanned_tables() -> None:
+    empty = ((), (), ())
+    shared = target_plan._SurfaceDelta(*empty, ("test_lists",), (), ())
+    catalog = object()
+    with pytest.raises(TargetPlanValidationError, match="shared"):
+        target_plan._validate_test_tables(shared, None, frozenset(), catalog)
+
+    modified = target_plan._SurfaceDelta(*empty, (), ("existing",), ())
+    with pytest.raises(TargetPlanValidationError, match="modify or delete"):
+        target_plan._validate_test_tables(modified, None, frozenset(), catalog)
+
+    authored = target_plan._SurfaceDelta(*empty, ("future",), (), ())
+    with pytest.raises(TargetPlanValidationError, match="target_plan omission"):
+        target_plan._validate_test_tables(authored, None, frozenset(), catalog)
+
+
+def test_surface_coverage_reports_provider_and_plan_mismatches() -> None:
+    definition = target_plan._TargetDefinition("acme:lib:toy:1.0#future", "future", {})
+    delta = target_plan._SurfaceDelta((definition,), (), (), (), (), ())
+    with pytest.raises(TargetPlanValidationError, match="provider Targets changed"):
+        target_plan._validate_surface_coverage(
+            delta, None, frozenset({"acme:lib:toy:1.0#missing"})
+        )
+
+    plan = target_plan.TargetPlan.from_value(
+        [{"target": "acme:lib:toy:1.0#planned", "role": "persistent"}]
+    )
+    with pytest.raises(TargetPlanValidationError, match="unplanned authored Targets") as exc:
+        target_plan._validate_surface_coverage(delta, plan, frozenset())
+    assert "planned Targets not newly authored" in str(exc.value)
+
+
+def test_plan_binding_policy_rejects_unbound_and_private_provider_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(target_plan, "_bound_identities", lambda *_args: set())
+    with pytest.raises(TargetPlanValidationError, match="must be bound"):
+        target_plan._validate_plan_bindings(
+            {}, tmp_path, None, {"future"}, frozenset(), frozenset()
+        )
+
+    monkeypatch.setattr(target_plan, "_bound_identities", lambda *_args: {"provider"})
+    with pytest.raises(TargetPlanValidationError, match="non-exported"):
+        target_plan._validate_plan_bindings(
+            {}, tmp_path, None, set(), frozenset({"provider"}), frozenset()
         )

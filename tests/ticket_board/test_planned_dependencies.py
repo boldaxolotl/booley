@@ -893,3 +893,210 @@ def test_public_materialization_retries_after_marker_write_failure(
     assert result.dependencies == ("provider",)
     assert calls == [True, True]
     assert marker.is_file()
+
+
+def test_provider_test_metadata_rejects_invalid_and_ambiguous_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tests = tmp_path / "tests.toml"
+    tests.write_text("invalid = [", encoding="utf-8")
+    with pytest.raises(PlannedDependencyError, match=r"cannot read provider tests\.toml"):
+        planned_dependencies._tests_tables(tests)
+
+    monkeypatch.setattr(
+        planned_dependencies, "resolve_checkout_project_dir", lambda _root: tmp_path
+    )
+    catalog = SimpleNamespace(declaration_count=lambda *_args, **_kwargs: 1)
+    tests.write_text("['acme:lib:toy:1.0#future']\nmodule = 'exact'\n", encoding="utf-8")
+    assert planned_dependencies._owned_tests(tmp_path, "acme:lib:toy:1.0#future", catalog)[0] == (
+        "acme:lib:toy:1.0#future"
+    )
+
+    tests.write_text("[future]\nmodule = 'bare'\n", encoding="utf-8")
+    assert planned_dependencies._owned_tests(tmp_path, "acme:lib:toy:1.0#future", catalog)[0] == (
+        "future"
+    )
+    ambiguous = SimpleNamespace(declaration_count=lambda *_args, **_kwargs: 2)
+    with pytest.raises(PlannedDependencyError, match="ambiguous bare"):
+        planned_dependencies._owned_tests(tmp_path, "acme:lib:toy:1.0#future", ambiguous)
+
+    tests.write_text("future = 'not a table'\n", encoding="utf-8")
+    with pytest.raises(PlannedDependencyError, match="is not a table"):
+        planned_dependencies._owned_tests(tmp_path, "acme:lib:toy:1.0#future", catalog)
+
+    tests.write_text("[other]\nmodule = 'none'\n", encoding="utf-8")
+    assert planned_dependencies._owned_tests(tmp_path, "acme:lib:toy:1.0#future", catalog) == (
+        "",
+        None,
+    )
+
+
+def test_provider_discovery_filters_states_and_wraps_invalid_basis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticket = tmp_path / "provider.md"
+    ticket.write_text("---\nacceptance_basis: {}\n---\n", encoding="utf-8")
+    monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "done"))
+    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
+    monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "draft"))
+    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
+    monkeypatch.setattr(
+        planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "waiting")
+    )
+    monkeypatch.setattr(
+        planned_dependencies,
+        "load_acceptance_basis",
+        lambda *_args: (_ for _ in ()).throw(acceptance_basis.AcceptanceBasisError("bad basis")),
+    )
+    with pytest.raises(PlannedDependencyError, match="invalid Acceptance Basis"):
+        planned_dependencies._provider(tmp_path, tmp_path, "provider")
+
+    monkeypatch.setattr(
+        planned_dependencies,
+        "load_acceptance_basis",
+        lambda *_args: SimpleNamespace(target_plan=None),
+    )
+    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
+    basis = SimpleNamespace(
+        target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}])
+    )
+    monkeypatch.setattr(planned_dependencies, "load_acceptance_basis", lambda *_args: basis)
+    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") == _Provider(
+        "provider", {"acceptance_basis": {}}, basis
+    )
+
+
+def test_provider_graph_and_export_claims_reject_conflicts() -> None:
+    plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
+    first = _Provider("first", {"dependencies": ["second"]}, SimpleNamespace(target_plan=plan))
+    second = _Provider("second", {"dependencies": ["first"]}, SimpleNamespace(target_plan=plan))
+    with pytest.raises(PlannedDependencyError, match="cyclic"):
+        planned_dependencies._ordered_providers([first, second])
+
+    entry = plan.entries[0]
+    with pytest.raises(PlannedDependencyError, match="ambiguous"):
+        planned_dependencies._claim_provider_export(first, entry, set(), {"future": "other"})
+    with pytest.raises(PlannedDependencyError, match="removed"):
+        planned_dependencies._claim_provider_export(first, entry, {"future"}, {})
+
+
+def test_provider_merge_wraps_disappeared_target_and_table_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(source / "toy.core", "  other:\n    filesets: [rtl]\n")
+    with pytest.raises(PlannedDependencyError, match="disappeared"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    project = source / ".booley_project"
+    project.mkdir()
+    (project / "tests.toml").write_text("[other]\nmodule = 'other'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        planned_dependencies,
+        "resolve_checkout_project_dir",
+        lambda root: root / ".booley_project",
+    )
+    with pytest.raises(PlannedDependencyError, match="disappeared"):
+        _merge_provider_test_table(source, destination, "future")
+
+
+def test_materialization_validation_rejects_each_inconsistent_boundary() -> None:
+    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    duplicate = ProviderMaterialization(
+        bindings=(binding, binding),
+        materialized_targets=frozenset({"future"}),
+        exported_targets=frozenset({"future"}),
+        surface_digests=(("future", "b" * 64),),
+        dependencies=("provider",),
+    )
+    with pytest.raises(PlannedDependencyError, match="duplicate"):
+        planned_dependencies._validate_materialization(duplicate)
+
+    misaligned = ProviderMaterialization(bindings=(binding,), dependencies=("provider",))
+    with pytest.raises(PlannedDependencyError, match="sets do not align"):
+        planned_dependencies._validate_materialization(misaligned)
+
+    wrong_digest = ProviderMaterialization(
+        bindings=(binding,),
+        materialized_targets=frozenset({"future"}),
+        exported_targets=frozenset({"future"}),
+        surface_digests=(("future", "c" * 64),),
+        dependencies=("provider",),
+    )
+    with pytest.raises(PlannedDependencyError, match="digest does not align"):
+        planned_dependencies._validate_materialization(wrong_digest)
+
+    wrong_dependency = ProviderMaterialization(
+        bindings=(binding,),
+        materialized_targets=frozenset({"future"}),
+        exported_targets=frozenset({"future"}),
+        surface_digests=(("future", "b" * 64),),
+    )
+    with pytest.raises(PlannedDependencyError, match="not a dependency"):
+        planned_dependencies._validate_materialization(wrong_dependency)
+
+    bad_path = ProviderMaterialization(placeholder_paths=frozenset({"../escape.sv"}))
+    with pytest.raises(PlannedDependencyError, match="invalid placeholder"):
+        planned_dependencies._validate_materialization(bad_path)
+
+    with pytest.raises(planned_dependencies.BoundaryError, match="non-empty strings"):
+        planned_dependencies._marker_strings({"values": [""]}, "values")
+    with pytest.raises(planned_dependencies.BoundaryError, match="invalid fields"):
+        planned_dependencies._marker_digests(
+            {"surface_digests": [{"target": "future", "sha256": "b" * 64, "extra": True}]}
+        )
+
+
+def test_provider_placeholders_filter_scope_content_and_input_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.targets.domain import TargetInput
+
+    rtl = TargetInput("rtl/new.sv", "toy.core", "systemVerilogSource", (), False, {})
+    ignored = TargetInput("rtl/filled.sv", "toy.core", "systemVerilogSource", (), False, {})
+    foreign = TargetInput("docs/new.md", "toy.core", "user", (), False, {})
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl/new.sv").touch()
+    (tmp_path / "rtl/filled.sv").write_text("module filled; endmodule\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/new.md").touch()
+    provider = _Provider(
+        "provider",
+        {"scope": ["rtl/new.sv [new]", "rtl/filled.sv [new]", "docs/new.md [new]"]},
+        SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        planned_dependencies, "_inspect_provider_inputs", lambda *_args: (rtl, ignored, foreign)
+    )
+
+    with pytest.raises(PlannedDependencyError, match="non-RTL/TB"):
+        planned_dependencies._provider_placeholders(tmp_path, provider, "future")
+
+    monkeypatch.setattr(
+        planned_dependencies, "_inspect_provider_inputs", lambda *_args: (rtl, ignored)
+    )
+    assert planned_dependencies._provider_placeholders(tmp_path, provider, "future") == (
+        "rtl/new.sv",
+    )
+    assert (
+        planned_dependencies._provider_placeholders(
+            tmp_path, _Provider("provider", {"scope": []}, SimpleNamespace()), "future"
+        )
+        == ()
+    )
+
+
+def test_refreshed_provider_binding_rejects_removed_and_changed_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _Provider("provider", {}, SimpleNamespace())
+    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    with pytest.raises(PlannedDependencyError, match="no longer exports"):
+        planned_dependencies._validate_refreshed_bindings(provider, [binding], set(), tmp_path)
+
+    monkeypatch.setattr(planned_dependencies, "target_surface_sha256", lambda *_args: "c" * 64)
+    with pytest.raises(PlannedDependencyError, match="changed after pinning"):
+        planned_dependencies._validate_refreshed_bindings(
+            provider, [binding], {("future", "persistent")}, tmp_path
+        )

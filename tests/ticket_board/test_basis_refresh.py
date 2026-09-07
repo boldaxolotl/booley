@@ -2,6 +2,7 @@
 
 import json
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ import pytest
 import yaml
 
 from booley.core.models import TargetPlan, TargetPlanRole
-from booley.ticket_board import basis_refresh
+from booley.ticket_board import basis_publication, basis_refresh
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     BasisParticipant,
@@ -261,3 +262,212 @@ def test_public_refresh_recovers_after_prepared_relocation_failure(
     assert recovered == new_basis
     assert operation
     assert len(calls) == 2
+
+
+def test_reapply_test_tables_handles_absent_unowned_equal_and_invalid_inputs(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "old/.booley_project"
+    new = tmp_path / "new/.booley_project"
+    plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
+    _reapply_test_tables(old.parent, new.parent, None)
+    _reapply_test_tables(old.parent, new.parent, plan)
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
+    (old / "tests.toml").write_text("[other]\nmodule = 'same'\n", encoding="utf-8")
+    (new / "tests.toml").write_text("[other]\nmodule = 'same'\n", encoding="utf-8")
+    _reapply_test_tables(old.parent, new.parent, plan)
+    (old / "tests.toml").write_text("[future]\nmodule = 'same'\n", encoding="utf-8")
+    (new / "tests.toml").write_text("[future]\nmodule = 'same'\n", encoding="utf-8")
+    _reapply_test_tables(old.parent, new.parent, plan)
+    (old / "tests.toml").write_text("[broken\n", encoding="utf-8")
+    with pytest.raises(BasisRefreshError, match=r"cannot recover approved tests\.toml"):
+        _reapply_test_tables(old.parent, new.parent, plan)
+
+
+def test_reapply_placeholders_validates_project_sources_and_destinations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_outer = tmp_path / "old-outer"
+    old_project = tmp_path / "old-project"
+    new_outer = tmp_path / "new-outer"
+    new_project = tmp_path / "new-project"
+    old_project.mkdir()
+    new_project.mkdir()
+    source = old_project / "future.sv"
+    source.write_text("content\n", encoding="utf-8")
+    participant = replace(_participant(), role="project")
+    basis = AcceptanceBasis((_participant(), participant))
+    old = AuthoringWorkspace(old_outer, old_project, "b" * 40, "b" * 40)
+    new = AuthoringWorkspace(new_outer, new_project, "c" * 40, "c" * 40)
+    monkeypatch.setattr(
+        basis_refresh,
+        "_changed_paths",
+        lambda repository, *_args: ("future.sv",) if repository == old_project else (),
+    )
+
+    with pytest.raises(BasisRefreshError, match="non-placeholder"):
+        _reapply_placeholders(old, new, basis, "ticket")
+    source.write_text("", encoding="utf-8")
+    (new_project / "future.sv").write_text("occupied\n", encoding="utf-8")
+    with pytest.raises(BasisRefreshError, match="now has content"):
+        _reapply_placeholders(old, new, basis, "ticket")
+
+
+def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_basis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = ProviderTargetBinding(
+        "provider", "a" * 64, "acme:lib:toy:1.0#future", "persistent", "b" * 64
+    )
+    consumer = AcceptanceBasis((_participant(),), providers=(binding,))
+    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (None, None))
+    with pytest.raises(BasisRefreshError, match="is not accepted"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+    ticket = tmp_path / "provider.md"
+    ticket.write_text("---\n---\n", encoding="utf-8")
+    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
+    monkeypatch.setattr(
+        basis_refresh,
+        "load_acceptance_basis",
+        lambda *_args: (_ for _ in ()).throw(basis_refresh.AcceptanceBasisError("bad basis")),
+    )
+    with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+    provider_basis = AcceptanceBasis((_participant(),))
+    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    with pytest.raises(BasisRefreshError, match="no longer exports"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+    provider_basis = AcceptanceBasis(
+        (_participant(),),
+        target_plan=TargetPlan.from_value([{"target": binding.target, "role": "persistent"}]),
+    )
+    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "c" * 64)
+    with pytest.raises(BasisRefreshError, match="changed after it was pinned"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+
+def test_build_and_publish_refresh_run_all_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = ProviderTargetBinding(
+        "provider", "a" * 64, "acme:lib:toy:1.0#future", "persistent", "b" * 64
+    )
+    basis = AcceptanceBasis((_participant(),))
+    journal = basis_refresh.BasisRefreshJournal(
+        1, "0" * 32, "1" * 16, "ticket", basis.basis_id, "building", {}
+    )
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\n---\n", encoding="utf-8")
+    old = AuthoringWorkspace(tmp_path / "old", None, "b" * 40, "")
+    workspace = AuthoringWorkspace(tmp_path / "new", None, "b" * 40, "", journal.generation)
+    refresh = basis_refresh._RefreshBuild(tmp_path, ticket, "ticket", {}, basis, old, journal)
+    calls: list[str] = []
+    monkeypatch.setattr(basis_refresh, "open_authoring_generation", lambda *_args: workspace)
+    monkeypatch.setattr(basis_refresh, "_verify_providers", lambda *_args: (provider,))
+    monkeypatch.setattr(basis_refresh, "_reapply_targets", lambda *_args: calls.append("targets"))
+    monkeypatch.setattr(
+        basis_refresh, "_reapply_test_tables", lambda *_args: calls.append("tables")
+    )
+    monkeypatch.setattr(
+        basis_refresh, "_reapply_placeholders", lambda *_args: calls.append("placeholders")
+    )
+
+    assert basis_refresh._build_refresh_workspace(refresh) == (workspace, (provider,))
+    assert calls == ["targets", "tables", "placeholders"]
+
+    receipts: list[str] = []
+    journals: list[basis_refresh.BasisRefreshJournal] = []
+    monkeypatch.setattr(
+        basis_refresh,
+        "prepare_replacement_acceptance_basis",
+        lambda *_args, **_kwargs: (basis, journal.operation_id),
+    )
+    monkeypatch.setattr(
+        basis_refresh, "write_basis_receipt", lambda *_args, **_kwargs: receipts.append("receipt")
+    )
+    monkeypatch.setattr(basis_refresh, "_write_journal", lambda _root, item: journals.append(item))
+
+    published, prepared = basis_refresh._publish_refresh_basis(
+        tmp_path, ticket, "ticket", workspace, (provider,), journal
+    )
+
+    assert published == basis
+    assert prepared.state == "prepared"
+    assert receipts == ["receipt"]
+    assert journals == [prepared]
+    assert basis_refresh._publish_refresh_basis(
+        tmp_path, ticket, "ticket", workspace, (provider,), prepared
+    ) == (basis, prepared)
+
+
+def test_finish_discard_and_recover_refresh_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = AcceptanceBasis((_participant(),))
+    journal = basis_refresh.BasisRefreshJournal(
+        1, "0" * 32, "1" * 16, "ticket", basis.basis_id, "prepared", basis.as_dict()
+    )
+    journal_path = tmp_path / "refresh.json"
+    operation = tmp_path / "operation"
+    journal_path.write_text("pending\n", encoding="utf-8")
+    operation.mkdir()
+    calls: list[str] = []
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: None)
+    basis_refresh.finish_basis_refresh(tmp_path, "ticket", journal.operation_id)
+    basis_refresh.discard_basis_refresh(tmp_path, "ticket")
+
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
+    with pytest.raises(BasisRefreshError, match="completion identity changed"):
+        basis_refresh.finish_basis_refresh(tmp_path, "ticket", "f" * 32)
+    monkeypatch.setattr(basis_refresh, "_operation_path", lambda *_args: operation)
+    monkeypatch.setattr(basis_refresh, "_journal_path", lambda *_args: journal_path)
+    monkeypatch.setattr(
+        basis_publication,
+        "finish_basis_publication",
+        lambda *_args: calls.append("finish-publication"),
+    )
+    monkeypatch.setattr(
+        basis_refresh, "safe_rmtree", lambda *_args, **_kwargs: calls.append("rmtree")
+    )
+    basis_refresh.finish_basis_refresh(tmp_path, "ticket", journal.operation_id)
+    assert calls == ["finish-publication", "rmtree"]
+
+    journal_path.write_text("pending\n", encoding="utf-8")
+    repositories = {"outer": tmp_path}
+    monkeypatch.setattr(basis_refresh, "discard_refresh_workspace", lambda *_args: repositories)
+    monkeypatch.setattr(
+        basis_publication,
+        "abandon_basis_publication",
+        lambda *_args: calls.append("abandon-publication"),
+    )
+    monkeypatch.setattr(
+        basis_refresh, "discard_generation_refs", lambda *_args: calls.append("discard-refs")
+    )
+    basis_refresh.discard_basis_refresh(tmp_path, "ticket")
+    assert calls[-3:] == ["abandon-publication", "discard-refs", "rmtree"]
+
+    finished: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        basis_refresh,
+        "finish_basis_refresh",
+        lambda _root, slug, operation_id: finished.append((slug, operation_id)),
+    )
+    basis_refresh.recover_published_basis_refreshes(
+        tmp_path,
+        [
+            {"status": "done", "feature_branch": "ticket"},
+            {"status": "queued"},
+            {"status": "queued", "feature_branch": "ticket", "acceptance_basis": basis.as_dict()},
+        ],
+    )
+    assert finished == [("ticket", journal.operation_id)]
+    with pytest.raises(BasisRefreshError, match="disagrees"):
+        basis_refresh.recover_published_basis_refreshes(
+            tmp_path,
+            [{"status": "queued", "feature_branch": "ticket", "acceptance_basis": {}}],
+        )

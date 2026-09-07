@@ -823,3 +823,270 @@ def test_authoring_basis_rejects_commits_beyond_destination(
         match="commits beyond the destination baseline",
     ):
         workspace_ops._pin_authoring_bases(repository, worktree, None, {"branch": "main"})
+
+
+def test_refresh_workspace_relocation_and_discard_cover_owned_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    project_data = tmp_path / "project-data"
+    operation = tmp_path / "operation"
+    outer = operation / "new-outer"
+    outer.mkdir(parents=True)
+    workspace = workspace_ops.AuthoringWorkspace(outer, None, "a" * 40, "", "0" * 16)
+    commands: list[tuple[object, ...]] = []
+    removals: list[Path] = []
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
+    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
+    monkeypatch.setattr(
+        workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
+    )
+
+    workspace_ops.relocate_refresh_workspace(
+        root, "ticket", "0" * 16, operation, workspace, has_project=False
+    )
+
+    assert commands[-1][-4:] == (
+        "worktree",
+        "move",
+        str(outer),
+        str(project_data / "worktrees/ticket"),
+    )
+
+    project_source = tmp_path / "project-source"
+    holding = operation / "new-project-moving"
+    holding.mkdir(parents=True)
+    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: project_source)
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: True)
+    monkeypatch.setattr(workspace_ops, "_registered_worktree", lambda *_args: True)
+    monkeypatch.setattr(
+        workspace_ops,
+        "_remove_authoring_worktrees",
+        lambda _root, candidate, *_args: removals.append(candidate),
+    )
+
+    repositories = workspace_ops.discard_refresh_workspace(root, "ticket", "0" * 16, operation)
+
+    assert repositories == {"outer": root, "project": project_source}
+    assert removals == [project_data / "worktrees/ticket", operation / "new-outer"]
+    assert commands[-1][-4:] == ("worktree", "remove", "--force", str(holding))
+
+
+def test_refresh_project_staging_restoration_and_participation_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    paired = SimpleNamespace(worktree=tmp_path / "paired")
+    workspace = workspace_ops.AuthoringWorkspace(outer, paired.worktree, "a" * 40, "b" * 40)
+    holding = tmp_path / "holding"
+    project_source = tmp_path / "project-source"
+    commands: list[tuple[object, ...]] = []
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
+    monkeypatch.setattr(
+        workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
+    )
+
+    workspace_ops._stage_refresh_project(workspace, project_source, holding)
+    holding.mkdir()
+    workspace_ops._restore_refresh_project(outer, project_source, holding)
+
+    assert commands[0][-4:] == ("worktree", "move", str(paired.worktree), str(holding))
+    assert commands[1][-4:] == (
+        "worktree",
+        "move",
+        str(holding),
+        str(workspace_ops.ticket_project_worktree(outer)),
+    )
+
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+        workspace_ops._stage_refresh_project(workspace, None, tmp_path / "other")
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+        workspace_ops._restore_refresh_project(outer, None, holding)
+
+
+def test_refresh_relocation_rejects_participant_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    operation = tmp_path / "operation"
+    canonical = tmp_path / "data/worktrees/ticket"
+    canonical.mkdir(parents=True)
+    workspace = workspace_ops.AuthoringWorkspace(tmp_path / "new", None, "a" * 40, "", "0" * 16)
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: True)
+    monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops,
+        "paired_project_repository",
+        lambda _outer: SimpleNamespace(worktree=tmp_path / "project"),
+    )
+
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="participation"):
+        workspace_ops.relocate_refresh_workspace(
+            root, "ticket", "0" * 16, operation, workspace, has_project=False
+        )
+
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
+        workspace_ops.relocate_refresh_workspace(
+            root, "ticket", "0" * 16, operation, workspace, has_project=True
+        )
+
+
+def test_discard_generation_refs_handles_absent_invalid_and_owned_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    deleted: list[tuple[object, ...]] = []
+    responses = iter(
+        [
+            _completed("git", returncode=1),
+            _completed("git", stdout="a" * 40 + "\n"),
+        ]
+    )
+    monkeypatch.setattr(workspace_ops, "_git", lambda *_args: next(responses))
+    monkeypatch.setattr(
+        workspace_ops, "_require_git", lambda *args, **_kwargs: deleted.append(args) or ""
+    )
+
+    workspace_ops.discard_generation_refs({"outer": first, "project": second}, "ticket", "0" * 16)
+
+    assert deleted[0][1:3] == ("update-ref", "-d")
+
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args: _completed("git", returncode=2, stderr="locked"),
+    )
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="locked"):
+        workspace_ops.discard_generation_refs({"outer": first}, "ticket", "0" * 16)
+
+
+def test_load_refresh_source_rebuilds_invalid_cached_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    operation = tmp_path / "operation"
+    checkout = operation / "old-basis"
+    checkout.mkdir(parents=True)
+    basis = AcceptanceBasis((_participant(),))
+    expected = workspace_ops.AuthoringWorkspace(checkout, None, "a" * 40, "")
+    calls: list[str] = []
+    attempts = iter((False, True))
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(workspace_ops, "_require_unexecuted_refresh_refs", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops, "safe_rmtree", lambda path, **_kwargs: calls.append(f"rm:{path}")
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "materialize_basis_checkout",
+        lambda *_args: calls.append("materialize"),
+    )
+
+    def load_workspace(*_args: object) -> workspace_ops.AuthoringWorkspace:
+        if not next(attempts):
+            raise workspace_ops.AcceptanceBasisOperationError("stale")
+        return expected
+
+    monkeypatch.setattr(workspace_ops, "_workspace_from_basis_checkout", load_workspace)
+
+    assert (
+        workspace_ops.load_refresh_source_workspace(root, basis, "ticket", operation) == expected
+    )
+    assert calls == [f"rm:{checkout}", "materialize"]
+
+
+def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    project = tmp_path / "project"
+    paired = SimpleNamespace(worktree=project)
+    basis = AcceptanceBasis((_participant(), _participant("project")))
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda repository, *args: (
+            ""
+            if args[0] == "status"
+            else basis.participant("project" if repository == project else "outer").authoring_sha
+        ),
+    )
+
+    result = workspace_ops._workspace_from_basis_checkout(tmp_path, outer, basis)
+
+    assert result.project == project
+    assert result.project_base_sha == basis.participant("project").destination_sha
+
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
+    monkeypatch.setattr(
+        workspace_ops, "checkout_project_dir_relative_to", lambda _root: Path("project")
+    )
+    changed = AcceptanceBasis((_participant(), _participant("zeta")))
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="participants changed"):
+        workspace_ops._workspace_from_basis_checkout(tmp_path, outer, changed)
+
+    native = AcceptanceBasis((_participant(),))
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda _repository, *args: "dirty" if args[0] == "status" else "a" * 40,
+    )
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(tmp_path, outer, native)
+
+
+def test_prepare_replacement_basis_resumes_or_starts_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nbranch: main\nacceptance_basis: old\n---\nbody\n", encoding="utf-8")
+    workspace = workspace_ops.AuthoringWorkspace(tmp_path / "outer", None, "a" * 40, "", "0" * 16)
+    publication = SimpleNamespace(operation_id="operation")
+    published: list[tuple[object, ...]] = []
+    monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: publication)
+    monkeypatch.setattr(
+        workspace_ops,
+        "publish_basis_commits",
+        lambda *args, **kwargs: (
+            published.append((args, kwargs)) or (AcceptanceBasis((_participant(),)), "sha")
+        ),
+    )
+
+    result = workspace_ops.prepare_replacement_acceptance_basis(
+        tmp_path, ticket, "ticket", workspace, (), operation_id="operation"
+    )
+
+    assert result[1] == "sha"
+    assert published[-1][1] == {}
+
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="operation IDs"):
+        workspace_ops.prepare_replacement_acceptance_basis(
+            tmp_path, ticket, "ticket", workspace, (), operation_id="other"
+        )
+
+    prepared = SimpleNamespace(target_plan=SimpleNamespace(removal_targets=("old",)))
+    monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        workspace_ops, "_prepare_basis_inputs", lambda *_args: (("binding",), ("old",))
+    )
+    monkeypatch.setattr(
+        workspace_ops, "_participant_preparations", lambda *_args: ("participant",)
+    )
+
+    workspace_ops.prepare_replacement_acceptance_basis(
+        tmp_path, ticket, "ticket", workspace, (), operation_id="new-operation"
+    )
+
+    assert published[-1][1]["operation_id"] == "new-operation"
+    assert published[-1][1]["bindings"] == ("binding",)
+    assert published[-1][1]["removal_targets"] == ("old",)

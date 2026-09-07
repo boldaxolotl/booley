@@ -107,6 +107,11 @@ class TestOnSuccess:
             "recreate the Ticket"
         ]
 
+    def test_unknown_fields_are_rejected(self):
+        assert OnSuccess.from_dict({"mystery": True}).validate() == [
+            "on_success has unknown field(s): mystery"
+        ]
+
     def test_validate_ok(self):
         assert OnSuccess().validate() == []
         assert OnSuccess(destination="done").validate() == []
@@ -145,7 +150,19 @@ class TestTargetPlan:
     @pytest.mark.parametrize(
         "value, message",
         [
+            ({}, "must be a list"),
             ([], "non-empty"),
+            ([None], "must be a mapping"),
+            ([{"target": "", "role": "persistent"}], "non-empty string"),
+            ([{"target": "sim", "role": "unknown"}], "must be one of"),
+            (
+                [{"target": "sim", "role": "replacement", "replaces": 3}],
+                "non-empty string",
+            ),
+            (
+                [{"target": "sim", "role": "replacement", "replaces": ""}],
+                "non-empty string",
+            ),
             ([{"target": "sim", "role": "persistent", "extra": True}], "unknown extra"),
             ([{"target": "sim", "role": "replacement"}], "missing replaces"),
             ([{"target": "sim", "role": "ephemeral", "replaces": "old"}], "unknown replaces"),
