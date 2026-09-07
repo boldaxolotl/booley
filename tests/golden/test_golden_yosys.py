@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.synth.backends.openroad.reporting import reg2reg_timing_tcl, write_sta_sdc
+from booley.flows.synth.backends.openroad.reporting import reg2reg_timing_tcl
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
@@ -44,10 +44,6 @@ def _timing_config(
     """A fully pinned timing config (defaults spelled out for stability)."""
     return StaTimingConfig(
         mode="physical",
-        clock="clk_i",
-        period_ps=4000.0,
-        input_delay_pct=30.0,
-        output_delay_pct=70.0,
         sdc=(),
         utilization_pct=utilization_pct,
         repair_timing=repair_timing,
@@ -89,11 +85,13 @@ def test_openroad_script_golden(
         design_name="dut",
         liberty=_LIBERTY,
         sta_netlist=tmp_path / "sta_dut.v",
-        sdc_path=tmp_path / "sta_constraints.sdc",
+        sdc_paths=(tmp_path / "target.sdc",),
         pdk=_PDK,
         report_dir=tmp_path / "reports" / "timing",
         work_dir=tmp_path,
         config=config,
+        target="synth_dut",
+        source_sdc_paths=(tmp_path / "target.sdc",),
     )
     script = normalize_work_dir(script_path.read_text(encoding="utf-8"), tmp_path)
     assert_matches_golden(f"yosys/{golden_name}", script)
@@ -107,50 +105,6 @@ def test_openroad_script_golden(
 def test_reg2reg_timing_tcl_golden() -> None:
     """Snapshot the reg->reg slack reporting block embedded by OpenROAD."""
     assert_matches_golden("yosys/reg2reg_timing.tcl", reg2reg_timing_tcl())
-
-
-# ---------------------------------------------------------------------------
-# write_sta_sdc — generated SDC constraints
-# ---------------------------------------------------------------------------
-
-
-def test_sta_sdc_default_golden(tmp_path: Path) -> None:
-    """Snapshot the auto-generated SDC (clock + I/O delays + drive/load)."""
-    sdc_path = write_sta_sdc(_timing_config(), "clk_i", tmp_path)
-    # No paths are embedded in the SDC — content is purely derived from the
-    # config numbers, so no normalization is needed.
-    assert_matches_golden("yosys/sta_sdc_default.sdc", sdc_path.read_text(encoding="utf-8"))
-
-
-def test_sta_sdc_with_user_sdc_golden(tmp_path: Path) -> None:
-    """A user SDC (extra constraints) is prepended verbatim to the defaults."""
-    user_sdc = tmp_path / "user_constraints.sdc"
-    user_sdc.write_text(
-        "# project false paths\nset_false_path -from [get_ports {rst_ni}]\n",
-        encoding="utf-8",
-    )
-    config = _timing_config()._replace(sdc=(user_sdc,))
-    sdc_path = write_sta_sdc(config, "clk_i", tmp_path)
-    assert_matches_golden("yosys/sta_sdc_with_user_sdc.sdc", sdc_path.read_text(encoding="utf-8"))
-
-
-def test_sta_sdc_target_owns_clock_and_io_golden(tmp_path: Path) -> None:
-    """A Target SDC that owns clock + I/O delays suppresses ALL generated
-    defaults (ADR 0029 decision 5) — only the authored constraints remain."""
-    user_sdc = tmp_path / "target_constraints.sdc"
-    user_sdc.write_text(
-        "create_clock -name clk_i -period 25.000000 [get_ports {clk_i}]\n"
-        "set_input_delay -clock clk_i 0.0 [all_inputs]\n"
-        "set_output_delay -clock clk_i 0.0 [all_outputs]\n"
-        "set_false_path -from [get_ports {mode_i}]\n",
-        encoding="utf-8",
-    )
-    config = _timing_config()._replace(sdc=(user_sdc,))
-    sdc_path = write_sta_sdc(config, "clk_i", tmp_path)
-    assert_matches_golden(
-        "yosys/sta_sdc_target_owns_clock.sdc",
-        sdc_path.read_text(encoding="utf-8"),
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -621,6 +621,7 @@ _RESOURCE_KILL_RE = re.compile(
     r"(?:\b(?:exit|code|error)\s*137\b|\breturncode\s*[=:]\s*137\b|\bkilled\b)",
     re.IGNORECASE,
 )
+_INPUT_ERROR_RE = re.compile(r"BOOLEY_INPUT_ERROR:\s*([^\r\n]+)")
 
 
 def _termination_reason(result: SubprocessResult, output: str) -> str:
@@ -973,9 +974,8 @@ class AsicSynthesizeFlow(BuiltinFlow):
         "paths) come from the Target's `file_type: SDC` fileset in the .core, "
         "NOT booley.toml: add an SDC file with your create_clock / "
         "set_input_delay / set_output_delay / set_false_path to the Target. A "
-        "Target with NO SDC is a hard error, not a silent default: "
-        "pass --default-clock <ps> to run against an explicitly-named canned "
-        "clock instead. "
+        "A physical Target with NO SDC is a hard configuration error; logical "
+        "synthesis remains valid without timing constraints. "
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
         "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
         "recipe knobs belong in the selected .core Target's flow_options. "
@@ -997,19 +997,6 @@ class AsicSynthesizeFlow(BuiltinFlow):
             "--baseline",
             default=None,
             help="Baseline git ref (SHA/branch/tag) for comparison",
-        )
-        # ADR 0031: explicit opt-in for the canned clock. A Target with no
-        # file_type:SDC fileset is a hard error UNLESS this names a period, so
-        # the default is chosen per-run instead of fabricated silently.
-        parser.add_argument(
-            "--default-clock",
-            type=float,
-            default=None,
-            metavar="PS",
-            dest="default_clock",
-            help="Named canned clock period (ps) for a Target that carries no "
-            "SDC fileset. Without it, a constraint-less Target is a hard "
-            "error rather than a silent ~250 MHz default.",
         )
         # ADR 0029 decision 7: flatten is an A/B experiment toggle, so it lives
         # on the Flow CLI. Tri-state: unset (None) means "use the selected
@@ -1081,7 +1068,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         work_dir: Path,
         synth_mode: SynthMode,
     ) -> None:
-        """Append ``--sta-sdc``/``--default-clock`` flags (ADR 0029/0031)."""
+        """Append Target-owned ``--sta-sdc`` flags for physical synthesis."""
         if not synth_mode.runs_openroad:
             return
         # STA constraints from the Target's file_type:SDC fileset (ADR 0029):
@@ -1089,26 +1076,30 @@ class AsicSynthesizeFlow(BuiltinFlow):
         # treatment as --extra-rtl — each is a path relative to the worktree,
         # resolved against /work inside the sandbox.
         for sdc_file in resolved.sdc_files:
-            rel = posix_relpath(sdc_file.absolute(resolved.build_root), work_dir)
+            path = sdc_file.absolute(resolved.build_root).resolve()
+            try:
+                path.relative_to(work_dir.resolve())
+            except ValueError as exc:
+                raise BoundaryError(
+                    f"synth: Target {target!r} SDC escapes the selected checkout "
+                    f"{work_dir.resolve()}: {path}"
+                ) from exc
+            if not path.is_file():
+                raise BoundaryError(f"synth: Target {target!r} SDC file not found: {path}")
+            try:
+                path.read_bytes()
+            except OSError as exc:
+                raise BoundaryError(
+                    f"synth: Target {target!r} SDC file is not readable: {path}: {exc}"
+                ) from exc
+            rel = posix_relpath(path, work_dir)
             cmd.extend(["--sta-sdc", rel])
-        # ADR 0031 (P1): design constraints are explicit and per-target. A Target
-        # with no file_type:SDC fileset must name its clock via --default-clock,
-        # or it is a hard error here — refuse to fabricate a 250 MHz clock and
-        # report a PPA number against a period the author never chose. Caught by
-        # _run_single_config (BoundaryError -> rc=2 infra) so the fix-hint reaches
-        # the report instead of crashing the whole run. Fail during in-process
-        # configuration, before EDA execution, with the Target name that
-        # run_yosys_syn's own guard cannot know.
-        default_clock = getattr(self.args, "default_clock", None)
-        if not resolved.sdc_files and default_clock is None:
+        if not resolved.sdc_files:
             raise BoundaryError(
-                f"synth: Target {target!r} has no timing constraints. "
-                "Add a `file_type: SDC` fileset (create_clock / set_input_delay / "
-                "set_output_delay / set_false_path) to the Target, or pass "
-                "--default-clock <ps> to run against an explicitly-named clock."
+                f"synth: physical Target {target!r} has no timing constraints. "
+                "Add a `file_type: SDC` fileset containing a clock to the Target. "
+                "Logical synthesis may run without SDC."
             )
-        if default_clock is not None:
-            cmd.extend(["--default-clock", str(default_clock)])
 
     def _append_typed_param_args(
         self,
@@ -1299,7 +1290,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
             msg = str(exc.code) if exc.code is not None else "synthesis configure failed"
             logger.warning("Synth %s: configure failed: %s", target, msg)
             return self._attach_recipe_evidence(target, _infra_metrics(msg)), msg
-        except OSError as exc:
+        except (BoundaryError, OSError) as exc:
             msg = f"failed to render synthesis build dir: {exc}"
             logger.warning("Synth %s: %s", target, msg)
             return self._attach_recipe_evidence(target, _infra_metrics(msg)), msg
@@ -1351,6 +1342,11 @@ class AsicSynthesizeFlow(BuiltinFlow):
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
+        input_error = _INPUT_ERROR_RE.search(output)
+        if input_error is not None:
+            metrics.returncode = 2
+            metrics.infra_error = input_error.group(1).strip()
+            metrics.termination = "infrastructure_error"
         if result.peak_rss_mb is not None:
             metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, result.peak_rss_mb)
         if outcome.forced_failure and metrics.returncode == 0:
@@ -1928,9 +1924,16 @@ class AsicSynthesizeFlow(BuiltinFlow):
                         continue
                     cmd = self._build_synth_cmd(tgt)
                     rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
+                    clock_note = (
+                        "  # Target SDC clock creation is validated by OpenROAD at runtime"
+                        if cmd[cmd.index("--synth-mode") : cmd.index("--synth-mode") + 2]
+                        == ["--synth-mode", "physical"]
+                        else ""
+                    )
                     lines.append(
                         f"[synth] dry-run ({tgt}): make -C {rel}"
-                        f"  # rendered at configure time from: {' '.join(cmd)}",
+                        f"  # rendered at configure time from: {' '.join(cmd)}"
+                        f"{clock_note}",
                     )
             except BoundaryError as exc:
                 # A wrong-typed config knob fails the preview loudly — dry-run

@@ -472,8 +472,9 @@ targets:
 `physical` runs Yosys followed by OpenROAD placement, optimization, parasitic
 estimation, and its embedded STA. Its `area_um2` is post-optimization area and
 `area_source` is `openroad_post_optimization`. Timing intent belongs in the
-Target's SDC fileset; a physical Target with neither SDC nor an explicit
-per-run clock is rejected rather than analyzed against a silent default.
+Target's SDC fileset. A physical Target without SDC is rejected before EDA
+execution, and OpenROAD rejects an SDC that creates no clocks. Booley loads the
+authored files in Target order and adds no generated timing constraints.
 
 `logical` runs only Yosys mapping. It is much faster and gives a useful mapped
 area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped

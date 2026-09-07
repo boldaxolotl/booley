@@ -51,7 +51,6 @@ def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, An
         "toplevel": snapshot.get("toplevel"),
         "recipe_args": jsonable(snapshot.get("recipe_args", [])),
         "constraints": jsonable(snapshot.get("constraints", [])),
-        "default_clock_ps": snapshot.get("default_clock_ps"),
         "technology": jsonable(snapshot.get("technology")),
     }
 
