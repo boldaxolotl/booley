@@ -1305,6 +1305,16 @@ class TestNoConfigs:
 class TestSingleConfigRun:
     """Test the main _run flow with a single config, mocking _execute."""
 
+    def test_configure_render_error_is_infrastructure_error(self, flow_and_state):
+        flow, _ = flow_and_state
+
+        with patch.object(flow, "_configure_synth", side_effect=OSError("disk full")):
+            metrics, output = flow._run_single_config("lite")
+
+        assert metrics.returncode == 2
+        assert metrics.termination == "infrastructure_error"
+        assert "failed to render synthesis build dir: disk full" in output
+
     def test_pass_no_baseline(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
         synth_output = (
@@ -2437,6 +2447,49 @@ class TestCriterionKey:
 
 
 class TestBuildSynthCmd:
+    @staticmethod
+    def _append_sdc_args(
+        flow: AsicSynthesizeFlow,
+        resolved: fusesoc_registry.ResolvedTarget,
+        tmp_path: Path,
+    ) -> None:
+        flow._append_sta_constraint_args([], resolved, "lite", tmp_path, SynthMode.PHYSICAL)
+
+    def test_sdc_must_stay_inside_selected_checkout(self, flow_and_state, tmp_path: Path):
+        flow, _ = flow_and_state
+        outside = tmp_path.parent / "outside.sdc"
+        outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        resolved = dataclasses.replace(
+            _fake_synth_resolved(tmp_path),
+            files=(fusesoc_registry.ResolvedFile(name=str(outside), file_type="SDC"),),
+        )
+
+        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sdc_must_exist(self, flow_and_state, tmp_path: Path):
+        flow, _ = flow_and_state
+        resolved = _fake_synth_resolved(tmp_path)
+        resolved.sdc_files[0].absolute(resolved.build_root).unlink()
+
+        with pytest.raises(BoundaryError, match="SDC file not found"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sdc_must_be_readable(self, flow_and_state, monkeypatch, tmp_path: Path):
+        flow, _ = flow_and_state
+        resolved = _fake_synth_resolved(tmp_path)
+        sdc_file = resolved.sdc_files[0].absolute(resolved.build_root)
+        original_read_bytes = Path.read_bytes
+
+        def fail_for_sdc(path):
+            if path == sdc_file:
+                raise OSError("permission denied")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
+        with pytest.raises(BoundaryError, match="SDC file is not readable"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
     def test_recipe_schema_bumps_without_default_clock(self, tmp_path: Path):
         snapshot = synthesis_recipe_snapshot(
             _fake_synth_resolved(tmp_path),
