@@ -294,7 +294,7 @@ def test_flow_collection_reports_retired_elaboration_tables(retired: str) -> Non
 
     assert not audit.is_valid
     finding = next(item for item in audit.findings if f"[flows.{retired}]" in item.message)
-    assert "sim --elab-only" in finding.fix
+    assert "sim --mode elab-only" in finding.fix
     assert "[flows.sim].standalone_frontend" in finding.fix
 
 

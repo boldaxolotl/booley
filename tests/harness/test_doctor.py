@@ -1655,7 +1655,7 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     assert ok is False
     assert any(
         f"[flows.{retired}] is retired" in message
-        and "sim --elab-only" in message
+        and "sim --mode elab-only" in message
         and "[flows.sim].standalone_frontend" in message
         for message in fails
     )
