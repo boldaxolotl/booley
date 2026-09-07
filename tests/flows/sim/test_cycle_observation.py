@@ -8,6 +8,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
+from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,
@@ -26,6 +27,36 @@ from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
+
+
+def _plan_unit(
+    role: WorkUnitRole,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str | None = None,
+) -> WorkUnitPlan:
+    return WorkUnitPlan(
+        unit_id="sim-baseline-coremark",
+        role=role,
+        revision=revision,
+        selector=selector,
+        target_identity=identity,
+        test_or_module_scope=("coremark",),
+        eda_tool="verilator",
+        timeout_ms=1_000,
+    )
+
+
+def test_simulation_plan_includes_baseline_before_candidate() -> None:
+    flow, _key = _criterion_flow(relative=True)
+    baseline = _plan_unit("baseline", revision="b" * 40)
+    candidate = _plan_unit("candidate")
+    flow._plan_cycle_count_baseline_units = MagicMock(return_value=([baseline], []))
+    flow._plan_simulation_targets = MagicMock(return_value=([candidate], []))
+
+    plan = flow._plan_simulation([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
+
+    assert plan == FlowPlan("sim", "simulate", (baseline, candidate))
 
 
 def _patch_catalog_select(monkeypatch, resolver) -> None:

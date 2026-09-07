@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import inf, nan
 from pathlib import Path
 
 import pytest
@@ -138,3 +139,9 @@ def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:
 def test_work_unit_timeout_must_be_positive() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         _unit(timeout_ms=0)
+
+
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_non_finite_plan_values_are_rejected(value: float) -> None:
+    with pytest.raises(ValueError, match="finite number"):
+        _unit(parameters={"unsafe": value})

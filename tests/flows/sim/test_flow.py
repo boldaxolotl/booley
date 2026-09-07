@@ -959,6 +959,22 @@ class TestDryRun:
             ("boot",),
         ]
 
+    @patch("booley.flows.sim.flow._get_test_names", return_value={})
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
+    def test_plan_fingerprint_changes_with_configured_environment(
+        self,
+        _mock_backend,
+        _mock_tests,
+        tmp_path: Path,
+    ) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
+            first = flow._plan_simulation(["lite"], {})
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
+            second = flow._plan_simulation(["lite"], {})
+
+        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_with_test_filter(
