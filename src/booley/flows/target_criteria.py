@@ -46,10 +46,16 @@ def resolve_target_criteria(
 def resolve_campaign_scope(
     explicit_scope: str | Sequence[str] | None,
     criteria: Sequence[TargetCriterion],
+    *,
+    enforce_match: bool = False,
 ) -> tuple[str, ...]:
     """Resolve one explicit or criterion-derived campaign scope."""
     explicit = _scope_paths(explicit_scope)
     if explicit:
+        sealed = {_scope_paths(criterion.params.get("scope")) for criterion in criteria}
+        sealed.discard(())
+        if enforce_match and sealed and any(set(scope) != set(explicit) for scope in sealed):
+            raise CampaignScopeError("mismatch")
         return explicit
     scopes = {_scope_paths(criterion.params.get("scope")) for criterion in criteria}
     scopes.discard(())
