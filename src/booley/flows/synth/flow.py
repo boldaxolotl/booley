@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -1144,15 +1145,20 @@ class AsicSynthesizeFlow(BuiltinFlow):
         """Append the shared normalized synthesis recipe for this invocation."""
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
-    def _resolve_synth_target(self, target: str) -> fusesoc_registry.ResolvedTarget:
+    def _resolve_synth_target(
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
+    ) -> fusesoc_registry.ResolvedTarget:
         """Clean and resolve one FuseSoC Target into its isolated build root."""
-        build_root = self._synth_work_root(target)
-        shutil.rmtree(build_root, ignore_errors=True)
+        selected_root = build_root or self._synth_work_root(target)
+        shutil.rmtree(selected_root, ignore_errors=True)
         handle = self._target_handle(target)
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=build_root)
-        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
+            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
@@ -1187,7 +1193,12 @@ class AsicSynthesizeFlow(BuiltinFlow):
             evidence = self._recipe_evidence = {}
         evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
-    def _resolve_synth_recipe(self, target: str) -> _PlannedSynthRecipe:
+    def _resolve_synth_recipe(
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
+    ) -> _PlannedSynthRecipe:
         """Resolve *target* and build its validated run_yosys_syn spec argv.
 
         FuseSoC owns design description; this command-gen exception forwards
@@ -1195,7 +1206,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         Baselines point ``work_dir`` at a separate worktree, so resolution and
         artifacts remain isolated. The argv also remains runnable for dry-run.
         """
-        resolved = self._resolve_synth_target(target)
+        resolved = self._resolve_synth_target(target, build_root=build_root)
         self._record_recipe_evidence(target, resolved)
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
@@ -1786,15 +1797,20 @@ class AsicSynthesizeFlow(BuiltinFlow):
         resolved = planned.resolved
         root = Path(self.args.work_dir)
         sources = tuple(
-            normalize_plan_path(item.absolute(resolved.build_root), root)
+            Path(item.name).as_posix()
             for item in resolved.files
             if item.file_type.lower() != "sdc"
         )
-        constraints = tuple(
-            normalize_plan_path(item.absolute(resolved.build_root), root)
-            for item in resolved.sdc_files
-        )
+        constraints = tuple(Path(item.name).as_posix() for item in resolved.sdc_files)
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
+        plan_recipe = dict(snapshot)
+        recipe_args = snapshot.get("recipe_args", [])
+        if "--synth-mode" in recipe_args:
+            index = recipe_args.index("--synth-mode")
+            if recipe_args[index + 1] == "physical":
+                plan_recipe["clock_validation"] = (
+                    "Target SDC clock creation is validated by OpenROAD at runtime"
+                )
         build_dir = self._synth_build_dir(target)
         handle = self._target_handle(target)
         return WorkUnitPlan(
@@ -1815,10 +1831,10 @@ class AsicSynthesizeFlow(BuiltinFlow):
             sources=sources,
             constraints=constraints,
             parameters=resolved.parameters,
-            recipe=snapshot,
+            recipe=plan_recipe,
             commands=(
                 CommandPlan(
-                    normalize_plan_argv(planned.command, root),
+                    self._normalized_synth_plan_command(planned, root),
                     cwd=".",
                     template=True,
                 ),
@@ -1837,6 +1853,32 @@ class AsicSynthesizeFlow(BuiltinFlow):
             ),
         )
 
+    @staticmethod
+    def _normalized_synth_plan_command(
+        planned: _PlannedSynthRecipe,
+        root: Path,
+    ) -> tuple[str, ...]:
+        """Replace disposable staged paths with their Target-owned names."""
+        replacements = {
+            posix_relpath(item.absolute(planned.resolved.build_root), root): Path(
+                item.name
+            ).as_posix()
+            for item in planned.resolved.files
+        }
+        replacements.update(
+            {
+                posix_relpath(item.absolute(planned.resolved.build_root).parent, root): (
+                    Path(item.name).parent.as_posix()
+                )
+                for item in planned.resolved.files
+                if item.is_include
+            }
+        )
+        return tuple(
+            replacements.get(argument, argument)
+            for argument in normalize_plan_argv(planned.command, root)
+        )
+
     def _plan_synth_implementation(self, targets: list[str]) -> FlowPlan:
         """Resolve candidate and baseline recipes before either revision runs."""
         candidate_units: list[WorkUnitPlan] = []
@@ -1846,20 +1888,24 @@ class AsicSynthesizeFlow(BuiltinFlow):
         candidate_recipes: dict[str, _PlannedSynthRecipe] = {}
         for target in targets:
             try:
-                lease = (
-                    edam.try_work_root_lease(self._synth_work_root(target))
-                    if self.args.dry_run
-                    else edam.work_root_lease(
+                if self.args.dry_run:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".booley-synth-plan-",
+                        dir=self.args.work_dir,
+                    ) as scratch:
+                        planned = self._resolve_synth_recipe(
+                            target,
+                            build_root=Path(scratch) / target,
+                        )
+                else:
+                    lease = edam.work_root_lease(
                         self._synth_work_root(target),
                         timeout_s=self._get_timeout(),
                         on_wait=lambda selected=target: self._report_workspace_wait(selected),
                     )
-                )
-                with lease as leased:
-                    if leased is None:
-                        raise ValueError("workspace busy")
-                    planned = self._resolve_synth_recipe(target)
-                candidate_recipes[target] = planned
+                    with lease:
+                        planned = self._resolve_synth_recipe(target)
+                    candidate_recipes[target] = planned
                 candidate_units.append(
                     self._synth_work_unit(
                         target,
@@ -1887,6 +1933,10 @@ class AsicSynthesizeFlow(BuiltinFlow):
             mode="implementation",
             work_units=(*baseline_units, *candidate_units),
             aggregate_errors=tuple(errors),
+            planning_disclosures=(
+                "FuseSoC setup may run in invocation-owned disposable scratch; "
+                "EDA commands are not executed.",
+            ),
         )
 
     def _plan_synth_baselines(
@@ -1970,7 +2020,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         plan = self._plan_synth_implementation(targets)
         self._flow_plan = plan
         if self.args.dry_run:
-            return self._dry_run(targets)
+            return self._dry_run_result(plan)
         if plan.aggregate_errors:
             detail: dict[str, Any] = {"plan": plan.as_dict()}
             for target in targets:
@@ -2119,72 +2169,6 @@ class AsicSynthesizeFlow(BuiltinFlow):
             for target in targets
         ):
             self._baseline_selfcompare_msg = None
-
-    def _dry_run(self, targets: list[str]) -> McpToolResult:
-        """Print the boundary command + the spec it is rendered from.
-
-        The executed command is a bare ``make -C <rel>`` (ADR 0037 §8); the
-        recipe knobs live in the scripts the configure half renders into that
-        dir, so the preview also shows the resolved run_yosys_syn spec argv —
-        the validated carrier of every flag. Building it requires the resolved
-        RTL, so this resolves every target through FuseSoC (one ``fusesoc run
-        --setup`` each) — an honest preview, not a cheap ``.core`` read. The
-        per-target label keeps the target name visible.
-
-        When resolution itself is unavailable (no ``fusesoc`` outside the
-        sandbox), dry-run must still succeed — the contract says dry-run needs
-        no EDA tools — so it degrades to the cheap ``setup_command`` preview
-        the make-driven built-ins use.
-        """
-        lines = []
-        for tgt in targets:
-            try:
-                with edam.try_work_root_lease(self._synth_work_root(tgt)) as leased:
-                    if leased is None:
-                        lines.append(self._setup_preview(tgt, "workspace busy"))
-                        continue
-                    cmd = self._build_synth_cmd(tgt)
-                    rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
-                    clock_note = (
-                        "  # Target SDC clock creation is validated by OpenROAD at runtime"
-                        if cmd[cmd.index("--synth-mode") : cmd.index("--synth-mode") + 2]
-                        == ["--synth-mode", "physical"]
-                        else ""
-                    )
-                    lines.append(
-                        f"[synth] dry-run ({tgt}): make -C {rel}"
-                        f"  # rendered at configure time from: {' '.join(cmd)}"
-                        f"{clock_note}",
-                    )
-            except BoundaryError as exc:
-                # A wrong-typed config knob fails the preview loudly — dry-run
-                # exists to vet the command, so hiding a config error here would
-                # defeat its purpose.
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"[synth] dry-run ({tgt}): config error: {exc}",
-                )
-            except fusesoc_registry.TargetResolutionError as exc:
-                lines.append(self._setup_preview(tgt, str(exc)))
-            except edam.WorkRootLeaseError as exc:
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"[synth] dry-run ({tgt}): infrastructure error: {exc}",
-                )
-        return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
-
-    def _setup_preview(self, target: str, reason: str) -> str:
-        """Return the non-mutating preview used when full resolution is unavailable."""
-        handle = self._target_handle(target)
-        setup_cmd = fusesoc_registry.setup_command_for_handle(
-            handle,
-            build_root=self._synth_work_root(target),
-        )
-        return (
-            f"[synth] dry-run ({target}): {' '.join(setup_cmd)}"
-            " && make -C <configured synth build dir>"
-            f"  # full preview unavailable here: {reason}"
-        )
 
     def _run_baseline_configs(
         self,

@@ -75,15 +75,23 @@ def _write_display_event(event: dict) -> None:
         logger.debug("display.jsonl write failed", exc_info=True)
 
 
-def _endpoint_start_event(endpoint_name: str, display_target: str | None) -> dict:
+def _endpoint_start_event(
+    endpoint_name: str,
+    display_target: str | None,
+    *,
+    dry_run: bool = False,
+) -> dict:
     """Build an endpoint_start display event dict."""
-    return {
+    event = {
         "type": "endpoint_start",
         "endpoint": endpoint_name,
         "target": display_target,
         "pid": os.getpid(),
         "timestamp": utc_now_rfc3339(),
     }
+    if dry_run:
+        event["dry_run"] = True
+    return event
 
 
 def _endpoint_progress_event(

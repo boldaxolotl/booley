@@ -35,8 +35,9 @@ Common controls:
   under that directory.
 - `--diagnostic` runs without satisfying Ticket Criteria. A strict Ticket
   requires it when the Flow/Target pair is outside the Acceptance Basis.
-- `--dry-run` validates inputs and previews commands or resolved build inputs,
-  depending on the Flow, without running the EDA tool.
+- `--dry-run` resolves and validates the requested work and prints the same
+  normalized plan shape for every built-in Flow. It does not run EDA or
+  Pre-Run Commands and does not update Booley-managed durable state.
 - `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
   work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
   workload-specific default. Queue time is not charged. The old `--timeout`
@@ -77,6 +78,29 @@ An agent-facing MCP call attaches its per-invocation report as
 too large for the MCP result, `reports` is empty, `truncated` is `true`, and the
 result retains the Flow, Target, exit code, and artifact pointers needed to open
 the durable report.
+
+### Dry-run plan
+
+Every built-in dry-run returns a JSON `FlowPlan` with `schema_version`, `flow`,
+`mode`, `semantic_plan_fingerprint`, ordered `work_units`, `aggregate_errors`,
+and `planning_disclosures`. Each work unit identifies its Target and revision
+role, timeout, sources and constraints, resolved parameters and recipe, ordered
+command argv, and expected artifacts. Paths are relative to `work_dir` where
+possible; ambient environment values and secrets are excluded.
+
+Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
+selected Target or baseline cannot be planned, while retaining successfully
+planned work units for diagnosis. It never acquires a heavy execution slot,
+runs an EDA or Pre-Run command, changes timeline or Criteria state, records
+acceptance evidence, populates implementation caches, or writes a normal
+verdict report. FuseSoC setup and declared generators may run when authoritative
+resolution requires them, using disposable scratch; this possibility is named
+in `planning_disclosures` and the scratch is removed afterward.
+
+With an explicit `--report-dir`, dry-run atomically writes only the distinct
+`<report-dir>/<flow>/flow_plan.json` artifact. The
+`semantic_plan_fingerprint` excludes scratch and invocation-local paths so the
+same prepared dry and real execution have the same semantic identity.
 
 Ticket and agent-driven runs configure
 `.booley_project/.runtime/flow-reports/` automatically. A direct CLI run writes
@@ -276,10 +300,10 @@ Useful controls:
 
 - `--baseline <git-ref>` compares implementation metrics with another revision.
 - `--no-cache` forces fresh implementation instead of reusing a matching result.
-- `--dry-run` performs the same FuseSoC setup and Target source inspection as a
-  real run, then prints resolved part, top, XDC, and source inputs. If any
-  selected Target fails setup, it reports no resolved metadata for any Target.
-  It does not claim to preview a runnable Vivado command.
+- `--dry-run` performs the shared aggregate planning contract described above.
+  Its FPGA work units include resolved part, top, XDC, source inputs, recipe,
+  and the explicitly marked Vivado Make command template. A later Target error
+  blocks execution but does not hide valid earlier work units from the plan.
 
 The Flow normalizes utilization, routed timing/Fmax, fixed critical-condition
 counts (latches, combinational loops, and multi-driven nets), constraint/recipe

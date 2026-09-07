@@ -346,8 +346,9 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "part=xc7a200tfbg484-1" in result.report_text
-    assert "xdc=" in result.report_text
+    unit = result.detail["work_units"][0]
+    assert unit["recipe"]["flow_options"]["part"] == "xc7a200tfbg484-1"
+    assert unit["constraints"]
     assert len(flow._flow_plan.work_units) == 1
     unit = flow._flow_plan.work_units[0]
     assert (unit.role, unit.selector, unit.eda_tool) == (
@@ -356,6 +357,21 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
         "vivado",
     )
     assert unit.timeout_ms == 7_200_000
+    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
+
+
+def test_dry_and_real_preparation_have_same_semantic_fingerprint(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    dry_plan = flow._plan_fpga_implementation(["default"])
+    flow.args.dry_run = False
+    real_plan = flow._plan_fpga_implementation(["default"])
+
+    assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
 
 
 def test_dry_run_resolves_sources_from_work_dir(
@@ -370,7 +386,7 @@ def test_dry_run_resolves_sources_from_work_dir(
     result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "sv_files=1 v_files=1" in result.report_text
+    assert result.detail["work_units"][0]["sources"] == ["rtl/top.sv", "rtl/legacy.v"]
 
 
 def test_run_rejects_non_fpga_axis_before_setup(
@@ -448,12 +464,13 @@ def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
             return_value=run_evidence.FlowSourceEvidence("unversioned", "source-digest"),
         ),
     ):
-        result = flow._dry_run(["good", "bad"])
+        result = flow._dry_run_result(flow._plan_fpga_implementation(["good", "bad"]))
 
     assert result.exit_code == EXIT_ERROR
     assert "setup rejected bad" in result.report_text
-    assert "target=good" not in result.report_text
-    assert "part=" not in result.report_text
+    assert [unit["selector"] for unit in result.detail["work_units"]] == ["good"]
+    assert result.detail["aggregate_errors"] == ["candidate bad: setup rejected bad"]
+    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
 
 
 def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
@@ -469,12 +486,13 @@ def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
         "capture_flow_source_evidence",
         side_effect=fusesoc_registry.FuseSocError("source inspection rejected"),
     ):
-        dry_run = flow._dry_run(["default"])
+        dry_run = flow._dry_run_result(flow._plan_fpga_implementation(["default"]))
         real_run = flow._run_single_target("default")
 
     assert dry_run.exit_code == EXIT_ERROR
     assert "source inspection rejected" in dry_run.report_text
-    assert "target=default" not in dry_run.report_text
+    assert dry_run.detail["work_units"] == []
+    assert dry_run.detail["aggregate_errors"] == ["candidate default: source inspection rejected"]
     assert real_run.returncode == EXIT_ERROR
     assert "source inspection rejected" in (real_run.infra_error or "")
 

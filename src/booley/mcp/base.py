@@ -1002,7 +1002,13 @@ class McpTool(ABC):
         self.read_state()
         self._default_target_args()
         display_target = self._resolve_display_config()
-        _write_display_event(_endpoint_start_event(self.name, display_target))
+        _write_display_event(
+            _endpoint_start_event(
+                self.name,
+                display_target,
+                dry_run=self._uses_dry_run_lifecycle(),
+            )
+        )
         return _PreparedMcpExecution(display_target)
 
     @contextmanager
@@ -1161,6 +1167,10 @@ class McpTool(ABC):
     def _resolve_job_class(self) -> str | None:
         """The Job Class this call belongs to, or None for unclassed endpoints."""
         return self.JOB_CLASS
+
+    def _uses_dry_run_lifecycle(self) -> bool:
+        """Whether this endpoint opts into the non-persisting dry-run path."""
+        return False
 
     def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
         """Claim this run's admission slot, waiting in queue order if needed.

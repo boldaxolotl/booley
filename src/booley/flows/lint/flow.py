@@ -507,15 +507,9 @@ class LintFlow(BuiltinFlow):
         return ["sh", "-c", script]
 
     def _dry_run(self, targets: tuple[TargetHandle, ...]) -> EndpointOutcome:
-        """Print the side-effect-free ``fusesoc run --setup`` + ``make`` preview.
-
-        One ``sh -c`` script per Target, emitted as JSON — the same shape the
-        simulate/elaborate built-ins use, so a dry-run never invokes fusesoc.
-        """
-        commands = {target.selector: self._dry_run_command(target) for target in targets}
-        output = json.dumps(commands, indent=2)
-        print(output)
-        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
+        """Render the normalized plan resolved by preflight."""
+        del targets
+        return self._dry_run_result(self._flow_plan)
 
     def _plan_lint(self, targets: tuple[TargetHandle, ...]) -> FlowPlan:
         """Resolve every selected lint recipe before any linter can execute."""
@@ -907,7 +901,6 @@ class LintFlow(BuiltinFlow):
             )
         plan = self._plan_lint(targets)
         self._flow_plan = plan
-        # Keep the legacy renderer until the atomic cross-Flow cutover PR.
         if self.args.dry_run:
             return self._dry_run(targets)
         if plan.aggregate_errors:

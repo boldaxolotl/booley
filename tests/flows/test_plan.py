@@ -113,6 +113,10 @@ def test_paths_and_argv_are_normalized_to_checkout(tmp_path: Path) -> None:
         "tool",
         ".booley_work/sim",
     )
+    assert normalize_plan_argv(
+        ("sh", "-c", f"tool --root {tmp_path} --file {nested}"),
+        tmp_path,
+    ) == ("sh", "-c", "tool --root . --file .booley_work/sim")
 
 
 def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:

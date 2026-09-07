@@ -113,6 +113,36 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
+### Shared planning and dry-run lifecycle
+
+The four shipped Flows inherit `BuiltinFlow` and project their authoritative
+preparation into `FlowPlan` / `WorkUnitPlan` records. A work unit keeps the
+timeout-bearing execution identity together: Target and revision role, selected
+tests or modules, EDA tool, sources, constraints, parameters, concrete recipe,
+ordered argv, and expected artifacts. Simulation and Lint consume their planned
+recipes during real execution; ASIC and FPGA implementation do the same for
+candidate and optional baseline work units. All requested units are validated
+before the first real command is dispatched.
+
+`semantic_plan_fingerprint` hashes execution meaning while excluding dry-run
+status, cwd and scratch prefixes, report destinations, and invocation IDs. It is
+separate from adapter-owned recipe/cache fingerprints. This lets tests compare
+dry and real preparation without weakening the concrete evidence identity used
+for implementation reuse.
+
+Built-in dry-run takes a deliberately narrower lifecycle through the endpoint
+coordinator. Boundary and Target validation still run, but heavy Job admission,
+acceptance recording, `_post_run()` state/timeline/Criteria persistence, normal
+verdict reports, and cache population do not. Start and end display events carry
+`dry_run=true`. An explicit report destination may receive only the atomic,
+distinctly typed `<flow>/flow_plan.json` plan.
+
+Authoritative FuseSoC setup or declared generators may be necessary to produce
+EDAM. Dry planning confines that work to an invocation-owned temporary directory
+inside the selected checkout and removes it on normal exit or exceptions. The
+plan discloses that limited preparation side effect; EDA and project Pre-Run
+commands are never dispatched.
+
 ### Ticket Acceptance Bases
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
@@ -703,8 +733,9 @@ Dry-run and real execution share one validated Target-recipe preflight. Both
 run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
 sources, and inspect those sources for provenance. Only the real path then
 materializes the Vivado project and creates execution evidence. Multi-Target
-dry-run output is all-or-nothing: a later setup failure suppresses the resolved
-metadata for earlier Targets.
+planning is execution-atomic: a later setup failure prevents every real unit,
+while dry-run retains valid earlier work units beside Target-attributed
+`aggregate_errors` for diagnosis.
 
 Plain Doctor includes the optional FPGA axis when a Target marks
 `booley: {doctor: [fpga]}` or `[flows.fpga]` is present and enabled. It uses the

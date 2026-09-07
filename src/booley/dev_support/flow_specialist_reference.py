@@ -179,7 +179,7 @@ def render_flow_reference(
             [
                 "",
                 "Common controls: `--target <name,...>` selects Target(s); "
-                "`--dry-run` prints commands without executing them; "
+                "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
                 "Key Flow-specific controls:",

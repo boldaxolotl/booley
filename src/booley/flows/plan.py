@@ -42,8 +42,16 @@ def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
 
 def normalize_plan_argv(argv: tuple[str, ...], work_dir: Path) -> tuple[str, ...]:
     """Remove the selected checkout's absolute prefix from command arguments."""
-    prefix = work_dir.resolve().as_posix().rstrip("/") + "/"
-    return tuple(argument.replace(prefix, "") for argument in argv)
+    checkout = work_dir.resolve().as_posix().rstrip("/")
+    prefix = checkout + "/"
+
+    def normalize(argument: str) -> str:
+        normalized = argument.replace(prefix, "")
+        if normalized == checkout:
+            return "."
+        return normalized.replace(f"={checkout}", "=.").replace(f" {checkout}", " .")
+
+    return tuple(normalize(argument) for argument in argv)
 
 
 @dataclass(frozen=True)
@@ -136,6 +144,7 @@ class FlowPlan:
     mode: str
     work_units: tuple[WorkUnitPlan, ...]
     aggregate_errors: tuple[str, ...] = ()
+    planning_disclosures: tuple[str, ...] = ()
     schema_version: int = PLAN_SCHEMA_VERSION
 
     @property
@@ -162,6 +171,7 @@ class FlowPlan:
             "semantic_plan_fingerprint": self.semantic_plan_fingerprint,
             "work_units": [unit.as_dict() for unit in self.work_units],
             "aggregate_errors": list(self.aggregate_errors),
+            "planning_disclosures": list(self.planning_disclosures),
         }
 
 
