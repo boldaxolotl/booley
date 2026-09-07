@@ -62,7 +62,7 @@ def stage_bad_overlay(project_dir: Path, flow_name: str, build_root: Path) -> in
             raise SelftestOverlayError(
                 f"self-test overlay destination escapes the build root: {destination}"
             )
-        shutil.copy2(source, destination)
+        shutil.copy(source, destination)
         copied += 1
     return copied
 
