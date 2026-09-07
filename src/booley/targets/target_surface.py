@@ -22,7 +22,7 @@ from typing import NotRequired, TypedDict, cast
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle, flow_can_drive
+from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle
 
 # Glob metacharacters: a `booley targets` positional containing any of these is
 # a filter pattern; anything else is a selection token for the detail view.
@@ -159,7 +159,7 @@ def filter_surface(
         for_flow = canonical(for_flow)
 
     def keep(entry: TargetHandle) -> bool:
-        if for_flow is not None and not flow_can_drive(for_flow, entry):
+        if for_flow is not None and for_flow not in entry.drivable_by:
             return False
         if glob is not None:
             candidates = (

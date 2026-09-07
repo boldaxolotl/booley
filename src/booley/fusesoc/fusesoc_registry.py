@@ -1247,7 +1247,7 @@ def target_source_files_for_ref(
 def target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
     """Fileset names a Target pulls in — ``filesets`` unioned with ``filesets_append``.
 
-    Public API: peer modules (fusesoc_trace_overlay, doctor) depend on this
+    Public interface: Simulation trace-overlay orchestration and Doctor depend on this
     name rather than reaching for a private helper (principle 9). Both keys it
     consumes are schema-audited as arrays (:data:`_CAPI2_TARGET_ARRAY_FIELDS`),
     so the splat below cannot silently explode a stray scalar into

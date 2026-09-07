@@ -26,7 +26,6 @@ from booley.targets.target_surface import (
     collect_surface,
     detail_payload,
     filter_surface,
-    flow_can_drive,
     is_glob,
     render_detail,
     render_listing,
@@ -676,81 +675,6 @@ class TestTargetInterface:
 
 
 # ---------------------------------------------------------------------------
-# flow_can_drive
-# ---------------------------------------------------------------------------
-
-
-class TestFlowCanDrive:
-    def _ref(
-        self,
-        flow: str | None,
-        eda_tool: str | None,
-        *,
-        name: str = "t",
-    ) -> TargetRef:
-        return TargetRef(
-            name=name,
-            vlnv="a:b:c:1.0",
-            core_file=Path("x.core"),
-            eda_tool=eda_tool,
-            flow=flow,
-        )
-
-    def test_sim_flow_drives_sim_targets(self):
-        ref = self._ref("sim", "verilator")
-        assert flow_can_drive("sim", ref)
-        assert not flow_can_drive("lint", ref)
-        assert not flow_can_drive("synth", ref)
-        assert not flow_can_drive("fpga", ref)
-
-    def test_sim_flow_drives_canonical_icarus_target(self):
-        ref = self._ref("sim", "icarus")
-        assert flow_can_drive("sim", ref)
-
-    def test_lint_flow_drives_lint_only(self):
-        ref = self._ref("lint", "verible")
-        assert flow_can_drive("lint", ref)
-        assert not flow_can_drive("sim", ref)
-
-    def test_generic_flow_splits_on_eda_tool(self):
-        yosys = self._ref("generic", "yosys")
-        vivado = self._ref("generic", "vivado")
-        assert flow_can_drive("synth", yosys)
-        assert not flow_can_drive("fpga", yosys)
-        assert flow_can_drive("fpga", vivado)
-        assert not flow_can_drive("synth", vivado)
-
-    def test_fpga_axis_ignores_resolution_tool(self):
-        ref = self._ref("generic", "verilator", name="fpga_core_fast")
-        assert flow_can_drive("fpga", ref)
-
-    def test_non_fpga_axis_overrides_vivado_fallback(self):
-        ref = self._ref("generic", "vivado", name="synth_core_fast")
-        assert not flow_can_drive("fpga", ref)
-
-    def test_legacy_flowless_target_falls_back_to_eda_tool_family(self):
-        """A `tools:`-style Target (flow=None) must not vanish from --for."""
-        legacy_sim = self._ref(None, "iverilog")
-        assert flow_can_drive("sim", legacy_sim)
-        assert not flow_can_drive("lint", legacy_sim)
-
-    @pytest.mark.parametrize("eda_tool", ["xcelium", "vcs"])
-    def test_unsupported_commercial_simulators_are_not_drivable(self, eda_tool: str):
-        """Vendor .cores may enumerate them, but Booley must not advertise support."""
-        for declared_flow in ("sim", None):
-            ref = self._ref(declared_flow, eda_tool)
-            assert not flow_can_drive("sim", ref)
-
-    def test_specialist_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"mutation_tester.*not a target-aware"):
-            flow_can_drive("mutation_tester", self._ref("sim", "verilator"))
-
-    def test_retired_elab_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"elab.*not a target-aware"):
-            flow_can_drive("elab", self._ref("sim", "verilator"))
-
-
-# ---------------------------------------------------------------------------
 # minimal_selector (fusesoc_registry)
 # ---------------------------------------------------------------------------
 
@@ -873,6 +797,28 @@ class TestFilterSurface:
     def test_for_flow_keeps_only_drivable(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="sim")
         assert sorted(entry.name for entry in surface.entries()) == ["sim", "smoke"]
+
+    def test_for_flow_consumes_catalog_drivability_facts(self, project: Path):
+        handle = make_target_handle(
+            project,
+            "catalog_owned",
+            flow="lint",
+            eda_tool="verilator",
+            drivable_by=("sim",),
+        )
+        surface = target_surface.TargetSurface(
+            groups=(
+                target_surface.CoreGroup(
+                    vlnv=handle.vlnv,
+                    core_file=handle.core_file,
+                    entries=(handle,),
+                ),
+            ),
+            warnings=(),
+        )
+
+        assert tuple(filter_surface(surface, for_flow="sim").entries()) == (handle,)
+        assert not tuple(filter_surface(surface, for_flow="lint").entries())
 
     def test_for_flow_drops_empty_groups(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="synth")

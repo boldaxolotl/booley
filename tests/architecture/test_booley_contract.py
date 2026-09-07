@@ -107,7 +107,15 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
             "seed.py",
         ),
         ("D12", "booley.targets.domain", "booley.fusesoc.registry", "seed.py"),
+        ("D12", "booley.targets.selection", "booley.flows.sim.flow", "seed.py"),
+        ("D12", "booley.targets.domain", "booley.targets.catalog", "seed.py"),
+        ("D12", "booley.targets.selection", "booley.targets.target_surface", "seed.py"),
         ("D12", "booley.fusesoc.registry", "booley.targets.catalog", "seed.py"),
+        ("D12", "booley.fusesoc.target_inspection", "booley.targets.target_surface", "seed.py"),
+        ("D13", "booley.fusesoc.registry", "booley.flows.sim.flow", "seed.py"),
+        ("D13", "booley.fusesoc.registry", "booley.flows.synth.flow", "seed.py"),
+        ("D13", "booley.fusesoc.registry", "booley.flows.fpga.flow", "seed.py"),
+        ("D13", "booley.fusesoc.registry", "booley.flows.lint.flow", "seed.py"),
     ),
 )
 def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
