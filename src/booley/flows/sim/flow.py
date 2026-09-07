@@ -79,7 +79,7 @@ from .execution import (
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.failures import find_missing_executable
-from .mode import SimulationMode, parse_simulation_mode
+from .mode import SimulationMode, normalize_simulation_mode, parse_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
@@ -680,7 +680,7 @@ def _resolve_sim_campaign_work_units(
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
         return 1
-    selected_mode = SimulationMode(str(mode).replace("-", "_"))
+    selected_mode = normalize_simulation_mode(mode)
     if selected_mode is SimulationMode.ELAB_ONLY:
         return len(targets)
     if selected_mode is SimulationMode.ELAB_ONLY_STANDALONE:
@@ -1207,8 +1207,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             args.mode = SimulationMode.ELAB_ONLY
         elif args.mode is None:
             args.mode = SimulationMode.SIMULATE
-        del args._legacy_elab_only
-        del args._legacy_standalone
+        vars(args).pop("_legacy_elab_only")
+        vars(args).pop("_legacy_standalone")
         return args
 
     def mcp_schema(self) -> dict[str, object]:
@@ -1399,7 +1399,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         return None
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run(self) -> McpToolResult:
+        """Run the selected shape and stamp its canonical mode on every result."""
+        result = self._run_selected_mode()
+        result.detail["mode"] = self.args.mode.value
+        return result
+
+    def _run_selected_mode(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
@@ -2187,6 +2193,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target_result.passed,
             source_target=target_result.target,
             detail={
+                "mode": self.args.mode.value,
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
@@ -2222,6 +2229,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
+                "mode": self.args.mode.value,
                 "target": target_result.target,
                 "target_identity": target_result.target_identity,
                 "test": test_name,

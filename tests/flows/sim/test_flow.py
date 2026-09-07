@@ -897,6 +897,7 @@ class TestCriterionGating:
         flow.set_criterion = MagicMock()
         flow._record_sim_criterion(self._passed_target())
         flow.set_criterion.assert_called_once()
+        assert flow.set_criterion.call_args.kwargs["detail"]["mode"] == "simulate"
 
 
 # ---------------------------------------------------------------------------
@@ -909,6 +910,7 @@ class TestMultiConfig:
         flow = _make_flow(tmp_path, config="")
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
+        assert result.detail["mode"] == "simulate"
 
 
 class TestExecutionValidation:

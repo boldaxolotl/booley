@@ -435,16 +435,23 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 3 * 600 + 3 * 90
 
     def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {
-                "target": "a,b",
-                "mode": "elab_only_standalone",
-                "timeout_ms": 10_000,
-            },
-            {"default_timeout": 1},
-        )
+        from booley.flows.sim.mode import SimulationMode
+
+        with patch(
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            return_value=3,
+        ) as resolve_units:
+            timeout = self._mcp_tool_timeout_seconds(
+                "sim",
+                {
+                    "target": "a,b",
+                    "mode": "elab_only_standalone",
+                    "timeout_ms": 10_000,
+                },
+                {"default_timeout": 1},
+            )
         assert timeout == 3 * 10 + 30
+        assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
 
     def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(

@@ -3169,7 +3169,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         _resolve_sim_campaign_work_units,
         _resolve_sim_timeout_ms,
     )
-    from booley.flows.sim.mode import SimulationMode, parse_simulation_mode
+    from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
     work_dir_raw = arguments.get("work_dir")
     work_dir = Path(work_dir_raw) if work_dir_raw else Path.cwd()
@@ -3180,7 +3180,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         timeout_ms = resolve_timeout_ms("sim", None, requested)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
-    mode = parse_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
+    mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
     try:
         work_units = _resolve_sim_campaign_work_units(
             work_dir,

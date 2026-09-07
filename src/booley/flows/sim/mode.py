@@ -24,11 +24,17 @@ class SimulationMode(StrEnum):
         return self is SimulationMode.ELAB_ONLY_STANDALONE
 
 
+def normalize_simulation_mode(value: SimulationMode | str) -> SimulationMode:
+    """Return the canonical mode for an MCP or CLI spelling."""
+    if isinstance(value, SimulationMode):
+        return value
+    return SimulationMode(value.strip().lower().replace("-", "_"))
+
+
 def parse_simulation_mode(value: str) -> SimulationMode:
     """Accept MCP underscore values and their hyphenated CLI spellings."""
-    normalized = value.strip().lower().replace("-", "_")
     try:
-        return SimulationMode(normalized)
+        return normalize_simulation_mode(value)
     except ValueError as exc:
         choices = ", ".join(mode.value.replace("_", "-") for mode in SimulationMode)
         raise argparse.ArgumentTypeError(f"must be one of {choices}") from exc

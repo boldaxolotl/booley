@@ -150,7 +150,8 @@ class StandaloneMixin:
 
     def _standalone_requested(self) -> bool:
         """Whether the caller explicitly requested the standalone sweep."""
-        return getattr(self.args, "mode", None) is SimulationMode.ELAB_ONLY_STANDALONE
+        mode = getattr(self.args, "mode", None)
+        return isinstance(mode, SimulationMode) and mode.includes_standalone
 
     def _standalone_rtl_scope(self, targets: list[str]) -> list[str]:
         """Project-relative HDL files in the Targets' RTL source scope.
@@ -459,6 +460,7 @@ class StandaloneMixin:
         detail = self._standalone_detail(
             frontend, modules, shared, failures, unparsed, log_pointer
         )
+        detail["mode"] = self.args.mode.value
         if self.args.state_file is not None:
             self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).

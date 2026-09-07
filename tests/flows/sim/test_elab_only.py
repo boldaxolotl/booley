@@ -76,6 +76,13 @@ def test_canonical_modes_parse(
     assert flow.args.mode is expected
 
 
+def test_invalid_mode_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        SimulateFlow().parse_args(
+            ["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "invalid"]
+        )
+
+
 @pytest.mark.parametrize("alias", ["--elab-only", "--build-only"])
 def test_legacy_elaboration_aliases_normalize(
     tmp_path: Path,
@@ -89,6 +96,22 @@ def test_legacy_elaboration_aliases_normalize(
     assert caplog.messages == [
         "--elab-only, --build-only, and --standalone are deprecated; use --mode"
     ]
+
+
+def test_legacy_standalone_combination_normalizes(tmp_path: Path) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--target",
+            "sim_dut",
+            "--elab-only",
+            "--standalone",
+        ]
+    )
+
+    assert flow.args.mode is SimulationMode.ELAB_ONLY_STANDALONE
 
 
 def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
@@ -130,10 +153,11 @@ def test_elab_only_rejects_run_stage_arguments(
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", mode, *extra])
 
-    result = flow._validate_mode_args()
+    result = flow._run()
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
+    assert result.detail["mode"] == mode.replace("-", "_")
     assert argument in result.report_text
     assert "use --mode simulate" in result.report_text
 
@@ -142,11 +166,45 @@ def test_standalone_requires_elab_only(tmp_path: Path) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--standalone"])
 
-    result = flow._validate_mode_args()
+    result = flow._run()
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
+    assert result.detail["mode"] == "simulate"
     assert "--mode elab-only-standalone" in result.report_text
+
+
+def test_elab_only_disabled_result_keeps_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
+    monkeypatch.setattr(flow, "_flow_enabled", lambda: False)
+
+    result = flow._run()
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.detail["mode"] == "elab_only"
+
+
+def test_elab_only_target_resolution_error_keeps_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
+    monkeypatch.setattr(flow, "_flow_enabled", lambda: True)
+    monkeypatch.setattr(
+        flow,
+        "_resolve_requested_targets",
+        lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="bad target"),
+    )
+
+    result = flow._run()
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.detail["mode"] == "elab_only"
 
 
 def test_explicit_mode_conflicts_with_legacy_flags(tmp_path: Path) -> None:
