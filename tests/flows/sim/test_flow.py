@@ -928,6 +928,28 @@ class TestExecutionValidation:
 
 
 class TestDryRun:
+    def test_plan_keeps_non_shell_commands_unchanged(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        command = ("make", "-C", ".booley_work/sim")
+
+        assert flow._redact_plan_environment("lite", command) == command
+
+    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        execution = MagicMock()
+        execution.preview.side_effect = ValueError("preview failed")
+        flow._simulation_execution_override = execution
+
+        units, errors = flow._plan_simulation_targets(
+            ["lite"],
+            {},
+            role="ordinary",
+            revision=None,
+        )
+
+        assert units == []
+        assert errors == ["lite: preview failed"]
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):

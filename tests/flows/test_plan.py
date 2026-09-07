@@ -183,6 +183,24 @@ def test_sensitive_semantic_values_have_distinct_fingerprints() -> None:
     assert plan_value_fingerprint({"FLAVOR": "fast"}) != plan_value_fingerprint({"FLAVOR": "safe"})
 
 
+def test_plan_values_normalize_supported_containers_and_paths() -> None:
+    first = plan_value_fingerprint({"items": {Path("rtl/top.sv")}, "ratio": 1.5})
+    second = plan_value_fingerprint({"ratio": 1.5, "items": frozenset({"rtl/top.sv"})})
+
+    assert first == second
+
+
+def test_unsupported_plan_value_is_rejected() -> None:
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        plan_value_fingerprint(object())
+
+
+def test_path_outside_checkout_remains_absolute(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.sv"
+
+    assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
+
+
 def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:
     first = stable_unit_id("sim", "alu", ("smoke",))
 
