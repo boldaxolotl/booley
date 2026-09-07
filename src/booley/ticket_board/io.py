@@ -36,6 +36,7 @@ class TicketFileSpec:
     dependencies: list[str] | None = None
     priority: str = "medium"
     criteria: dict[str, Any] | None = None
+    target_plan: list[dict[str, str]] | None = None
     on_success: dict[str, Any] | None = None
     body: str = ""
 
@@ -579,7 +580,6 @@ class TicketIO:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
-                "remove_targets": [],
             }
         fields = {
             "summary": spec.summary,
@@ -592,6 +592,8 @@ class TicketIO:
         }
         if spec.project_destination_ref:
             fields["project_destination_ref"] = spec.project_destination_ref
+        if spec.target_plan is not None:
+            fields["target_plan"] = spec.target_plan
         if spec.spec:
             fields["spec"] = spec.spec
         # Legacy escape hatch for pre-authored plans. Normal tickets should let
@@ -1002,6 +1004,9 @@ class TicketIO:
         self._validate_return_to_draft_preconditions(slug, check_owner=not pending)
         with self._ticket_lock(slug):
             self._validate_return_to_draft_preconditions(slug, check_owner=False)
+            from .basis_refresh import discard_basis_refresh
+
+            discard_basis_refresh(self._project_root, slug)
             current_path, current_status = find_ticket_file(self.tickets_dir, slug)
             result = return_to_draft(
                 self._project_root,

@@ -20,6 +20,10 @@ from booley.core.models import (  # noqa: F401
     AgentCallParams,
     AgentResult,
     OnSuccess,
+    TargetPlan,
+    TargetPlanEntry,
+    TargetPlanError,
+    TargetPlanRole,
 )
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
 
@@ -80,7 +84,6 @@ class TicketContext:
                 "merge": self.on_success.merge,
                 "cleanup": self.on_success.cleanup,
                 "triage_report": self.on_success.triage_report,
-                "remove_targets": list(self.on_success.remove_targets),
             },
         }
 

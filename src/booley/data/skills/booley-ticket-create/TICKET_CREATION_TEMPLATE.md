@@ -1,8 +1,8 @@
 # Ticket Creation Guidance
 
 Write Project-specific guidance for `/booley-ticket-create` here in any Markdown form.
-The skill uses it only while choosing a new Ticket's Criteria and successful-run
-disposition. Explicit instructions for an individual Ticket take precedence.
+The skill uses it only while choosing a new Ticket's Criteria, Target Plan, and
+successful-run disposition. Explicit instructions for an individual Ticket take precedence.
 
 For example, a Project might say:
 

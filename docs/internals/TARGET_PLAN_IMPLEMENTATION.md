@@ -137,8 +137,9 @@ ephemeral entries   -> remove each `target` Target
 persistent entries  -> remove nothing
 ```
 
-Store the normalized Target Plan and derived removal set in the published
-Acceptance Basis. Acceptance continues to remove only the selected Target definition
+Store the normalized Target Plan, derived removal set, and internal provider bindings
+in its committed Acceptance Basis record. Keep Ticket frontmatter as the minimal
+`schema` plus `participants` pointer. Acceptance continues to remove only the selected Target definition
 and its unambiguously owned test table; shared filesets, parameters, sources,
 constraints, generators, and hooks remain. Completion reads the removal set
 from the Acceptance Basis, never from `on_success`.
@@ -152,7 +153,8 @@ path may silently translate it. The CLI no longer accepts or emits the key.
 
 ### Export rules
 
-An active provider Ticket exports only:
+An eligible basis-published provider in `waiting`, `queued`, `running`, `blocked`, or
+`review` exports only:
 
 - a `persistent` entry's `target`; and
 - a `replacement` entry's `target`.
@@ -197,14 +199,20 @@ Agent starts:
 4. reapply the consumer's approved Target Plan and placeholder changes;
 5. rerun full Ticket and Acceptance Basis validation;
 6. create fresh participant commits and publish a replacement Acceptance Basis
-   for an internal authoring generation, retaining the previous basis; and
-7. promote the Ticket to executable only after the refresh succeeds.
+   as a Basis Refresh, retaining the previous basis and receipt; and
+7. publish the new Board pointer and waiting-to-queued transition as the same
+   crash-recoverable transaction.
 
 No user confirmation is required when the provider surface and the consumer's
 approved plan are unchanged. A missing or materially changed export, dirty or
 already-executed consumer workspace, ambiguous provider, or failed reapply
 blocks with `acceptance-input-change-required` and uses the existing
 return-to-draft recovery path.
+
+A provider may itself publish a pre-execution Basis Refresh. Its accepted basis
+identity may therefore differ from the basis observed by the consumer at creation;
+the pinned exported role and normalized Target/control surface, rather than basis-ID
+equality, decide whether the downstream refresh is unchanged.
 
 Many consumers may depend on one export. A later Ticket may replace an earlier
 Ticket's replacement candidate, producing an ordered replacement chain. Two
@@ -243,10 +251,9 @@ For `replacement`, show:
 - a focused Target-definition diff against the baseline; and
 - a focused owned-test-table diff against the baseline table.
 
-If a focused replacement diff cannot be produced safely, show the complete
-candidate definition and complete affected test-table content. Shared or
-ambiguous table ownership likewise requires showing the complete affected
-content. Any edit returns to the full approval gate.
+If a focused replacement diff cannot be produced safely, stop with an approval
+blocker. Shared or ambiguous table ownership is likewise a blocker. Any edit
+returns to the full approval gate.
 
 Provider pinning and materialization are absent from the artifact. The full
 Ticket already exposes its normal dependency list.
@@ -256,7 +263,7 @@ Ticket already exposes its normal dependency list.
 ### 1. Domain model and parsing
 
 - Add immutable `TargetPlanEntry`, `TargetPlan`, and role types below the
-  Ticket Board/harness boundary.
+  Ticket Board/Harness boundary.
 - Add `target_plan` to known Ticket fields and implement strict discriminated
   parsing and validation.
 - Remove `remove_targets` from `OnSuccess`, its JSON parser, CLI flags, help,
@@ -314,7 +321,7 @@ Primary modules:
 
 ### 4. Provider composition and refresh
 
-- Discover exportable Target Plan entries in non-done Tickets during ticket
+- Discover exportable Target Plan entries only in eligible basis-published Tickets during ticket
   creation and dependency scanning.
 - Add internal provider bindings to the Acceptance Basis without adding a
   user-authored field or user-facing output.
@@ -408,7 +415,7 @@ Primary files:
 - Ordinary tickets show `Target Plan: none` and author no Target controls.
 - Persistent and ephemeral entries show full definitions and owned tables.
 - Replacement entries show focused definition/table diffs and explicit
-  acceptance effects, with complete-content fallback.
+  acceptance effects; an unsafe or ambiguous focused diff blocks approval.
 - Agent mode rejects incomplete plans and missing provider dependencies.
 - Project Ticket Creation Guidance can influence a plan but cannot bypass the
   plan or approval validators.

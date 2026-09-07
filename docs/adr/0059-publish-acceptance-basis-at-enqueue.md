@@ -11,6 +11,11 @@ enqueued, records its participant commits through prepare-first journals and
 identity-checked ref updates, and treats the stored basis as authoritative for
 the rest of that generation.
 
+ADR-0060 adds one narrow exception: a pre-execution Basis Refresh may replace
+the basis of an untouched waiting Ticket after its dependencies are accepted,
+using a recoverable publication-plus-promotion transaction while retaining the
+previous basis as evidence.
+
 Target Contract fields, commands, journal schemas, and compatibility adapters
 are rejected rather than upgraded. Existing Tickets using the retired format
 must be recreated and enqueued as a new Authoring Generation. This hard cutoff

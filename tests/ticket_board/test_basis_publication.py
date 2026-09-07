@@ -288,3 +288,76 @@ def test_temporary_keepalive_and_finish_validation_fail_closed(
         basis_publication.finish_basis_publication(tmp_path, "ticket", "f" * 32)
     with pytest.raises(basis_publication.BasisPublicationError, match="incompletely published"):
         basis_publication.finish_basis_publication(tmp_path, "ticket", "0" * 32)
+
+
+def test_abandon_basis_publication_deletes_owned_refs_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = replace(_publication_journal(), prepared={"outer": "d" * 40})
+    journal_path = tmp_path / "journal.json"
+    journal_path.write_text("pending\n", encoding="utf-8")
+    deleted: list[tuple[str, set[str]]] = []
+    monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: journal)
+    monkeypatch.setattr(basis_publication, "_journal_path", lambda *_args: journal_path)
+    monkeypatch.setattr(
+        basis_publication,
+        "_delete_owned_ref",
+        lambda _repo, ref, allowed: deleted.append((ref, allowed)),
+    )
+
+    basis_publication.abandon_basis_publication(
+        tmp_path, "ticket", journal.operation_id, {"outer": tmp_path}
+    )
+
+    basis = basis_publication._basis(journal)
+    assert deleted == [
+        (
+            journal.participants[0].ticket_ref,
+            {journal.participants[0].expected_old_sha, "d" * 40},
+        ),
+        (basis_publication._temporary_ref(journal.operation_id, "outer"), {"d" * 40}),
+        (f"refs/booley/bases/{basis.basis_id}/outer", {basis.participant("outer").authoring_sha}),
+    ]
+    assert not journal_path.exists()
+
+
+def test_abandon_basis_publication_validates_operation_and_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = _publication_journal()
+    monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: None)
+    basis_publication.abandon_basis_publication(tmp_path, "ticket", journal.operation_id, {})
+    monkeypatch.setattr(basis_publication, "load_basis_publication", lambda *_args: journal)
+    with pytest.raises(basis_publication.BasisPublicationError, match="identity changed"):
+        basis_publication.abandon_basis_publication(tmp_path, "ticket", "f" * 32, {})
+    with pytest.raises(basis_publication.BasisPublicationError, match="repositories"):
+        basis_publication.abandon_basis_publication(tmp_path, "ticket", journal.operation_id, {})
+
+
+def test_delete_owned_ref_handles_absent_invalid_changed_and_owned_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    responses = iter(
+        [
+            _completed("git", returncode=1),
+            _completed("git", returncode=2, stderr="locked"),
+            _completed("git", stdout="b" * 40),
+            _completed("git", stdout="a" * 40),
+        ]
+    )
+    deleted: list[tuple[str, ...]] = []
+    monkeypatch.setattr(basis_publication, "_git", lambda *_args: next(responses))
+    monkeypatch.setattr(
+        basis_publication,
+        "_require_git",
+        lambda _repo, *args: deleted.append(args),
+    )
+
+    basis_publication._delete_owned_ref(tmp_path, "refs/heads/ticket", {"a" * 40})
+    with pytest.raises(basis_publication.BasisPublicationError, match="locked"):
+        basis_publication._delete_owned_ref(tmp_path, "refs/heads/ticket", {"a" * 40})
+    with pytest.raises(basis_publication.BasisPublicationError, match="changed unexpectedly"):
+        basis_publication._delete_owned_ref(tmp_path, "refs/heads/ticket", {"a" * 40})
+    basis_publication._delete_owned_ref(tmp_path, "refs/heads/ticket", {"a" * 40})
+
+    assert deleted == [("update-ref", "-d", "refs/heads/ticket", "a" * 40)]

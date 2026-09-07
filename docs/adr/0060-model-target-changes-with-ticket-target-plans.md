@@ -13,7 +13,8 @@ runnable baseline Target; and an ephemeral Target exists only to collect that
 Ticket's evidence. Ticket creation commits the approved Target definitions and
 owned test tables before enqueue, while acceptance derives removals from the
 plan: replacement baselines and ephemeral Targets disappear, and persistent
-and replacement Targets remain.
+and replacement Targets remain. Enqueue validates and commits these approved authoring
+inputs while publishing the Acceptance Basis.
 
 This replaces the unstructured `on_success.remove_targets` operation with an
 explicit transition model. The old field has a hard cutoff: any Ticket that
@@ -22,7 +23,8 @@ published Acceptance Basis may retain a machine-owned canonical removal set, but
 it derives that set exclusively from `target_plan`; it is not an authoring
 surface or user-facing workflow detail.
 
-An active Ticket may provide its planned persistent and replacement Targets to
+An eligible basis-published Ticket in `waiting`, `queued`, `running`, `blocked`, or
+`review` may provide its planned persistent and replacement Targets to
 dependent Tickets. Ephemeral Targets and retiring replacement baselines are
 never providers. The consumer declares the provider as a normal Ticket
 dependency; Booley pins and materializes the provider's published Target surface
@@ -31,6 +33,17 @@ Acceptance Basis against the accepted dependency state before its first executio
 consume one planned Target, and replacements may form an ordered chain, but
 sibling replacements of the same eventual baseline must be ordered or
 resolved explicitly.
+
+This ADR amends ADR-0059's one-basis-per-Authoring-Generation rule only for a
+pre-execution **Basis Refresh**. Once all dependencies are accepted, Booley may replace
+the basis of a still-untouched waiting Ticket without user approval when its approved
+authored inputs are unchanged. The publication and waiting-to-queued transition are one
+recoverable transaction; the old basis and receipt remain retained evidence. Any drift
+blocks for `return-to-draft` instead of being treated as a refresh.
+
+Because a provider may itself pass through this refresh, downstream consumers do not
+require its accepted basis ID to equal the earlier pin. They require the same exported
+role and normalized Target/control surface from the provider's accepted basis.
 
 ## Considered options
 
@@ -58,7 +71,8 @@ enough to collect evidence, although their Criteria may fail.
 
 Target-plan approval shows complete definitions and owned test tables for
 persistent and ephemeral Targets. A replacement shows its candidate's focused
-diff against the declared baseline, including the owned test table; acceptance
+diff against the declared baseline, including the owned test table. Inability to
+produce that focused diff unambiguously is an approval blocker; acceptance
 effects are explicit. Provider materialization, pinning, and refresh remain
 internal Acceptance Basis mechanics and are omitted from normal user-facing
 output.

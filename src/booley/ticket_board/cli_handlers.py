@@ -9,9 +9,10 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
-from booley.core.models import OnSuccess
+from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
@@ -544,7 +545,7 @@ def _cmd_init(tio, args):
 
 
 _ON_SUCCESS_REQUIRED_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
-_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS | {"remove_targets"}
+_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS
 
 
 def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
@@ -558,6 +559,12 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         mapping = require_dict(parsed, field="--on-success")
     except BoundaryError as exc:
         return None, str(exc)
+    if "remove_targets" in mapping:
+        return (
+            None,
+            "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
+            "recreate the Ticket",
+        )
 
     missing = _ON_SUCCESS_REQUIRED_KEYS - mapping.keys()
     unknown = mapping.keys() - _ON_SUCCESS_KEYS
@@ -569,7 +576,6 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
     if key_errors:
         return None, "; ".join(key_errors)
 
-    mapping.setdefault("remove_targets", [])
     model = OnSuccess.from_dict(mapping)
     errors = model.validate()
     if errors:
@@ -579,55 +585,89 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         "merge": model.merge,
         "cleanup": model.cleanup,
         "triage_report": model.triage_report,
-        "remove_targets": list(model.remove_targets),
     }, None
 
 
-def _cmd_create_file(tio, args):
-    # Parse criteria: --criteria-file takes precedence over --criteria
-    criteria = None
-    if args.criteria_file:
-        try:
-            criteria = json.loads(Path(args.criteria_file).read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"Error: invalid --criteria-file: {e}", file=sys.stderr)
-            return 2
-    elif args.criteria:
-        try:
-            criteria = json.loads(args.criteria)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid --criteria JSON: {e}", file=sys.stderr)
-            return 2
+def _parse_target_plan_arg(value: str) -> tuple[list[dict[str, str]] | None, str | None]:
+    """Parse and canonicalize a Target Plan from the CLI boundary."""
+    try:
+        parsed = json.loads(value)
+        plan = TargetPlan.from_value(parsed)
+    except (json.JSONDecodeError, TargetPlanError) as exc:
+        return None, str(exc)
+    return plan.as_list(), None
 
+
+def _create_target_plan(args, on_success: dict[str, Any] | None):
+    source = args.target_plan
+    if args.target_plan_file:
+        try:
+            source = Path(args.target_plan_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            return None, f"invalid --target-plan-file: {exc}"
+    if source is None:
+        return None, None
+    plan, error = _parse_target_plan_arg(source)
+    if error:
+        return None, f"invalid Target Plan: {error}"
+    if on_success is not None and on_success["merge"] is not True:
+        return None, "invalid Target Plan: target_plan requires on_success.merge: true"
+    return plan, None
+
+
+def _cmd_create_file(tio, args):
+    criteria, error = _create_file_criteria(args)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     on_success = None
     if args.on_success is not None:
         on_success, error = _parse_on_success_arg(args.on_success)
         if error:
             print(f"Error: invalid --on-success: {error}", file=sys.stderr)
             return 2
-
-    # Read body from file if --body-file given
-    body = args.body
-    if args.body_file:
-        body = Path(args.body_file).read_text(encoding="utf-8")
-
+    target_plan, error = _create_target_plan(args, on_success)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     result = tio.create_ticket_file(
         args.slug,
-        TicketFileSpec(
-            summary=args.summary,
-            ticket_type=args.ticket_type,
-            branch=args.branch,
-            project_destination_ref=args.project_destination_ref,
-            scope=args.scope,
-            spec=args.spec,
-            dependencies=args.dependencies,
-            priority=args.priority,
-            criteria=criteria,
-            on_success=on_success,
-            body=body,
-        ),
+        _create_file_spec(args, criteria, target_plan, on_success),
     )
     return 0 if result else 2
+
+
+def _create_file_criteria(args) -> tuple[Any, str | None]:
+    """Parse create-file criteria with file input taking precedence."""
+    if args.criteria_file:
+        try:
+            return json.loads(Path(args.criteria_file).read_text(encoding="utf-8")), None
+        except (json.JSONDecodeError, OSError) as e:
+            return None, f"invalid --criteria-file: {e}"
+    if args.criteria:
+        try:
+            return json.loads(args.criteria), None
+        except json.JSONDecodeError as e:
+            return None, f"invalid --criteria JSON: {e}"
+    return None, None
+
+
+def _create_file_spec(args, criteria, target_plan, on_success) -> TicketFileSpec:
+    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else args.body
+    return TicketFileSpec(
+        summary=args.summary,
+        ticket_type=args.ticket_type,
+        branch=args.branch,
+        project_destination_ref=args.project_destination_ref,
+        scope=args.scope,
+        spec=args.spec,
+        dependencies=args.dependencies,
+        priority=args.priority,
+        criteria=criteria,
+        target_plan=target_plan,
+        on_success=on_success,
+        body=body,
+    )
 
 
 def _cmd_return_to_draft(tio, args):
@@ -647,14 +687,12 @@ def _cmd_enqueue(tio, args):
     merge = getattr(args, "merge", None)
     cleanup = getattr(args, "cleanup", None)
     triage_report = getattr(args, "triage_report", None)
-    remove_targets = getattr(args, "remove_targets", None)
-    if any(value is not None for value in (dest, merge, cleanup, triage_report, remove_targets)):
+    if any(value is not None for value in (dest, merge, cleanup, triage_report)):
         on_success = {
             "destination": dest or "review",
             "merge": merge if merge is not None else True,
             "cleanup": cleanup if cleanup is not None else True,
             "triage_report": triage_report if triage_report is not None else True,
-            "remove_targets": remove_targets or [],
         }
     success = tio.enqueue_ticket(
         args.slug,

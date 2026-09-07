@@ -39,6 +39,7 @@ from booley.runtime.job_slots import (
     SlotCaps,
     SlotStore,
 )
+from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 
 
 class FakeWorld:
@@ -56,6 +57,23 @@ class FakeWorld:
 
     def now(self) -> float:
         return self.clock
+
+    def capture_identity(self, pid: int) -> ProcessIdentity | None:
+        if pid not in self.alive:
+            return None
+        return ProcessIdentity(pid, "fake", self._start_ticks(pid))
+
+    def observe_identity(self, identity: ProcessIdentity) -> ProcessObservation:
+        if identity.pid not in self.alive:
+            return ProcessObservation(DEAD)
+        current = self.capture_identity(identity.pid)
+        state = RUNNING if current == identity else REUSED
+        return ProcessObservation(state)
+
+    def _start_ticks(self, pid: int) -> int:
+        argv = self.alive[pid]
+        text = "\0".join(argv) if argv is not None else "unknown"
+        return sum((index + 1) * ord(character) for index, character in enumerate(text))
 
 
 @pytest.fixture()
@@ -76,6 +94,8 @@ def make_store(root: Path, world: FakeWorld, caps: SlotCaps | None = None) -> Sl
         read_cmdline=world.read_cmdline,
         now=world.now,
         sleep=lambda s: None,
+        capture_identity=world.capture_identity,
+        observe_identity=world.observe_identity,
         recovery=job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
     )
 
@@ -93,6 +113,8 @@ def make_execution_store(
         read_cmdline=world.read_cmdline,
         now=world.now,
         sleep=lambda _seconds: None,
+        capture_identity=world.capture_identity,
+        observe_identity=world.observe_identity,
         recovery=job_slots.SlotRecovery(
             execution_is_terminal=execution_terminal,
             cancel_execution=cancellations.append,

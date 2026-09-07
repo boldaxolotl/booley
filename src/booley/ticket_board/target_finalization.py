@@ -24,11 +24,7 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
 
-from .acceptance_targets import (
-    AcceptanceTargetBinding,
-    canonical_acceptance_bindings,
-    criterion_targets,
-)
+from .acceptance_targets import AcceptanceTargetBinding
 
 
 class TargetFinalizationError(ValueError):
@@ -79,21 +75,15 @@ def _tests_key(root: Path, handle: TargetHandle, catalog: TargetCatalog) -> str:
     canonical = handle.identity
     if canonical in raw:
         return canonical
-    matching = [key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == handle.name]
-    if not matching:
+    if handle.name not in raw:
         return ""
-    if len(matching) > 1:
-        raise TargetFinalizationError(
-            f"Target {canonical!r} matches multiple tests.toml sections: "
-            + ", ".join(repr(key) for key in sorted(matching))
-        )
-    declarations = [item for item in catalog.list() if item.name == handle.name]
-    if matching[0] == handle.name and len(declarations) > 1:
+    declarations = catalog.declaration_count(handle.name, include_private=True)
+    if declarations > 1:
         raise TargetFinalizationError(
             f"ambiguous bare tests.toml section [{handle.name}] is shared by "
-            f"{len(declarations)} cores; use a VLNV-qualified table before enqueue"
+            f"{declarations} cores; use a VLNV-qualified table before enqueue"
         )
-    return matching[0]
+    return handle.name
 
 
 def _require_participant_owned_target(
@@ -119,7 +109,7 @@ def _require_participant_owned_target(
         return
     relative = owner.relative_to(root).as_posix()
     raise TargetFinalizationError(
-        f"on_success.remove_targets target {canonical!r} is declared in nested "
+        f"Acceptance Basis removal Target {canonical!r} is declared in nested "
         f"repository {relative!r}; only outer and paired project participants can be finalized"
     )
 
@@ -146,12 +136,12 @@ def plan_target_removals(
         canonical = handle.identity
         if canonical not in allowed:
             raise TargetFinalizationError(
-                f"on_success.remove_targets target {canonical!r} is not bound by this "
+                f"Acceptance Basis removal Target {canonical!r} is not bound by this "
                 "Ticket's criteria"
             )
         if canonical in seen:
             raise TargetFinalizationError(
-                f"on_success.remove_targets resolves {canonical!r} more than once"
+                f"Acceptance Basis removal resolves {canonical!r} more than once"
             )
         seen.add(canonical)
         try:
@@ -172,31 +162,6 @@ def plan_target_removals(
     plan = TargetRemovalPlan(tuple(sorted(removals)))
     _validate_plan_spans(root, plan)
     return plan
-
-
-def canonical_remove_targets(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> tuple[str, ...]:
-    """Return the full-VLNV removal identities declared by ticket fields."""
-    on_success = fields.get("on_success")
-    if not isinstance(on_success, Mapping):
-        return ()
-    selectors = on_success.get("remove_targets", [])
-    if not isinstance(selectors, list) or not selectors:
-        return ()
-    bindings = canonical_acceptance_bindings(
-        project_root, criterion_targets(fields.get("criteria"))
-    )
-    return plan_target_removals(project_root, selectors, bindings).canonical_targets
-
-
-def validate_acceptance_removals(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
-    """Return enqueue-time diagnostics for acceptance-time Target removal."""
-    try:
-        canonical_remove_targets(fields, project_root)
-    except (TargetFinalizationError, FuseSocError) as exc:
-        return [str(exc)]
-    return []
 
 
 def _mapping_value(node: MappingNode, key: str) -> MappingNode | None:
@@ -265,7 +230,7 @@ def _core_replacements(text: str, names: set[str], path: Path) -> list[tuple[int
     ]
 
 
-_TOML_HEADER_RE = re.compile(r"^\s*\[(?!\[)(.+)\]\s*(?:#.*)?$")
+_TOML_HEADER_RE = re.compile(r"^\s*(\[\[?[^\]\r\n]+\]\]?)\s*(?:#.*)?$")
 
 
 def _single_toml_path(value: Mapping[str, Any]) -> tuple[str, ...]:
@@ -289,7 +254,7 @@ def _toml_headers(text: str) -> list[tuple[int, tuple[str, ...]]]:
         match = _TOML_HEADER_RE.match(line.rstrip("\r\n"))
         if match:
             try:
-                parsed = tomllib.loads(f"[{match.group(1)}]\n")
+                parsed = tomllib.loads(match.group(1) + "\n")
             except tomllib.TOMLDecodeError as exc:
                 raise TargetFinalizationError(
                     f"unsupported tests.toml table header: {exc}"
@@ -379,9 +344,11 @@ def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
         normalize_tests_toml(raw)
     except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
         raise TargetFinalizationError(f"finalized tests.toml is invalid: {exc}") from exc
-    declarations = {handle.name for handle in catalog.list()}
     orphaned = sorted(
-        key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) not in declarations
+        key
+        for key in raw
+        if key != TEST_LISTS_TABLE
+        and catalog.declaration_count(_bare_target(key), include_private=True) == 0
     )
     if orphaned:
         raise TargetFinalizationError(

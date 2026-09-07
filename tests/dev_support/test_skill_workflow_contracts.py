@@ -180,18 +180,33 @@ def test_ticket_create_hands_human_off_to_booley_run():
     assert "/booley-run-and-fix" not in skill
 
 
+def test_ticket_create_companions_cover_target_plan_decisions():
+    guidance = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
+    grilling = _skill_text("booley-ticket-create", "grilling.md")
+
+    assert "Criteria, Target Plan" in guidance
+    for required in (
+        "New Target lifecycle",
+        "coexist",
+        "replace a runnable baseline",
+        "evidence-only",
+        "persistent / replacement / ephemeral",
+    ):
+        assert required in grilling
+
+
 def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
     skill = _skill_text("booley-ticket-create")
     contract = " ".join(skill.split())
 
     for required in (
-        "Ticket creation authors only the Ticket, any new Target definitions",
+        "Ticket creation authors only the Ticket, Target definitions and unambiguously owned",
         "empty placeholder files for Scope paths marked `[new]`",
         "existing Targets remain unchanged",
         "The developer who runs the Ticket authors its implementation",
         "A placeholder is a zero-byte file",
         "do not put declarations, modules, packages, assertions, stimulus",
-        "author only the approved new Target definitions",
+        "approved planned Target definitions and owned test tables",
         "create only empty placeholders for `[new]` Scope paths",
         "do not implement any part of the Ticket",
         "report the blocker instead of",
@@ -221,12 +236,12 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
         "Detailed mode skips 2d and 2e",
         "single post-grill review artifact",
         "MANDATORY TICKET APPROVAL",
-        "New Targets",
-        "every Target that ticket creation will author",
-        "name, destination file, and complete proposed definition",
-        "New Targets: none",
-        "Create this ticket and these Targets? (yes / edit / cancel)",
-        "Author the new Targets exactly as approved",
+        "Target Plan",
+        "persistent and ephemeral entries",
+        "complete Target definition",
+        "Target Plan: none",
+        "Create this ticket and Target Plan? (yes / edit / cancel)",
+        "Author them exactly as approved",
         "requires changing an approved Target definition, return to 2f",
         "require no further user confirmation",
         "Basis publication remains an internal implementation detail",
@@ -266,9 +281,7 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         '--on-success "$ON_SUCCESS_JSON"',
     ):
         assert required in contract
-    assert (
-        "Its authority is limited to the proposed Ticket's `criteria` and `on_success`" in contract
-    )
+    assert "optional `target_plan`, and `on_success`" in contract
     for retired in (
         "All five blocks must then be present",
         "An active file fully replaces",
@@ -276,23 +289,38 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "merge, add/remove, or inheritance syntax",
     ):
         assert retired not in contract
-    assert "all five on_success fields" in contract
-    assert "remove_targets" in contract
+    assert "all four on_success fields" in contract
+    assert "remove_targets" not in contract
 
 
-def test_ticket_create_fixes_target_removal_at_creation_time():
+def test_ticket_create_fixes_target_plan_at_creation_time():
     skill = _skill_text("booley-ticket-create")
     template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
     contract = " ".join(skill.split())
 
     for required in (
-        "Decide `on_success.remove_targets` during Ticket creation",
-        "Every selector must resolve uniquely",
-        "Target remains fixed",
-        "Do not use this field as general file cleanup",
+        "Decide the Target Plan during Ticket creation",
+        "Every selector resolves uniquely",
+        "`replacement` retains its candidate and removes its runnable baseline",
+        "Acceptance removes only the derived Target definitions",
     ):
         assert required in contract
-    assert "remove_targets: []" in template
+    assert "target_plan:" in template
+
+
+def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
+    skill = _skill_text("booley-ticket-create")
+    contract = " ".join(skill.split())
+
+    for required in (
+        "ordinary scope-overlap and interface-dependency inference",
+        "add that provider to `dependencies` in human mode",
+        "reject the request and name every missing provider dependency",
+        "After Criteria and the Target Plan are fully resolved, rerun §A",
+        "mandatory in both lightweight and detailed modes",
+        "After all inferred Criteria and Target Plan values are resolved, rerun §A",
+    ):
+        assert required in contract
 
 
 def test_ticket_creation_template_is_packaged_free_form_markdown():

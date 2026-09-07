@@ -129,7 +129,7 @@ def test_binding_record_parser_rejects_invalid_schema() -> None:
     ("mutate", "message"),
     [
         (lambda record: record.update(extra=True), "invalid top-level"),
-        (lambda record: record.update(schema=2), "unsupported schema"),
+        (lambda record: record.update(schema=3), "unsupported schema"),
         (lambda record: record["ticket"].update(extra=True), "ticket has an invalid schema"),
         (
             lambda record: record["ticket"]["frontmatter"].update(extra=True),
@@ -224,7 +224,6 @@ def test_record_validation_rejects_invalid_on_success_policy(
         "merge": True,
         "cleanup": True,
         "triage_report": True,
-        "remove_targets": [],
     }
     monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(

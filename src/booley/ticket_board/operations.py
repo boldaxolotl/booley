@@ -692,6 +692,8 @@ def op_unblock(
     if status != "blocked":
         print(f"Error: ticket '{slug}' is {status}, not blocked", file=sys.stderr)
         return False
+    if not _queue_recovery_permitted(entry, slug):
+        return False
     step = entry.get("blocked_step", "")
 
     # Note: do NOT delete ticket.lock before the locked operation — on Unix,
@@ -716,6 +718,18 @@ def op_unblock(
     elif ok:
         _append_unblock_marker(tio, slug)
     return ok
+
+
+def _queue_recovery_permitted(entry: dict[str, Any], slug: str) -> bool:
+    from .acceptance_basis import requires_return_to_draft
+
+    if not requires_return_to_draft(entry):
+        return True
+    print(
+        f"Error: ticket '{slug}' requires return-to-draft after Acceptance Basis drift",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _append_feedback(tio, slug, message, heading: str = "Human Response"):
@@ -791,36 +805,130 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
     tickets = scan_all_tickets(tio.tickets_dir)
+    from .basis_refresh import recover_published_basis_refreshes
+
+    recover_published_basis_refreshes(Path(tio._project_root), tickets)
 
     done_slugs = compute_done_slugs(tickets)
 
-    # Find waiting tickets whose deps are all satisfied
     promoted = []
     for t in tickets:
         if t.get("status") != "waiting":
             continue
+        provider_error = _waiting_provider_error(tio, t, tickets)
+        if provider_error:
+            slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
+            print(
+                f"Error: cannot promote '{slug}': acceptance-input-change-required: "
+                f"{provider_error}",
+                file=sys.stderr,
+            )
+            _block_failed_basis_refresh(tio, slug)
+            continue
         deps = t.get("dependencies", [])
         if deps and not all(d in done_slugs for d in deps):
             continue
-        slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
-        summary = t.get("summary", slug)
-        # Move waiting/ → queue/
-        ok = _op_move_and_log(
-            tio,
-            slug,
-            "queue",
-            {},
-            (
-                "waiting:init",
-                "queued:init",
-                "ticket-board",
-                "dependencies satisfied — promoted to queue",
-            ),
-        )
-        if ok:
-            promoted.append({"slug": slug, "summary": summary})
+        promoted_entry = _promote_waiting_ticket(tio, t)
+        if promoted_entry is not None:
+            promoted.append(promoted_entry)
 
     return promoted
+
+
+def _waiting_provider_error(
+    tio: Any, ticket: dict[str, Any], tickets: list[dict[str, Any]]
+) -> str:
+    if ticket.get("acceptance_basis") is None:
+        return ""
+    available = {
+        slug_from_file(item.get("file", ""))
+        for item in tickets
+        if item.get("status") != "archived"
+    }
+    dependencies = {item for item in ticket.get("dependencies", ()) if isinstance(item, str)}
+    unavailable = dependencies - available
+    if not unavailable:
+        return ""
+    slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    from .acceptance_basis import AcceptanceBasisError
+
+    try:
+        basis = tio.load_basis(slug)
+    except AcceptanceBasisError as exc:
+        return f"invalid Acceptance Basis: {exc}"
+    missing = sorted({row.provider for row in basis.providers} & unavailable)
+    return "provider unavailable: " + ", ".join(missing) if missing else ""
+
+
+def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] | None:
+    slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    updates: dict[str, Any] = {}
+    state = {"operation": "", "failed": False}
+
+    def refresh_basis() -> bool:
+        return _refresh_waiting_basis(tio, ticket, slug, updates, state)
+
+    ok = _op_move_and_log(
+        tio,
+        slug,
+        "queue",
+        updates,
+        (
+            "waiting:init",
+            "queued:init",
+            "ticket-board",
+            "dependencies satisfied — promoted to queue",
+        ),
+        before_move=refresh_basis,
+    )
+    if ok:
+        if state["operation"]:
+            from .basis_refresh import finish_basis_refresh
+
+            finish_basis_refresh(Path(tio._project_root), slug, state["operation"])
+        return {"slug": slug, "summary": ticket.get("summary", slug)}
+    if state["failed"]:
+        _block_failed_basis_refresh(tio, slug)
+    return None
+
+
+def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
+    from .basis_refresh import BasisRefreshError, prepare_waiting_basis_refresh
+
+    if ticket.get("acceptance_basis") is None:
+        return True
+    path = Path(ticket["file"])
+    if not path.is_absolute():
+        path = Path(tio.tickets_dir) / path
+    try:
+        basis, operation = prepare_waiting_basis_refresh(Path(tio._project_root), path, slug)
+    except BasisRefreshError as exc:
+        state["failed"] = True
+        print(
+            f"Error: cannot promote '{slug}': acceptance-input-change-required: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    if basis is not None:
+        updates["acceptance_basis"] = basis.as_dict()
+        state["operation"] = operation
+    return True
+
+
+def _block_failed_basis_refresh(tio: Any, slug: str) -> None:
+    _op_move_and_log(
+        tio,
+        slug,
+        "blocked",
+        {"blocked_reason": "acceptance-input-change-required", "blocked_step": "setup"},
+        (
+            "waiting:init",
+            "blocked:setup",
+            "ticket-board",
+            "Basis Refresh failed — acceptance inputs require revision",
+        ),
+        expected_status="waiting",
+    )
 
 
 def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> OnSuccess:
@@ -927,7 +1035,7 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     return None
 
 
-def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
+def op_complete(
     tio: Any,
     slug: str,
     *,
@@ -944,25 +1052,60 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
 
     Returns True on success, False on failure.
     """
+    request = _prepare_completion_request(tio, slug, no_merge, no_cleanup)
+    if request is None:
+        return False
+    slug, on_success, accepted_snapshot = request
+    if on_success.merge:
+        return _complete_with_merge(tio, slug, on_success, accepted_snapshot)
+    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
+        return False
+    _finish_completed_ticket(tio, slug, cleanup=False)
+    return True
+
+
+def _prepare_completion_request(
+    tio: Any, slug: str, no_merge: bool, no_cleanup: bool
+) -> tuple[str, Any, Any] | None:
+    context = _completion_context(tio, slug, no_merge, no_cleanup)
+    if context is None:
+        return None
+    slug, on_success = context
+    accepted_snapshot = _completion_acceptance_valid(tio, slug)
+    if accepted_snapshot is None:
+        return None
+    from .acceptance_basis import AcceptanceBasisError
+
+    try:
+        basis = tio.load_basis(slug)
+    except AcceptanceBasisError as exc:
+        print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
+        return None
+    if not on_success.merge and basis.target_plan is not None:
+        print(
+            f"Error: cannot complete '{slug}': Target Plan acceptance requires merge",
+            file=sys.stderr,
+        )
+        return None
+    return slug, on_success, accepted_snapshot
+
+
+def _completion_context(
+    tio: Any, slug: str, no_merge: bool, no_cleanup: bool
+) -> tuple[str, Any] | None:
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
-        return False
+        return None
     # ``feature_branch`` is an accepted lookup alias, but all runtime paths and
     # paired repository branches are keyed by the ticket filename stem.
     slug = Path(str(entry["file"])).stem
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
-    if on_success.remove_targets and not on_success.merge:
-        print(
-            f"Error: cannot remove Targets when merge is disabled for '{slug}'",
-            file=sys.stderr,
-        )
-        return False
     policy_errors = on_success.validate()
     if policy_errors:
         print(f"Error: cannot complete '{slug}': {policy_errors[0]}", file=sys.stderr)
-        return False
+        return None
 
     status = entry.get("status", "")
     if status != "review" and not (status == "done" and on_success.merge):
@@ -970,42 +1113,27 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
         )
+        return None
+    return slug, on_success
+
+
+def _complete_with_merge(tio: Any, slug: str, on_success: Any, snapshot: Any) -> bool:
+    from .acceptance_journal import cleanup_finished
+    from .completion import complete_review_ticket
+
+    if not complete_review_ticket(
+        tio,
+        slug,
+        on_success,
+        expected_sources=snapshot.participant_heads,
+    ):
+        detail = _acceptance_failure_detail(tio, slug)
+        print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
         return False
-    accepted_snapshot = _completion_acceptance_valid(tio, slug)
-    if accepted_snapshot is None:
-        return False
-
-    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
-
-    try:
-        AcceptanceBasis.from_mapping(entry.get("acceptance_basis"))
-    except AcceptanceBasisError as exc:
-        print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
-        return False
-
-    if on_success.merge:
-        from .acceptance_journal import cleanup_finished
-        from .completion import complete_review_ticket
-
-        if not complete_review_ticket(
-            tio,
-            slug,
-            on_success,
-            expected_sources=accepted_snapshot.participant_heads,
-        ):
-            detail = _acceptance_failure_detail(tio, slug)
-            print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
-            return False
-        finished_cleanup = on_success.cleanup and cleanup_finished(
-            Path(tio._project_root).resolve(), slug
-        )
-        _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
-        return True
-
-    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
-        return False
-
-    _finish_completed_ticket(tio, slug, cleanup=False)
+    finished_cleanup = on_success.cleanup and cleanup_finished(
+        Path(tio._project_root).resolve(), slug
+    )
+    _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
     return True
 
 
@@ -1441,6 +1569,8 @@ def op_reset(
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
+        return False
+    if not _queue_recovery_permitted(entry, slug):
         return False
     project_root = Path(getattr(tio, "_project_root", ""))
     if entry.get("acceptance_basis") is None and (project_root / ".git").exists():

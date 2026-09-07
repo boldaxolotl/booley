@@ -88,6 +88,7 @@ KNOWN_FIELDS = REQUIRED_FIELDS | {
     "base_sha",
     "project_destination_ref",
     "acceptance_basis",
+    "target_plan",
     "target_contract",  # recognized only to produce the hard-cutoff diagnostic
     "target_contract_history",  # recognized only to produce the hard-cutoff diagnostic
     "on_success",

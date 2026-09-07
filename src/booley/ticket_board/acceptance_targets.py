@@ -391,7 +391,8 @@ def _validate_coverage_suites(criteria: Any, root: Path) -> list[str]:
     return errors
 
 
-def _new_scope_matches(scope: Any, path: str) -> bool:
+def scope_allows_new_path(scope: Any, path: str) -> bool:
+    """Return whether a normalized path is covered by a Scope ``[new]`` entry."""
     import fnmatch
 
     if not isinstance(scope, list):
@@ -426,7 +427,8 @@ def _missing_target_sources(catalog: TargetCatalog, target: str) -> list[str]:
     return sorted({item.path for item in _missing_target_inputs(catalog, target)})
 
 
-def _deferable_rtl_or_tb_input(item: TargetInput) -> bool:
+def deferable_rtl_or_tb_input(item: TargetInput) -> bool:
+    """Return whether a missing Target input may be deferred as Scope [new]."""
     if item.file_type.startswith(_RTL_FILE_TYPE_PREFIXES):
         return True
     if "tb" not in item.tags:
@@ -441,7 +443,7 @@ def _nondeferable_missing_inputs(inputs: Iterable[TargetInput]) -> list[str]:
         {
             f"{item.path} (file_type={item.file_type!r})"
             for item in inputs
-            if not _deferable_rtl_or_tb_input(item)
+            if not deferable_rtl_or_tb_input(item)
         }
     )
 
@@ -547,7 +549,7 @@ def _validate_changed_targets(
             )
             continue
         undeclared = [
-            path for path in missing if not _new_scope_matches(fields.get("scope"), path)
+            path for path in missing if not scope_allows_new_path(fields.get("scope"), path)
         ]
         if undeclared:
             errors.append(
@@ -676,7 +678,7 @@ def _validate_binding(
             )
             continue
         undeclared = [
-            path for path in missing if not _new_scope_matches(fields.get("scope"), path)
+            path for path in missing if not scope_allows_new_path(fields.get("scope"), path)
         ]
         if undeclared:
             errors.append(
