@@ -1191,7 +1191,7 @@ def _baseline_surface_file(repository: Path, baseline: str, path: str) -> bytes 
     if not listed.stdout.strip():
         return None
     shown = subprocess.run(
-        ["git", "show", f"{baseline}:{path}"],
+        ["git", "cat-file", "--filters", f"--path={path}", f"{baseline}:{path}"],
         cwd=repository,
         capture_output=True,
         timeout=30,

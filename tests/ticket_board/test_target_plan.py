@@ -100,6 +100,26 @@ def test_replacement_plan_canonicalizes_and_derives_baseline_removal(repository:
     assert analysis.plan.entries[0].role is TargetPlanRole.REPLACEMENT
 
 
+def test_source_boundary_compares_worktree_filtered_baseline(repository: Path) -> None:
+    _git(repository, "config", "core.autocrlf", "true")
+    path = repository / "toy.core"
+    content = _core(
+        "  lint_old:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "  lint_new:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+    )
+    path.write_bytes(content.replace("\n", "\r\n").encode())
+
+    analysis = _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+
+    assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
+
+
 def test_changed_core_does_not_misclassify_untouched_siblings(repository: Path) -> None:
     _add_candidate(repository)
 
