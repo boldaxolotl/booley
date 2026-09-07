@@ -12,6 +12,7 @@ from booley.review.receipt import (
     ReviewInvocation,
     build_review_contract_detail,
     finalize_review_detail,
+    review_invocation_changed,
     review_receipt_drift,
 )
 
@@ -57,6 +58,28 @@ def test_only_scoped_source_edits_stale_receipt(tmp_path: Path, monkeypatch) -> 
 
     (tmp_path / "rtl/uart.sv").write_text("module uart; logic x; endmodule\n", encoding="utf-8")
     assert review_receipt_drift(detail, tmp_path) == ["scope"]
+
+
+def test_scoped_source_edits_preserve_invocation_identity(tmp_path: Path, monkeypatch) -> None:
+    detail = _detail(tmp_path, monkeypatch)
+    previous = detail["contract"]
+    (tmp_path / "rtl/uart.sv").write_text("module uart; logic x; endmodule\n", encoding="utf-8")
+    current = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="clean",
+            steering="prefer reset behavior",
+        )
+    )
+
+    assert previous["scope_hashes"] != current["scope_hashes"]
+    assert review_invocation_changed(previous, current) is False
+
+    changed_scope = {**current, "scope": ["rtl/other.sv"]}
+    assert review_invocation_changed(previous, changed_scope) is True
 
 
 def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> None:
@@ -106,8 +129,8 @@ def test_missing_persisted_spec_fails_loudly(tmp_path: Path, monkeypatch) -> Non
         review_receipt_drift(detail, tmp_path)
 
 
-def test_v3_receipt_is_stale_once(tmp_path: Path, monkeypatch) -> None:
+def test_pre_v4_receipt_uses_legacy_source_fingerprint_path(tmp_path: Path, monkeypatch) -> None:
     detail = _detail(tmp_path, monkeypatch)
     detail["review_detail_version"] = 3
 
-    assert review_receipt_drift(detail, tmp_path) == ["contract_version"]
+    assert review_receipt_drift(detail, tmp_path) == []

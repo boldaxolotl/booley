@@ -16,6 +16,7 @@ from booley.targets.flow_names import config_section
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
 REVIEW_DETAIL_VERSION = 4
+_FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
 
 
 class ReviewContextError(OSError):
@@ -153,6 +154,29 @@ def finalize_review_detail(
     return finalized
 
 
+def review_invocation_changed(
+    previous: object,
+    current: Mapping[str, Any],
+) -> bool:
+    """Whether two contracts ask different review questions.
+
+    Scoped source hashes are freshness evidence, not invocation identity: an
+    edit to a reviewed file must preserve its finding lifecycle so the next
+    review can verify or rediscover it.
+    """
+    if not isinstance(previous, Mapping):
+        return True
+
+    def identity(contract: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in contract.items()
+            if key not in _FRESHNESS_ONLY_CONTRACT_FIELDS
+        }
+
+    return identity(previous) != identity(current)
+
+
 def _persisted_document_changed(contract: Mapping[str, Any], name: str) -> bool:
     raw_path = contract.get(f"{name}_source")
     path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
@@ -164,7 +188,11 @@ def _persisted_document_changed(contract: Mapping[str, Any], name: str) -> bool:
 def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]:
     """Return changed dimensions for a persisted source-scoped receipt."""
     if detail.get("review_detail_version") != REVIEW_DETAIL_VERSION:
-        return ["contract_version"]
+        # Pre-v4 receipts continue through the legacy source-fingerprint path
+        # in criteria_acceptance. Upgrading Booley must not discard otherwise
+        # current findings and explicit waivers merely because their persisted
+        # representation predates the source-scoped contract.
+        return []
     contract = detail.get("contract")
     if not isinstance(contract, Mapping) or contract.get("version") != REVIEW_DETAIL_VERSION:
         return ["contract_version"]
@@ -174,7 +202,11 @@ def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]
         if _persisted_document_changed(contract, name)
     ]
     raw_scope = contract.get("scope")
-    scope = tuple(item for item in raw_scope if isinstance(item, str)) if isinstance(raw_scope, list) else ()
+    scope = (
+        tuple(item for item in raw_scope if isinstance(item, str))
+        if isinstance(raw_scope, list)
+        else ()
+    )
     if contract.get("scope_hashes") != _scope_hashes(work_dir, scope):
         changed.append("scope")
     category = contract.get("category")

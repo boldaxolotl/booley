@@ -37,6 +37,7 @@ from booley.review.receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewInvocation,
     build_review_contract_detail,
+    review_invocation_changed,
 )
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
@@ -1219,7 +1220,9 @@ class ReviewerSpecialist(Specialist):
         previous = (entry.detail or {}).get("contract")
         current = self._review_contract_detail()
         previous_version = (entry.detail or {}).get("review_detail_version")
-        if previous_version == REVIEW_DETAIL_VERSION and previous == current:
+        if previous_version == REVIEW_DETAIL_VERSION and not review_invocation_changed(
+            previous, current
+        ):
             return
         entry.met = False
         entry.stale = True

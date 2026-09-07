@@ -64,6 +64,7 @@ from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 from .coverage_verilog_utils import (
     _build_rtl_name_map,  # noqa: F401  # re-exported for backward compatibility
@@ -2618,7 +2619,7 @@ Your job is to apply waivers and value classifications with informed judgment.
             self._tb_top = tb_top_for_target(self.args.target, self.args.work_dir, resolved=None)
             catalog = TargetCatalog.build(self.args.work_dir)
             inspection = catalog.inspect(catalog.select(self.args.target))
-        except Exception as exc:  # noqa: BLE001 — Target adapters expose several typed errors
+        except FuseSocError as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"coverage_analyst: could not resolve Target metadata: {exc}",
@@ -3130,7 +3131,7 @@ Your job is to apply waivers and value classifications with informed judgment.
                 trace_scope,
                 trace_timeout,
             )
-        except Exception as exc:  # noqa: BLE001 - adapter failures are not uniformly typed
+        except (FuseSocError, OSError, ValueError) as exc:
             logger.debug("coverage EDAM/configure failed for %s", self.args.target, exc_info=True)
             return McpToolResult(
                 exit_code=EXIT_ERROR,

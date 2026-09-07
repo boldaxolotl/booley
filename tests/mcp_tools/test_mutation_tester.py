@@ -48,9 +48,7 @@ from booley.targets.catalog import TargetCatalog
 def test_removed_topology_options_are_rejected(removed: str) -> None:
     endpoint = MutationTesterSpecialist()
     with pytest.raises(SystemExit):
-        endpoint.parse_args(
-            ["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"]
-        )
+        endpoint.parse_args(["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"])
 
 
 def _env_with_state(

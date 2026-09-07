@@ -424,9 +424,10 @@ def _refresh_verification_entry(
         now=now,
     ):
         return True
-    if key.startswith(("review_rtl_", "review_tb_")) and (entry.detail or {}).get(
-        "review_detail_version"
-    ) == 4:
+    if (
+        key.startswith(("review_rtl_", "review_tb_"))
+        and (entry.detail or {}).get("review_detail_version") == 4
+    ):
         return False
     return _source_evidence_is_stale(
         entry,

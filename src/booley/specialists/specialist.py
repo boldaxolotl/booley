@@ -153,8 +153,7 @@ class Specialist(McpTool):
             action="append",
             default=None,
             help=(
-                f"{help_text} Repeatable; over MCP pass an array of strings, "
-                "not a bare string."
+                f"{help_text} Repeatable; over MCP pass an array of strings, not a bare string."
             ),
         )
 
