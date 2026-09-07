@@ -66,6 +66,32 @@ def test_triage_leads_with_explicit_blockers_and_evidence_links():
     assert "Do not open with the passing checks" in blocked
 
 
+def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
+    blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
+    summary = _skill_text("booley-ticket-triage", "steps/04-summary.md")
+
+    ordered_steps = (
+        'python -m booley.ticket_board return-to-draft "$SLUG"',
+        "Correct the authoring filesets",
+        "Resolve the moved Ticket's absolute path",
+        'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
+        'python -m booley.ticket_board enqueue "$SLUG"',
+    )
+    positions = [blocked.index(step) for step in ordered_steps]
+
+    assert positions == sorted(positions)
+    assert "acceptance-input-change-required" in blocked
+    assert "logs/<slug>/runs/<NNN>/" in blocked
+    assert "retain the original basis" in blocked
+    assert "new authoring generation" in blocked
+    assert "`outer_worktree` and `project_worktree`" in blocked
+    assert "`booley board return-to-draft" not in blocked
+    assert "`booley board enqueue" not in blocked
+    assert "published and enqueued" in blocked
+    assert "published and queued" not in blocked
+    assert "| Returned to draft | <n> | ... |" in summary
+
+
 def test_triage_review_briefing_is_fixed_compact_and_html_linked():
     review = _skill_text("booley-ticket-triage", "steps/03-review.md")
     template = _skill_text("booley-ticket-triage", "review-template.md")
