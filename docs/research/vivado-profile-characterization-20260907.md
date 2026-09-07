@@ -1,4 +1,4 @@
-# Vivado FPGA profile characterization — 2026-09-07
+# Vivado FPGA profile characterization — 07 SEP 2026
 
 This report records the evidence used to choose Booley's portable FPGA
 `ppa_profile` mappings. The experiment ran on licensed AMD Vivado 2025.2 build
@@ -10,7 +10,7 @@ lane.
 | Portable intent | Vivado synthesis strategy | Vivado implementation strategy |
 | --- | --- | --- |
 | `compact` | `Flow_AreaOptimized_high` | `Area_Explore` |
-| `balanced` | existing `Vivado Synthesis Defaults` | existing `Vivado Implementation Defaults` |
+| `balanced` | `Vivado Synthesis Defaults` | `Vivado Implementation Defaults` |
 | `max_frequency` | `Flow_PerfOptimized_high` | `Performance_ExplorePostRoutePhysOpt` |
 
 The complete strategy catalogs enumerated from the Vivado 2025.2 installation
@@ -41,8 +41,10 @@ Assigning the `synth_1` strategy resets Vivado synthesis-step properties,
 including `STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS`. Booley must therefore apply
 the profile strategy patch after Edalize creates the project but before its
 existing out-of-context patch. Reversing those two patches silently drops
-`-mode out_of_context`. The fixture and its ordinary test preserve this
-ordering requirement.
+`-mode out_of_context`. The ordinary test binds the checked-in evidence to the
+exact Tcl bytes, while the licensed replay observes the resulting Vivado
+property. The production adapter must carry its own regression test when the
+public profile option lands.
 
 ## Interpretation
 

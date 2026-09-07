@@ -5,13 +5,27 @@ if {$argc != 2} {
 set profile [lindex $argv 0]
 set output_root [file normalize [lindex $argv 1]]
 set fixture_root [file dirname [file normalize [info script]]]
-file delete -force $output_root
+if {[file exists $output_root]} {
+  error "output root already exists: $output_root"
+}
 file mkdir $output_root
 
 create_project -force "profile_$profile" $output_root -part xc7a35tcpg236-1
 add_files -norecurse [file join $fixture_root top.sv]
 add_files -fileset constrs_1 -norecurse [file join $fixture_root top.xdc]
 set_property top top [get_filesets sources_1]
+
+if {![regexp {SW Build ([0-9]+)} [version] _ vivado_build]} {
+  error "could not parse Vivado build from: [version]"
+}
+puts "BOOLEY_VIVADO_VERSION=[version -short]"
+puts "BOOLEY_VIVADO_BUILD=$vivado_build"
+foreach strategy [lsort [list_property_value strategy [get_runs synth_1]]] {
+  puts "BOOLEY_SYNTH_SUPPORTED=$strategy"
+}
+foreach strategy [lsort [list_property_value strategy [get_runs impl_1]]] {
+  puts "BOOLEY_IMPL_SUPPORTED=$strategy"
+}
 
 # Strategy assignment resets some step properties. Keep it before Booley's
 # out-of-context patch; the production adapter is required to use this order.
@@ -30,6 +44,7 @@ set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} \
 puts "BOOLEY_PROFILE=$profile"
 puts "BOOLEY_SYNTH_STRATEGY=[get_property strategy [get_runs synth_1]]"
 puts "BOOLEY_IMPL_STRATEGY=[get_property strategy [get_runs impl_1]]"
+puts "BOOLEY_SYNTH_MORE_OPTIONS=[get_property {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} [get_runs synth_1]]"
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
 if {[get_property PROGRESS [get_runs synth_1]] ne "100%"} {
