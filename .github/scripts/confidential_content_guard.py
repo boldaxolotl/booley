@@ -11,8 +11,9 @@ This file is stdlib-only because CI executes the trusted default-branch copy
 against an untrusted pull-request checkout without importing candidate code.
 
 Local pre-push wrappers should pass Git's remote name and location arguments
-after the ``pre-push`` command. Without them, new refs conservatively scan full
-ancestry because the guard cannot prove what the destination already contains.
+after the ``pre-push`` command. Without them, the guard can exclude only the
+updated ref's previous tip because it cannot prove what else the destination
+already contains.
 """
 
 from __future__ import annotations
@@ -639,12 +640,12 @@ def outgoing_commits(
     destination_tips: Iterable[str] = (),
 ) -> list[str]:
     """Return commits newly exposed by one ref update."""
-    if _is_zero_sha(remote_sha):
-        tips = list(dict.fromkeys(destination_tips))
-        if tips:
-            return _rev_list(repo, [local_sha, "--not", *tips])
-        return _rev_list(repo, [local_sha])
-    return _rev_list(repo, [local_sha, "--not", remote_sha])
+    exclusions = [] if _is_zero_sha(remote_sha) else [remote_sha]
+    exclusions.extend(destination_tips)
+    exclusions = list(dict.fromkeys(exclusions))
+    if exclusions:
+        return _rev_list(repo, [local_sha, "--not", *exclusions])
+    return _rev_list(repo, [local_sha])
 
 
 def _is_zero_sha(value: str) -> bool:
@@ -697,13 +698,10 @@ def pre_push_hook_main(
             raise GuardError("the pre-push destination is incomplete")
         config = load_config(root)
         updates = [RefUpdate.parse(line) for line in stdin]
-        has_new_ref = any(
-            not _is_zero_sha(update.local_sha) and _is_zero_sha(update.remote_sha)
-            for update in updates
-        )
+        has_non_deletion = any(not _is_zero_sha(update.local_sha) for update in updates)
         destination_tips = (
             _local_destination_tips(root, remote_location)
-            if remote_location and has_new_ref
+            if remote_location and has_non_deletion
             else []
         )
         commits: list[str] = []
