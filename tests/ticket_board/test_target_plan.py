@@ -120,6 +120,28 @@ def test_source_boundary_compares_worktree_filtered_baseline(repository: Path) -
     assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
 
 
+def test_tests_source_boundary_accepts_crlf_table_append(repository: Path) -> None:
+    _git(repository, "config", "core.autocrlf", "true")
+    project = repository / ".booley_project"
+    project.mkdir()
+    tests_path = project / "tests.toml"
+    tests_path.write_bytes(b"[existing]\r\nmodule = 'old'\r\n")
+    _git(repository, "add", "-f", ".booley_project/tests.toml")
+    _git(repository, "commit", "-qm", "add tests baseline")
+    _add_candidate(repository)
+    core_path = repository / "toy.core"
+    core_path.write_bytes(core_path.read_bytes().replace(b"\n", b"\r\n"))
+    tests_path.write_bytes(b"[existing]\r\nmodule = 'old'\r\n\r\n[lint_new]\r\nmodule = 'new'\r\n")
+
+    analysis = _analyze(
+        _replacement_fields(),
+        repository,
+        ((repository, ("toy.core", ".booley_project/tests.toml")),),
+    )
+
+    assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
+
+
 def test_changed_core_does_not_misclassify_untouched_siblings(repository: Path) -> None:
     _add_candidate(repository)
 

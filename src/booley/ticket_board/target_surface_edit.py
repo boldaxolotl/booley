@@ -19,6 +19,7 @@ class TargetSurfaceEditError(ValueError):
 
 
 _NEW_CORE_KEYS = frozenset({"CAPI=2", "name", "targets"})
+_TOML_HEADER_RE = re.compile(r"(?m)^[ \t]*(\[\[?[^\]\r\n]+\]\]?)[ \t]*(?:#.*)?\r?$")
 
 
 def _mapping_value(node: MappingNode, key: str) -> tuple[ScalarNode, MappingNode] | None:
@@ -106,8 +107,7 @@ def validate_new_core_surface(text: str, path: Path) -> None:
 def toml_table_block(content: str, key: str) -> str:
     """Return one complete top-level TOML table without consuming its successor."""
     headers = [
-        (match, _toml_header_path(match.group(1)))
-        for match in re.finditer(r"(?m)^[ \t]*(\[\[?[^\]\r\n]+\]\]?)[ \t]*(?:#.*)?$", content)
+        (match, _toml_header_path(match.group(1))) for match in _TOML_HEADER_RE.finditer(content)
     ]
     start = next((match.start() for match, path in headers if path == (key,)), None)
     if start is None:
@@ -125,8 +125,7 @@ def toml_table_spans(content: str, keys: Iterable[str]) -> tuple[tuple[int, int]
     """Locate complete top-level tables, including an adjacent source prefix."""
     selected = set(keys)
     headers = [
-        (match, _toml_header_path(match.group(1)))
-        for match in re.finditer(r"(?m)^[ \t]*(\[\[?[^\]\r\n]+\]\]?)[ \t]*(?:#.*)?$", content)
+        (match, _toml_header_path(match.group(1))) for match in _TOML_HEADER_RE.finditer(content)
     ]
     selected_paths = {(key,) for key in selected}
     spans: list[tuple[int, int]] = []
