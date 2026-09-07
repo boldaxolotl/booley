@@ -9,8 +9,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.eda.provisioning.runtime_spec import Issuance
+from booley.harness import session_refresh as harness_refresh
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
+from booley.runtime.image_lifecycle import LifecycleResult, Status
 from booley.runtime.session_spec import SessionSpecSnapshot
 
 
@@ -270,3 +272,57 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
         session_refresh.refresh(tmp_path, images)
 
     restore.assert_called_once_with(tmp_path, snapshot)
+
+
+def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> None:
+    inspection = LifecycleResult("booley-sandbox", "sha256:old", Status.CURRENT)
+    refreshed = LifecycleResult(
+        "booley-sandbox",
+        "sha256:fresh",
+        Status.CHANGED,
+        payload_fingerprint="payload-123",
+    )
+    events: list[tuple[object, ...]] = []
+
+    def drive_runtime(project_root, images, *, verbose):
+        images.inspect(project_root, verbose=verbose)
+        result = images.refresh(project_root, verbose=verbose)
+        images.reissue(project_root, result.selected_id, verbose=verbose)
+        return result
+
+    with (
+        patch.object(
+            harness_refresh.init_cmd,
+            "inspect_refreshable_session_image",
+            side_effect=lambda root, *, verbose: events.append(("inspect", root, verbose))
+            or inspection,
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "refresh_session_image",
+            side_effect=lambda root, *, verbose, inspection: events.append(
+                ("refresh", root, verbose, inspection)
+            )
+            or refreshed,
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "reissue_session_spec",
+            side_effect=lambda root, image_id, *, verbose: events.append(
+                ("reissue", root, image_id, verbose)
+            ),
+        ),
+        patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive_runtime),
+    ):
+        result = harness_refresh.refresh(tmp_path, verbose=True)
+
+    assert result == session_refresh.RefreshImage(
+        "booley-sandbox",
+        "sha256:fresh",
+        "payload-123",
+    )
+    assert events == [
+        ("inspect", tmp_path, True),
+        ("refresh", tmp_path, True, inspection),
+        ("reissue", tmp_path, "sha256:fresh", True),
+    ]

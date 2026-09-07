@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from booley.presentation.heartbeat import render_heartbeat
+from booley.presentation.heartbeat import format_heartbeat, render_heartbeat
+
+
+def test_formatter_defines_shared_heartbeat_text() -> None:
+    assert format_heartbeat("simulation", "2.0s", "working") == (
+        "  * [simulation] elapsed: 2.0s | working"
+    )
+    assert format_heartbeat("simulation", "2.0s") == "  * [simulation] elapsed: 2.0s"
 
 
 def test_standalone_renderer_respects_no_color(monkeypatch, capsys) -> None:

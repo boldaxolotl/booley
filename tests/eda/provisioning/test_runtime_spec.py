@@ -97,6 +97,31 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
         runtime_spec.validate(project, spec, path)
 
 
+def test_legacy_registrar_remains_valid_for_issued_specs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    legacy = "python -m booley.runtime.incontainer_register"
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=legacy,
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+
+    assert runtime_spec.validate(project, spec, path) == stamp
+
+
 def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
     issued, monkeypatch: pytest.MonkeyPatch
 ) -> None:
