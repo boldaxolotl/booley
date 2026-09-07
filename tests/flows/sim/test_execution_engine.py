@@ -32,6 +32,7 @@ from booley.flows.sim.execution import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.trace_recipe import TraceMode
+from booley.fusesoc import selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.targets.domain import TargetHandle
 
@@ -497,7 +498,7 @@ def test_adapter_programmer_value_error_propagates(tmp_path: Path) -> None:
         _run_execution(handle, prepared, MagicMock(), ("smoke",), cocotb=False)
 
 
-def test_trace_reset_failure_is_not_recorded_as_success(tmp_path: Path) -> None:
+def test_fresh_build_reset_failure_is_not_recorded_as_success(tmp_path: Path) -> None:
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=True))
     build_root = tmp_path / "build"
     build_root.mkdir()
@@ -509,9 +510,129 @@ def test_trace_reset_failure_is_not_recorded_as_success(tmp_path: Path) -> None:
             match="could not reset traced Simulation build root",
         ),
     ):
-        execution._reset_trace_root(build_root)
+        execution._reset_fresh_build_root(build_root)
 
-    assert execution._reset_trace_roots == set()
+    assert execution._reset_build_roots == set()
+
+
+@pytest.mark.parametrize(
+    "trace, doctor_kind, expected",
+    [
+        (False, None, ""),
+        (True, None, "trace"),
+        (False, selftest_overlay.BAD_KIND, "doctor-selftest-bad"),
+        (True, selftest_overlay.BAD_KIND, "trace-doctor-selftest-bad"),
+    ],
+)
+def test_live_and_preview_use_the_same_build_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trace: bool,
+    doctor_kind: str | None,
+    expected: str,
+) -> None:
+    if doctor_kind is None:
+        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
+    else:
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, doctor_kind)
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    work_root = tmp_path / "work-root"
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=trace))
+    trace_overlay = SimpleNamespace(
+        vlnv="acme:lib:demo_trace:1",
+        mode=TraceMode.NATIVE_FST,
+        cleanup=MagicMock(),
+    )
+
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            return_value=work_root,
+        ) as work_root_for,
+        patch.object(execution, "_reset_fresh_build_root") as reset,
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_build",
+            return_value=prepared,
+        ) as prepare,
+        patch(
+            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+            return_value=["setup"],
+        ) as setup,
+        patch(
+            "booley.flows.sim.execution.engine._trace_overlay",
+            return_value=trace_overlay,
+        ),
+    ):
+        execution._prepare_build(handle)
+        execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
+
+    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [
+        expected,
+        expected,
+    ]
+    reset.assert_called_once_with(work_root)
+    assert prepare.call_args.kwargs["variant"] == expected
+    setup.assert_called_once_with(handle, build_root=work_root)
+    assert trace_overlay.cleanup.call_count == int(trace)
+
+
+@pytest.mark.parametrize("cocotb, groups_per_run", [(False, 2), (True, 1)])
+def test_fresh_build_root_resets_once_per_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cocotb: bool,
+    groups_per_run: int,
+) -> None:
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    handle = _handle(tmp_path)
+    build_root = tmp_path / "build-root"
+    outcome = SimulationTargetOutcome(
+        target="sim",
+        target_identity=handle.identity,
+        toplevel="tb_demo",
+        eda_tool="icarus",
+        passed=True,
+        verdict="pass",
+        elapsed_s=0.0,
+        tests=(SimulationTestOutcome("a", "pass", True),),
+    )
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+
+    def run_group(_handle: TargetHandle, _test_names: tuple[str, ...]) -> SimulationTargetOutcome:
+        execution._reset_fresh_build_root(build_root)
+        return outcome
+
+    execution._run_group = MagicMock(side_effect=run_group)
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=cocotb),
+        ),
+        patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset,
+    ):
+        execution.run(handle, NamedTests(("a", "b")))
+        execution.run(handle, NamedTests(("a", "b")))
+
+    assert execution._run_group.call_count == groups_per_run * 2
+    assert reset.call_count == 2
+
+
+def test_ordinary_build_root_is_never_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    build_root = tmp_path / "build-root"
+    build_root.mkdir()
+    sentinel = build_root / "cached"
+    sentinel.write_text("keep\n", encoding="utf-8")
+
+    with patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset:
+        execution._reset_fresh_build_root(build_root)
+
+    reset.assert_not_called()
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
 
 
 @pytest.mark.parametrize(

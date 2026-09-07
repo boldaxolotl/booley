@@ -122,7 +122,7 @@ class SimulationExecution:
         self._invoke = invoke
         self._options = options
         self._artifact_root = artifact_root
-        self._reset_trace_roots: set[Path] = set()
+        self._reset_build_roots: set[Path] = set()
 
     def run(
         self,
@@ -131,6 +131,7 @@ class SimulationExecution:
     ) -> SimulationTargetOutcome:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
+        self._reset_build_roots.clear()
         try:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:
@@ -267,14 +268,14 @@ class SimulationExecution:
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
-        variant = "trace" if self._options.trace else ""
+        variant = _build_variant(self._options.trace)
         build_root = edam_layer.work_root_for(
             handle.project_root,
             "sim",
             handle.selector,
             variant=variant,
         )
-        self._reset_trace_root(build_root)
+        self._reset_fresh_build_root(build_root)
         overlay = _trace_overlay(handle) if self._options.trace else None
         try:
             prepared = prepare_simulation_build(
@@ -439,7 +440,7 @@ class SimulationExecution:
         cocotb: bool,
     ) -> tuple[str, ...]:
         root = handle.project_root
-        variant = "trace" if self._options.trace else ""
+        variant = _build_variant(self._options.trace)
         build_root = edam_layer.work_root_for(root, "sim", handle.selector, variant=variant)
         setup = fusesoc_registry.setup_command_for_handle(
             handle,
@@ -459,21 +460,34 @@ class SimulationExecution:
     def _effective_timeout_ms(self, handle: TargetHandle) -> int:
         return self._options.timeout_ms or resolve_sim_timeout_ms(handle.project_root)
 
-    def _reset_trace_root(self, build_root: Path) -> None:
-        if not self._options.trace:
+    def _reset_fresh_build_root(self, build_root: Path) -> None:
+        doctor_bad = _doctor_bad_requested()
+        if not self._options.trace and not doctor_bad:
             return
         key = build_root.resolve()
-        if key in self._reset_trace_roots:
+        if key in self._reset_build_roots:
             return
         try:
             shutil.rmtree(build_root)
         except FileNotFoundError:
             pass
         except OSError as exc:
+            kind = "traced" if self._options.trace else "Doctor bad"
             raise SimulationBuildPreparationError(
-                f"could not reset traced Simulation build root {build_root}: {exc}"
+                f"could not reset {kind} Simulation build root {build_root}: {exc}"
             ) from exc
-        self._reset_trace_roots.add(key)
+        self._reset_build_roots.add(key)
+
+
+def _doctor_bad_requested() -> bool:
+    return os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
+
+
+def _build_variant(trace: bool) -> str:
+    variants = ["trace"] if trace else []
+    if _doctor_bad_requested():
+        variants.append("doctor-selftest-bad")
+    return "-".join(variants)
 
 
 def _trace_overlay(handle: TargetHandle) -> Any:
