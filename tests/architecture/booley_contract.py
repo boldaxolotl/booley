@@ -201,20 +201,6 @@ COMPOSITION_PERMISSIONS = (
         "The MCP server classifies and composes Specialist endpoints.",
     ),
     CompositionPermission(
-        "C3",
-        "D6",
-        "booley.runtime.heartbeat",
-        "booley.harness.colors",
-        "The heartbeat command composes terminal presentation at its executable entry point.",
-    ),
-    CompositionPermission(
-        "C4",
-        "D6",
-        "booley.runtime.heartbeat",
-        "booley.harness.terminal",
-        "The heartbeat command composes terminal lifecycle at its executable entry point.",
-    ),
-    CompositionPermission(
         "C5",
         "D6",
         "booley.runtime.incontainer_register",

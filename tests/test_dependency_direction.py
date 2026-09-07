@@ -69,7 +69,7 @@ def test_runtime_does_not_depend_on_agent_facing_layers() -> None:
 
 
 def test_shared_runtime_does_not_depend_on_harness() -> None:
-    composition_entrypoints = {"heartbeat.py", "incontainer_register.py"}
+    composition_entrypoints = {"incontainer_register.py"}
     shared_runtime = [
         path for path in _python_files("runtime") if path.name not in composition_entrypoints
     ]

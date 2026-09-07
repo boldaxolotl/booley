@@ -105,8 +105,6 @@ belongs to one named rule and gives no source module a blanket exemption.
 | --- | --- | --- | --- |
 | C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
-| C3 | D6 | `booley.runtime.heartbeat -> booley.harness.colors` | The heartbeat command composes terminal presentation at its executable entry point. |
-| C4 | D6 | `booley.runtime.heartbeat -> booley.harness.terminal` | The heartbeat command composes terminal lifecycle at its executable entry point. |
 | C5 | D6 | `booley.runtime.incontainer_register -> booley.harness.auto_doctor` | In-container registration composes its Doctor command entry point. |
 | C6 | D6 | `booley.runtime.incontainer_register -> booley.harness.upgrade_cli` | In-container registration composes upgrade commands. |
 | C7 | D6 | `booley.runtime.incontainer_register -> booley.harness.upgrade_review` | In-container registration composes upgrade-review commands. |
