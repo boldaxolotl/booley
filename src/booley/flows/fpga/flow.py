@@ -34,6 +34,7 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.flows.implementation_profiles import PPA_PROFILE_CHOICES
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -111,6 +112,7 @@ from .backends.vivado.metrics import (
 from .implementation_report import (
     build_fpga_implementation_report,
 )
+from .profiles import VivadoProfile, resolve_fpga_profile
 from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -149,6 +151,7 @@ class _ResolvedFpgaRecipe:
     defines: tuple[str, ...]
     vlogparams: dict[str, Any]
     out_of_context: bool
+    ppa_profile: VivadoProfile
     recipe_snapshot: dict[str, Any]
     recipe_fingerprint: str
     source_evidence: run_evidence.FlowSourceEvidence
@@ -235,6 +238,12 @@ class FpgaImplFlow(BuiltinFlow):
             "--no-cache",
             action="store_true",
             help="Bypass reusable implementation results and run the recipe again",
+        )
+        parser.add_argument(
+            "--ppa-profile",
+            choices=PPA_PROFILE_CHOICES,
+            default=None,
+            help="Override the Target's portable FPGA optimization profile for this call",
         )
 
     def _build_command(self) -> list[str]:
@@ -553,7 +562,12 @@ class FpgaImplFlow(BuiltinFlow):
             "out_of_context",
             field=f"Target {target!r} flow_options.out_of_context",
         )
-        snapshot = fpga_recipe_snapshot(resolved, target=target)
+        ppa_profile = resolve_fpga_profile(
+            resolved.flow_options,
+            override=getattr(self.args, "ppa_profile", None),
+            target=target,
+        )
+        snapshot = fpga_recipe_snapshot(resolved, target=target, profile=ppa_profile)
         fingerprint = fpga_recipe_snapshot_fingerprint(snapshot)
         source = run_evidence.capture_flow_source_evidence(work_dir, target)
         return _ResolvedFpgaRecipe(
@@ -568,6 +582,7 @@ class FpgaImplFlow(BuiltinFlow):
             defines=tuple(_unique_strings(_vlogdefine_args(resolved.parameters))),
             vlogparams=vlogparam_values(resolved.parameters),
             out_of_context=out_of_context,
+            ppa_profile=ppa_profile,
             recipe_snapshot=snapshot,
             recipe_fingerprint=fingerprint,
             source_evidence=source,
@@ -645,6 +660,9 @@ class FpgaImplFlow(BuiltinFlow):
             project_name,
             recipe.vlogparams,
         )
+        # Vivado resets synthesis step properties when a strategy is assigned.
+        # Apply the profile first so the OOC patch below remains authoritative.
+        fpga_edam.apply_ppa_profile(work_root, project_name, recipe.ppa_profile)
         # QoR-gate targets whose bare toplevel out-ports the package (e.g. an
         # engine block never meant for pin mapping) opt into OOC synthesis so
         # placement does not fail on IO-buffer overutilization. Strictly typed:
@@ -657,6 +675,7 @@ class FpgaImplFlow(BuiltinFlow):
             recipe.resolved,
             edam,
             out_of_context=recipe.out_of_context,
+            recipe_sha256=recipe.recipe_fingerprint,
         )
         dispatch_evidence = run_evidence.build_flow_run_evidence(
             flow=self.name,
@@ -715,7 +734,7 @@ class FpgaImplFlow(BuiltinFlow):
             prepared = self._prepare_fpga_command(target)
             run_cmd = prepared.run_cmd
             work_root = prepared.work_root
-        except Exception as exc:  # isolate arbitrary adapter/configure failures
+        except Exception as exc:  # noqa: BLE001 — isolate arbitrary adapter/configure failures
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
 

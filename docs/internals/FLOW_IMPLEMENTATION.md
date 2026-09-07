@@ -712,7 +712,8 @@ timing is met.
 
 ### Configuration boundary
 
-The selected Target owns FPGA build intent: device part, out-of-context choice,
+The selected Target owns FPGA build intent: device part, portable PPA profile,
+out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
 policy; every invocation still names its Target. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
 owns the exact keys, defaults, and examples.
@@ -724,14 +725,16 @@ backend. Booley always builds and executes the Vivado EDAM below. Unprefixed
 vendored Targets retain a `tool: vivado` compatibility fallback because they
 cannot be renamed to the Booley convention.
 
-The device `part`, `out_of_context` choice, and other build-recipe inputs live
+The device `part`, `ppa_profile`, `out_of_context` choice, and other
+build-recipe inputs live
 under the selected Target's `flow_options`. XDC constraints are a Target
 `file_type: xdc` fileset, and compile-time defines are typed `vlogdefine`
 parameters. Doctor rejects those build inputs under `[flows.fpga]`.
 
 Dry-run and real execution share one validated Target-recipe preflight. Both
 run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
-sources, and inspect those sources for provenance. Only the real path then
+sources, resolve the portable profile and concrete Vivado mapping, and inspect
+those sources for provenance. Only the real path then
 materializes the Vivado project and creates execution evidence. Multi-Target
 planning is execution-atomic: a later setup failure prevents every real unit,
 while dry-run retains valid earlier work units beside Target-attributed
@@ -797,7 +800,11 @@ come from the XDC and surface in the `per_clock` metric map below.
 
 Both provisioning sources run the **same** Edalize `vivado` project inside the
 Session Runtime. The Booley Flow materializes it (sources, XDC, part, defines,
-generated Tcl), then invokes its `make` target:
+generated Tcl), applies the characterized non-default `synth_1` and `impl_1`
+strategy properties, then invokes its `make` target. `balanced` performs no Tcl
+write and preserves Edalize's existing defaults byte-for-byte. Strategy
+assignment must precede the out-of-context patch because Vivado resets synthesis
+step properties when a strategy changes:
 
 ```
 make -C .booley_project/.runtime/edalize/fpga/<target>

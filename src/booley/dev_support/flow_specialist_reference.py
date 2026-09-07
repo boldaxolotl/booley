@@ -48,7 +48,8 @@ _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {
-    "fpga": f"{_BASELINE_CONTROL}; `--no-cache` forces a fresh implementation",
+    "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
+    "selects portable optimization intent; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "

@@ -15,9 +15,9 @@ from typing import Any
 from booley.core.boundary import as_dict, as_positive_int, as_str
 from booley.eda.provisioning.policies.vivado import POLICY_REVISION, SUPPORTED_VERSION
 
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
 CACHE_FILE = ".booley-fpga-cache.json"
-_IMPLEMENTATION_REVISION = 1
+_IMPLEMENTATION_REVISION = 2
 _REPORT_PATTERNS = (
     "*_utilization_placed.rpt",
     "*_timing_summary_routed.rpt",
@@ -56,6 +56,7 @@ def input_fingerprint(
     edam: Mapping[str, Any],
     *,
     out_of_context: bool,
+    recipe_sha256: str = "",
 ) -> str:
     """Hash the resolved design intent, every input byte, and tool identity."""
     files: list[dict[str, Any]] = []
@@ -78,15 +79,21 @@ def input_fingerprint(
                 "missing": missing,
             }
         )
+    flow_options = dict(resolved.flow_options)
+    # The normalized recipe digest carries the resolved profile and mapping.
+    # Avoid treating an explicit ``balanced`` spelling as different from its
+    # identical omitted default.
+    flow_options.pop("ppa_profile", None)
     payload = {
         "schema": CACHE_SCHEMA,
         "implementation_revision": _IMPLEMENTATION_REVISION,
+        "recipe_sha256": recipe_sha256,
         "target": {
             "name": resolved.name,
             "vlnv": resolved.vlnv,
             "toplevel": resolved.toplevel,
             "eda_tool": resolved.eda_tool,
-            "flow_options": dict(resolved.flow_options),
+            "flow_options": flow_options,
             "parameters": dict(resolved.parameters),
             "out_of_context": out_of_context,
         },

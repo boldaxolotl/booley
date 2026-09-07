@@ -65,6 +65,14 @@ compatibility libraries, locale, image identity, mount, and environment are
 host-issued policy rather than Project settings. Vivado itself executes inside
 the runtime.
 
+The FPGA Flow's portable `compact`, `balanced`, and `max_frequency` profiles
+were characterized on this exact lane. They map to supported Vivado run
+strategies; `balanced` preserves the vendor defaults without patching generated
+Tcl. The reproducible compatibility evidence is recorded in
+`docs/research/vivado-profile-characterization-20260907.md`. These names express
+optimization intent, not guaranteed QoR, and FPGA power is not currently a
+normalized metric.
+
 The Project requests host provisioning under `[eda.vivado]`; the administrator
 selects the exact Installation Registration in the Grant for one canonical
 Project root with `booley eda`. `booley projects` lists each remembered root and

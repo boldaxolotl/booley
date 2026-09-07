@@ -8,9 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from ..recipe_evidence import jsonable, recipe_snapshot_fingerprint
+from .profiles import VivadoProfile, resolve_fpga_profile
 
 
-def fpga_recipe_snapshot(resolved: Any, *, target: str) -> dict[str, Any]:
+def fpga_recipe_snapshot(
+    resolved: Any,
+    *,
+    target: str,
+    profile: VivadoProfile | None = None,
+) -> dict[str, Any]:
     """Return normalized FPGA implementation intent and design constraints."""
     constraints = []
     for xdc_file in resolved.xdc_files:
@@ -21,14 +27,20 @@ def fpga_recipe_snapshot(resolved: Any, *, target: str) -> dict[str, Any]:
             digest = None
         constraints.append({"name": xdc_file.name, "sha256": digest})
 
+    selected_profile = profile or resolve_fpga_profile(resolved.flow_options, target=target)
+    flow_options = dict(resolved.flow_options)
+    # Store the effective profile exactly once so omitted-default and explicit
+    # ``balanced`` Targets have the same semantic recipe identity.
+    flow_options.pop("ppa_profile", None)
     return {
-        "schema": 1,
+        "schema": 2,
         "flow": "fpga",
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
         "eda_tool": resolved.eda_tool,
-        "flow_options": jsonable(resolved.flow_options),
+        "flow_options": jsonable(flow_options),
+        "ppa_profile": selected_profile.as_dict(),
         "parameters": jsonable(resolved.parameters),
         "constraints": constraints,
     }

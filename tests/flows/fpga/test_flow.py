@@ -348,6 +348,8 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     assert result.exit_code == EXIT_SUCCESS
     unit = result.detail["work_units"][0]
     assert unit["recipe"]["flow_options"]["part"] == "xc7a200tfbg484-1"
+    assert unit["recipe"]["ppa_profile"]["name"] == "balanced"
+    assert unit["recipe"]["ppa_profile"]["mapping"]["applied"] is False
     assert unit["constraints"]
     assert len(flow._flow_plan.work_units) == 1
     unit = flow._flow_plan.work_units[0]
@@ -360,18 +362,46 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
 
 
+def test_dry_run_call_profile_overrides_target_profile(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run", "--ppa-profile", "max_frequency")
+    configured = dataclasses.replace(
+        _fake_fpga_resolved(tmp_path),
+        flow_options={
+            "tool": "vivado",
+            "part": "xc7a200tfbg484-1",
+            "ppa_profile": "compact",
+        },
+    )
+
+    with patch.object(fusesoc_registry, "_resolve_target", return_value=configured):
+        result = flow._run()
+
+    profile = result.detail["work_units"][0]["recipe"]["ppa_profile"]
+    assert profile["name"] == "max_frequency"
+    assert profile["mapping"]["synthesis_strategy"] == "Flow_PerfOptimized_high"
+    assert profile["mapping"]["implementation_strategy"] == ("Performance_ExplorePostRoutePhysOpt")
+
+
 def test_dry_and_real_preparation_have_same_semantic_fingerprint(
     tmp_path: Path,
     state_file: Path,
 ) -> None:
     _write_project_config(tmp_path)
-    flow = _flow(tmp_path, state_file, "--dry-run")
+    flow = _flow(tmp_path, state_file, "--dry-run", "--ppa-profile", "max_frequency")
 
     dry_plan = flow._plan_fpga_implementation(["default"])
     flow.args.dry_run = False
     real_plan = flow._plan_fpga_implementation(["default"])
 
     assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
+    assert (
+        dry_plan.work_units[0].recipe["ppa_profile"]
+        == real_plan.work_units[0].recipe["ppa_profile"]
+    )
 
 
 def test_dry_run_resolves_sources_from_work_dir(
@@ -564,6 +594,39 @@ def test_enable_out_of_context_missing_tcl_raises(tmp_path: Path) -> None:
         fpga_edam.enable_out_of_context(tmp_path, "fpga_missing")
 
 
+def test_balanced_profile_leaves_generated_tcl_byte_identical(tmp_path: Path) -> None:
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    tcl = tmp_path / "fpga_t.tcl"
+    original = b"create_project fpga_t -force\n"
+    tcl.write_bytes(original)
+
+    fpga_edam.apply_ppa_profile(tmp_path, "fpga_t", VIVADO_PROFILES["balanced"])
+
+    assert tcl.read_bytes() == original
+
+
+def test_profile_patch_precedes_out_of_context_and_is_idempotent(tmp_path: Path) -> None:
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    tcl = tmp_path / "fpga_t.tcl"
+    tcl.write_text("create_project fpga_t -force\n", encoding="utf-8")
+
+    fpga_edam.apply_ppa_profile(tmp_path, "fpga_t", VIVADO_PROFILES["compact"])
+    fpga_edam.apply_ppa_profile(tmp_path, "fpga_t", VIVADO_PROFILES["compact"])
+    fpga_edam.enable_out_of_context(tmp_path, "fpga_t")
+
+    content = tcl.read_text(encoding="utf-8")
+    assert content.count("portable FPGA ppa_profile = compact") == 1
+    assert "set_property strategy Flow_AreaOptimized_high [get_runs synth_1]" in content
+    assert "set_property strategy Area_Explore [get_runs impl_1]" in content
+    assert content.index("set_property strategy") < content.index(
+        "STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS"
+    )
+
+
 # ===========================================================================
 # Session Runtime execution
 # ===========================================================================
@@ -700,6 +763,42 @@ class TestFpgaResolution:
         # FuseSoC build dir is keyed distinctly so it can't clobber the vivado dir.
         # Compare build_root in POSIX form so the assertion is portable.
         assert seen["build_root"].as_posix().endswith("fpga/default-fusesoc")
+
+    def test_materialization_applies_profile_before_out_of_context(
+        self,
+        tmp_path: Path,
+        state_file: Path,
+    ) -> None:
+        _write_project_config(tmp_path)
+        flow = _flow(tmp_path, state_file, "--ppa-profile", "compact")
+        resolved = dataclasses.replace(
+            _fake_fpga_resolved(tmp_path),
+            flow_options={
+                "tool": "vivado",
+                "part": "xc7a200tfbg484-1",
+                "out_of_context": True,
+            },
+        )
+        calls: list[str] = []
+        build_p, cfg_p, run_p = _patch_edam_build({})
+
+        with (
+            build_p,
+            cfg_p,
+            run_p,
+            patch.object(fusesoc_registry, "_resolve_target", return_value=resolved),
+            patch(
+                "booley.flows.fpga.backends.vivado.edam.apply_ppa_profile",
+                side_effect=lambda *_args: calls.append("profile"),
+            ),
+            patch(
+                "booley.flows.fpga.backends.vivado.edam.enable_out_of_context",
+                side_effect=lambda *_args: calls.append("out_of_context"),
+            ),
+        ):
+            flow._prepare_fpga_command("default")
+
+        assert calls == ["profile", "out_of_context"]
 
 
 # ===========================================================================
@@ -894,7 +993,7 @@ class TestTargetRecipeBoundary:
                 ),
             ),
         ):
-            flow._prepare_fpga_command("fpga")
+            prepared = flow._prepare_fpga_command("fpga")
 
         assert captured["toplevel"] == "dut_top"
         # Absolute workspace Paths (Edalize relativizes them downstream);
@@ -912,6 +1011,7 @@ class TestTargetRecipeBoundary:
         # The vlogdefine param reached the EDAM defines.
         assert "SYNTH" in captured["defines"]
         assert captured["vlogparams"] == {"WIDTH": 8}
+        assert prepared.recipe_snapshot["ppa_profile"]["name"] == "compact"
         # Resolved build dir lives under the worktree and is relocatable — no
         # absolute workspace path (in either separator form) leaked into the EDAM.
         edam = next((work_dir / ".booley_project" / ".runtime").rglob("*.eda.yml"))
@@ -1079,7 +1179,7 @@ targets:
   fpga:
     default_tool: vivado
     flow: generic
-    flow_options: {tool: vivado, part: xc7a200tfbg484-1}
+    flow_options: {tool: vivado, part: xc7a200tfbg484-1, ppa_profile: compact}
     filesets: [rtl, tb, constraints]
     parameters: [WIDTH, SYNTH]
     toplevel: dut_top
