@@ -45,7 +45,7 @@ from booley.targets.flow_names import config_section
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -57,6 +57,7 @@ from ..flow_config import (
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
+from ..invocation import default_timeout_ms, resolve_timeout_ms
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -149,7 +150,7 @@ def _raise_if_missing_executable(text: str) -> None:
         raise MissingExecutableError(binary, context=text)
 
 
-_DEFAULT_TIMEOUT_MS = 600_000
+_DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 # Per-run disk budget for the sim run directory (SETUP-25) — on how much the dir
 # GROWS during one run, not on its total size (F-23: run_cwd is routinely shared
 # with the TB's staged input vectors, and charging those to the output budget
@@ -525,20 +526,10 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     budget in ``booley.toml`` (mirrors ``[flows.synth].timeout_ms``), so
     a heavy core (e.g. a 400+MB ``vvp`` whose cold rebuild+run exceeds the 600s
     default under load) need not raise it on every call. Precedence lives in the
-    caller: an explicit ``--timeout`` arg wins over this knob, which wins over
-    :data:`_DEFAULT_TIMEOUT_MS`. Non-positive / unparseable values fall back.
+    caller: an explicit ``--timeout-ms`` arg wins over this knob, which wins over
+    :data:`_DEFAULT_TIMEOUT_MS`. Invalid configured values fail at the boundary.
     """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("timeout_ms")
-            configured = as_int(val, _DEFAULT_TIMEOUT_MS)
-            return max(1, configured if configured is not None else _DEFAULT_TIMEOUT_MS)
-    except ImportError:
-        pass
-    return _DEFAULT_TIMEOUT_MS
+    return resolve_timeout_ms("sim", work_dir, None)
 
 
 def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
@@ -1110,7 +1101,7 @@ def _append_batch_output_lines(
             )
 
 
-class SimulateFlow(StandaloneMixin, BooleyFlow):
+class SimulateFlow(StandaloneMixin, BuiltinFlow):
     """Run RTL simulation for one or more Targets."""
 
     name: str = "sim"
@@ -1204,18 +1195,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             action="store_true",
             help="Skip zombie process cleanup",
         )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Print commands as JSON without executing",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=None,
-            help="Per-test timeout in milliseconds. Precedence: this arg > "
-            "[flows.sim].timeout_ms in booley.toml > 600000 default.",
-        )
 
     def _build_command(self) -> list[str]:
         # Not used — _run() is overridden for multi-config logic
@@ -1228,14 +1207,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _effective_timeout_ms(self) -> int:
         """Resolve the per-test timeout in ms.
 
-        Precedence: explicit ``--timeout`` CLI/MCP arg > ``[flows.sim]``
+        Precedence: explicit ``--timeout-ms`` CLI/MCP arg > ``[flows.sim]``
         ``timeout_ms`` in booley.toml (F4) > :data:`_DEFAULT_TIMEOUT_MS`. Mirrors
         ``AsicSynthesizeFlow._timeout_ms`` so a large core can persist a higher
-        sim budget instead of passing ``--timeout`` on every call.
+        sim budget instead of passing ``--timeout-ms`` on every call.
         """
-        if self.args.timeout is not None:
-            return max(1, int(self.args.timeout))
-        return _resolve_sim_timeout_ms(Path(self.args.work_dir))
+        return self._timeout_ms()
 
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).
@@ -2541,7 +2518,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             artifact_root=self.args.report_dir,
             options=SimulationOptions(
                 trace=self.args.trace,
-                timeout_ms=int(self.args.timeout) if self.args.timeout is not None else None,
+                timeout_ms=self.args.timeout_ms,
                 result_verbosity=self.args.result_verbosity,
             ),
         )

@@ -241,7 +241,7 @@ owns the exact simulation keys and defaults, while its
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
-(debug-only; never a pass/fail source), `--timeout`, and `--dry-run` resolve
+(debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
 **Pre-Run Commands** (`[flows.sim].pre_run_commands`) are the one
@@ -410,8 +410,8 @@ edit lands in the diff like any other change, where ticket Scope and the
 Reviewer agent ([CONTEXT.md](../CONTEXT.md)) are the control.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
-*and* the Criteria counts with them), `--dry-run`, and `--timeout` (ms, default
-120000).
+*and* the Criteria counts with them), `--dry-run`, and `--timeout-ms` (positive
+integer milliseconds; `[flows.lint].timeout_ms` fallback; default 120000).
 
 ### Verdict semantics
 

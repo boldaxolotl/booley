@@ -55,6 +55,8 @@ SKIP_MODULES = frozenset(
 )
 
 BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga")
+_FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow"})
+_ENDPOINT_BASE_NAMES = _FLOW_BASE_NAMES | {"McpTool", "Specialist"}
 
 
 def discover_mcp_tools(
@@ -201,7 +203,7 @@ def extract_mcp_tool_info(
             continue
 
         base_names = _get_base_names(node)
-        if not base_names & {"McpTool", "BooleyFlow", "Specialist"}:
+        if not base_names & _ENDPOINT_BASE_NAMES:
             continue
 
         attrs = _extract_endpoint_metadata_attrs(node)
@@ -268,7 +270,7 @@ def _build_mcp_tool_info(
 ) -> McpToolInfo:
     """Assemble MCP endpoint metadata from extracted class attributes."""
     rel_path = f"{package}/{py_file.name}" if builtin and package else str(py_file)
-    if "BooleyFlow" in base_names:
+    if base_names & _FLOW_BASE_NAMES:
         kind = "flow"
     elif "Specialist" in base_names:
         kind = "specialist"

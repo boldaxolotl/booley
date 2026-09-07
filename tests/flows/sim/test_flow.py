@@ -302,7 +302,7 @@ class _BoundaryHarness(SimulationExecution):
             artifact_root=flow.args.report_dir,
             options=SimulationOptions(
                 trace=flow.args.trace,
-                timeout_ms=int(flow.args.timeout) if flow.args.timeout else None,
+                timeout_ms=flow.args.timeout_ms,
                 result_verbosity=flow.args.result_verbosity,
             ),
         )
