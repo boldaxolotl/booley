@@ -6,6 +6,10 @@ inputs:
     description: Repository-relative path to the demo contract
     required: false
     default: .github/contracts/picorv32-demo.toml
+  materialize:
+    description: Materialize generated inputs on the host for a host-prepared consumer
+    required: false
+    default: "false"
 
 outputs:
   ticket_slug:
@@ -108,3 +112,15 @@ runs:
         --project-dir demo/.booley_project
         --fixture "${TICKET_FIXTURE}"
         --slug "${TICKET_SLUG}"
+
+    - name: Materialize and validate reviewed demo inputs
+      if: inputs.materialize == 'true'
+      shell: bash
+      env:
+        CONTRACT_PATH: ${{ inputs.contract }}
+        PYTHONPATH: ${{ github.workspace }}/src
+      run: >-
+        python "${GITHUB_WORKSPACE}/.github/scripts/picorv32_demo_contract.py"
+        --contract "${CONTRACT_PATH}"
+        --demo-root demo
+        --project-dir demo/.booley_project

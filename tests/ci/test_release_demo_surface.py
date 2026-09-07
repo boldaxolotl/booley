@@ -69,3 +69,36 @@ def test_demo_surface_uses_public_commands_without_mutating_ticket(
     }
     assert evidence["checks"][-1] == {"id": "demo.ticket-immutable", "status": "pass"}
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
+
+
+def test_demo_surface_main_defaults_to_running_python(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_validate(**kwargs):
+        captured.update(kwargs)
+        return {"schema": 1}
+
+    evidence = tmp_path / "evidence.json"
+    monkeypatch.setattr(demo_surface, "validate", fake_validate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "demo_surface.py",
+            "--project",
+            str(tmp_path),
+            "--project-state",
+            str(tmp_path),
+            "--ticket-slug",
+            "release-smoke",
+            "--expected-version",
+            "1.2.3",
+            "--image-digest",
+            "sha256:image",
+            "--evidence",
+            str(evidence),
+        ],
+    )
+
+    assert demo_surface.main() == 0
+    assert captured["python"] == Path(sys.executable)

@@ -535,7 +535,7 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     validate = _named_step(job, "Run isolated host validation")
 
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
-    assert 'cp -a tests/fixtures/cocotb_counter "${root}/project"' in prepare
+    assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
     assert '"${root}/venv/bin/pip" install .' in prepare
     assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
     assert "/usr/bin/booley" not in prepare + validate["run"]
@@ -555,10 +555,16 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
         prepare = _named_step(job, "Prepare exact reviewed demo contract")
         assert prepare["uses"] == "./.github/actions/prepare-picorv32-demo"
         assert job["needs"] == ["build-and-push", "build-and-push-riscv"]
+    simulation_prepare = _named_step(simulation, "Prepare exact reviewed demo contract")
+    assert simulation_prepare["with"] == {"materialize": True}
     assert (
         "-m release_validation.demo_surface"
         in _named_step(surface, "Validate immutable ticket surface")["run"]
     )
+
+    simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
+    assert "/^\\[flows\\.synth\\]$/,/^\\[flows\\.fpga\\]$/" in simulation_run
+    assert "enabled = false" in simulation_run
     assert "verify_picorv32_demo.sh" in _named_step(flows, "Run exact reviewed demo flows")["run"]
     assert _named_step(surface, "Restore demo ownership")["if"] == "always()"
     assert _named_step(flows, "Restore demo ownership")["if"] == "always()"

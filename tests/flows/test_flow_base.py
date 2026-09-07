@@ -477,9 +477,13 @@ class TestTimeoutKillsTheWholeTree:
         import sys
 
         script = (
-            "import subprocess, sys, time\n"
+            "import os, subprocess, sys, time\n"
             "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-            f"open({str(pid_file)!r}, 'w').write(str(kid.pid))\n"
+            f"pid_path = {str(pid_file)!r}\n"
+            "pid_tmp = pid_path + '.tmp'\n"
+            "with open(pid_tmp, 'w') as stream:\n"
+            "    stream.write(str(kid.pid))\n"
+            "os.replace(pid_tmp, pid_path)\n"
             "time.sleep(120)\n"
         )
 

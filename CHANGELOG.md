@@ -7,24 +7,112 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
-## Unreleased
+## 0.2.13 - 07 SEP 2026
+
+### New features
+
+- Ticket Mode now publishes an immutable Acceptance Basis automatically when a
+  Ticket is enqueued. The basis records the authored inputs, repository
+  identities, Criteria bindings, and Target dispositions used during execution
+  and final acceptance. The Acceptance Journal protects the exact source,
+  prepared result, finalized result, destination, and cleanup state across
+  retries. Returning a blocked Ticket to draft preserves the old basis and
+  evidence while starting a new authoring generation.
+  ([PR #378](https://github.com/boldaxolotl/booley/pull/378),
+  [PR #361](https://github.com/boldaxolotl/booley/pull/361))
+
+### Quality of life
+
+- The standard Session Runtime image is 71% smaller by visible filesystem size;
+  the RISC-V image is 66% smaller. Both retain the supported EDA and agent
+  toolchains, OpenROAD source provenance, and SPDX SBOM attestations. The demo
+  stack needs about 6 GB of Docker storage, plus Project artifacts and temporary
+  build or upgrade data.
+  ([PR #350](https://github.com/boldaxolotl/booley/pull/350))
+- Doctor reuses one FuseSoC library view when auditing equivalent Targets.
+  `booley doctor --concise` hides PASS rows without changing findings, counts,
+  evidence, or exit status. A focused 100-Target source inspection fell from
+  7.32 seconds to 0.15 seconds.
+  ([#352](https://github.com/boldaxolotl/booley/issues/352))
+- Simulation results now record millisecond build and run durations plus setup,
+  pre-run, result-processing, publication, and unattributed phases. Supported
+  platforms also report peak RSS, OOM-kill deltas, and simulator child CPU time
+  for diagnosing Windows Docker performance failures.
+  ([#356](https://github.com/boldaxolotl/booley/issues/356))
+- Host bootstrap now installs and verifies VS Code's Dev Containers extension.
+  PicoRV32 guidance explains the automatic reopen popup and how to open the same
+  command through the Command Palette (`F1` or `Ctrl+Shift+P`).
+  ([PR #353](https://github.com/boldaxolotl/booley/pull/353))
+- The Session Runtime now includes Claude Code 2.1.263, Codex CLI 0.153.4, and
+  NumPy 2.5.3. Release checks use PyYAML 6.0.3, and the reaper and isolated
+  evidence service use Docker 29.8.0.
+  ([PR #394](https://github.com/boldaxolotl/booley/pull/394))
+- The ticket-creation agent writes only the Ticket, approved new Target
+  definitions, and zero-byte placeholders for new scope paths. Mutation
+  creators may inspect RTL but may not modify files, run Project tools or
+  simulators, or inspect testbenches. Reviewer prompts tell developers to omit
+  `--target` for target-independent Criteria.
+  ([PR #360](https://github.com/boldaxolotl/booley/pull/360),
+  [PR #338](https://github.com/boldaxolotl/booley/pull/338),
+  [PR #339](https://github.com/boldaxolotl/booley/pull/339))
 
 ### Bug fixes
 
+- Synthesis reports now include normalized EDA warning totals, categories,
+  dispositions, and representative diagnostics with a pointer to the full log.
+  A final Yosys structural pass rejects combinational loops and multi-driven
+  nets even when mapping and optimization otherwise complete; actionable
+  warnings produce WARN without turning a structurally valid result into a
+  failure. ([#344](https://github.com/boldaxolotl/booley/issues/344))
+- B-Wave `sample` now applies `--first`, `--last`, `--before`, and `--after` to
+  the selected trigger event while preserving time windows, `--count`, reset,
+  sync/async, and stored or Virtual Signal behavior.
+  ([#317](https://github.com/boldaxolotl/booley/issues/317))
 - B-Wave now applies `-s` consistently to stored and Virtual Signal rows in
-  `wave`, `value`, and `sample`: composed helpers remain available without
-  leaking into output, mixed-name diagnostics count real matches correctly,
-  and Virtual Signal names that exactly collide with stored or earlier virtual
-  names are rejected before query results are emitted.
+  `wave`, `value`, and `sample`. Unselected helpers remain available for
+  composition without appearing in output, and exact stored or duplicate
+  Virtual Signal name collisions fail before results are emitted.
   ([#318](https://github.com/boldaxolotl/booley/issues/318))
+- Native B-Wave accepts and renders `--marker` only for `wave`; other commands
+  reject it with exit status 2. Stored marker cycles and async marker columns
+  now survive wrapper substitution and run-length encoding correctly.
+  ([#319](https://github.com/boldaxolotl/booley/issues/319))
+- First-time `booley init` in a checkout nested below another Project now keeps
+  its agent selection and configuration in that checkout. The configuration
+  guide distinguishes Booley's Icarus trace overlay from project-owned
+  Verilator trace sources.
+  ([#342](https://github.com/boldaxolotl/booley/issues/342))
+- Parallel `booley session enter` commands now wait for the host lifecycle lock
+  and release it before supervised commands run. Concurrent read-only B-Wave
+  queries no longer fail with "host Docker lifecycle is busy".
+  ([#345](https://github.com/boldaxolotl/booley/issues/345))
+- Sidecar upgrade blockers now identify the owning Project and include a
+  Project-scoped shutdown command. After an image upgrade, `booley init`
+  reconciles a stopped, ownership-verified headless Session Runtime instead of
+  reporting the Project ready with stale issuance.
+  ([#352](https://github.com/boldaxolotl/booley/issues/352))
+- Simulation adapters resolve registries, selectors, skips, environments,
+  pre-run commands, and artifact freshness from each Target checkout, so
+  baseline worktrees cannot inherit active-Project cache state. Adapter results
+  use attempt-bound atomic transport with explicit failure precedence.
+  ([PR #359](https://github.com/boldaxolotl/booley/pull/359))
 - The Stealth pre-push guard now rejects tracked `.booley_project/` paths and
-  committed links into that state even when the Session Runtime exposes it at
-  a different absolute path.
+  committed links into that state even when the Session Runtime exposes it at a
+  different absolute path.
+  ([PR #363](https://github.com/boldaxolotl/booley/pull/363))
 
 ### Upgrade notes
 
-- Existing Projects should rerun `booley init` after upgrading so their
-  vendored pre-push hook receives the corrected project-state guard.
+- After upgrading, run `booley bootstrap`. Refresh a headless runtime with
+  `booley session refresh`, or use **Dev Containers: Rebuild Container** for a
+  VS Code runtime. Run `booley init` in each existing Project so its vendored
+  pre-push hook receives the corrected project-state guard.
+- Booley rejects legacy Target Contract tickets. Recreate them with the current
+  Ticket workflow. Enqueue now publishes the Acceptance Basis without a separate
+  seal step; use `booley board return-to-draft <slug>` when a blocked Ticket
+  needs different authored inputs.
+
+[Full changes from v0.2.12](https://github.com/boldaxolotl/booley/compare/v0.2.12...v0.2.13)
 
 ## 0.2.12 - 04 SEP 2026
 
@@ -38,10 +126,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
-- Host bootstrap now installs and verifies VS Code's Dev Containers extension.
-  The PicoRV32 demo guidance identifies the automatic reopen prompt as a popup
-  notification and gives the Command Palette (`F1` or `Ctrl+Shift+P`) fallback
-  when it is absent.
 - `booley auth` now mints Claude credentials inside the validated Session
   Runtime while credential storage and runtime-spec reseeding remain on the
   host. It safely reuses running runtimes and recovers interrupted refreshes.
