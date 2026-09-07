@@ -55,10 +55,9 @@ def _make_flow(
             str(tmp_path / "reports"),
             "--target",
             "sim_dut",
-            "--elab-only",
+            "--mode",
+            "elab-only-standalone" if standalone else "elab-only",
         ]
-        if standalone:
-            args.append("--standalone")
         flow.parse_args(args)
     flow.read_state()
     return flow

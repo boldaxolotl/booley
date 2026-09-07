@@ -537,11 +537,14 @@ design as success.
 
 ### Elaboration Check (`[flows.sim]`)
 
-`booley flow sim --target <sim-target> --elab-only` compiles, elaborates, and
+`booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
 without running Pre-Run Commands, simulator tests, Cocotb Python, or tracing.
-`--build-only` is an equivalent permanent alias. Only simulation Targets are
-eligible; synthesis Targets belong to `synth`.
+Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
+and then sweep every RTL module from its declaring file. `--elab-only` and
+`--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
+aliases. Only simulation Targets are eligible; synthesis Targets belong to
+`synth`.
 
 ```toml
 [flows.sim]

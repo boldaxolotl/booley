@@ -48,8 +48,8 @@ of making container paths part of Project configuration.
 
 | Booley Flow | EDA tool | Provisioning | Trace | Requirements |
 |---|---|---|---|---|
-| `sim` (including `--elab-only`) | Verilator | image | waveform (enabling/disabling trace forces a Verilator recompile) | ships in the standard image; cocotb testbenches supported |
-| `sim` (including `--elab-only`) | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
+| `sim` (including `--mode elab-only`) | Verilator | image | waveform (enabling/disabling trace forces a Verilator recompile) | ships in the standard image; cocotb testbenches supported |
+| `sim` (including `--mode elab-only`) | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
 | `lint` | Verilator | image | none | ships in the standard image |
 | `lint` | Verible (`verible-verilog-lint`, style/naming rules) | image | none | ships in the standard image |
 | `synth` | Yosys (+ OpenROAD in physical mode) | image + setup cache | none | tools ship in the standard image; `booley bootstrap` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |

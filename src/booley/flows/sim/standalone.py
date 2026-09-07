@@ -19,6 +19,7 @@ from booley.targets.catalog import TargetCatalog
 from .. import edam as edam_layer
 from .. import output_budget
 from ..flow_config import _load_flow_config
+from .mode import SimulationMode
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ class StandaloneMixin:
 
     def _standalone_requested(self) -> bool:
         """Whether the caller explicitly requested the standalone sweep."""
-        return bool(getattr(self.args, "standalone", False))
+        return getattr(self.args, "mode", None) is SimulationMode.ELAB_ONLY_STANDALONE
 
     def _standalone_rtl_scope(self, targets: list[str]) -> list[str]:
         """Project-relative HDL files in the Targets' RTL source scope.

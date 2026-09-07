@@ -598,7 +598,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
     no signal ⇒ `no`, and say so in one line.
 12. **Elaboration Check** — record whether the project needs the stronger
-    `sim --elab-only --standalone` module sweep; ordinary Simulation already
+    `sim --mode elab-only-standalone` module sweep; ordinary Simulation already
     records its authenticated build-stage outcome.
 13. **Timeouts, synthesis calibration & memory** —
     `[flows.<flow>].timeout_ms` where evidence (CI runtimes, log stamps)

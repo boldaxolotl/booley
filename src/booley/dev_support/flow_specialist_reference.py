@@ -51,8 +51,8 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
-        "`--elab-only` (`--build-only`) compiles, elaborates, and links without "
-        "running tests; add `--standalone` for the stronger module sweep. "
+        "`--mode elab-only` compiles, elaborates, and links without running tests; "
+        "`--mode elab-only-standalone` adds the stronger module sweep. "
         "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "

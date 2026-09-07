@@ -33,7 +33,7 @@ enabled = false              # flip to true (or delete the line) when wired up
 # under the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_RUN_CWD, ...):
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 # standalone_frontend = "auto"  # auto | iverilog | verilator; used only by
-#                                # sim --elab-only --standalone
+#                                # sim --mode elab-only-standalone
 
 # The only commercial provisioning policy currently available is an
 # administrator-registered Vivado 2025.2 installation on Linux x86-64:

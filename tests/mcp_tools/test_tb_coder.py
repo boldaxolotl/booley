@@ -580,7 +580,7 @@ class TestBuildPrompt:
         prompt = endpoint._build_prompt()
         assert "Do NOT run a full simulator or linter" in prompt
         assert "sim" in prompt
-        assert "elab_only=true" in prompt
+        assert "mode=elab_only" in prompt
         assert "testbench/verification changes compile and elaborate cleanly" in prompt
 
     def test_escalation_protocol(

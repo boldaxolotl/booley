@@ -3169,6 +3169,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         _resolve_sim_campaign_work_units,
         _resolve_sim_timeout_ms,
     )
+    from booley.flows.sim.mode import SimulationMode, parse_simulation_mode
 
     work_dir_raw = arguments.get("work_dir")
     work_dir = Path(work_dir_raw) if work_dir_raw else Path.cwd()
@@ -3179,17 +3180,19 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         timeout_ms = resolve_timeout_ms("sim", None, requested)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
+    mode = parse_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
     try:
         work_units = _resolve_sim_campaign_work_units(
             work_dir,
             raw_target,
             arguments.get("test"),
             arguments.get("skip"),
+            mode,
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
 
-    if _ticket_baseline_required("cycle_count_"):
+    if mode is SimulationMode.SIMULATE and _ticket_baseline_required("cycle_count_"):
         work_units *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
     call_margin_s = 0 if arguments.get("trace") else 30

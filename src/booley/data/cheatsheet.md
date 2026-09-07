@@ -82,7 +82,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 
 Key Flow-specific controls:
 
-- `sim`: `--elab-only` (`--build-only`) compiles, elaborates, and links without running tests; add `--standalone` for the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
@@ -143,8 +143,8 @@ variants, and the first public test that killed each detected mutant.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --elab-only` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --elab-only --standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --mode elab-only` | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --mode elab-only-standalone` | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review

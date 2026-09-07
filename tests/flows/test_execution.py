@@ -54,6 +54,6 @@ def test_every_flow_rejects_retired_elaboration_tables(retired, requested):
 
     with pytest.raises(
         FlowConfigError,
-        match=rf"flows\.{retired}.*sim --elab-only.*flows\.sim",
+        match=rf"flows\.{retired}.*sim --mode elab-only.*flows\.sim",
     ):
         flow_enabled_from_config(requested, config)
