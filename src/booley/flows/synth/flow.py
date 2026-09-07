@@ -1897,6 +1897,12 @@ class AsicSynthesizeFlow(BuiltinFlow):
                             target,
                             build_root=Path(scratch) / target,
                         )
+                        unit = self._synth_work_unit(
+                            target,
+                            planned,
+                            role="candidate",
+                            revision=candidate_revision,
+                        )
                 else:
                     lease = edam.work_root_lease(
                         self._synth_work_root(target),
@@ -1906,14 +1912,13 @@ class AsicSynthesizeFlow(BuiltinFlow):
                     with lease:
                         planned = self._resolve_synth_recipe(target)
                     candidate_recipes[target] = planned
-                candidate_units.append(
-                    self._synth_work_unit(
+                    unit = self._synth_work_unit(
                         target,
                         planned,
                         role="candidate",
                         revision=candidate_revision,
                     )
-                )
+                candidate_units.append(unit)
             except (
                 BoundaryError,
                 edam.WorkRootLeaseError,

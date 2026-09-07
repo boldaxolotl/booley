@@ -635,9 +635,10 @@ class TestTryReadReport:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _try_read_report
+            from booley.mcp import server as mcp_server
 
-            self._try_read_report = _try_read_report
+            self.mcp_server = mcp_server
+            self._try_read_report = mcp_server._try_read_report
 
     def test_no_env_var(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -664,6 +665,40 @@ class TestTryReadReport:
         step_dir.mkdir(parents=True)
         (step_dir / "report.json").write_text("NOT JSON", encoding="utf-8")
         assert self._try_read_report() is None
+
+    def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
+        async def fake_run(_cmd, timeout=600):
+            del timeout
+            return 0, '{"flow": "lint", "schema_version": 1}', "", False
+
+        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
+        monkeypatch.setattr(
+            self.mcp_server,
+            "_try_read_report",
+            lambda: pytest.fail("dry-run must not read a historical verdict"),
+        )
+        monkeypatch.setattr(
+            self.mcp_server,
+            "TextContent",
+            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
+        )
+
+        result = asyncio.run(
+            self.mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {"dry_run": True, "target": "lint_demo"},
+                {
+                    "module": "lint",
+                    "default_timeout": 600,
+                    "non_persisting_dry_run": True,
+                },
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, list)
+        assert '"flow": "lint"' in result[0].text
 
 
 # ---------------------------------------------------------------------------

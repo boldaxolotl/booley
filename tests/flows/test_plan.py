@@ -119,6 +119,15 @@ def test_paths_and_argv_are_normalized_to_checkout(tmp_path: Path) -> None:
     ) == ("sh", "-c", "tool --root . --file .booley_work/sim")
 
 
+def test_windows_argv_spelling_is_normalized_to_checkout(tmp_path: Path) -> None:
+    checkout = tmp_path.as_posix().replace("/", "\\")
+
+    assert normalize_plan_argv(
+        ("tool", f"{checkout}\\.booley_work\\sim"),
+        tmp_path,
+    ) == ("tool", ".booley_work/sim")
+
+
 def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:
     first = stable_unit_id("sim", "alu", ("smoke",))
 

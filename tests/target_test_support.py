@@ -85,7 +85,7 @@ class _LenientCatalog:
         catalog = self._real_catalog_build(self.project_root)
         try:
             return catalog.inspect(catalog.select(handle.selector))
-        except fusesoc_registry.UnknownTargetError:
+        except UnknownTargetError:
             return TargetInspection(
                 handle=handle,
                 toplevel=handle.declared_toplevel,

@@ -685,10 +685,11 @@ class TestDryRun:
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
-        assert result.exit_code == 0
+        assert result.exit_code == EXIT_ERROR
         data = json.loads(capsys.readouterr().out)
         assert data["flow"] == "lint"
-        assert data["work_units"][0]["selector"] == "lite"
+        assert data["work_units"] == []
+        assert data["aggregate_errors"] == ["lite: ERROR: lint dry-run: Unknown target 'lite'"]
 
 
 # ---------------------------------------------------------------------------

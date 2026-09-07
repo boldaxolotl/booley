@@ -529,22 +529,7 @@ class LintFlow(BuiltinFlow):
                     continue
                 inspection = None
             try:
-                command = (
-                    tuple(self._dry_run_command(target))
-                    if target.core_file.exists()
-                    else (
-                        "make",
-                        "-C",
-                        edam_layer.relpath_for_make(
-                            edam_layer.work_root_for(
-                                self.args.work_dir,
-                                "lint",
-                                target.selector,
-                            ),
-                            self.args.work_dir,
-                        ),
-                    )
-                )
+                command = tuple(self._dry_run_command(target))
                 if len(command) == 1 and command[0].startswith("ERROR:"):
                     raise ValueError(command[0])
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:

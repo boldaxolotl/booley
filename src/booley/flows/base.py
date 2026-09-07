@@ -416,10 +416,7 @@ class BuiltinFlow(BooleyFlow):
     """Invocation seam shared only by Booley's four shipped Flows."""
 
     default_timeout: ClassVar[int] = 600
-
-    def _uses_dry_run_lifecycle(self) -> bool:
-        """Built-ins bypass admission and acceptance persistence for dry-run."""
-        return bool(getattr(getattr(self, "_args", None), "dry_run", False))
+    non_persisting_dry_run = True
 
     def _dry_run_result(self, plan: object) -> McpToolResult:
         """Render and optionally persist one normalized built-in Flow plan."""

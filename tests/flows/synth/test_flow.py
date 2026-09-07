@@ -1288,9 +1288,13 @@ class TestDryRun:
             ),
         ):
             result = flow._run()
+            dry_plan = flow._flow_plan
+            flow.args.dry_run = False
+            real_plan = flow._plan_synth_implementation(["syn"])
 
         assert result.exit_code == EXIT_SUCCESS
         assert result.detail["work_units"][0]["selector"] == "syn"
+        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
         run_evidence = flow._recipe_evidence["syn"][2]
         assert run_evidence["source_sha256"]
 

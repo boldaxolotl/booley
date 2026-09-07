@@ -43,13 +43,20 @@ def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
 def normalize_plan_argv(argv: tuple[str, ...], work_dir: Path) -> tuple[str, ...]:
     """Remove the selected checkout's absolute prefix from command arguments."""
     checkout = work_dir.resolve().as_posix().rstrip("/")
-    prefix = checkout + "/"
+    prefixes = ((checkout + "/", "/"), (checkout.replace("/", "\\") + "\\", "\\"))
 
     def normalize(argument: str) -> str:
-        normalized = argument.replace(prefix, "")
-        if normalized == checkout:
-            return "."
-        return normalized.replace(f"={checkout}", "=.").replace(f" {checkout}", " .")
+        normalized = argument
+        for prefix, separator in prefixes:
+            if prefix in normalized:
+                normalized = normalized.replace(prefix, "")
+                if separator == "\\":
+                    normalized = normalized.replace("\\", "/")
+        for spelling in (checkout, checkout.replace("/", "\\")):
+            if normalized == spelling:
+                return "."
+            normalized = normalized.replace(f"={spelling}", "=.").replace(f" {spelling}", " .")
+        return normalized
 
     return tuple(normalize(argument) for argument in argv)
 
