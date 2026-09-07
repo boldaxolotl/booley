@@ -31,6 +31,11 @@ class ReviewScopeContract:
         """Return whether *path* is a Python testbench in this scope."""
         return _normalize(path) in self.cocotb_files
 
+    def contains_file(self, path: str) -> bool:
+        """Return whether *path* is one of the explicitly scoped sources."""
+        normalized = _normalize(path)
+        return normalized in self.cocotb_files or normalized in self.hdl_files
+
 
 def _normalize(path: str) -> str:
     value = path.replace("\\", "/").removeprefix("./")

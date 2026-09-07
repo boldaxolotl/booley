@@ -74,9 +74,7 @@ def test_reviewer_criterion_binding_is_source_scoped(state_file: Path) -> None:
     state = DevelopmentState.load(state_file)
     state.init_criteria(
         {"review_tb_quality_clean": True},
-        criterion_params={
-            "review_tb_quality_clean": {"scope": ["tb/uart_tb.sv"]}
-        },
+        criterion_params={"review_tb_quality_clean": {"scope": ["tb/uart_tb.sv"]}},
         strict=True,
     )
     state.save()
@@ -173,6 +171,12 @@ def _stamp_current_review_contract(endpoint: ReviewerSpecialist, state_file: Pat
     endpoint.read_state()
 
 
+def _read_current_review_contract(endpoint: ReviewerSpecialist, state_file: Path) -> None:
+    """Load fixture state and upgrade it to the current receipt contract."""
+    endpoint.read_state()
+    _stamp_current_review_contract(endpoint, state_file)
+
+
 def test_dry_run_does_not_invoke_agent_or_update_receipts(
     state_file: Path,
     tmp_path: Path,
@@ -207,6 +211,40 @@ def test_dry_run_does_not_invoke_agent_or_update_receipts(
     assert state_file.read_text(encoding="utf-8") == before
     review.assert_not_called()
     refresh.assert_not_called()
+
+
+def test_review_findings_outside_explicit_source_scope_are_dropped(
+    state_file: Path,
+) -> None:
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--scope",
+            "rtl/mod_a.sv",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+        ]
+    )
+    assert endpoint._resolve_scope_contract() is None
+    issues = [
+        ReviewIssue(**_make_issue_dict(file="rtl/mod_a.sv")),
+        ReviewIssue(**_make_issue_dict(file="rtl/mod_b.sv")),
+    ]
+    output_lines: list[str] = []
+
+    with (
+        patch("booley.specialists.reviewer._load_ticket_text", return_value=(None, None)),
+        patch(
+            "booley.specialists.reviewer.resolve_documented_assumptions",
+            return_value=(None, None),
+        ),
+    ):
+        kept = endpoint._filter_review_issues(issues, output_lines)
+
+    assert [issue.file for issue in kept] == ["rtl/mod_a.sv"]
+    assert output_lines == ["INFO: ignored 1 finding(s) outside the explicit source scope"]
 
 
 # ---------------------------------------------------------------------------
@@ -2636,7 +2674,7 @@ class TestCleanModeInitial:
                 SOURCE_FINGERPRINT_DETAIL_KEY: {
                     "categories": ["rtl"],
                     "fingerprint": compute_source_fingerprint(Path.cwd()),
-                }
+                },
             },
         )
         st.save()
@@ -2722,8 +2760,7 @@ class TestCleanModeVerify:
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*_review_args(), "--steer", "Waive finding 1: required latency"])
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2794,8 +2831,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2863,8 +2899,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -2948,8 +2983,7 @@ class TestCleanModeVerify:
                 "quality",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2992,8 +3026,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3042,8 +3075,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3109,8 +3141,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # All three demoted to still_present → gate fails, met=False.
@@ -3170,8 +3201,7 @@ class TestCleanModeVerify:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is True
@@ -3231,8 +3261,7 @@ class TestCleanReviewImpasse:
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3311,8 +3340,7 @@ class TestFindingIdentityByIndex:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is False
@@ -3375,8 +3403,7 @@ class TestFindingIdentityByIndex:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is True
@@ -3446,8 +3473,7 @@ class TestVerifyFixedPersistence:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # Bug A (prior status=fixed, unmentioned) → stays fixed → resolved
@@ -3516,8 +3542,7 @@ class TestVerifyFixedPersistence:
                 "bugs",
             ]
         )
-        endpoint.read_state()
-        _stamp_current_review_contract(endpoint, state_file)
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # Bug A regressed → pending; Bug B fixed → resolved.

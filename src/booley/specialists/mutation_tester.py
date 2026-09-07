@@ -649,6 +649,7 @@ class MutationTesterSpecialist(Specialist):
     )
     code_modifying: bool = False
     target_required: bool = True
+    non_persisting_dry_run: bool = True
     announce_success_report: bool = True
     min_model: str = "standard"
     default_timeout: int = 1800
@@ -832,8 +833,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 return McpToolResult(
                     exit_code=EXIT_FAILURE,
                     report_text=(
-                        "mutation_tester: --scope does not match the sealed Target "
-                        "criterion scope"
+                        "mutation_tester: --scope does not match the sealed Target criterion scope"
                     ),
                 )
             return McpToolResult(
@@ -1017,27 +1017,7 @@ replacement must differ, and every proposal must remain a single source edit.
         min_detected = self.args.min_detected if self.args.min_detected is not None else count
         if count_error := self._validate_count(count, min_detected):
             return count_error
-        if getattr(self.args, "dry_run", False):
-            budget = source_size_budget or compute_source_size_budget(scope_files, work_dir)
-            summary = (
-                f"mutation_tester dry-run: target={target}; scope={len(scope_files)} file(s); "
-                f"top={tb_top}; count={count}; min_detected={min_detected}"
-            )
-            return self._dry_run_result(
-                summary=summary,
-                detail={
-                    "target": target,
-                    "scope": scope_files,
-                    "tb_top": tb_top,
-                    "rtl_closure": self._dut_files(),
-                    "tests": [unit.display_name for unit in self._target_campaign.execution_units()],
-                    "count": count,
-                    "min_detected": min_detected,
-                    "source_size_budget": budget,
-                },
-            )
-        self.args.count = count
-        return MutationRunPlan(
+        plan = MutationRunPlan(
             scope_files=scope_files,
             scope_hashes=lock_mod.compute_scope_hashes(scope_files, work_dir),
             work_dir=work_dir,
@@ -1049,6 +1029,35 @@ replacement must differ, and every proposal must remain a single source edit.
             auto_mode=auto_mode,
             formula_count=formula_count,
             source_size_budget=source_size_budget,
+        )
+        if getattr(self.args, "dry_run", False):
+            return self._dry_run_preview(plan)
+        self.args.count = count
+        return plan
+
+    def _dry_run_preview(self, plan: MutationRunPlan) -> McpToolResult:
+        """Describe the validated mutation campaign without executing it."""
+        budget = plan.source_size_budget or compute_source_size_budget(
+            plan.scope_files,
+            plan.work_dir,
+        )
+        summary = (
+            f"mutation_tester dry-run: target={plan.target}; "
+            f"scope={len(plan.scope_files)} file(s); top={plan.tb_top}; "
+            f"count={plan.count}; min_detected={plan.min_detected}"
+        )
+        return self._dry_run_result(
+            summary=summary,
+            detail={
+                "target": plan.target,
+                "scope": plan.scope_files,
+                "tb_top": plan.tb_top,
+                "rtl_closure": self._dut_files(),
+                "tests": [unit.display_name for unit in self._target_campaign.execution_units()],
+                "count": plan.count,
+                "min_detected": plan.min_detected,
+                "source_size_budget": budget,
+            },
         )
 
     @staticmethod

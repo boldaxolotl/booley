@@ -137,7 +137,7 @@ def test_dry_run_stops_before_prerequisites_agents_and_eda(tmp_path: Path) -> No
     phase_one.assert_not_called()
 
 
-def test_coverage_records_one_aggregate_target_criterion() -> None:
+def test_coverage_records_each_active_target_criterion() -> None:
     endpoint = _make_endpoint_with_args(report_dir=None)
     endpoint._phase_errors = set()
     endpoint._target_campaign = types.SimpleNamespace(
@@ -148,9 +148,9 @@ def test_coverage_records_one_aggregate_target_criterion() -> None:
     with patch.object(endpoint, "set_criterion") as set_criterion:
         result = endpoint._build_coverage_result(report, [], {"coverage_toggle"})
 
-    assert result.criterion_key == "coverage_default"
+    assert result.criterion_key == "coverage_toggle_default"
     set_criterion.assert_called_once()
-    assert set_criterion.call_args.args[:2] == ("coverage_default", True)
+    assert set_criterion.call_args.args[:2] == ("coverage_toggle_default", True)
 
 
 def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
@@ -1424,8 +1424,8 @@ class TestSanitizeFsmRegisters:
 class TestResolveThreshold:
     def _endpoint_with_params(self, params):
         endpoint = _make_endpoint_with_args()
-        entry = types.SimpleNamespace(params={"metrics": {"toggle": params}})
-        endpoint._state = types.SimpleNamespace(criteria={"coverage_default": entry})
+        entry = types.SimpleNamespace(params=params)
+        endpoint._state = types.SimpleNamespace(criteria={"coverage_toggle_default": entry})
         return endpoint
 
     def test_numeric_string_param_coerced(self):
@@ -2333,14 +2333,8 @@ class TestCriteriaFiltering:
         endpoint = _make_endpoint_with_args(criteria=criteria)
         if state_criteria is None:
             state_criteria = {
-                "coverage_default": types.SimpleNamespace(
-                    params={
-                        "metrics": {
-                            name: {"min_pct": 80}
-                            for name in ("toggle", "fsm", "value", "branch", "expression")
-                        }
-                    }
-                )
+                f"coverage_{name}_default": types.SimpleNamespace(params={"min_pct": 80})
+                for name in ("toggle", "fsm", "value", "branch", "expression")
             }
         endpoint._state = types.SimpleNamespace(criteria=state_criteria)
         return endpoint
@@ -2388,14 +2382,8 @@ class TestCriteriaFiltering:
         endpoint = self._make_endpoint_with_criteria(
             criteria="toggle,branch",
             state_criteria={
-                "coverage_default": types.SimpleNamespace(
-                    params={
-                        "metrics": {
-                            "toggle": {"min_pct": 80},
-                            "value": {"min_pct": 80},
-                        }
-                    }
-                )
+                "coverage_toggle_default": types.SimpleNamespace(params={"min_pct": 80}),
+                "coverage_value_default": types.SimpleNamespace(params={"min_pct": 80}),
             },
         )
         active = endpoint._get_active_criteria()

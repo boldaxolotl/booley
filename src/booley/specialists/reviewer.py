@@ -1009,6 +1009,7 @@ class ReviewerSpecialist(Specialist):
     code_modifying: bool = False
     config_aware: bool = False
     accepts_target: bool = False
+    non_persisting_dry_run: bool = True
     min_model: str = "standard"
     default_max_turns: int = 30
     default_timeout: int = 1800  # 30 min
@@ -1258,12 +1259,10 @@ class ReviewerSpecialist(Specialist):
         """Build focus-specific system prompt with methodology and inlined guide."""
         category = self.args.category
         gp = _guide_paths()
-        sections: list[str] = []
-
-        # --- Methodology preamble ---
         cat_label = "RTL" if category == "rtl" else "testbench"
-        sections.append(f"You are a {cat_label} code reviewer.\n")
-        sections.append("""\
+        sections = [
+            f"You are a {cat_label} code reviewer.\n",
+            """\
 ## Review methodology
 
 Work through every criterion in the review guide below. Read the files in scope \
@@ -1271,58 +1270,68 @@ first, then use Grep to trace signal drivers/consumers, package definitions, and
 state transitions. Report a finding only after confirming it in the code — drop \
 anything you cannot substantiate. Make each finding's severity and confidence \
 match the strength of the evidence.
-""")
+""",
+        ]
+        self._append_review_guides(sections, focus, category, gp)
+        if focus == "quality":
+            self._append_style_guides(sections, category, gp)
+        sections.append(self._output_instructions(focus, category))
+        return "\n".join(sections)
 
-        # --- Inlined focus guide ---
+    def _append_review_guides(
+        self,
+        sections: list[str],
+        focus: str,
+        category: str,
+        guide_paths: dict[str, str],
+    ) -> None:
+        """Append the source-kind-specific review checklists."""
         if category == "rtl":
             guide_name = "protocol-cdc" if focus == "protocol" else focus
-            guide_paths = [f"{gp['rtl_guide_dir']}/{guide_name}.md"]
+            paths = [f"{guide_paths['rtl_guide_dir']}/{guide_name}.md"]
         else:
             if self._scope_contract is None:
                 self._resolve_scope_contract()
             contract = self._scope_contract or ReviewScopeContract()
-            guide_names = []
+            names = []
             if contract.has_hdl:
-                guide_names.append("tb-review.md")
+                names.append("tb-review.md")
             if contract.has_cocotb:
-                guide_names.append("cocotb-tb-review.md")
-            guide_paths = [f"{gp['tb_guide_dir']}/{name}" for name in guide_names]
+                names.append("cocotb-tb-review.md")
+            paths = [f"{guide_paths['tb_guide_dir']}/{name}" for name in names]
 
-        for guide_path in guide_paths:
+        for guide_path in paths:
             guide_content = self._read_guide(guide_path)
             if guide_content:
                 sections.append(f"## Review guide — {focus} ({Path(guide_path).stem})\n")
                 sections.append(guide_content)
                 sections.append("")
 
-        # --- Style guides (quality focus only) ---
-        if focus == "quality":
-            label = "RTL" if category == "rtl" else "Testbench"
-            key = "rtl_style_guide" if category == "rtl" else "tb_style_guide"
-            style_content = self._read_guide(gp[key])
-            if style_content:
-                sections.append(f"## {label} style guide\n")
-                sections.append(style_content)
-                sections.append("")
-
-            overlay = self._read_style_overlay(category)
-            if overlay:
-                sections.append(f"## {label} style guide — project overlay\n")
-                sections.append(
-                    "Rules below are authored by this project and take "
-                    "precedence over the generic guide above wherever the two "
-                    "conflict. Review against them with the same severity "
-                    "levels.\n"
-                )
-                sections.append(overlay)
-                sections.append("")
-
-        # --- Output format ---
-        # Guides may include human-oriented examples, but the parser contract
-        # below is always authoritative.
-        sections.append(self._output_instructions(focus, category))
-
-        return "\n".join(sections)
+    def _append_style_guides(
+        self,
+        sections: list[str],
+        category: str,
+        guide_paths: dict[str, str],
+    ) -> None:
+        """Append packaged and project-specific style guidance."""
+        label = "RTL" if category == "rtl" else "Testbench"
+        key = "rtl_style_guide" if category == "rtl" else "tb_style_guide"
+        style_content = self._read_guide(guide_paths[key])
+        if style_content:
+            sections.extend([f"## {label} style guide\n", style_content, ""])
+        overlay = self._read_style_overlay(category)
+        if not overlay:
+            return
+        sections.extend(
+            [
+                f"## {label} style guide — project overlay\n",
+                "Rules below are authored by this project and take precedence over the "
+                "generic guide above wherever the two conflict. Review against them with "
+                "the same severity levels.\n",
+                overlay,
+                "",
+            ]
+        )
 
     # --- Prompt construction ---
 
@@ -1613,8 +1622,17 @@ object, even after calling the capability.
 
     # --- Main execution override ---
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911 — one early return per validation/mode branch of the review flow
+    def _run(self) -> McpToolResult:
         """Single-focus review with terminal _done or disposition-loop _clean mode."""
+        prepared = self._prepare_review_run()
+        if isinstance(prepared, McpToolResult):
+            return prepared
+        if getattr(self.args, "dry_run", False):
+            return self._dry_run_preview()
+        return self._execute_review(prepared)
+
+    def _prepare_review_run(self) -> str | McpToolResult:
+        """Validate source, criterion, and specification inputs."""
         errors = self._validate_args()
         if errors:
             return McpToolResult(
@@ -1648,6 +1666,12 @@ object, even after calling the capability.
                 report_text=f"Review scope contract error: {contract_error}",
             )
 
+        if spec_error := self._validate_review_spec():
+            return spec_error
+        return crit_key
+
+    def _validate_review_spec(self) -> McpToolResult | None:
+        """Require readable specification text for the spec focus."""
         try:
             spec_content, _ = resolve_spec_content(
                 getattr(self.args, "spec", None),
@@ -1655,47 +1679,47 @@ object, even after calling the capability.
             )
         except OSError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
+            return None
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=(
+                "Spec review needs a spec to check against, but none was found. "
+                "In Ticket Mode the ticket body (or its spec: field) is used "
+                "automatically; in Interactive Mode pass --spec <path>."
+            ),
+        )
 
-        # Spec-availability guard: a spec-compliance review without a spec is
-        # meaningless — fail fast instead of letting the agent report a clean
-        # pass against nothing (mirrors the scope-file guard above).
-        if SPEC_FOCUS in self._parse_focus() and spec_content is None:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "Spec review needs a spec to check against, but none "
-                    "was found. In Ticket Mode the ticket body (or its "
-                    "spec: field) is used automatically; in Interactive "
-                    "Mode pass --spec <path to specification>."
-                ),
-            )
-
-        if getattr(self.args, "dry_run", False):
-            contract = self._scope_contract or ReviewScopeContract()
+    def _dry_run_preview(self) -> McpToolResult:
+        """Describe the validated review without invoking its agent."""
+        contract = self._scope_contract or ReviewScopeContract()
+        focus = next(iter(self._parse_focus()))
+        if self.args.category == "rtl":
+            guides = [focus]
+        else:
             guides = []
-            if self.args.category == "rtl":
-                guides.append(next(iter(self._parse_focus())))
-            else:
-                if contract.has_hdl:
-                    guides.append("hdl-testbench")
-                if contract.has_cocotb:
-                    guides.append("cocotb-testbench")
-            summary = (
-                f"reviewer dry-run: {self.args.category}/{next(iter(self._parse_focus()))}; "
-                f"{len(self._parse_scope())} file(s); guides={','.join(guides)}"
-            )
-            return self._dry_run_result(
-                summary=summary,
-                detail={
-                    "category": self.args.category,
-                    "focus": next(iter(self._parse_focus())),
-                    "scope": self._parse_scope(),
-                    "guides": guides,
-                    "spec": getattr(self.args, "spec", None) or "",
-                    "steering_count": len(getattr(self.args, "steer", None) or []),
-                },
-            )
+            if contract.has_hdl:
+                guides.append("hdl-testbench")
+            if contract.has_cocotb:
+                guides.append("cocotb-testbench")
+        summary = (
+            f"reviewer dry-run: {self.args.category}/{focus}; "
+            f"{len(self._parse_scope())} file(s); guides={','.join(guides)}"
+        )
+        return self._dry_run_result(
+            summary=summary,
+            detail={
+                "category": self.args.category,
+                "focus": focus,
+                "scope": self._parse_scope(),
+                "guides": guides,
+                "spec": getattr(self.args, "spec", None) or "",
+                "steering_count": len(getattr(self.args, "steer", None) or []),
+            },
+        )
 
+    def _execute_review(self, crit_key: str) -> McpToolResult:
+        """Run one validated terminal or corrective review."""
         self._invalidate_changed_invocation_contract(crit_key)
 
         # Refresh before either mode's idempotency guard.  Report submission
@@ -2585,7 +2609,7 @@ Schema enforcement (applied upstream by the harness):
         ticket_text, _ = _load_ticket_text()
         decisions_text, _ = resolve_documented_assumptions()
         scope_text = "\n\n".join(part for part in (ticket_text, decisions_text) if part)
-        dropped = {"policy": 0, "scope": 0}
+        dropped = {"policy": 0, "source_scope": 0, "ticket_scope": 0}
         for issue in issues:
             action = self._review_issue_action(issue, policy, scope_text)
             if action in dropped:
@@ -2603,6 +2627,8 @@ Schema enforcement (applied upstream by the harness):
         policy: TbProjectPolicy,
         scope_text: str,
     ) -> str:
+        if not self._issue_file_in_scope(issue.file):
+            return "source_scope"
         issue_dict = issue.to_dict()
         rejects_trace = policy.trace_files and _issue_rejects_tb_owned_trace(issue_dict)
         contract = self._scope_contract or ReviewScopeContract()
@@ -2613,7 +2639,18 @@ Schema enforcement (applied upstream by the harness):
         if rejects_trace or rejects_sentinel:
             return "policy"
         action = _classify_issue_scope(issue, scope_text)
-        return "scope" if action == "drop" else action
+        return "ticket_scope" if action == "drop" else action
+
+    def _issue_file_in_scope(self, issue_file: str) -> bool:
+        """Match an agent-reported file against the explicit review scope."""
+        path = Path(issue_file)
+        if path.is_absolute():
+            try:
+                path = path.resolve().relative_to(Path(self.args.work_dir).resolve())
+            except ValueError:
+                return False
+        contract = self._scope_contract or ReviewScopeContract()
+        return contract.contains_file(str(path))
 
     def _append_filter_summary(
         self,
@@ -2625,9 +2662,14 @@ Schema enforcement (applied upstream by the harness):
                 f"INFO: ignored {dropped['policy']} finding(s) that conflict with the "
                 "project's configured sentinel/trace contract"
             )
-        if dropped["scope"]:
+        if dropped["source_scope"]:
             output_lines.append(
-                f"INFO: ignored {dropped['scope']} finding(s) whose Ticket clause "
+                f"INFO: ignored {dropped['source_scope']} finding(s) outside the "
+                "explicit source scope"
+            )
+        if dropped["ticket_scope"]:
+            output_lines.append(
+                f"INFO: ignored {dropped['ticket_scope']} finding(s) whose Ticket clause "
                 "was not an exact staged requirement"
             )
         if self._non_corrective_issues:
