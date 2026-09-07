@@ -3150,7 +3150,7 @@ class TestBuildEdalizeTraceCmd:
                 return_value=["hardcoded.fst"],
             ),
             patch(
-                "booley.fusesoc.fusesoc_trace_overlay.write_trace_overlay",
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
                 return_value=self._overlay(TraceMode.NATIVE_FST),
             ),
             patch(
@@ -3189,7 +3189,7 @@ class TestBuildEdalizeTraceCmd:
         endpoint._coverage_test = "regress"
         with (
             patch(
-                "booley.fusesoc.fusesoc_trace_overlay.write_trace_overlay",
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
                 return_value=self._overlay(TraceMode.VCD_FIFO),
             ),
             patch(
@@ -3217,7 +3217,7 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.fusesoc.fusesoc_trace_overlay.write_trace_overlay",
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
                 return_value=self._overlay(TraceMode.VCD_FIFO),
             ),
             patch(
@@ -3250,7 +3250,7 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.fusesoc.fusesoc_trace_overlay.write_trace_overlay",
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
                 return_value=self._overlay(TraceMode.NATIVE_FST),
             ),
             patch(

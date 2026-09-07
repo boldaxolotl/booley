@@ -42,6 +42,7 @@ from booley.core.models import AgentCallParams
 from booley.flows import edam as edam_layer
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim import trace_overlay
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession, trace_cache_key
@@ -52,7 +53,7 @@ from booley.flows.target_campaign import (
 )
 from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_test_suite import NoRunnableTestsError
-from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -2902,7 +2903,7 @@ Your job is to apply waivers and value classifications with informed judgment.
             variant="trace",
         )
         handle = TargetCatalog.build(work_dir).select(self.args.target, for_flow="sim")
-        overlay = fusesoc_trace_overlay.write_trace_overlay(handle)
+        overlay = trace_overlay.write_trace_overlay(handle)
         try:
             resolved = fusesoc_registry.resolve_target_handle(
                 handle,
@@ -2992,7 +2993,7 @@ Your job is to apply waivers and value classifications with informed judgment.
             TargetCatalog.build(context.work_dir).select(self.args.target).cocotb_module
         )
         if cocotb_module:
-            fusesoc_trace_overlay.validate_cocotb_trace_mode(
+            trace_overlay.validate_cocotb_trace_mode(
                 self.args.target,
                 context.trace_mode,
             )
