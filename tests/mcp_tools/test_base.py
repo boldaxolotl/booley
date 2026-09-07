@@ -964,6 +964,51 @@ class TestMcpToolWriteReport:
 
 
 class TestMcpToolMain:
+    @pytest.mark.parametrize(
+        ("run_raises", "expected_exit"),
+        [(False, EXIT_SUCCESS), (True, EXIT_ERROR)],
+    )
+    def test_display_label_brackets_full_lifecycle(
+        self,
+        tmp_path: Path,
+        run_raises: bool,
+        expected_exit: int,
+    ) -> None:
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+
+        class LabelledMcpTool(ConcreteMcpTool):
+            def _run(self) -> McpToolResult:
+                if run_raises:
+                    raise RuntimeError("boom")
+                return McpToolResult(exit_code=EXIT_SUCCESS)
+
+        endpoint = LabelledMcpTool()
+        sentinel = "target demo · test smoke"
+        with (
+            mock.patch.dict(os.environ, _env_with_state(state_file)),
+            mock.patch.object(
+                endpoint,
+                "_resolve_display_label",
+                side_effect=[sentinel, "must not be resolved twice"],
+            ) as resolve_label,
+            mock.patch("booley.mcp.base._write_display_event") as write_event,
+        ):
+            exit_code = endpoint.main([])
+
+        lifecycle_events = [
+            call.args[0]
+            for call in write_event.call_args_list
+            if call.args[0]["type"] in {"endpoint_start", "endpoint_end"}
+        ]
+        assert exit_code == expected_exit
+        resolve_label.assert_called_once_with()
+        assert [event["type"] for event in lifecycle_events] == [
+            "endpoint_start",
+            "endpoint_end",
+        ]
+        assert [event["display_label"] for event in lifecycle_events] == [sentinel, sentinel]
+
     def test_success_flow(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         st = DevelopmentState.load(state_file)

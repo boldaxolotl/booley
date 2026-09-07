@@ -37,6 +37,53 @@ class TestDisplayWatcherEvents:
 
         assert "sim" in watcher._open_endpoints
 
+    def test_endpoint_start_prefers_display_label(self, tmp_path: Path):
+        display = tmp_path / "display.jsonl"
+        display.touch()
+        watcher = DisplayWatcher(display)
+        watcher._file_pos = 0
+
+        self._write_event(
+            display,
+            {
+                "type": "endpoint_start",
+                "endpoint": "sim",
+                "target": "::lib:core:0#sim_core",
+                "display_label": "target sim_core · test smoke",
+            },
+        )
+
+        with patch("booley.harness.terminal.endpoint_box_open") as mock_open:
+            watcher._poll_events()
+
+        mock_open.assert_called_once_with("sim", "target sim_core · test smoke")
+
+    def test_endpoint_end_prefers_display_label(self, tmp_path: Path):
+        display = tmp_path / "display.jsonl"
+        display.touch()
+        watcher = DisplayWatcher(display)
+        watcher._file_pos = 0
+        label = "2 targets · 4 tests"
+        self._write_event(display, {"type": "endpoint_start", "endpoint": "sim"})
+        self._write_event(
+            display,
+            {
+                "type": "endpoint_end",
+                "endpoint": "sim",
+                "target": "sim_a,sim_b",
+                "display_label": label,
+                "exit_code": 0,
+            },
+        )
+
+        with (
+            patch("booley.harness.terminal.endpoint_box_open"),
+            patch("booley.harness.terminal.endpoint_box_close") as mock_close,
+        ):
+            watcher._poll_events()
+
+        assert mock_close.call_args.args[:2] == ("sim", label)
+
     def test_endpoint_end_closes_box(self, tmp_path: Path):
         display = tmp_path / "display.jsonl"
         display.touch()

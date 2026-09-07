@@ -286,6 +286,7 @@ class _PreparedMcpExecution:
     """Adapter-owned state carried through the neutral execution sequence."""
 
     display_target: str | None
+    display_label: str | None
     dry_run: bool
     non_persisting_dry_run: bool
 
@@ -1004,16 +1005,23 @@ class McpTool(ABC):
         self.read_state()
         self._default_target_args()
         display_target = self._resolve_display_config()
+        display_label = self._resolve_display_label()
         dry_run = bool(getattr(self.args, "dry_run", False))
         non_persisting_dry_run = self._is_non_persisting_dry_run()
         _write_display_event(
             _endpoint_start_event(
                 self.name,
                 display_target,
+                display_label=display_label,
                 dry_run=dry_run,
             )
         )
-        return _PreparedMcpExecution(display_target, dry_run, non_persisting_dry_run)
+        return _PreparedMcpExecution(
+            display_target=display_target,
+            display_label=display_label,
+            dry_run=dry_run,
+            non_persisting_dry_run=non_persisting_dry_run,
+        )
 
     @contextmanager
     def admission(self, prepared: _PreparedMcpExecution) -> Iterator[None]:
@@ -1091,6 +1099,7 @@ class McpTool(ABC):
         return self._finish_main(
             _as_mcp_tool_result(outcome),
             prepared.display_target,
+            prepared.display_label,
             started=started,
             acceptance_recorded=acceptance_recorded,
             dry_run=prepared.dry_run,
@@ -1145,6 +1154,7 @@ class McpTool(ABC):
         self,
         result: McpToolResult,
         display_target: str | None,
+        display_label: str | None,
         started: float | None,
         *,
         acceptance_recorded: bool,
@@ -1164,6 +1174,7 @@ class McpTool(ABC):
                     display_target,
                     result,
                     duration,
+                    display_label=display_label,
                     dry_run=dry_run,
                 ),
             )
@@ -1255,6 +1266,10 @@ class McpTool(ABC):
     def _resolve_display_config(self) -> str | None:
         """Resolve the config tag shown in display events."""
         return self.display_tag or ((self._selected_target or None) if self.config_aware else None)
+
+    def _resolve_display_label(self) -> str | None:
+        """Return an optional human label without changing endpoint semantics."""
+        return None
 
     def _post_run(self, result: McpToolResult, duration: float) -> None:
         """Persist mutable run state and publish the report.

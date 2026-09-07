@@ -112,6 +112,159 @@ def test_human_display_caps_targets_at_three():
     ]
 
 
+def test_human_display_does_not_repeat_single_passing_target_or_test():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=True,
+            elapsed_s=9.8,
+            tests=[SimTestResult(name="smoke", passed=True, elapsed_s=9.8)],
+        )
+    ]
+
+    assert _build_display_lines(results, total_elapsed=10.0) == ["✓ PASS  10.0s"]
+
+
+def test_human_display_keeps_target_detail_for_multiple_passing_tests():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=True,
+            tests=[
+                SimTestResult(name="smoke", passed=True),
+                SimTestResult(name="edge", passed=True),
+            ],
+        )
+    ]
+
+    assert _build_display_lines(results, total_elapsed=2.0) == [
+        "1/1 targets passed, 2.0s",
+        "✓ sim_mul (2/2 tests)  0ms",
+    ]
+
+
+def test_human_display_keeps_names_for_single_target_failure():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=False,
+            elapsed_s=1.0,
+            tests=[SimTestResult(name="edge", passed=False, error_tail="assertion failed")],
+        )
+    ]
+
+    lines = _build_display_lines(results, total_elapsed=1.0)
+
+    assert lines[1] == "✗ sim_mul  1.0s"
+    assert any("edge" in line for line in lines)
+
+
+def _display_flow(tmp_path: Path, target: str, *args: str) -> SimulateFlow:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", target, *args])
+    return flow
+
+
+def test_display_label_names_one_requested_test(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
+
+    with patch("booley.flows.sim.flow._get_test_names", return_value={}):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · test smoke"
+
+
+def test_display_label_counts_distinct_matching_tests(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul", "--test", "mul")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_mul": ["mul_base", "mul_edge"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · 2 tests"
+
+
+def test_display_label_applies_skips_before_naming_test(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul", "--skip", "edge")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_mul": ["smoke", "edge"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · test smoke"
+
+
+def test_display_label_deduplicates_same_test_across_targets(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_a,sim_b", "--test", "smoke")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_a": ["smoke"], "sim_b": ["smoke"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "2 targets · test smoke"
+
+
+def test_display_label_uses_unknown_suite_when_any_target_is_undeclared(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_a,sim_b")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_a": ["smoke"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "2 targets · tests"
+
+
+def test_display_label_uses_elaboration_mode_without_test_discovery(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_core", "--mode", "elab-only-standalone")
+
+    with patch("booley.flows.sim.flow._get_test_names") as get_tests:
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_core · elaboration"
+    get_tests.assert_not_called()
+
+
+def test_display_label_failure_uses_neutral_tests_with_short_target(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul")
+
+    with patch("booley.flows.sim.flow._get_test_names", side_effect=RuntimeError("boom")):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · tests"
+
+
+def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
+
+    with (
+        patch("booley.flows.sim.flow._get_test_names", return_value={}),
+        patch("booley.targets.catalog.TargetCatalog.build") as build_catalog,
+    ):
+        flow._resolve_display_label()
+
+    build_catalog.assert_not_called()
+
+
 def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
         patch(

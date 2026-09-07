@@ -19,7 +19,7 @@ from booley.harness.terminal import (
     get_console_app,
     set_console_active,
 )
-from booley.mcp.base import McpToolResult, _endpoint_end_event
+from booley.mcp.base import McpToolResult, _endpoint_end_event, _endpoint_start_event
 
 # ===========================================================================
 # Phase 0a: summary field in endpoint_end
@@ -44,6 +44,26 @@ class TestToolEndSummary:
         result = McpToolResult(exit_code=0)
         event = _endpoint_end_event("lint", None, result, 2.0)
         assert event["summary"] == ""
+
+    def test_endpoint_events_include_additive_display_label(self):
+        result = McpToolResult(exit_code=0)
+
+        start = _endpoint_start_event(
+            "sim",
+            "::lib:core:0#sim_core",
+            display_label="target sim_core · test smoke",
+        )
+        end = _endpoint_end_event(
+            "sim",
+            "::lib:core:0#sim_core",
+            result,
+            2.0,
+            display_label="target sim_core · test smoke",
+        )
+
+        assert start["target"] == "::lib:core:0#sim_core"
+        assert end["target"] == "::lib:core:0#sim_core"
+        assert start["display_label"] == end["display_label"]
 
 
 # ===========================================================================
