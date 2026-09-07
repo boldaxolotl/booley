@@ -16,6 +16,7 @@ from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
+from booley.targets.domain import FuseSocError
 
 from .analytics import (
     attribute_tokens_to_steps,
@@ -218,9 +219,13 @@ def _cmd_validate_ticket(tio, args):
         validation_root = workspace.outer
         from .acceptance_targets import acceptance_control_paths
 
-        allowed_dirty_paths = tuple(
-            validation_root / item for item in acceptance_control_paths(validation_root)
-        )
+        try:
+            allowed_dirty_paths = tuple(
+                validation_root / item for item in acceptance_control_paths(validation_root)
+            )
+        except (FuseSocError, OSError, ValueError) as exc:
+            print(json.dumps({"errors": [f"Acceptance input discovery failed: {exc}"]}))
+            return 1
     results = validate_ticket_fields(
         fields,
         body,
