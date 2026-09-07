@@ -209,6 +209,25 @@ def test_enqueue_records_tests_toml_update_in_acceptance_basis(
     assert _git(root, "rev-parse", outer_participant.ticket_ref) == outer_participant.authoring_sha
 
 
+def test_validate_ticket_does_not_reopen_published_authoring_workspace(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, tio = _project(tmp_path, monkeypatch)
+    _ticket(tio)
+    assert tio.enqueue_ticket("change-target") is True
+    ticket = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
+    capsys.readouterr()
+
+    assert main(["validate-ticket", str(ticket)]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "errors": [],
+        "valid": True,
+        "warnings": [],
+    }
+
+
 def test_mutation_campaign_dictionary_round_trips_through_markdown() -> None:
     criteria = {
         "mandatory": {

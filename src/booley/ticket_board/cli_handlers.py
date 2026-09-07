@@ -208,7 +208,7 @@ def _cmd_validate_ticket(tio, args):
     project_root = detect_project_root()
     validation_root = project_root
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
-    if (project_root / ".git").exists():
+    if (project_root / ".git").exists() and fields.get("acceptance_basis") is None:
         try:
             workspace = TicketWorkspace.ensure_authoring(project_root, path, path.stem)
         except (RuntimeError, ValueError, OSError) as exc:
