@@ -1920,7 +1920,7 @@ def _add_submodule_repository(repository: Path, tmp_path: Path, name: str) -> No
         "submodule",
         "add",
         str(dependency),
-        "vendor/dependency",
+        "dep",
     )
     _git(repository, "commit", "-m", "add dependency")
 
@@ -1986,11 +1986,11 @@ def test_return_to_draft_relocates_standalone_submodules(
     assert not draft_transition.transition_pending(root, "submodule-transition")
 
 
-def test_return_to_draft_rejects_native_submodule(tmp_path: Path) -> None:
+def test_native_submodule_recovery(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    slug = "native-submodule"
+    slug = "n"
     _create_submodule_transition_ticket(tio, slug, "Reject unsafe native submodule relocation")
-    _add_submodule_repository(root, tmp_path, "native-dependency")
+    _add_submodule_repository(root, tmp_path, "n-dep")
     workspace = project_dir / "worktrees" / slug
     paired = workspace / ".booley_project"
     _git(workspace, "merge", "main")
@@ -2004,7 +2004,7 @@ def test_return_to_draft_rejects_native_submodule(tmp_path: Path) -> None:
         "update",
         "--init",
     )
-    assert (workspace / "vendor/dependency/.git").is_file()
+    assert (workspace / "dep/.git").is_file()
 
     with pytest.raises(
         draft_transition.DraftTransitionError,
@@ -2029,20 +2029,20 @@ def test_return_to_draft_rejects_native_submodule(tmp_path: Path) -> None:
     assert not draft_transition.transition_pending(root, slug)
 
 
-def test_return_to_draft_moves_paired_submodule(tmp_path: Path) -> None:
+def test_paired_submodule_move(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    slug = "paired-submodule"
+    slug = "p"
     _create_submodule_transition_ticket(tio, slug, "Relocate paired project submodule")
-    _add_submodule_repository(project_dir, tmp_path, "paired-dependency")
+    _add_submodule_repository(project_dir, tmp_path, "p-dep")
     paired = project_dir / "worktrees" / slug / ".booley_project"
     _git(paired, "merge", "main")
     materialize_submodules(project_dir, paired)
-    assert (paired / "vendor/dependency/.git").is_dir()
+    assert (paired / "dep/.git").is_dir()
     _block_ticket_for_return_to_draft(project_dir, tio, slug)
 
     reopened = tio.return_to_draft(slug)
 
     published = Path(reopened["project_worktree"])
-    assert (published / "vendor/dependency/.git").is_dir()
-    assert _git(published / "vendor/dependency", "status", "--porcelain") == ""
+    assert (published / "dep/.git").is_dir()
+    assert _git(published / "dep", "status", "--porcelain") == ""
     assert not draft_transition.transition_pending(root, slug)
