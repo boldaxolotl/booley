@@ -348,6 +348,14 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     assert result.exit_code == EXIT_SUCCESS
     assert "part=xc7a200tfbg484-1" in result.report_text
     assert "xdc=" in result.report_text
+    assert len(flow._flow_plan.work_units) == 1
+    unit = flow._flow_plan.work_units[0]
+    assert (unit.role, unit.selector, unit.eda_tool) == (
+        "candidate",
+        "default",
+        "vivado",
+    )
+    assert unit.timeout_ms == 7_200_000
 
 
 def test_dry_run_resolves_sources_from_work_dir(
