@@ -70,6 +70,47 @@ def test_simulation_plan_includes_baseline_before_candidate() -> None:
     assert plan.work_units == (baseline, candidate)
 
 
+def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = tmp_path
+    baseline_ref = "b" * 40
+    baseline = _plan_unit("baseline", identity="drifted", revision=baseline_ref)
+    flow._cycle_baseline_selection = MagicMock(
+        return_value=(baseline_ref, [_TARGET_SELECTOR], None)
+    )
+    flow._plan_simulation_targets = MagicMock(return_value=([baseline], ["preview failed"]))
+    baseline_root = tmp_path / "baseline"
+
+    @contextmanager
+    def fake_baseline_worktree(project_root: Path, revision: str):
+        assert project_root == tmp_path
+        assert revision == baseline_ref
+        yield baseline_root
+
+    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
+
+    units, errors = flow._plan_cycle_count_baseline_units(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+    )
+
+    assert units == [baseline]
+    assert errors == [
+        "preview failed",
+        "sim_core: baseline resolves to 'drifted', expected 'sim_core'",
+    ]
+    assert flow.args.work_dir == tmp_path
+    flow._plan_simulation_targets.assert_called_once_with(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+        role="baseline",
+        revision=baseline_ref,
+    )
+
+
 def _patch_catalog_select(monkeypatch, resolver) -> None:
     class Catalog:
         def __init__(self, root):
