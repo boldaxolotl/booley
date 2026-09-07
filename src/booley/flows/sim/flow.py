@@ -547,7 +547,7 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
     ``[flows.sim].sim_time_grace_s`` bounds how long a cocotb run may sit
     at *exactly* 0.00 ns of simulation time before Booley aborts it with the
     run-loop-mismatch diagnosis instead of burning the whole ``timeout_ms``
-    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under Verilator 5.046, then
+    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under an older Verilator, then
     no timed callback ever fired — 600 s of wall clock, zero sim time). ``0``
     disables the watchdog; anything else is a wall-clock second count.
     Defaults to :data:`run_guard.DEFAULT_SIM_TIME_GRACE_S`.

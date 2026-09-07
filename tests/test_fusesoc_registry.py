@@ -15,6 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
+from booley.fusesoc.fusesoc_coverage_overlay import (
+    coverage_overlay_vlnv,
+    write_coverage_overlay,
+)
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
@@ -641,6 +645,27 @@ class TestDoctorTargetMetadata:
             ("booley: {doctor: [sim, sim]}", "must not contain duplicates"),
             ("booley: {doctor_selftest: bad}", "doctor_selftest must be a boolean"),
             ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
+            ("booley: {coverage: whole-run}", "coverage must be a mapping"),
+            (
+                "booley: {coverage: {reset_included: bad}}",
+                "reset_included must be a boolean",
+            ),
+            (
+                "booley: {coverage: {custom_main_hooks: write_hook}}",
+                "custom_main_hooks must be an array",
+            ),
+            (
+                "booley: {coverage: {custom_main_hooks: [write_hook, write_hook]}}",
+                "must not contain duplicates",
+            ),
+            (
+                "booley: {coverage: {custom_main_hooks: [mystery]}}",
+                "contains unknown hook",
+            ),
+            (
+                "booley: {coverage: {mystery: true}}",
+                "mystery is not a supported coverage key",
+            ),
         ],
     )
     def test_schema_rejects_invalid_metadata(self, tmp_path: Path, metadata: str, needle: str):
@@ -652,6 +677,20 @@ class TestDoctorTargetMetadata:
             encoding="utf-8",
         )
         assert any(needle in error for error in core_schema_errors(core))
+
+    def test_schema_accepts_coverage_recipe(self, tmp_path: Path):
+        core = tmp_path / "coverage.core"
+        core.write_text(
+            "CAPI=2:\nname: ::coverage:0\ntargets:\n"
+            "  sim:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley:\n"
+            "        coverage:\n"
+            "          reset_included: false\n"
+            "          custom_main_hooks: [start_hook, write_hook]\n",
+            encoding="utf-8",
+        )
+        assert core_schema_errors(core) == []
 
     def test_fpga_doctor_metadata_selects_target(self, tmp_path: Path):
         core = tmp_path / "fpga.core"
@@ -1624,6 +1663,95 @@ class TestTraceOverlayVlnv:
     )
     def test_suffixes_name_component(self, base: str, expected: str):
         assert trace_overlay_vlnv(base) == expected
+
+
+class TestCoverageOverlay:
+    _INSTRUMENTATION = (
+        "--coverage-line",
+        "--coverage-toggle",
+        "--coverage-expr",
+        "--coverage-user",
+        "--coverage-per-instance",
+    )
+
+    def test_uses_distinct_vlnvs_for_coverage_build_variants(self):
+        assert coverage_overlay_vlnv("::design:0", trace=False) == ("::design-booleycoverage:0")
+        assert coverage_overlay_vlnv("::design:0", trace=True) == (
+            "::design-booleytracecoverage:0"
+        )
+
+    @pytest.mark.parametrize("trace", [False, True])
+    def test_writes_exact_instrumentation_without_touching_target(
+        self, tmp_path: Path, trace: bool
+    ):
+        core = _CORE_TEXT.replace(
+            "      tool: verilator\n",
+            "      tool: verilator\n"
+            "      verilator_options: [--timing, --coverage, --coverage-line]\n",
+        )
+        base = _write_core(tmp_path / "ip", core)
+        overlay = write_coverage_overlay(
+            TargetCatalog.build(tmp_path).select("sim"),
+            instrumentation=self._INSTRUMENTATION,
+            trace=trace,
+        )
+        try:
+            options = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
+                "verilator_options"
+            ]
+            assert options[-5:] == list(self._INSTRUMENTATION)
+            assert options.count("--coverage-line") == 1
+            assert "--coverage" not in options
+            assert ("--trace" in options) is trace
+            assert "--timing" in options
+            assert TRACE_OVERLAY_MARKER in overlay.core_file.name
+            assert overlay.core_file not in discover_cores(tmp_path)
+            assert read_core(base)["targets"]["sim"]["flow_options"]["verilator_options"] == [
+                "--timing",
+                "--coverage",
+                "--coverage-line",
+            ]
+        finally:
+            overlay.cleanup()
+
+    def test_rejects_non_verilator_sim_target(self, tmp_path: Path):
+        core = _CORE_TEXT.replace("tool: verilator", "tool: icarus").replace(
+            "default_tool: verilator", "default_tool: icarus"
+        )
+        _write_core(tmp_path / "ip", core)
+        with pytest.raises(FuseSocError, match="only Verilator"):
+            write_coverage_overlay(
+                TargetCatalog.build(tmp_path).select("sim"),
+                instrumentation=self._INSTRUMENTATION,
+                trace=False,
+            )
+
+    def test_injects_packaged_bridge_for_declared_custom_main_hooks(self, tmp_path: Path):
+        core = _CORE_TEXT.replace(
+            "      tool: verilator\n",
+            "      tool: verilator\n"
+            "      booley:\n"
+            "        coverage:\n"
+            "          reset_included: false\n"
+            "          custom_main_hooks: [start_hook, write_hook]\n",
+        )
+        _write_core(tmp_path / "ip", core)
+        overlay = write_coverage_overlay(
+            TargetCatalog.build(tmp_path).select("sim"),
+            instrumentation=self._INSTRUMENTATION,
+            trace=False,
+        )
+        try:
+            document = read_core(overlay.core_file)
+            fileset = document["filesets"]["booley_verilator_coverage_bridge"]
+            declared = [next(iter(item)) for item in fileset["files"]]
+            assert [Path(path).name for path in declared] == [
+                "booley_coverage.h",
+                "booley_coverage.cpp",
+            ]
+            assert "booley_verilator_coverage_bridge" in document["targets"]["sim"]["filesets"]
+        finally:
+            overlay.cleanup()
 
 
 class TestWriteTraceOverlay:
