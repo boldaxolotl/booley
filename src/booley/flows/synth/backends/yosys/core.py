@@ -37,9 +37,6 @@ from booley.flows.synth.backends.yosys.parsing import (
 )
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.timing import (
-    DEFAULT_STA_INPUT_DELAY_PCT,
-    DEFAULT_STA_OUTPUT_DELAY_PCT,
-    DEFAULT_STA_PERIOD_PS,
     DEFAULT_STA_UTILIZATION_PCT,
     StaTimingConfig,
     detect_clock_port,
@@ -55,9 +52,6 @@ __all__ = [
     "DEFAULT_FRONTEND",
     "DEFAULT_LIBERTY",
     "DEFAULT_LIB_DIR",
-    "DEFAULT_STA_INPUT_DELAY_PCT",
-    "DEFAULT_STA_OUTPUT_DELAY_PCT",
-    "DEFAULT_STA_PERIOD_PS",
     "DEFAULT_STA_UTILIZATION_PCT",
     "FORMAL_CELL_TYPES",
     "FRONTEND_CHOICES",
@@ -672,8 +666,18 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     for raw in sdc or []:
         sdc_path = Path(raw)
         resolved = sdc_path.resolve() if sdc_path.is_absolute() else (base / sdc_path).resolve()
-        if not resolved.exists():
+        try:
+            resolved.relative_to(base)
+        except ValueError:
+            sys.exit(
+                f"ERROR: STA SDC constraints file escapes the selected checkout {base}: {resolved}"
+            )
+        if not resolved.is_file():
             sys.exit(f"ERROR: STA SDC constraints file not found: {resolved}")
+        try:
+            resolved.read_bytes()
+        except OSError as exc:
+            sys.exit(f"ERROR: STA SDC constraints file is not readable: {resolved}: {exc}")
         resolved_sdc.append(resolved)
     return resolved_sdc
 
@@ -681,10 +685,6 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
 def synth_timing_config(
     *,
     mode: str | SynthMode | None = None,
-    clock: str | None = None,
-    period_ps: float | None = None,
-    input_delay_pct: float | None = None,
-    output_delay_pct: float | None = None,
     sdc: list[str] | None = None,
     utilization_pct: float | None = None,
     repair_timing: bool | None = None,
@@ -703,11 +703,10 @@ def synth_timing_config(
     repair, parasitic estimation, and STA. Logical mode stops after Yosys and
     reports mapped area without timing.
 
-    Design constraints (``period``/``clock``/I-O delays/extra SDC) are **not**
-    read from ``booley.toml`` anymore (ADR 0029): they arrive as ``--sta-sdc``
-    files sourced from the Target's ``file_type: SDC`` fileset, plus the CLI
-    overrides for direct configure use. ``sdc`` here is the list of
-    those SDC paths (repeatable ``--sta-sdc``).
+    Design constraints are **not** read from ``booley.toml`` (ADR 0029). They
+    arrive only as ``--sta-sdc`` files sourced from the Target's
+    ``file_type: SDC`` fileset. Physical synthesis requires at least one such
+    file; logical synthesis does not.
 
     *project_root* pins the booley.toml lookup and relative-SDC resolution to
     an explicit worktree (in-process configure, ADR 0037 §8); ``None`` resolves
@@ -722,10 +721,6 @@ def synth_timing_config(
     timing = _load_and_validate_timing_config(project_root)
     resolved_mode = _resolve_synth_mode(mode)
     resolved_sdc = _resolve_sta_sdc_paths(sdc, project_root)
-    # Design-constraint scalars (period/clock/I-O delays) come only from the
-    # trusted argparse-typed CLI overrides now; there is no booley.toml fallback
-    # for them (ADR 0029). Absent → the DEFAULT_STA_* constants. The remaining
-    # recipe knobs (utilization/repair_timing) keep their validated TOML read.
     if legacy_utilization_fallback is None:
         legacy_utilization_fallback = utilization_pct is None
     if legacy_repair_fallback is None:
@@ -746,16 +741,6 @@ def synth_timing_config(
         resolved_repair = True
     return StaTimingConfig(
         mode=resolved_mode,
-        clock=clock,
-        period_ps=float(period_ps) if period_ps else DEFAULT_STA_PERIOD_PS,
-        input_delay_pct=(
-            float(input_delay_pct) if input_delay_pct is not None else DEFAULT_STA_INPUT_DELAY_PCT
-        ),
-        output_delay_pct=(
-            float(output_delay_pct)
-            if output_delay_pct is not None
-            else DEFAULT_STA_OUTPUT_DELAY_PCT
-        ),
         sdc=tuple(resolved_sdc),
         utilization_pct=resolved_utilization,
         repair_timing=resolved_repair,

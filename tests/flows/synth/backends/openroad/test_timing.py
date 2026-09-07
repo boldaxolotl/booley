@@ -14,10 +14,6 @@ def _config(**overrides):
 
     base = {
         "mode": "physical",
-        "clock": "clk_i",
-        "period_ps": 4000.0,
-        "input_delay_pct": 30.0,
-        "output_delay_pct": 70.0,
         "sdc": (),
         "utilization_pct": 40.0,
         "repair_timing": True,
@@ -80,11 +76,13 @@ class TestWriteScript:
             "top",
             Path("/lib.lib"),
             tmp_path / "sta_top.v",
-            tmp_path / "c.sdc",
+            (tmp_path / "c.sdc",),
             pdk,
             report_dir,
             tmp_path,
             _config(**cfg_overrides),
+            target="synth_top",
+            source_sdc_paths=(tmp_path / "c.sdc",),
         )
         return path.read_text(encoding="utf-8")
 
@@ -100,6 +98,14 @@ class TestWriteScript:
         # Select the intended whole flat netlist explicitly. OpenROAD changed
         # the meaning of a no-argument remove_buffers call in 26Q3.
         assert "remove_buffers [get_cells *]" in text
+
+    def test_clockless_sdc_is_runtime_input_error(self, tmp_path):
+        text = self._write(tmp_path)
+        assert "[llength [all_clocks]] == 0" in text
+        assert "foreach _clk [all_clocks]" in text
+        assert "BOOLEY_INPUT_ERROR: synth Target 'synth_top'" in text
+        assert "c.sdc" in text
+        assert "add create_clock" in text
 
     def test_wire_rc_layers(self, tmp_path):
         text = self._write(tmp_path)

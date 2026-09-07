@@ -28,6 +28,14 @@ from booley.config.project_config import (
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.plan import (
+    CommandPlan,
+    FlowPlan,
+    WorkUnitPlan,
+    normalize_plan_argv,
+    normalize_plan_path,
+    stable_unit_id,
+)
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.result import parse_summary_line
@@ -80,7 +88,7 @@ from .execution import (
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.failures import find_missing_executable
 from .mode import SimulationMode, normalize_simulation_mode, parse_simulation_mode
-from .standalone import StandaloneMixin, _StandaloneOutcome
+from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
@@ -1394,10 +1402,111 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if runnable_error is not None:
             return runnable_error
 
+        plan = self._plan_simulation(targets, test_names_map)
+        self._flow_plan = plan
         if self.args.dry_run:
             return self._handle_dry_run(targets, test_names_map)
+        if plan.aggregate_errors:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
+                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+            )
 
         return None
+
+    def _plan_simulation(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> FlowPlan:
+        """Resolve all Simulation work units before any executable is dispatched."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        previews = {}
+        execution = self._simulation_execution()
+        for target in targets:
+            tests = self._resolve_tests_to_run(target, test_names_map)
+            try:
+                preview = execution.preview(
+                    self._target_handle(target),
+                    self._execution_selection(tests),
+                )
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"{target}: {exc}")
+                continue
+            previews[target] = preview
+            for group, command in zip(preview.groups, preview.commands, strict=True):
+                build_root = edam_layer.work_root_for(
+                    self.args.work_dir,
+                    "sim",
+                    target,
+                    variant="trace" if self.args.trace else "",
+                )
+                units.append(
+                    WorkUnitPlan(
+                        unit_id=stable_unit_id("sim", target, group),
+                        role="ordinary",
+                        revision=None,
+                        selector=target,
+                        target_identity=preview.target_identity,
+                        test_or_module_scope=group,
+                        eda_tool=preview.eda_tool,
+                        timeout_ms=self._effective_timeout_ms(),
+                        sources=tuple(
+                            normalize_plan_path(path, self.args.work_dir)
+                            for path in preview.sources
+                        ),
+                        constraints=tuple(
+                            normalize_plan_path(path, self.args.work_dir)
+                            for path in preview.constraints
+                        ),
+                        parameters=preview.parameters,
+                        recipe={
+                            "flow_options": preview.flow_options,
+                            "mode": self.args.mode.value,
+                            "result_verbosity": self.args.result_verbosity,
+                            "toplevel": preview.toplevel,
+                            "trace": self.args.trace,
+                        },
+                        commands=(
+                            CommandPlan(
+                                normalize_plan_argv(
+                                    self._redact_plan_environment(target, command),
+                                    self.args.work_dir,
+                                ),
+                                cwd=".",
+                                template=True,
+                            ),
+                        ),
+                        expected_artifacts=(
+                            normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+                        ),
+                    )
+                )
+        self._simulation_previews = previews
+        return FlowPlan(
+            flow="sim",
+            mode=self.args.mode.value,
+            work_units=tuple(units),
+            aggregate_errors=tuple(errors),
+        )
+
+    def _redact_plan_environment(
+        self,
+        target: str,
+        command: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Retain configured variable names while excluding their values."""
+        if len(command) != 3 or command[:2] != ("sh", "-c"):
+            return command
+        script = command[2]
+        for name, value in self._target_sim_env(target).items():
+            script = script.replace(
+                f"export {name}={shlex.quote(value)}",
+                f"export {name}=<configured>",
+            )
+        return (*command[:2], script)
 
     def _run(self) -> McpToolResult:
         """Run the selected shape and stamp its canonical mode on every result."""
@@ -1629,9 +1738,142 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if target_error is not None:
             target_error.detail["mode"] = self.args.mode.value
             return target_error
+        plan = self._plan_elaboration(targets)
+        self._flow_plan = plan
         if self.args.dry_run:
             return self._handle_elab_only_dry_run(targets)
+        if plan.aggregate_errors:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
+                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+            )
         return targets
+
+    def _plan_elaboration(self, targets: list[str]) -> FlowPlan:
+        """Resolve every elaboration unit, including one cumulative standalone sweep."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        for target in targets:
+            try:
+                handle = self._target_handle(target)
+                inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+                command = tuple(self._elab_only_dry_command(target))
+                if len(command) == 1 and command[0].startswith("ERROR:"):
+                    raise ValueError(command[0])
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"{target}: {exc}")
+                continue
+            constraints = tuple(
+                item.path for item in inspection.inputs if item.file_type.lower() == "sdc"
+            )
+            sources = tuple(
+                item.path for item in inspection.inputs if item.file_type.lower() != "sdc"
+            )
+            build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+            units.append(
+                WorkUnitPlan(
+                    unit_id=stable_unit_id("sim", target, ("elaboration",)),
+                    role="ordinary",
+                    revision=None,
+                    selector=target,
+                    target_identity=handle.identity,
+                    test_or_module_scope=("elaboration",),
+                    eda_tool=inspection.eda_tool,
+                    timeout_ms=self._effective_timeout_ms(),
+                    sources=tuple(
+                        normalize_plan_path(path, self.args.work_dir) for path in sources
+                    ),
+                    constraints=tuple(
+                        normalize_plan_path(path, self.args.work_dir) for path in constraints
+                    ),
+                    parameters=inspection.parameters,
+                    recipe={
+                        "flow_options": inspection.flow_options,
+                        "mode": self.args.mode.value,
+                        "toplevel": inspection.toplevel,
+                    },
+                    commands=(
+                        CommandPlan(
+                            normalize_plan_argv(
+                                self._redact_plan_environment(target, command),
+                                self.args.work_dir,
+                            ),
+                            cwd=".",
+                            template=True,
+                        ),
+                    ),
+                    expected_artifacts=(
+                        normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+                    ),
+                )
+            )
+
+        if self._standalone_requested():
+            try:
+                standalone = self._plan_standalone_check(targets)
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"standalone: {exc}")
+            else:
+                self._standalone_plan_recipe = standalone
+                units.append(self._standalone_work_unit(targets, standalone))
+
+        return FlowPlan(
+            flow="sim",
+            mode=self.args.mode.value,
+            work_units=tuple(units),
+            aggregate_errors=tuple(errors),
+        )
+
+    def _standalone_work_unit(
+        self,
+        targets: list[str],
+        standalone: _StandalonePlanRecipe,
+    ) -> WorkUnitPlan:
+        modules = tuple(module for module, _path in standalone.modules)
+        sources = tuple(
+            dict.fromkeys([path for _module, path in standalone.modules] + list(standalone.shared))
+        )
+        identities = [self._target_handle(target).identity for target in targets]
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", "standalone", modules, role="standalone"),
+            role="standalone",
+            revision=None,
+            selector=",".join(targets),
+            target_identity="+".join(identities),
+            test_or_module_scope=modules,
+            eda_tool=standalone.frontend,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=tuple(normalize_plan_path(path, self.args.work_dir) for path in sources),
+            parameters={},
+            recipe={
+                "frontend": standalone.frontend,
+                "mode": self.args.mode.value,
+                "module_sources": [
+                    {"module": module, "source": source} for module, source in standalone.modules
+                ],
+                "shared_sources": list(standalone.shared),
+            },
+            commands=tuple(
+                CommandPlan(
+                    normalize_plan_argv(command, self.args.work_dir),
+                    cwd=".",
+                )
+                for command in standalone.commands
+            ),
+            expected_artifacts=(
+                normalize_plan_path(
+                    edam_layer.work_root_for(
+                        self.args.work_dir,
+                        "sim",
+                        "standalone",
+                        variant="sweep",
+                    )
+                    / RUN_LOG_NAME,
+                    self.args.work_dir,
+                ),
+            ),
+        )
 
     def _run_elab_only_campaign(
         self,
@@ -1911,13 +2153,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         _atomic_write_json(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> McpToolResult:
-        commands = {target: self._elab_only_dry_command(target) for target in targets}
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} elab-only build command(s)",
-            detail={"mode": self.args.mode.value, "commands": commands},
-        )
+        del targets
+        return self._dry_run_result(self._flow_plan)
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
@@ -2558,7 +2795,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
         selection = self._execution_selection(tests_to_run)
         execution = self._simulation_execution()
-        outcome = execution.run(self._target_handle(target), selection)
+        planned_groups = tuple(
+            unit.test_or_module_scope
+            for unit in self._flow_plan.work_units
+            if unit.selector == target and unit.role == "ordinary"
+        )
+        outcome = execution.run(
+            self._target_handle(target),
+            selection,
+            planned_groups=planned_groups,
+        )
         result = self._project_execution_outcome(outcome)
         output_lines.append(f"[sim] {target} (session-runtime)")
         output_lines.extend(result.diagnostics)
@@ -2856,22 +3102,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> McpToolResult:
-        """Render side-effect-free previews through the execution boundary."""
-        commands: list[list[str]] = []
-        for target in targets:
-            tests = self._resolve_tests_to_run(target, test_names_map)
-            preview = self._simulation_execution().preview(
-                self._target_handle(target),
-                self._execution_selection(tests),
-            )
-            commands.extend([list(command) for command in preview.commands])
-
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} command(s)",
-            detail={"mode": self.args.mode.value, "commands": commands},
-        )
+        """Render the normalized plan resolved by preflight."""
+        del targets, test_names_map
+        return self._dry_run_result(self._flow_plan)
 
     def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
         """Write one Target's verdict, build context, and artifact pointers."""
