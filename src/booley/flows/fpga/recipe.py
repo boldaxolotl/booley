@@ -11,6 +11,13 @@ from ..recipe_evidence import jsonable, recipe_snapshot_fingerprint
 from .profiles import VivadoProfile, resolve_fpga_profile
 
 
+def normalized_fpga_flow_options(flow_options: Mapping[str, Any]) -> dict[str, Any]:
+    """Return Target flow options with the profile represented only by recipe evidence."""
+    normalized = dict(flow_options)
+    normalized.pop("ppa_profile", None)
+    return normalized
+
+
 def fpga_recipe_snapshot(
     resolved: Any,
     *,
@@ -28,10 +35,9 @@ def fpga_recipe_snapshot(
         constraints.append({"name": xdc_file.name, "sha256": digest})
 
     selected_profile = profile or resolve_fpga_profile(resolved.flow_options, target=target)
-    flow_options = dict(resolved.flow_options)
     # Store the effective profile exactly once so omitted-default and explicit
     # ``balanced`` Targets have the same semantic recipe identity.
-    flow_options.pop("ppa_profile", None)
+    flow_options = normalized_fpga_flow_options(resolved.flow_options)
     return {
         "schema": 2,
         "flow": "fpga",

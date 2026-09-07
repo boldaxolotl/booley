@@ -607,6 +607,14 @@ def test_balanced_profile_leaves_generated_tcl_byte_identical(tmp_path: Path) ->
     assert tcl.read_bytes() == original
 
 
+def test_non_default_profile_missing_tcl_raises(tmp_path: Path) -> None:
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    with pytest.raises(FileNotFoundError, match=r"ppa_profile 'compact'.*not found"):
+        fpga_edam.apply_ppa_profile(tmp_path, "fpga_missing", VIVADO_PROFILES["compact"])
+
+
 def test_profile_patch_precedes_out_of_context_and_is_idempotent(tmp_path: Path) -> None:
     from booley.flows.fpga.backends.vivado import edam as fpga_edam
     from booley.flows.fpga.profiles import VIVADO_PROFILES

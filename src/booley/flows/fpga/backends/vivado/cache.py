@@ -14,6 +14,7 @@ from typing import Any
 
 from booley.core.boundary import as_dict, as_positive_int, as_str
 from booley.eda.provisioning.policies.vivado import POLICY_REVISION, SUPPORTED_VERSION
+from booley.flows.fpga.recipe import normalized_fpga_flow_options
 
 CACHE_SCHEMA = 3
 CACHE_FILE = ".booley-fpga-cache.json"
@@ -51,14 +52,8 @@ def _hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def input_fingerprint(
-    resolved: Any,
-    edam: Mapping[str, Any],
-    *,
-    out_of_context: bool,
-    recipe_sha256: str = "",
-) -> str:
-    """Hash the resolved design intent, every input byte, and tool identity."""
+def _input_file_evidence(resolved: Any) -> list[dict[str, Any]]:
+    """Describe every resolved input byte that participates in cache identity."""
     files: list[dict[str, Any]] = []
     for item in resolved.rtl_files:
         path = item.absolute(resolved.build_root)
@@ -79,11 +74,21 @@ def input_fingerprint(
                 "missing": missing,
             }
         )
-    flow_options = dict(resolved.flow_options)
+    return files
+
+
+def input_fingerprint(
+    resolved: Any,
+    edam: Mapping[str, Any],
+    *,
+    out_of_context: bool,
+    recipe_sha256: str = "",
+) -> str:
+    """Hash the resolved design intent, every input byte, and tool identity."""
     # The normalized recipe digest carries the resolved profile and mapping.
     # Avoid treating an explicit ``balanced`` spelling as different from its
     # identical omitted default.
-    flow_options.pop("ppa_profile", None)
+    flow_options = normalized_fpga_flow_options(resolved.flow_options)
     payload = {
         "schema": CACHE_SCHEMA,
         "implementation_revision": _IMPLEMENTATION_REVISION,
@@ -98,7 +103,7 @@ def input_fingerprint(
             "out_of_context": out_of_context,
         },
         "edam": dict(edam),
-        "files": files,
+        "files": _input_file_evidence(resolved),
         "tool": {
             "name": "vivado",
             "version": SUPPORTED_VERSION,

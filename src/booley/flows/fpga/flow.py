@@ -536,18 +536,7 @@ class FpgaImplFlow(BuiltinFlow):
     ) -> _ResolvedFpgaRecipe:
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
-        selected_root = build_root or edam_layer.work_root_for(
-            work_dir,
-            self.name,
-            target,
-            variant="fusesoc",
-        )
-        handle = self._target_handle(target)
-        ref = getattr(self, "_target_execution_refs", {}).get(target)
-        if ref is not None:
-            resolved = resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        else:
-            resolved = fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
+        resolved = self._resolve_fpga_target(target, build_root=build_root)
         validate_top_parameter_intent(resolved, flow="fpga")
         part = self._resolve_part(resolved.flow_options)
         xdc_files = tuple(self._resolve_xdc_files(resolved, target))
@@ -568,8 +557,6 @@ class FpgaImplFlow(BuiltinFlow):
             target=target,
         )
         snapshot = fpga_recipe_snapshot(resolved, target=target, profile=ppa_profile)
-        fingerprint = fpga_recipe_snapshot_fingerprint(snapshot)
-        source = run_evidence.capture_flow_source_evidence(work_dir, target)
         return _ResolvedFpgaRecipe(
             target=target,
             resolved=resolved,
@@ -584,9 +571,24 @@ class FpgaImplFlow(BuiltinFlow):
             out_of_context=out_of_context,
             ppa_profile=ppa_profile,
             recipe_snapshot=snapshot,
-            recipe_fingerprint=fingerprint,
-            source_evidence=source,
+            recipe_fingerprint=fpga_recipe_snapshot_fingerprint(snapshot),
+            source_evidence=run_evidence.capture_flow_source_evidence(work_dir, target),
         )
+
+    def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:
+        """Resolve one Target at the selected candidate or baseline revision."""
+        work_dir = Path(self.args.work_dir)
+        selected_root = build_root or edam_layer.work_root_for(
+            work_dir,
+            self.name,
+            target,
+            variant="fusesoc",
+        )
+        handle = self._target_handle(target)
+        ref = getattr(self, "_target_execution_refs", {}).get(target)
+        if ref is not None:
+            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
@@ -610,38 +612,50 @@ class FpgaImplFlow(BuiltinFlow):
         self,
         target: str,
     ) -> _PreparedFpgaCommand:
-        """Materialize the Edalize vivado project and return (run_cmd, work_root).
-
-        The single seam between EDAM generation / in-process ``configure()`` and
-        execution (mirrors ``simulate._prepare_sim_command``). Per ADR 0022
-        (decision 4) FuseSoC owns *design-description*: ``resolve_target`` runs
-        ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing the RTL
-        sources, top module, and typed parameters. Only this **resolution half**
-        is swapped — the vivado boundary crossing (ADR 0019/0037) and the
-        EDAM-builder command-gen exception are preserved: the resolved
-        sources/top/defines are
-        fed *into* ``build_fpga_edam`` (whose ``configure()`` materializes the
-        vivado project) instead of the legacy-registry-derived ones.
-
-        The Target owns Vivado's part, constraints, defines, and out-of-context
-        setting. A ``--baseline`` re-resolve runs against a throwaway worktree
-        (``self.args.work_dir``
-        points at it), so its build dir is physically separate from the current
-        run's and cannot clobber it.
-
-        Raises ``ValueError`` / ``EdamSecurityError`` on bad inputs and
-        ``TargetResolutionError`` on FuseSoC setup failure (the caller records
-        all three as infra errors).
-        """
+        """Materialize the validated Vivado recipe and return its executable command."""
         work_dir = Path(self.args.work_dir)
-        recipe = None
-        if getattr(self, "_execution_role", "candidate") == "candidate":
-            recipe = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
-        if recipe is None:
-            recipe = self._resolve_fpga_recipe(target)
+        recipe = self._fpga_recipe_for_execution(target)
         work_root = edam_layer.work_root_for(work_dir, "fpga", target)
+        edam = self._materialize_fpga_project(recipe, work_root)
+        fingerprint = fpga_cache.input_fingerprint(
+            recipe.resolved,
+            edam,
+            out_of_context=recipe.out_of_context,
+            recipe_sha256=recipe.recipe_fingerprint,
+        )
+        dispatch_evidence = run_evidence.build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe.recipe_fingerprint,
+            work_dir=work_dir,
+            source_evidence=recipe.source_evidence,
+        )
+        return _PreparedFpgaCommand(
+            run_cmd=fpga_edam.fpga_run_command(work_root, work_dir),
+            work_root=work_root,
+            fingerprint=fingerprint,
+            require_bitstream=not recipe.out_of_context,
+            recipe_snapshot=recipe.recipe_snapshot,
+            recipe_fingerprint=recipe.recipe_fingerprint,
+            run_evidence=dispatch_evidence.as_dict(),
+        )
+
+    def _fpga_recipe_for_execution(self, target: str) -> _ResolvedFpgaRecipe:
+        """Reuse a planned candidate recipe or resolve the active execution revision."""
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            planned = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
+            if planned is not None:
+                return planned
+        return self._resolve_fpga_recipe(target)
+
+    def _materialize_fpga_project(
+        self,
+        recipe: _ResolvedFpgaRecipe,
+        work_root: Path,
+    ) -> dict[str, Any]:
+        """Generate Vivado Tcl, then apply profile and out-of-context patches in order."""
         edam = fpga_edam.build_fpga_edam(
-            name=f"fpga_{target}",
+            name=f"fpga_{recipe.target}",
             toplevel=recipe.top,
             part=recipe.part,
             sv_files=list(recipe.sv_files),
@@ -670,29 +684,7 @@ class FpgaImplFlow(BuiltinFlow):
         # non-bool raises (BoundaryError is a ValueError → infra error upstream).
         if recipe.out_of_context:
             fpga_edam.enable_out_of_context(work_root, project_name)
-        run_cmd = fpga_edam.fpga_run_command(work_root, Path(self.args.work_dir))
-        fingerprint = fpga_cache.input_fingerprint(
-            recipe.resolved,
-            edam,
-            out_of_context=recipe.out_of_context,
-            recipe_sha256=recipe.recipe_fingerprint,
-        )
-        dispatch_evidence = run_evidence.build_flow_run_evidence(
-            flow=self.name,
-            target=target,
-            recipe_sha256=recipe.recipe_fingerprint,
-            work_dir=work_dir,
-            source_evidence=recipe.source_evidence,
-        )
-        return _PreparedFpgaCommand(
-            run_cmd=run_cmd,
-            work_root=work_root,
-            fingerprint=fingerprint,
-            require_bitstream=not recipe.out_of_context,
-            recipe_snapshot=recipe.recipe_snapshot,
-            recipe_fingerprint=recipe.recipe_fingerprint,
-            run_evidence=dispatch_evidence.as_dict(),
-        )
+        return edam
 
     def _resolve_part(self, flow_options: Any) -> str:
         """Validate and resolve the FPGA part from Target ``flow_options``."""
@@ -734,7 +726,7 @@ class FpgaImplFlow(BuiltinFlow):
             prepared = self._prepare_fpga_command(target)
             run_cmd = prepared.run_cmd
             work_root = prepared.work_root
-        except Exception as exc:  # noqa: BLE001 — isolate arbitrary adapter/configure failures
+        except Exception as exc:
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
 
