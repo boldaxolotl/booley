@@ -845,9 +845,7 @@ def _waiting_provider_error(
         for item in tickets
         if item.get("status") != "archived"
     }
-    dependencies = {
-        item for item in ticket.get("dependencies", ()) if isinstance(item, str)
-    }
+    dependencies = {item for item in ticket.get("dependencies", ()) if isinstance(item, str)}
     unavailable = dependencies - available
     if not unavailable:
         return ""

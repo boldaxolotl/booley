@@ -208,9 +208,7 @@ def test_removal_preserves_doctor_private_test_table(tmp_path: Path) -> None:
         tmp_path / "doctor.core",
         vlnv="acme:lib:doctor:1.0",
         targets=(
-            "  doctor:\n"
-            "    flow: lint\n"
-            "    flow_options: {booley: {doctor_selftest: true}}\n"
+            "  doctor:\n    flow: lint\n    flow_options: {booley: {doctor_selftest: true}}\n"
         ),
     )
     project = tmp_path / ".booley_project"
