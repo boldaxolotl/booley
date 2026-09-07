@@ -128,9 +128,18 @@ def test_tests_source_boundary_accepts_crlf_table_append(repository: Path) -> No
     tests_path.write_bytes(b"[existing]\r\nmodule = 'old'\r\n")
     _git(repository, "add", "-f", ".booley_project/tests.toml")
     _git(repository, "commit", "-qm", "add tests baseline")
-    _add_candidate(repository)
     core_path = repository / "toy.core"
-    core_path.write_bytes(core_path.read_bytes().replace(b"\n", b"\r\n"))
+    core_content = _core(
+        "  lint_old:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+        "  lint_new:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n"
+    )
+    core_path.write_bytes(core_content.replace("\n", "\r\n").encode())
     tests_path.write_bytes(b"[existing]\r\nmodule = 'old'\r\n\r\n[lint_new]\r\nmodule = 'new'\r\n")
 
     analysis = _analyze(
