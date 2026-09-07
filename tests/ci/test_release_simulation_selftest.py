@@ -105,5 +105,6 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
     )
     assert configured.stdout.strip() == "never"
     assert all(
-        (project / ".booley_project" / "tickets" / relative).is_dir() for relative in TICKET_DIRS
+        (project / ".booley_project" / "tickets" / relative).is_dir()
+        for relative in (*TICKET_DIRS, "logs", "locks")
     )

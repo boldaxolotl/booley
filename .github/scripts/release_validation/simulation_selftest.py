@@ -44,7 +44,7 @@ def _prepare_clone_state(project: Path) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"failed to configure checkout worktree guard\n{result.stderr}")
     tickets = resolve_checkout_project_dir(project) / "tickets"
-    for relative in TICKET_DIRS:
+    for relative in (*TICKET_DIRS, "logs", "locks"):
         (tickets / relative).mkdir(parents=True, exist_ok=True)
 
 
