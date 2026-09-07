@@ -146,6 +146,21 @@ def test_argv_normalization_is_checkout_independent() -> None:
     assert first == second
 
 
+def test_argv_normalization_accepts_native_and_posix_separators(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    native = normalize_plan_argv(
+        (root, f"{root}\\.booley_work\\sim"),
+        tmp_path,
+    )
+    posix_root = tmp_path.as_posix()
+    posix = normalize_plan_argv(
+        (posix_root, f"{posix_root}/.booley_work/sim"),
+        tmp_path,
+    )
+
+    assert native == posix == (".", ".booley_work/sim")
+
+
 def test_inputs_are_partitioned_and_normalized_once(tmp_path: Path) -> None:
     inputs = (
         SimpleNamespace(path=str(tmp_path / "rtl/top.sv"), file_type="systemVerilogSource"),

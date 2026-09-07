@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,23 +68,39 @@ def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
 
 def normalize_plan_argv(argv: tuple[str, ...], work_dir: Path) -> tuple[str, ...]:
     """Remove the selected checkout's absolute prefix from command arguments."""
-    checkout = work_dir.resolve().as_posix().rstrip("/")
-    prefixes = ((checkout + "/", "/"), (checkout.replace("/", "\\") + "\\", "\\"))
+    roots = {
+        str(work_dir).rstrip("/\\"),
+        work_dir.as_posix().rstrip("/"),
+        str(work_dir.resolve()).rstrip("/\\"),
+        work_dir.resolve().as_posix().rstrip("/"),
+    }
+    roots |= {root.replace("\\", "/") for root in roots}
+    roots |= {root.replace("/", "\\") for root in roots}
+    ordered_roots = sorted((root for root in roots if root), key=len, reverse=True)
 
-    def normalize(argument: str) -> str:
-        normalized = argument
-        for prefix, separator in prefixes:
-            if prefix in normalized:
-                normalized = normalized.replace(prefix, "")
-                if separator == "\\":
-                    normalized = normalized.replace("\\", "/")
-        for spelling in (checkout, checkout.replace("/", "\\")):
-            if normalized == spelling:
+    def normalize_argument(argument: str) -> str:
+        for root in ordered_roots:
+            if argument == root:
                 return "."
-            normalized = normalized.replace(f"={spelling}", "=.").replace(f" {spelling}", " .")
-        return normalized
+            for separator in ("/", "\\"):
+                prefix = root + separator
+                if argument.startswith(prefix):
+                    return argument[len(prefix) :].replace("\\", "/")
 
-    return tuple(normalize(argument) for argument in argv)
+        normalized = argument
+        matched = False
+        for root in ordered_roots:
+            for separator in ("/", "\\"):
+                prefix = root + separator
+                if prefix in normalized:
+                    normalized = normalized.replace(prefix, "")
+                    matched = True
+            exact_root = re.compile(rf"(?<![a-zA-Z0-9_.-]){re.escape(root)}(?![a-zA-Z0-9_./\\-])")
+            normalized, substitutions = exact_root.subn(".", normalized)
+            matched = matched or substitutions > 0
+        return normalized.replace("\\", "/") if matched else normalized
+
+    return tuple(normalize_argument(argument) for argument in argv)
 
 
 def normalize_plan_inputs(
