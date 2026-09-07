@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from booley.config.project_config import bare_target
+
 
 def short_target_name(selector: str) -> str:
     """Return the Target name from a bare or VLNV-qualified selector."""
-    return selector.rsplit("#", 1)[-1].strip()
+    return bare_target(selector.strip()).strip()
 
 
 def _distinct(values: Iterable[str]) -> tuple[str, ...]:

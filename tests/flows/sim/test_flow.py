@@ -125,7 +125,7 @@ def test_human_display_does_not_repeat_single_passing_target_or_test():
     assert _build_display_lines(results, total_elapsed=10.0) == ["✓ PASS  10.0s"]
 
 
-def test_human_display_summarizes_tests_for_one_passing_target():
+def test_human_display_keeps_target_detail_for_multiple_passing_tests():
     results = [
         TargetResult(
             target="sim_mul",
@@ -137,7 +137,10 @@ def test_human_display_summarizes_tests_for_one_passing_target():
         )
     ]
 
-    assert _build_display_lines(results, total_elapsed=2.0) == ["2/2 tests passed, 2.0s"]
+    assert _build_display_lines(results, total_elapsed=2.0) == [
+        "1/1 targets passed, 2.0s",
+        "✓ sim_mul (2/2 tests)  0ms",
+    ]
 
 
 def test_human_display_keeps_names_for_single_target_failure():
@@ -241,13 +244,13 @@ def test_display_label_uses_elaboration_mode_without_test_discovery(tmp_path: Pa
     get_tests.assert_not_called()
 
 
-def test_display_label_failure_falls_back_without_qualified_selector(tmp_path: Path):
+def test_display_label_failure_uses_neutral_tests_with_short_target(tmp_path: Path):
     flow = _display_flow(tmp_path, "::demo:core:0#sim_mul")
 
     with patch("booley.flows.sim.flow._get_test_names", side_effect=RuntimeError("boom")):
         label = flow._resolve_display_label()
 
-    assert label == "target sim_mul"
+    assert label == "target sim_mul · tests"
 
 
 def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):

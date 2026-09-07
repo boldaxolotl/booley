@@ -799,9 +799,6 @@ def _build_display_lines(
         tests = results[0].tests
         if len(tests) == 1:
             return [f"✓ PASS  {_format_duration(total_elapsed)}"]
-        if tests:
-            tests_passed = sum(test.passed for test in tests)
-            return [f"{tests_passed}/{len(tests)} tests passed, {total_elapsed:.1f}s"]
 
     targets_passed = sum(1 for r in results if r.passed)
     lines: list[str] = [
@@ -1174,7 +1171,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ]
         except Exception:  # display metadata must not block a Flow run
             logger.debug("could not resolve simulation display scope", exc_info=True)
-            return super()._resolve_display_label()
+            return format_flow_display_label(targets, tests=None)
         if any(test is None for test in selected):
             return format_flow_display_label(targets, tests=None)
         return format_flow_display_label(targets, tests=(str(test) for test in selected))
