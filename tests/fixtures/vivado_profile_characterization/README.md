@@ -4,7 +4,7 @@ This fixture records the licensed-host proof used to select Booley's portable
 FPGA PPA-profile mappings. It uses one tiny, deterministic out-of-context
 counter design and an Artix-7 part available to the Vivado 2025.2 lane.
 
-The checked-in `evidence.json` is the result captured on 2026-09-07. To repeat
+The checked-in `evidence.json` is the result captured on 07 SEP 2026. To repeat
 the routed proof on an approved licensed host:
 
 ```bash

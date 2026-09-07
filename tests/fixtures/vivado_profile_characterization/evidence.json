@@ -17,7 +17,7 @@
     "sha256": {
       "top.sv": "cbd31508a5b0e7874680ec0c19dfe8767e082ab052b3b6504daae18a6a2aaf99",
       "top.xdc": "e40b660c623a53d4bdcb584dc75e36c3a44f7d3a46b5cdfa164154edf04a9af6",
-      "characterize.tcl": "fff0ba1604dd1efd97ff291a63de2d0781952f07725c8575b484817586d0d4f6"
+      "characterize.tcl": "67edae50b5539e38595bac57ba7f76514503fdc17c1bbebc4ce85bbc6fa9fe81"
     }
   },
   "supported_strategies": {
