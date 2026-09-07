@@ -7,7 +7,7 @@ import re
 import shlex
 import shutil
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -21,10 +21,7 @@ from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
-    AdapterTransportError,
     AdapterTransportIdentity,
-    partial_result_identity,
-    read_adapter_result,
 )
 from booley.flows.sim.build import (
     BuildOutcome,
@@ -53,6 +50,12 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
 from .artifacts import CompatibilityArtifactPolicy, TraceArtifactPolicy, artifact_path_component
+from .attempt import (
+    AdapterAttemptOutcome,
+    AdapterAttemptRequest,
+    ProcessInvoker,
+    execute_adapter_attempt,
+)
 from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invocation
 from .contract import (
     DefaultSelection,
@@ -68,15 +71,12 @@ from .contract import (
 )
 from .failures import find_missing_executable
 from .freshness import (
-    ArtifactStamp,
     ArtifactValidationError,
-    snapshot_artifact,
     validate_fresh_artifact,
 )
 from .pre_run import run_pre_run_commands
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
-ProcessInvoker = Callable[..., SubprocessResult]
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
@@ -98,12 +98,6 @@ class _Attempt:
     cycle_sentinels: tuple[str, ...]
     workload_inputs: tuple[Mapping[str, Any], ...]
     setup_s: float
-
-
-@dataclass(frozen=True)
-class _AdapterResultStamps:
-    terminal: ArtifactStamp | None
-    partial: ArtifactStamp | None
 
 
 @dataclass(frozen=True)
@@ -235,16 +229,16 @@ class SimulationExecution:
             return failure(handle, attempt, pre_run, started)
         trace_policy = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
         compatibility_policy = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
-        adapter_before = _adapter_result_stamps(attempt)
-        process = self._invoke(list(attempt.command), timeout=attempt.wrapper_timeout_s)
+        executed = self._execute_adapter(attempt)
+        process = executed.process
         processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
         if build.failure_kind == "infrastructure":
             return _infrastructure_failure(handle, attempt, build, pre_run, started)
-        try:
-            adapter = self._read_adapter_result(attempt, process, build, adapter_before)
-        except (AdapterTransportError, ArtifactValidationError) as exc:
-            return _transport_failure(handle, attempt, build, pre_run, str(exc), started)
+        adapter_error = _adapter_attempt_error(executed, build)
+        if adapter_error is not None:
+            return _transport_failure(handle, attempt, build, pre_run, adapter_error, started)
+        adapter = None if build.design_failed else executed.result
         try:
             return self._completed_group(
                 handle,
@@ -261,6 +255,15 @@ class SimulationExecution:
         except SimulationArtifactPersistenceError as exc:
             return _artifact_failure(handle, attempt, build, pre_run, str(exc), started)
 
+    def _execute_adapter(self, attempt: _Attempt) -> AdapterAttemptOutcome:
+        request = AdapterAttemptRequest(
+            attempt.command,
+            attempt.wrapper_timeout_s,
+            attempt.identity,
+            attempt.prepared.build_root,
+        )
+        return execute_adapter_attempt(self._invoke, request)
+
     def _prepare_attempt(self, handle: TargetHandle, test_names: tuple[str, ...]) -> _Attempt:
         started = time.monotonic()
         prepared, trace_mode = self._prepare_build(handle)
@@ -273,10 +276,16 @@ class SimulationExecution:
             selected_tests=test_names,
             result_path=prepared.build_root / f".booley-adapter-{token}.json",
         )
-        trace_files = tuple(resolve_trace_files(handle.project_root))
-        work = self._prepared_work(handle, prepared, identity, trace_mode, trace_files)
+        work = prepare_simulation_work(
+            handle,
+            prepared,
+            identity,
+            self._options,
+            trace=self._options.trace,
+            trace_mode=trace_mode.value,
+        )
         pre_run_commands = tuple(resolve_pre_run_commands(handle.project_root))
-        simulator_environment = tuple(_target_environment(handle).items())
+        simulator_environment = tuple(simulation_target_environment(handle).items())
         try:
             invocation = prepare_adapter_invocation(work)
         except UnsupportedSimulationAdapterError as exc:
@@ -319,7 +328,7 @@ class SimulationExecution:
                 handle,
                 variant=policy.variant,
                 resolution_vlnv=overlay.vlnv if overlay is not None else None,
-                environment=_target_environment(handle),
+                environment=simulation_target_environment(handle),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
                 trace_overlay.validate_cocotb_trace_mode(
@@ -332,46 +341,6 @@ class SimulationExecution:
             if overlay is not None:
                 overlay.cleanup()
 
-    def _prepared_work(
-        self,
-        handle: TargetHandle,
-        prepared: PreparedSimulationBuild,
-        identity: AdapterTransportIdentity,
-        trace_mode: TraceMode,
-        trace_files: tuple[str, ...],
-    ) -> PreparedSimulationWork:
-        root = handle.project_root
-        rel = edam_layer.relpath_for_make(prepared.build_root, root)
-        cocotb = bool(prepared.resolved.cocotb_module)
-        plusargs = _simulation_plusargs(
-            handle, identity.selected_tests, prepared.resolved.parameters
-        )
-        passes, fails = resolve_sim_sentinels(root)
-        return PreparedSimulationWork(
-            adapter="cocotb" if cocotb else prepared.eda_tool,
-            build_dir=rel,
-            run_cwd=_simulation_run_cwd(root, rel),
-            timeout_s=max(1, self._effective_timeout_ms(handle) // 1000),
-            eda_tool=prepared.eda_tool,
-            max_rundir_bytes=resolve_max_rundir_bytes(root),
-            plusargs=tuple(plusargs),
-            trace=self._options.trace,
-            trace_mode=trace_mode.value,
-            trace_scope=prepared.toplevel,
-            trace_args=tuple(resolve_trace_args(root)),
-            trace_files=trace_files,
-            pass_sentinels=tuple(passes),
-            fail_sentinels=tuple(fails),
-            top=prepared.toplevel,
-            cocotb_module=prepared.resolved.cocotb_module or "",
-            tests=identity.selected_tests,
-            result_verbosity=self._options.result_verbosity,
-            sim_time_grace_s=resolve_sim_time_grace_s(root),
-            adapter_result_path=str(identity.result_path),
-            attempt_token=identity.attempt_token,
-            target_identity=identity.target_identity,
-        )
-
     def _run_pre_run(self, handle: TargetHandle, attempt: _Attempt) -> PreRunEvidence | None:
         return run_pre_run_commands(
             handle,
@@ -383,39 +352,6 @@ class SimulationExecution:
             commands=attempt.pre_run_commands,
             run_cwd=attempt.work.run_cwd,
         )
-
-    @staticmethod
-    def _read_adapter_result(
-        attempt: _Attempt,
-        process: SubprocessResult,
-        build: BuildOutcome,
-        before: _AdapterResultStamps,
-    ) -> AdapterResult | None:
-        if build.design_failed:
-            return None
-        identity = attempt.identity
-        result_before = before.terminal
-        if not identity.result_path.exists():
-            if process.timed_out:
-                identity = partial_result_identity(identity)
-                result_before = before.partial
-                if not identity.result_path.exists():
-                    return None
-            else:
-                raise AdapterTransportError(
-                    "adapter completed without authenticated terminal result"
-                )
-        validate_fresh_artifact(
-            identity.result_path,
-            roots=(attempt.prepared.build_root,),
-            before=result_before,
-        )
-        result = read_adapter_result(identity)
-        if result.passed and (process.returncode != 0 or not build.passed):
-            raise AdapterTransportError("adapter pass contradicts process or build evidence")
-        if result.failure_kind == "infrastructure":
-            raise AdapterTransportError(result.detail or "adapter infrastructure failure")
-        return result
 
     def _completed_group(
         self,
@@ -456,7 +392,6 @@ class SimulationExecution:
             time.monotonic() - processing_started,
         )
         artifacts = (*logs, *compatibility, *((trace,) if trace is not None else ()))
-        diagnostics = adapter.diagnostics if adapter is not None else ()
         return _group_outcome(
             handle,
             attempt,
@@ -465,7 +400,7 @@ class SimulationExecution:
             pre_run,
             artifacts,
             started,
-            diagnostics,
+            adapter.diagnostics if adapter is not None else (),
             adapter.passed if adapter is not None else None,
         )
 
@@ -520,6 +455,25 @@ class SimulationExecution:
         self._reset_build_roots.add(key)
 
 
+def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) -> str | None:
+    if build.design_failed:
+        return None
+    if attempt.error is not None:
+        return attempt.error
+    result = attempt.result
+    if result is None:
+        return (
+            None
+            if attempt.process.timed_out
+            else "adapter completed without authenticated terminal result"
+        )
+    if result.passed and (attempt.process.returncode != 0 or not build.passed):
+        return "adapter pass contradicts process or build evidence"
+    if result.failure_kind == "infrastructure":
+        return result.detail or "adapter infrastructure failure"
+    return None
+
+
 def _doctor_bad_requested() -> bool:
     return os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
 
@@ -550,7 +504,8 @@ def _work_groups(selection: SimulationSelection, cocotb: bool) -> tuple[tuple[st
     return (selection.names,) if cocotb else tuple((name,) for name in selection.names)
 
 
-def _target_environment(handle: TargetHandle) -> dict[str, str]:
+def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
+    """Return the resolved project environment for one Simulation Target."""
     sections = load_test_configuration_field(handle.project_root, "env")
     environment = dict(lookup_target_section(sections, handle.selector) or {})
     return {str(name): str(value) for name, value in environment.items()}
@@ -609,6 +564,48 @@ def _simulation_run_cwd(root: Path, build_dir: str) -> str:
     return resolve_run_cwd(root)
 
 
+def prepare_simulation_work(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    identity: AdapterTransportIdentity,
+    options: SimulationOptions,
+    *,
+    trace: bool,
+    trace_mode: str,
+    plusargs_suffix: tuple[str, ...] = (),
+) -> PreparedSimulationWork:
+    """Shape one prepared build through the shared Simulation adapter contract."""
+    root = handle.project_root
+    rel = edam_layer.relpath_for_make(prepared.build_root, root)
+    cocotb = bool(prepared.resolved.cocotb_module)
+    plusargs = _simulation_plusargs(handle, identity.selected_tests, prepared.resolved.parameters)
+    passes, fails = resolve_sim_sentinels(root)
+    return PreparedSimulationWork(
+        adapter="cocotb" if cocotb else prepared.eda_tool,
+        build_dir=rel,
+        run_cwd=_simulation_run_cwd(root, rel),
+        timeout_s=max(1, (options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
+        eda_tool=prepared.eda_tool,
+        max_rundir_bytes=resolve_max_rundir_bytes(root),
+        plusargs=(*plusargs, *plusargs_suffix),
+        trace=trace,
+        trace_mode=trace_mode,
+        trace_scope=prepared.toplevel,
+        trace_args=tuple(resolve_trace_args(root)),
+        trace_files=tuple(resolve_trace_files(root)),
+        pass_sentinels=tuple(passes),
+        fail_sentinels=tuple(fails),
+        top=prepared.toplevel,
+        cocotb_module=prepared.resolved.cocotb_module or "",
+        tests=identity.selected_tests,
+        result_verbosity=options.result_verbosity,
+        sim_time_grace_s=resolve_sim_time_grace_s(root),
+        adapter_result_path=str(identity.result_path),
+        attempt_token=identity.attempt_token,
+        target_identity=identity.target_identity,
+    )
+
+
 def _preview_work(
     execution: SimulationExecution,
     handle: TargetHandle,
@@ -645,7 +642,7 @@ def _preview_work(
 def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: Path) -> list[str]:
     root = handle.project_root
     values = {
-        **_target_environment(handle),
+        **simulation_target_environment(handle),
         "BOOLEY_TARGET": handle.selector,
         "BOOLEY_TEST_NAMES": " ".join(names),
         "BOOLEY_PROJECT_ROOT": str(root),
@@ -1151,14 +1148,6 @@ def _trace_artifact_policy(
         build_root=attempt.prepared.build_root,
         patterns=attempt.work.trace_files,
     )
-
-
-def _adapter_result_stamps(
-    attempt: _Attempt,
-) -> _AdapterResultStamps:
-    terminal = attempt.identity.result_path
-    partial = partial_result_identity(attempt.identity).result_path
-    return _AdapterResultStamps(snapshot_artifact(terminal), snapshot_artifact(partial))
 
 
 def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:

@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 from fusesoc.capi2.exprs import Exprs
 
+from booley.core.boundary import is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -544,7 +545,7 @@ def _check_booley_target_metadata(
     if not isinstance(booley, Mapping):
         errors.append(f"{label} must be a mapping")
         return
-    for key in sorted(set(booley) - {"doctor", "doctor_selftest"}):
+    for key in sorted(set(booley) - {"coverage", "doctor", "doctor_selftest"}):
         errors.append(f"{label}.{key} is not a supported Booley Target key")
     if "doctor" in booley:
         doctor = booley["doctor"]
@@ -574,6 +575,34 @@ def _check_booley_target_metadata(
                 errors.append(f"{label}.doctor must not contain duplicates")
     if "doctor_selftest" in booley and not isinstance(booley["doctor_selftest"], bool):
         errors.append(f"{label}.doctor_selftest must be a boolean")
+    if "coverage" in booley:
+        _check_coverage_target_metadata(booley["coverage"], label, errors)
+
+
+def _check_coverage_target_metadata(value: Any, label: str, errors: list[str]) -> None:
+    """Validate the private Phase-3 coverage recipe on one Simulation Target."""
+    coverage_label = f"{label}.coverage"
+    if not isinstance(value, Mapping):
+        errors.append(f"{coverage_label} must be a mapping")
+        return
+    for key in sorted(set(value) - {"custom_main_hooks", "reset_included"}):
+        errors.append(f"{coverage_label}.{key} is not a supported coverage key")
+    if "reset_included" in value and not isinstance(value["reset_included"], bool):
+        errors.append(f"{coverage_label}.reset_included must be a boolean")
+    if "custom_main_hooks" not in value:
+        return
+    hooks = value["custom_main_hooks"]
+    if not isinstance(hooks, list):
+        errors.append(f"{coverage_label}.custom_main_hooks must be an array")
+        return
+    if not is_str_list(hooks):
+        errors.append(f"{coverage_label}.custom_main_hooks must contain only strings")
+        return
+    invalid = [hook for hook in hooks if hook not in {"start_hook", "write_hook"}]
+    if invalid:
+        errors.append(f"{coverage_label}.custom_main_hooks contains unknown hook(s) {invalid!r}")
+    if len({str(hook) for hook in hooks}) != len(hooks):
+        errors.append(f"{coverage_label}.custom_main_hooks must not contain duplicates")
 
 
 def core_schema_errors(core_file: Path | str) -> list[str]:
