@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Booley QA scenario format prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17233c;
+      --muted: #63708a;
+      --paper: #f7f4ed;
+      --panel: #fffdf8;
+      --line: #d9d3c6;
+      --accent: #315bd6;
+      --accent-soft: #e7ecff;
+      --good: #147d64;
+      --bad: #b54343;
+      --warn: #986a12;
+      --code: #152039;
+      --code-ink: #e8ecf8;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--paper); }
+    button { font: inherit; }
+    .shell { width: min(1480px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 64px; }
+    .eyebrow { color: var(--accent); font-weight: 750; letter-spacing: .08em; text-transform: uppercase; font-size: .76rem; }
+    h1 { margin: 8px 0 12px; max-width: 980px; font-size: clamp(2rem, 4vw, 4.4rem); line-height: .98; letter-spacing: -.045em; }
+    h2 { margin: 0 0 12px; font-size: 1.25rem; }
+    h3 { margin: 0 0 8px; font-size: 1rem; }
+    p { line-height: 1.55; }
+    .lede { max-width: 1000px; color: var(--muted); font-size: 1.08rem; }
+    .notice { margin: 24px 0; border-left: 5px solid var(--warn); background: #fff5d8; padding: 14px 18px; }
+    .proposal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0 30px; }
+    .proposal article, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 6px 20px rgba(23, 35, 60, .05); }
+    .proposal article { padding: 18px; }
+    .proposal strong { display: block; margin-bottom: 5px; }
+    .proposal span { color: var(--muted); line-height: 1.45; }
+    .grid { display: grid; grid-template-columns: 270px minmax(0, 1.5fr) minmax(300px, .8fr); gap: 14px; align-items: stretch; }
+    .panel { overflow: hidden; }
+    .panel-head { padding: 14px 16px; border-bottom: 1px solid var(--line); background: #fbf9f2; }
+    .panel-head p { margin: 2px 0 0; color: var(--muted); font-size: .86rem; }
+    .file-list { padding: 8px; }
+    .file-button { width: 100%; border: 0; background: transparent; color: var(--ink); padding: 10px 11px; border-radius: 9px; text-align: left; cursor: pointer; font-size: .86rem; overflow-wrap: anywhere; }
+    .file-button:hover, .file-button.active { background: var(--accent-soft); color: #173990; }
+    .file-button.generated::after { content: "generated"; display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 10px; background: #eee5cf; color: #6a5840; font-size: .64rem; }
+    .viewer { min-height: 620px; display: flex; flex-direction: column; }
+    .file-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow-wrap: anywhere; }
+    pre { margin: 0; padding: 20px; flex: 1; overflow: auto; background: var(--code); color: var(--code-ink); font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; tab-size: 2; }
+    .state { padding: 16px; }
+    .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .datum { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+    .datum .label { display: block; color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+    .datum .value { display: block; margin-top: 4px; font-weight: 700; overflow-wrap: anywhere; }
+    .status-good { color: var(--good); }
+    .status-bad { color: var(--bad); }
+    .last-change { margin: 13px 0 0; padding: 12px; border-radius: 10px; background: var(--accent-soft); line-height: 1.4; }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; color: var(--muted); }
+    details pre { margin-top: 8px; max-height: 260px; border-radius: 10px; }
+    .section { margin-top: 24px; }
+    .controls { padding: 16px; }
+    .button-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .action { border: 1px solid #b7c2e8; background: white; color: #183574; padding: 9px 12px; border-radius: 9px; cursor: pointer; }
+    .action:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .action.danger { color: #8d2929; border-color: #dfb5b5; }
+    .walkthroughs { padding: 16px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .tab { border: 0; border-radius: 999px; padding: 7px 11px; background: #ebe7dc; cursor: pointer; }
+    .tab.active { color: white; background: var(--accent); }
+    .walkthrough-copy { color: var(--muted); margin: 0 0 12px; }
+    .steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .step-button { border: 1px solid var(--line); background: white; border-radius: 9px; padding: 9px 11px; cursor: pointer; }
+    .step-button.next { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .step-button.done { color: var(--good); background: #e8f6f1; }
+    .arrow { color: var(--muted); }
+    .events { max-height: 310px; overflow: auto; padding: 8px 16px 16px; }
+    .event { display: grid; grid-template-columns: 74px 1fr; gap: 10px; border-bottom: 1px solid var(--line); padding: 9px 0; font-size: .86rem; }
+    .event code { color: var(--accent); }
+    .event.error code { color: var(--bad); }
+    .questions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .question { padding: 16px; }
+    .question p { margin: 6px 0 0; color: var(--muted); }
+    .recommended { margin-top: 10px; color: var(--good); font-weight: 700; }
+    footer { margin-top: 34px; color: var(--muted); font-size: .9rem; }
+
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 230px 1fr; }
+      .state-panel { grid-column: 1 / -1; }
+    }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 20px, 1480px); padding-top: 22px; }
+      .proposal, .grid, .questions { grid-template-columns: 1fr; }
+      .viewer { min-height: 500px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Throwaway logic prototype · Wayfinder</div>
+    <h1>Can one hybrid repository format stay readable and executable?</h1>
+    <p class="lede">This demo tests a proposed data shape for Booley's public QA suite: stable structured records for machines, normative Markdown for people and agents, and an append-only execution stream for evidence. Click the files, drive the run, and look for places where the format becomes ambiguous or repetitive.</p>
+
+    <div class="notice"><strong>Prototype only.</strong> Nothing here is normative, complete, or intended for <code>main</code>. The PicoRV32 slice is deliberately tiny; it exists to make format decisions tangible.</div>
+
+    <section class="proposal" aria-label="Format proposal">
+      <article><strong>Norms in Markdown</strong><span>The Scenario Protocol and Authoring Guide remain pleasant to review, with stable rule IDs that scenarios reference.</span></article>
+      <article><strong>Design in YAML</strong><span>Scenario and coverage records use schema-validated YAML, keeping identifiers, graphs, gates, and allocations mechanically checkable.</span></article>
+      <article><strong>Evidence in JSONL</strong><span>The runner appends typed immutable events; summaries and Consolidate Findings handoffs are derived, never competing sources of truth.</span></article>
+    </section>
+
+    <section class="grid" aria-label="Prototype explorer">
+      <aside class="panel">
+        <div class="panel-head"><h2>Repository shape</h2><p>Choose a representative artifact.</p></div>
+        <nav id="file-list" class="file-list"></nav>
+      </aside>
+
+      <section class="panel viewer">
+        <div class="panel-head"><h2 id="file-title">Artifact</h2><p id="file-path" class="file-path"></p></div>
+        <pre id="file-content"></pre>
+      </section>
+
+      <aside class="panel state-panel">
+        <div class="panel-head"><h2>Current run state</h2><p>Re-rendered after every action.</p></div>
+        <div class="state">
+          <div id="state-grid" class="state-grid"></div>
+          <div id="last-change" class="last-change"></div>
+          <details><summary>Full machine state</summary><pre id="raw-state"></pre></details>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel section">
+      <div class="panel-head"><h2>Free play</h2><p>Try legal and illegal actions in any order.</p></div>
+      <div id="actions" class="controls button-grid"></div>
+    </section>
+
+    <section class="panel section">
+      <div class="panel-head"><h2>Guided walkthroughs</h2><p>Each tab resets the model to make awkward cases repeatable.</p></div>
+      <div class="walkthroughs">
+        <div id="tabs" class="tabs"></div>
+        <p id="walkthrough-copy" class="walkthrough-copy"></p>
+        <div id="walkthrough-steps" class="steps"></div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <div class="panel-head"><h2>Run event stream</h2><p>The proposed runner output is append-only; rejected actions appear here but do not mutate the run.</p></div>
+      <div id="events" class="events"></div>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">Human review frontier</div>
+      <h2>Decisions this prototype is asking you to make</h2>
+      <div class="questions">
+        <article class="panel question"><h3>1 · File boundary</h3><p>Should the protocol and guide be Markdown while scenario and manifest facts are YAML, with JSON Schema beside them?</p><div class="recommended">Recommendation: yes—do not encode long-lived norms as YAML prose.</div></article>
+        <article class="panel question"><h3>2 · Scenario structure</h3><p>Should assertions live beside the step that supplies their stimulus, while coverage allocations reference the stable scenario, step, and assertion IDs?</p><div class="recommended">Recommendation: yes—optimize the primary review path, then index mechanically.</div></article>
+        <article class="panel question"><h3>3 · Shared rules</h3><p>Should scenarios bind a protocol major version and cite stable rule IDs instead of copying authority, evidence, retry, and cleanup prose?</p><div class="recommended">Recommendation: yes—path + version + rule IDs; commit digest belongs in the Run Declaration.</div></article>
+        <article class="panel question"><h3>4 · Runtime records</h3><p>Should deviations, observations, Findings, checkpoints, and cleanup be typed JSONL events with derived human summaries and handoffs?</p><div class="recommended">Recommendation: yes—one append-only truth, multiple disposable views.</div></article>
+        <article class="panel question"><h3>5 · Identifier scope</h3><p>Should IDs be globally stable dot-separated strings, even when nested in a scenario file?</p><div class="recommended">Recommendation: yes for scenario/obligation/assertion; step and checkpoint IDs may be scenario-scoped.</div></article>
+        <article class="panel question"><h3>6 · Runner seam</h3><p>Should a future runner only validate, resolve, schedule, checkpoint, and emit records—never supply missing scenario semantics?</p><div class="recommended">Recommendation: yes—missing semantics are schema/authoring failures, not runner defaults.</div></article>
+      </div>
+    </section>
+
+    <footer>Built to answer “Prototype the public scenario and coverage-manifest format.” Open this file directly; it has no dependencies and stores no state.</footer>
+  </main>
+
+  <script type="text/plain" data-file="qa/protocol/v1.md" data-title="Scenario Protocol v1">
+# Booley QA Scenario Protocol v1
+
+Status: PROTOTYPE · Normative when adopted
+Protocol ID: booley.qa/scenario-protocol
+Version: 1
+
+## Rule SP-AUTH-001 · Frozen authority
+
+A run MUST freeze all optional authority in its Run Declaration before its first
+action. Missing authority is denied. A run MUST NOT pause for live approval.
+
+## Rule SP-EVID-001 · Assertion evidence
+
+An assertion outcome MUST identify its stimulus, expected observation,
+authoritative evidence class, immutable capture pointer, and dimensional identity.
+Agent prose and exit zero alone are insufficient.
+
+## Rule SP-CONT-001 · Continue-first execution
+
+An unexpected failure prunes only dependent work. After capture, the operator MUST
+attempt declared recovery and continue every independent runnable step.
+
+## Rule SP-CHK-001 · Durable checkpoints
+
+A completed checkpoint atomically flushes step transitions, assertion records,
+evidence pointers, repository identity, and owned-resource state. Resume MAY skip
+only revalidated completed checkpoints.
+
+## Rule SP-REC-001 · Append-only run record
+
+The Scenario Run Record is an ordered JSONL event stream. Corrections append a
+superseding event; they never rewrite an earlier observation.
+
+## Rule SP-CLEAN-001 · Owned-resource cleanup
+
+Every state-changing step MUST register exact owned resources and a terminal
+disposition. Cleanup runs after success, failure, or deadline exhaustion.
+  </script>
+
+  <script type="text/plain" data-file="qa/AUTHORING.md" data-title="Scenario Authoring Guide">
+# Authoring Booley QA scenarios
+
+Status: PROTOTYPE · Normative author responsibilities
+
+Execution semantics live in [Scenario Protocol v1](protocol/v1.md). Structural
+constraints live in the schemas. This guide does not duplicate either authority.
+
+## Start from obligations
+
+1. Select uncovered, stale, or changed Coverage Obligations.
+2. Fit them into one coherent Project journey.
+3. Pin the IP origin and revision, Booley release, lanes, capabilities, authority,
+   navigation sources, evidence classes, faults, recovery, checkpoints, and cleanup.
+4. Define stable steps and assertions.
+5. Allocate every Coverage Cell to a scenario, step, and assertion.
+
+## Authoring rules
+
+- Keep one stable `scenario_id` while the same Project journey survives.
+- Keep action intent and prohibited shortcuts precise; leave command spelling,
+  diagnostics, and implementation detail to the agent unless literal form is tested.
+- Put an assertion beside the step that creates its stimulus.
+- Reference shared protocol rules by stable rule ID. Tighten rules locally only when
+  necessary; never weaken authority, safety, evidence, or cleanup.
+- Treat a controlled fault as a complete baseline → fault → failure → recovery →
+  restored-state Verification Chain.
+- Register cleanup for every owned resource at the step that creates it.
+
+## Review gates
+
+Structural validation checks schemas, IDs, references, graphs, and allocations.
+Semantic review checks meaningful stimuli, evidence, authority, continuation,
+recovery, checkpoints, cleanup, and narrative coherence. A candidate rehearsal
+finds underspecification; a trustworthy product failure does not invalidate the
+scenario design.
+  </script>
+
+  <script type="text/plain" data-file="qa/coverage/manifest.yaml" data-title="Coverage manifest">
+schema: booley.qa/coverage-manifest/v1
+suite_id: booley-public-qa
+
+capability_groups:
+  - capability_group_id: project.initialization
+    title: Project Initialization
+    classification: supported
+    authority_refs:
+      - docs/user/SETUP.md#initialize-the-project--host
+
+obligations:
+  - obligation_id: project.init.idempotent-success
+    capability_group_id: project.initialization
+    facet: persistence
+    requirement: Repeating Project Initialization preserves an already-correct Project.
+    stimulus: Run the exact released `booley init` twice on the disposable Project.
+    expected: The second run reports ready and leaves managed state unchanged.
+    mandatory: true
+    evidence_class: stateful-lifecycle
+    navigation_refs:
+      - docs/user/SETUP.md#initialize-the-project--host
+    varies_by: [host_os]
+    verification_chain_id: project.init.lifecycle
+
+  - obligation_id: flow.sim.icarus-artifact-success
+    capability_group_id: flow.simulation
+    facet: success
+    requirement: Icarus simulation produces a passing structured result and fresh artifact.
+    stimulus: Run the pinned PicoRV32 smoke Target through the Simulation Flow.
+    expected: PASS grade with a fresh, content-verified simulation artifact.
+    mandatory: true
+    evidence_class: flow-eda
+    authority_refs:
+      - docs/user/FLOW_REFERENCE.md#simulation
+      - docs/user/SUPPORTED-EDA-TOOLS.md#built-in-flows
+    navigation_refs:
+      - docs/user/USAGE.md#running-a-booley-flow-directly
+    varies_by: [host_os]
+
+allocations:
+  - allocation_id: alloc.picorv32.linux.init-idempotent
+    obligation_id: project.init.idempotent-success
+    cell: {host_os: ubuntu-24.04-x86_64}
+    scenario_id: picorv32-demo-continuity
+    step_id: host.initialize-project
+    assertion_id: picorv32.init.idempotent
+
+  - allocation_id: alloc.picorv32.linux.icarus-smoke
+    obligation_id: flow.sim.icarus-artifact-success
+    cell: {host_os: ubuntu-24.04-x86_64}
+    scenario_id: picorv32-demo-continuity
+    step_id: flow.icarus-smoke
+    assertion_id: picorv32.sim.icarus-artifact
+  </script>
+
+  <script type="text/plain" data-file="qa/scenarios/picorv32-demo-continuity/scenario.yaml" data-title="PicoRV32 scenario slice">
+schema: booley.qa/scenario/v1
+scenario_id: picorv32-demo-continuity
+title: PicoRV32 published-demo continuity
+protocol:
+  path: ../../protocol/v1.md
+  protocol_id: booley.qa/scenario-protocol
+  version: 1
+  required_rules: [SP-AUTH-001, SP-EVID-001, SP-CONT-001, SP-CHK-001, SP-REC-001, SP-CLEAN-001]
+
+journey:
+  project_origin: https://github.com/boldaxolotl/booley-prj-picorv32
+  project_revision: b8fe2370cb9aa7d93617850169f42f07821865d6
+  upstream_origin: https://github.com/YosysHQ/picorv32
+  upstream_revision: a473fc8fca393771d83b0ffcf0b14db3393339d8
+  purpose: Prove the published demo remains operational with an exact released Booley.
+
+lanes:
+  host_os: [ubuntu-24.04-x86_64, windows-x86_64-docker-desktop-wsl2]
+  provider: [codex, claude]
+  required_modes: [interactive, ticket]
+
+run:
+  overall_timeout: PT8H
+  required_authorities:
+    - authority_id: upstream-rtl-edit
+      default: denied
+      effect: Any upstream RTL or testbench edit is prohibited for this run.
+  clean_room_navigation:
+    - ../../../docs/user/SETUP.md
+    - ../../../docs/user/USAGE.md
+    - ../../../docs/user/FLOW_REFERENCE.md
+
+checkpoints:
+  - checkpoint_id: project-ready
+    after_step: host.initialize-project
+  - checkpoint_id: simulation-evidenced
+    after_step: flow.icarus-smoke
+
+steps:
+  - step_id: host.initialize-project
+    title: Initialize the published Project twice
+    depends_on: []
+    intent: Prove automatic Host Bootstrap, initialization, and idempotence.
+    required_action:
+      - Install and identify the exact published Booley release.
+      - Run ordinary Project Initialization twice without consulting Booley source.
+    local_freedom:
+      - Native path spelling and shell mechanics.
+      - Diagnostic commands documented by Booley.
+    prohibited_shortcuts:
+      - A local wheel, editable install, development version, or Booley source import.
+      - Editing upstream RTL or testbench files.
+    timeout: PT45M
+    retry: {maximum: 1, class: documented-idempotent-retry}
+    continuation: Prune dependent runtime steps only; preserve captured failure and clean up.
+    assertions:
+      - assertion_id: picorv32.init.idempotent
+        lifecycle: established
+        obligation_refs: [project.init.idempotent-success]
+        mandatory: true
+        stimulus: Compare the first and second initialization against the captured baseline.
+        expect: The second run reports ready with no unintended managed-state drift.
+        evidence:
+          class: stateful-lifecycle
+          captures: [command-record, project-state-digest, generated-runtime-spec-digest]
+    owns:
+      - resource: disposable-project-root
+        disposition: restore-baseline
+    checkpoint_after: project-ready
+
+  - step_id: flow.icarus-smoke
+    title: Verify the published Icarus simulation path
+    depends_on: [host.initialize-project]
+    intent: Run the documented smoke Target and verify the result beyond exit status.
+    required_action:
+      - Invoke the Simulation Flow for the pinned Target through supported public guidance.
+      - Verify structured grade, Target and EDA identity, freshness, and artifact contents.
+    local_freedom: [Exact diagnostic route after the original observation is captured.]
+    prohibited_shortcuts: [Treating agent prose or exit zero as assertion evidence.]
+    timeout: PT30M
+    retry: {maximum: 1, class: reproducibility-only}
+    continuation: Capture failure, attempt declared recovery, then continue independent work.
+    assertions:
+      - assertion_id: picorv32.sim.icarus-artifact
+        lifecycle: established
+        obligation_refs: [flow.sim.icarus-artifact-success]
+        mandatory: true
+        stimulus: Execute the pinned simulation Target using Icarus.
+        expect: PASS grade and a fresh content-verified artifact for the exact Target.
+        evidence:
+          class: flow-eda
+          captures: [flow-result-json, simulation-log, verified-output-artifact]
+    checkpoint_after: simulation-evidenced
+  </script>
+
+  <script type="text/plain" data-file="qa/schemas/scenario-v1.schema.json" data-title="Scenario schema seam">
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "booley.qa/scenario/v1",
+  "title": "Booley QA scenario",
+  "type": "object",
+  "required": ["schema", "scenario_id", "protocol", "journey", "lanes", "run", "steps"],
+  "properties": {
+    "schema": {"const": "booley.qa/scenario/v1"},
+    "scenario_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "protocol": {
+      "type": "object",
+      "required": ["path", "protocol_id", "version", "required_rules"]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/step"}
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": ["step_id", "title", "depends_on", "intent", "required_action",
+                   "local_freedom", "prohibited_shortcuts", "timeout", "retry",
+                   "continuation", "assertions"],
+      "properties": {
+        "step_id": {"type": "string"},
+        "assertions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/assertion"}
+        }
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "required": ["assertion_id", "lifecycle", "obligation_refs", "mandatory",
+                   "stimulus", "expect", "evidence"]
+    }
+  }
+}
+  </script>
+
+  <script type="text/plain" data-file="qa/runs/RUN-2026-09-07-001/events.jsonl" data-title="Generated run events" data-generated="true">
+{"event":"run_declared","seq":1,"run_id":"RUN-2026-09-07-001","scenario_id":"picorv32-demo-continuity","scenario_digest":"sha256:…","protocol_version":1,"run_purpose":"qualification","booley_release":"0.2.13","lane":{"host_os":"ubuntu-24.04-x86_64","provider":"codex","modes":["interactive","ticket"]},"authority":{"upstream-rtl-edit":"denied"}}
+{"event":"assertion_observed","seq":8,"step_id":"flow.icarus-smoke","assertion_id":"picorv32.sim.icarus-artifact","outcome":"fail","stimulus_ref":"evidence/commands/0007.json","expected":"PASS grade with fresh verified artifact","observed":"Flow returned execution error before artifact creation","evidence_refs":["evidence/flow/0008-result.json","evidence/logs/0008.log"]}
+{"event":"deviation_recorded","seq":9,"deviation_id":"DEV-0001","class":"incidental","step_id":"flow.icarus-smoke","description":"Used documented verbose diagnostics before the permitted retry","invalidates":[]}
+{"event":"finding_recorded","seq":10,"finding_id":"FND-0001","kind":"finding","bucket":"booley","reproduction_status":"not-attempted","step_id":"flow.icarus-smoke","assertion_id":"picorv32.sim.icarus-artifact","observed":"Simulation failed before artifact creation","expected":"Published demo smoke simulation passes","reproduction":"Run the declared scenario step against the frozen inputs","evidence_refs":["evidence/flow/0008-result.json","evidence/logs/0008.log"]}
+{"event":"checkpoint_completed","seq":14,"checkpoint_id":"simulation-evidenced","digest":"sha256:…","repository_identity":"b8fe2370…","owned_resources":[{"resource":"disposable-project-root","state":"registered"}]}
+  </script>
+
+  <script type="text/plain" data-file="qa/runs/RUN-2026-09-07-001/consolidate-findings.json" data-title="Generated Consolidate Findings handoff" data-generated="true">
+{
+  "schema": "booley.qa/consolidate-findings-handoff/v1",
+  "run_id": "RUN-2026-09-07-001",
+  "source_event_stream": {
+    "path": "events.jsonl",
+    "digest": "sha256:…"
+  },
+  "records": [
+    {
+      "source_ref": "RUN-2026-09-07-001/FND-0001",
+      "kind": "finding",
+      "bucket": "booley",
+      "original_text_ref": "events.jsonl#seq=10",
+      "step_id": "flow.icarus-smoke",
+      "assertion_id": "picorv32.sim.icarus-artifact",
+      "evidence_refs": ["evidence/flow/0008-result.json", "evidence/logs/0008.log"]
+    }
+  ],
+  "reconciliation": {"raw_observations": 1, "findings": 1, "wins": 0, "omitted": 0}
+}
+  </script>
+
+  <script>
+    const PrototypeModel = (() => {
+      const initialState = () => ({
+        phase: "unloaded",
+        suiteLoaded: false,
+        declarationFrozen: false,
+        activeStep: null,
+        assertion: "not reached",
+        trustworthyEvidence: 0,
+        deviations: 0,
+        findings: 0,
+        checkpoint: "none",
+        handoff: "not built",
+        operationalCompletion: "running",
+        qaVerdict: "inconclusive",
+        lastChange: "Open a file or load the suite to begin.",
+        events: []
+      });
+
+      const describe = {
+        LOAD_SUITE: "Load and validate normative suite",
+        FREEZE_RUN: "Freeze Run Declaration",
+        START_STEP: "Start Icarus smoke step",
+        RECORD_PASS: "Record pass with evidence",
+        RECORD_FAIL: "Record trustworthy failure",
+        PASS_WITHOUT_EVIDENCE: "Attempt pass without evidence",
+        CAPTURE_DEVIATION: "Capture incidental deviation",
+        CAPTURE_FINDING: "Capture raw Finding",
+        FLUSH_CHECKPOINT: "Flush durable checkpoint",
+        BUILD_HANDOFF: "Build Consolidate Findings handoff",
+        REQUEST_APPROVAL: "Attempt live approval pause",
+        RESET: "Reset run"
+      };
+
+      function event(state, type, message, rejected = false) {
+        return [...state.events, {seq: state.events.length + 1, type, message, rejected}];
+      }
+
+      function reject(state, type, message) {
+        return {...state, lastChange: `Rejected: ${message}`, events: event(state, type, message, true)};
+      }
+
+      function reduce(state, action) {
+        const type = action.type;
+        if (type === "RESET") return initialState();
+
+        if (type === "LOAD_SUITE") {
+          if (state.suiteLoaded) return reject(state, type, "the suite is already loaded");
+          return {...state, phase: "ready", suiteLoaded: true,
+            lastChange: "Schemas, references, IDs, and dependency graph validated.",
+            events: event(state, type, "Normative suite loaded and validated")};
+        }
+
+        if (type === "FREEZE_RUN") {
+          if (!state.suiteLoaded) return reject(state, type, "load and validate the suite first");
+          if (state.declarationFrozen) return reject(state, type, "the Run Declaration is immutable once frozen");
+          return {...state, phase: "declared", declarationFrozen: true,
+            lastChange: "Exact inputs, capabilities, lane, and denied upstream-edit authority frozen.",
+            events: event(state, type, "Run Declaration frozen")};
+        }
+
+        if (type === "START_STEP") {
+          if (!state.declarationFrozen) return reject(state, type, "a step cannot begin before the Run Declaration is frozen");
+          if (state.activeStep) return reject(state, type, "finish or checkpoint the active step first");
+          return {...state, phase: "executing", activeStep: "flow.icarus-smoke",
+            lastChange: "Step started with its declared timeout, retry class, and authority.",
+            events: event(state, type, "Started flow.icarus-smoke")};
+        }
+
+        if (type === "PASS_WITHOUT_EVIDENCE") {
+          if (!state.activeStep) return reject(state, type, "no assertion stimulus is active");
+          return reject(state, type, "agent prose and exit status cannot satisfy a Flow/EDA assertion");
+        }
+
+        if (type === "RECORD_PASS") {
+          if (!state.activeStep) return reject(state, type, "start the scenario step first");
+          return {...state, assertion: "pass", trustworthyEvidence: state.trustworthyEvidence + 3,
+            qaVerdict: "pass", lastChange: "PASS recorded with result JSON, log, and verified fresh artifact.",
+            events: event(state, type, "Recorded evidence-backed assertion pass")};
+        }
+
+        if (type === "RECORD_FAIL") {
+          if (!state.activeStep) return reject(state, type, "start the scenario step first");
+          return {...state, assertion: "fail", trustworthyEvidence: state.trustworthyEvidence + 2,
+            qaVerdict: "fail", lastChange: "Original failure preserved; only dependent work is pruned.",
+            events: event(state, type, "Recorded trustworthy product failure")};
+        }
+
+        if (type === "CAPTURE_DEVIATION") {
+          if (!state.declarationFrozen) return reject(state, type, "deviations are meaningful only inside a declared run");
+          return {...state, deviations: state.deviations + 1,
+            lastChange: "Incidental diagnostic variation recorded without changing the assertion.",
+            events: event(state, type, "Appended deviation_recorded event")};
+        }
+
+        if (type === "CAPTURE_FINDING") {
+          if (state.assertion !== "fail") return reject(state, type, "capture a contradictory trustworthy observation first");
+          return {...state, findings: state.findings + 1,
+            lastChange: "Raw Finding appended with original observation and immutable evidence pointers.",
+            events: event(state, type, "Appended finding_recorded event")};
+        }
+
+        if (type === "FLUSH_CHECKPOINT") {
+          if (!state.activeStep || state.assertion === "not reached") return reject(state, type, "a checkpoint needs a completed assertion record");
+          return {...state, phase: "checkpointed", activeStep: null, checkpoint: "simulation-evidenced",
+            lastChange: "Step, evidence, repository identity, and owned-resource ledger flushed atomically.",
+            events: event(state, type, "Completed checkpoint simulation-evidenced")};
+        }
+
+        if (type === "BUILD_HANDOFF") {
+          if (state.checkpoint === "none") return reject(state, type, "finalize at least one durable checkpoint first");
+          const complete = state.assertion === "pass" || (state.assertion === "fail" && state.findings > 0);
+          if (!complete) return reject(state, type, "a trustworthy failure needs a reconciled Finding before handoff");
+          return {...state, phase: "finalized", handoff: "built", operationalCompletion: "complete",
+            lastChange: "Derived handoff reconciles every raw observation; the JSONL stream remains authoritative.",
+            events: event(state, type, "Built Consolidate Findings handoff")};
+        }
+
+        if (type === "REQUEST_APPROVAL") {
+          return reject(state, type, "the protocol forbids live approval; absent pre-run authority means denied");
+        }
+
+        return reject(state, type, "unknown action");
+      }
+
+      return {initialState, reduce, describe};
+    })();
+
+    const fileNodes = [...document.querySelectorAll("script[data-file]")].map(node => ({
+      path: node.dataset.file,
+      title: node.dataset.title,
+      generated: node.dataset.generated === "true",
+      content: node.textContent.trim()
+    }));
+
+    const actions = [
+      "LOAD_SUITE", "FREEZE_RUN", "START_STEP", "RECORD_PASS", "RECORD_FAIL",
+      "PASS_WITHOUT_EVIDENCE", "CAPTURE_DEVIATION", "CAPTURE_FINDING",
+      "FLUSH_CHECKPOINT", "BUILD_HANDOFF", "REQUEST_APPROVAL", "RESET"
+    ];
+
+    const walkthroughs = [
+      {
+        title: "Evidence-backed pass",
+        copy: "Watch the declaration freeze before work, and notice that pass is accepted only with all three evidence captures.",
+        steps: ["LOAD_SUITE", "FREEZE_RUN", "START_STEP", "RECORD_PASS", "FLUSH_CHECKPOINT", "BUILD_HANDOFF"]
+      },
+      {
+        title: "Continue-first failure",
+        copy: "A trustworthy failure remains fail. The run records a Finding, checkpoints what it knows, and still produces the downstream handoff.",
+        steps: ["LOAD_SUITE", "FREEZE_RUN", "START_STEP", "RECORD_FAIL", "CAPTURE_DEVIATION", "CAPTURE_FINDING", "FLUSH_CHECKPOINT", "BUILD_HANDOFF"]
+      },
+      {
+        title: "Forbidden shortcuts",
+        copy: "The model rejects execution before declaration, pass-by-prose, and live approval without mutating authoritative state.",
+        steps: ["START_STEP", "LOAD_SUITE", "FREEZE_RUN", "START_STEP", "PASS_WITHOUT_EVIDENCE", "REQUEST_APPROVAL"]
+      }
+    ];
+
+    let state = PrototypeModel.initialState();
+    let activeFile = 0;
+    let activeWalkthrough = 0;
+    let walkthroughIndex = 0;
+
+    function renderFiles() {
+      const list = document.getElementById("file-list");
+      list.innerHTML = "";
+      fileNodes.forEach((file, index) => {
+        const button = document.createElement("button");
+        button.className = `file-button${index === activeFile ? " active" : ""}${file.generated ? " generated" : ""}`;
+        button.textContent = file.path;
+        button.onclick = () => { activeFile = index; renderFiles(); renderViewer(); };
+        list.appendChild(button);
+      });
+    }
+
+    function renderViewer() {
+      const file = fileNodes[activeFile];
+      document.getElementById("file-title").textContent = file.title;
+      document.getElementById("file-path").textContent = file.path;
+      document.getElementById("file-content").textContent = file.content;
+    }
+
+    function renderState() {
+      const data = [
+        ["Phase", state.phase], ["Declaration", state.declarationFrozen ? "frozen" : "not frozen"],
+        ["Active step", state.activeStep || "none"], ["Assertion", state.assertion],
+        ["Evidence", `${state.trustworthyEvidence} captures`], ["Checkpoint", state.checkpoint],
+        ["Deviations", state.deviations], ["Findings", state.findings],
+        ["QA verdict", state.qaVerdict], ["Handoff", state.handoff]
+      ];
+      const grid = document.getElementById("state-grid");
+      grid.innerHTML = "";
+      data.forEach(([label, value]) => {
+        const item = document.createElement("div");
+        item.className = "datum";
+        const statusClass = value === "pass" || value === "built" || value === "frozen" ? "status-good" : value === "fail" ? "status-bad" : "";
+        item.innerHTML = `<span class="label">${label}</span><span class="value ${statusClass}">${value}</span>`;
+        grid.appendChild(item);
+      });
+      document.getElementById("last-change").textContent = state.lastChange;
+      document.getElementById("raw-state").textContent = JSON.stringify(state, null, 2);
+    }
+
+    function renderActions() {
+      const area = document.getElementById("actions");
+      area.innerHTML = "";
+      actions.forEach(type => {
+        const button = document.createElement("button");
+        button.className = `action${type === "PASS_WITHOUT_EVIDENCE" || type === "REQUEST_APPROVAL" ? " danger" : ""}`;
+        button.textContent = PrototypeModel.describe[type];
+        button.onclick = () => dispatch(type, false);
+        area.appendChild(button);
+      });
+    }
+
+    function renderWalkthroughs() {
+      const tabs = document.getElementById("tabs");
+      tabs.innerHTML = "";
+      walkthroughs.forEach((walkthrough, index) => {
+        const button = document.createElement("button");
+        button.className = `tab${index === activeWalkthrough ? " active" : ""}`;
+        button.textContent = walkthrough.title;
+        button.onclick = () => {
+          activeWalkthrough = index;
+          walkthroughIndex = 0;
+          state = PrototypeModel.initialState();
+          renderAll();
+        };
+        tabs.appendChild(button);
+      });
+
+      const walkthrough = walkthroughs[activeWalkthrough];
+      document.getElementById("walkthrough-copy").textContent = walkthrough.copy;
+      const steps = document.getElementById("walkthrough-steps");
+      steps.innerHTML = "";
+      walkthrough.steps.forEach((type, index) => {
+        if (index) {
+          const arrow = document.createElement("span");
+          arrow.className = "arrow";
+          arrow.textContent = "→";
+          steps.appendChild(arrow);
+        }
+        const button = document.createElement("button");
+        button.className = `step-button${index === walkthroughIndex ? " next" : ""}${index < walkthroughIndex ? " done" : ""}`;
+        button.textContent = PrototypeModel.describe[type];
+        button.onclick = () => {
+          if (index !== walkthroughIndex) return;
+          dispatch(type, true);
+        };
+        steps.appendChild(button);
+      });
+    }
+
+    function renderEvents() {
+      const events = document.getElementById("events");
+      events.innerHTML = "";
+      if (!state.events.length) {
+        events.innerHTML = '<div class="event"><code>empty</code><span>No actions recorded yet.</span></div>';
+        return;
+      }
+      [...state.events].reverse().forEach(entry => {
+        const row = document.createElement("div");
+        row.className = `event${entry.rejected ? " error" : ""}`;
+        row.innerHTML = `<code>${String(entry.seq).padStart(3, "0")} ${entry.rejected ? "REJECT" : "APPEND"}</code><span>${entry.message}</span>`;
+        events.appendChild(row);
+      });
+    }
+
+    function dispatch(type, fromWalkthrough) {
+      state = PrototypeModel.reduce(state, {type});
+      if (fromWalkthrough) walkthroughIndex += 1;
+      renderState();
+      renderWalkthroughs();
+      renderEvents();
+    }
+
+    function renderAll() {
+      renderFiles();
+      renderViewer();
+      renderState();
+      renderActions();
+      renderWalkthroughs();
+      renderEvents();
+    }
+
+    renderAll();
+  </script>
+</body>
+</html>
