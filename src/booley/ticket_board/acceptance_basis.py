@@ -102,7 +102,12 @@ class AcceptancePathPolicy:
 
     schema: int = SCHEMA_VERSION
 
-    def discover(self, project_root: Path | str) -> tuple[str, ...]:
+    def discover(
+        self,
+        project_root: Path | str,
+        *,
+        git_owner: Path | None = None,
+    ) -> tuple[str, ...]:
         if (
             not isinstance(self.schema, int)
             or isinstance(self.schema, bool)
@@ -112,7 +117,9 @@ class AcceptancePathPolicy:
         from .acceptance_targets import acceptance_control_paths
 
         try:
-            return acceptance_control_paths(project_root)
+            root = Path(project_root)
+            command = tuple(_worktree_git_command(root, git_owner)) if git_owner else ("git",)
+            return acceptance_control_paths(root, git_command=command)
         except (OSError, ValueError) as exc:
             raise AcceptanceBasisError(
                 f"{BLOCK_REASON}: protected-input discovery failed in {project_root}: {exc}"
@@ -955,15 +962,116 @@ def assert_live_inputs_unchanged(
         )
 
 
+def assert_candidate_inputs_unchanged(
+    basis: AcceptanceBasis,
+    project_root: Path | str,
+    live_checkout: Path | str,
+    generated_reference: Path | str,
+) -> None:
+    """Reject protected live changes, allowing only matching generated inputs."""
+    root = Path(project_root).resolve()
+    live = Path(live_checkout).resolve()
+    reference = Path(generated_reference).resolve()
+    prefix = _project_path_prefix(reference)
+    outer = basis.participant("outer")
+    outer_recorded = _require_participant_worktree(root, outer, live)
+    project = next((item for item in basis.participants if item.role == "project"), None)
+    project_state = _candidate_project_worktree(root, live, prefix, project)
+    _prefix, outer_protected, project_protected = _candidate_protected_inputs(
+        live,
+        reference,
+        basis,
+        git_owner=root,
+    )
+    _assert_repository_inputs_unchanged(
+        live,
+        outer.authoring_sha,
+        outer_protected,
+        git_owner=root,
+        generated_reference=reference,
+        generated_checkout_root=outer_recorded,
+        excluded_prefixes=(prefix,) if project is not None else (),
+        include_reference_only_generated=False,
+    )
+    if project is None:
+        return
+    assert project_state is not None
+    project_owner, project_live, project_recorded = project_state
+    _assert_repository_inputs_unchanged(
+        project_live,
+        project.authoring_sha,
+        project_protected,
+        git_owner=project_owner,
+        generated_reference=reference / prefix,
+        generated_checkout_root=project_recorded.parent,
+        ticket_prefix=prefix,
+        include_reference_only_generated=False,
+    )
+
+
+def _candidate_project_worktree(
+    root: Path,
+    live: Path,
+    prefix: str,
+    participant: BasisParticipant | None,
+) -> tuple[Path, Path, Path] | None:
+    if participant is None:
+        return None
+    owner = _project_repository(root)
+    candidate = live / prefix.rstrip("/")
+    recorded = _require_participant_worktree(owner, participant, candidate)
+    return owner, candidate, recorded
+
+
+def _require_participant_worktree(
+    owner: Path,
+    participant: BasisParticipant,
+    candidate: Path,
+) -> Path:
+    expected = worktree_for_ref(owner, participant.ticket_ref)
+    if expected is None:
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: no registered worktree for {participant.ticket_ref}"
+        )
+    if not _same_worktree_directory(candidate, expected):
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: live checkout {candidate} is not the registered "
+            f"worktree for {participant.ticket_ref}"
+        )
+    recorded = _recorded_worktree_path(owner, participant.ticket_ref)
+    if recorded is None:
+        raise AcceptanceBasisError(
+            f"{BLOCK_REASON}: registered worktree for {participant.ticket_ref} disappeared"
+        )
+    return recorded
+
+
 def _partition_protected_inputs(
     root: Path,
     basis: AcceptanceBasis,
 ) -> tuple[str, set[str], set[str]]:
     protected = _basis_control_paths(root, basis, PATH_POLICY.discover)
-    try:
-        prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
-    except (FileNotFoundError, ValueError):
-        prefix = f"{PROJECT_DIR_NAME}/"
+    return _partition_discovered_inputs(root, basis, protected)
+
+
+def _candidate_protected_inputs(
+    live: Path,
+    reference: Path,
+    basis: AcceptanceBasis,
+    *,
+    git_owner: Path,
+) -> tuple[str, set[str], set[str]]:
+    protected = set(PATH_POLICY.discover(live, git_owner=git_owner))
+    protected.update(PATH_POLICY.discover(reference))
+    return _partition_discovered_inputs(reference, basis, protected)
+
+
+def _partition_discovered_inputs(
+    root: Path,
+    basis: AcceptanceBasis,
+    protected: set[str],
+) -> tuple[str, set[str], set[str]]:
+    prefix = _project_path_prefix(root)
     outer_protected = {path for path in protected if not path.startswith(prefix)}
     project = next((row for row in basis.participants if row.role == "project"), None)
     if project is None:
@@ -973,6 +1081,13 @@ def _partition_protected_inputs(
     }
     project_protected.add("acceptance/bases")
     return prefix, outer_protected, project_protected
+
+
+def _project_path_prefix(root: Path) -> str:
+    try:
+        return checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
+    except (FileNotFoundError, ValueError):
+        return f"{PROJECT_DIR_NAME}/"
 
 
 def _basis_control_paths(root: Path, basis: AcceptanceBasis, discover: Any) -> set[str]:
@@ -1379,6 +1494,7 @@ def _assert_repository_inputs_unchanged(
     generated_checkout_root: Path | None = None,
     ticket_prefix: str = "",
     excluded_prefixes: tuple[str, ...] = (),
+    include_reference_only_generated: bool = True,
 ) -> None:
     changed = _repository_changed_paths(
         repository,
@@ -1387,6 +1503,7 @@ def _assert_repository_inputs_unchanged(
         generated_reference=generated_reference,
         generated_checkout_root=generated_checkout_root,
         excluded_prefixes=excluded_prefixes,
+        include_reference_only_generated=include_reference_only_generated,
     )
     violations = sorted(
         path
@@ -1412,6 +1529,7 @@ def _repository_changed_paths(
     generated_reference: Path | None,
     generated_checkout_root: Path | None,
     excluded_prefixes: tuple[str, ...],
+    include_reference_only_generated: bool = True,
 ) -> set[str]:
     pathspec = (
         ("--", ".", *(f":(exclude,literal){prefix.rstrip('/')}" for prefix in excluded_prefixes))
@@ -1434,9 +1552,12 @@ def _repository_changed_paths(
             generated_commands,
             None,
         )
+        candidates = (
+            generated | reference_generated if include_reference_only_generated else generated
+        )
         generated = {
             path
-            for path in generated | reference_generated
+            for path in candidates
             if not _same_generated_path(
                 repository / path,
                 generated_reference / path,

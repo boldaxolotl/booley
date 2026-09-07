@@ -312,6 +312,8 @@ def _validate_source_surface(
             _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
             _materialize_surface_submodules(root, temporary)
+            # This is a fresh composite of the recorded source commits, never a
+            # reused live Ticket Workspace, so exact basis semantics apply.
             assert_inputs_unchanged(basis, temporary)
             from ..acceptance_targets import validate_binding_selectors
 
@@ -589,6 +591,8 @@ def _validate_candidate_surface(
         )
     try:
         _materialize_surface_submodules(transaction.root, outer)
+        # This is a fresh composite of the prepared candidate commits, never a
+        # reused live Ticket Workspace, so exact basis semantics apply.
         assert_inputs_unchanged(transaction.basis, outer)
     except AcceptanceBasisError as exc:
         raise AcceptanceOperationError(str(exc)) from exc

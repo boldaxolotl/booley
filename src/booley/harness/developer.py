@@ -1477,17 +1477,15 @@ def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
     if basis is None:
         logger.warning("Ticket %s reaches handoff without an Acceptance Basis", ctx.slug)
         return False
-    from booley.ticket_board.acceptance_basis import (
-        BLOCK_REASON,
-        AcceptanceBasisError,
-        assert_inputs_unchanged,
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+    from booley.ticket_board.acceptance_validation import (
+        assert_ticket_worktree_inputs_unchanged,
     )
 
     try:
-        assert_inputs_unchanged(basis, ctx.work_dir)
+        assert_ticket_worktree_inputs_unchanged(ctx.project_root, basis, ctx.work_dir)
     except (OSError, AcceptanceBasisError) as exc:
-        reason = f"{BLOCK_REASON}: {exc}"
-        block_ticket(ctx, reason, "developer", run_index=run_index)
+        block_ticket(ctx, str(exc), "developer", run_index=run_index)
         return True
     return False
 
