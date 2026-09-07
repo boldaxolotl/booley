@@ -73,7 +73,8 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     ordered_steps = (
         'python -m booley.ticket_board return-to-draft "$SLUG"',
         "Correct the authoring filesets",
-        'python -m booley.ticket_board validate-ticket "$DRAFT_PATH" --check-git',
+        "Resolve the moved Ticket's absolute path",
+        'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
         'python -m booley.ticket_board enqueue "$SLUG"',
     )
     positions = [blocked.index(step) for step in ordered_steps]
@@ -86,6 +87,8 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     assert "`outer_worktree` and `project_worktree`" in blocked
     assert "`booley board return-to-draft" not in blocked
     assert "`booley board enqueue" not in blocked
+    assert "published and enqueued" in blocked
+    assert "published and queued" not in blocked
     assert "| Returned to draft | <n> | ... |" in summary
 
 

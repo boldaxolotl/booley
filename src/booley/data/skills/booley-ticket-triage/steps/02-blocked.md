@@ -157,13 +157,13 @@ For an unblock retry:
   2. Correct the authoring filesets and any other Acceptance Basis inputs in
      the returned `outer_worktree` and `project_worktree` (when present), and
      update the draft Ticket when its authored fields must change.
-  3. Run
-     `python -m booley.ticket_board validate-ticket "$DRAFT_PATH" --check-git`
-     and fix every error before continuing. `$DRAFT_PATH` is the moved Ticket's
-     absolute path under the Project's `tickets/board/drafts/` directory.
+  3. Resolve the moved Ticket's absolute path under the Project's
+     `tickets/board/drafts/` directory, then run
+     `python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git`
+     and fix every error before continuing.
   4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
      Acceptance Basis, then print:
-     `Returned to draft -> corrected authoring generation published and queued.`
+     `Returned to draft -> corrected authoring generation published and enqueued.`
 
   Do not use the main checkout for the authoring corrections: use the worktree
   paths emitted as JSON by `return-to-draft`. This is a new authoring generation,
