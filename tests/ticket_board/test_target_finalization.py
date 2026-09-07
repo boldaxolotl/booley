@@ -10,6 +10,7 @@ import pytest
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import UnknownTargetError
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.target_finalization import (
     TargetFinalizationError,
@@ -111,7 +112,7 @@ def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> Non
     assert "# candidate comment stays byte-for-byte\n[candidate]" in tests_toml.read_text(
         encoding="utf-8"
     )
-    with pytest.raises(fusesoc_registry.UnknownTargetError):
+    with pytest.raises(UnknownTargetError):
         TargetCatalog.build(tmp_path).select(canonical)
 
 

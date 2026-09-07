@@ -19,7 +19,13 @@ from booley.fusesoc.core_projection import (
 )
 from booley.targets import target_surface
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle, TargetRef
+from booley.targets.domain import (
+    AmbiguousTargetError,
+    IncompatibleTargetError,
+    TargetHandle,
+    TargetRef,
+    UnknownTargetError,
+)
 from booley.targets.selection import minimal_selector
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
@@ -164,9 +170,9 @@ class TestTargetInterface:
             flow: expected for flow, (_authored, expected) in cases.items()
         }
         assert all(handle.project_root == project.resolve() for handle in selected.values())
-        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+        with pytest.raises(AmbiguousTargetError):
             select_target(project, "lint", for_flow="lint")
-        with pytest.raises(fusesoc_registry.IncompatibleTargetError):
+        with pytest.raises(IncompatibleTargetError):
             select_target(project, "sim", for_flow="lint")
 
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
@@ -716,11 +722,11 @@ class TestCollectSurface:
         assert all(
             entry.name != "lint_selftest_bad" for entry in collect_surface(project).entries()
         )
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             detail_payload(project, "lint_selftest_bad", resolve=False)
 
     def test_doctor_can_select_its_private_selftest(self, project: Path, monkeypatch):
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             select_target(project, "lint_selftest_bad", for_flow="lint")
 
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
@@ -735,7 +741,7 @@ class TestCollectSurface:
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             select_targets(project, "lint_selftest_bad")
 
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
@@ -979,9 +985,9 @@ class TestDetail:
         assert "resolved" not in payload and "resolved_error" not in payload
 
     def test_unknown_and_ambiguous_tokens_raise(self, project: Path):
-        with pytest.raises(fusesoc_registry.UnknownTargetError):
+        with pytest.raises(UnknownTargetError):
             detail_payload(project, "ghost", resolve=False)
-        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+        with pytest.raises(AmbiguousTargetError):
             detail_payload(project, "lint", resolve=False)
 
     def test_resolution_failure_degrades_to_error_field(self, project: Path):

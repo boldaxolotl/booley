@@ -245,8 +245,8 @@ def detail_payload(
     The cheap half always fills in (enumeration + Doctor metadata); when enabled,
     the resolved half runs ``fusesoc run --setup`` and lands under ``"resolved"``.
     A resolution failure lands under ``"resolved_error"`` instead of raising. Unknown and
-    ambiguous *token*\\ s DO raise (:class:`fusesoc_registry.UnknownTargetError`
-    / :class:`fusesoc_registry.AmbiguousTargetError`) — their messages already
+    ambiguous *token*\\ s DO raise (:class:`booley.targets.domain.UnknownTargetError`
+    / :class:`booley.targets.domain.AmbiguousTargetError`) — their messages already
     name the candidates. The remaining keyword arguments mirror
     :func:`fusesoc_registry.resolve_target`.
     """

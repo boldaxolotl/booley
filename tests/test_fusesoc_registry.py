@@ -12,18 +12,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc import selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
-    AmbiguousTargetError,
     CoreCollisionError,
     FuseSocError,
-    IncompatibleTargetError,
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
-    UnknownTargetError,
     _enumerate_all,
     _missing_target_sources,
     _preflight_target_sources,
@@ -52,10 +49,8 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.fusesoc.fusesoc_registry import (
     _resolve_ref as resolve_ref,
 )
-from booley.fusesoc.fusesoc_registry import (
-    _resolve_target_selection as resolve_target_selection,
-)
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import touch_declared_sources
@@ -86,6 +81,14 @@ def doctor_target_seed(project_root: Path | str) -> list[str]:
             if handle.doctor_flows
         )
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("AmbiguousTargetError", "IncompatibleTargetError", "UnknownTargetError"),
+)
+def test_selection_errors_are_not_reexported(name: str) -> None:
+    assert not hasattr(fusesoc_registry, name)
 
 
 def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
@@ -462,7 +465,7 @@ class TestCoreTargetEdaTool:
 
 
 # ---------------------------------------------------------------------------
-# available_targets / target_eda_tools / resolve_target_selection (decision 10/11)
+# available_targets / target_eda_tools (decision 10/11)
 # ---------------------------------------------------------------------------
 
 
@@ -494,10 +497,11 @@ class TestAvailableTargets:
         assert available_targets(tmp_path) == []
         assert target_eda_tools(tmp_path) == {}
         with pytest.raises(UnknownTargetError, match="Unknown target"):
-            resolve_target_selection("lint_selftest_bad", tmp_path)
+            TargetCatalog.build(tmp_path).select("lint_selftest_bad")
 
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        assert resolve_target_selection("lint_selftest_bad", tmp_path) == ["lint_selftest_bad"]
+        handle = TargetCatalog.build(tmp_path).select("lint_selftest_bad")
+        assert handle.selector == "lint_selftest_bad"
 
 
 class TestDoctorTargetMetadata:
@@ -589,60 +593,6 @@ class TestDoctorTargetMetadata:
         assert core_target_doctor_flows(doc, "fpga_board") == ("fpga",)
         assert doctor_target_selectors(tmp_path, "fpga") == ["fpga_board"]
         assert "fpga_board" in doctor_target_seed(tmp_path)
-
-
-class TestResolveConfigSelection:
-    def test_validates_named_targets(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        assert resolve_target_selection("sim", tmp_path) == ["sim"]
-
-    def test_unknown_target_raises(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        with pytest.raises(UnknownTargetError, match="Unknown target"):
-            resolve_target_selection("nope", tmp_path)
-
-    def test_ambiguous_bare_token_raises(self, tmp_path: Path):
-        # A bare name declared by >1 distinct core is ambiguous at selection.
-        _write_core(tmp_path / "a")
-        _write_core(tmp_path / "b", _CORE_TEXT.replace("::demo_core:0", "::other:0"))
-        with pytest.raises(AmbiguousTargetError):
-            resolve_target_selection("sim", tmp_path)
-        # ...but a vlnv#name token disambiguates and passes through verbatim.
-        assert resolve_target_selection("demo_core#sim", tmp_path) == ["demo_core#sim"]
-
-    def test_empty_returns_nothing(self, tmp_path: Path):
-        # ADR 0030: empty selection is [] unconditionally — no enumerate-all
-        # fallback (a Flow with no --target and no configured Target refuses).
-        _write_core(tmp_path / "ip")
-        assert resolve_target_selection("", tmp_path) == []
-
-    def test_flow_compatible_target_is_selectable_for_execution(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        assert resolve_target_selection("sim", tmp_path, for_flow="sim") == ["sim"]
-
-    def test_flow_incompatible_target_is_rejected_before_execution(self, tmp_path: Path):
-        core = _CORE_TEXT.replace(
-            "  sim:\n",
-            "  synth:\n"
-            "    default_tool: yosys\n"
-            "    flow: generic\n"
-            "    flow_options: {tool: yosys}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: counter\n"
-            "  sim:\n",
-        )
-        _write_core(tmp_path / "ip", core)
-
-        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for-flow sim"):
-            resolve_target_selection("synth", tmp_path, for_flow="sim")
-
-    def test_no_core_rejects_any_token(self, tmp_path: Path):
-        """ADR 0039: a resolvable .core Target is a precondition — the old
-        zero-.core transitional skip (raw tokens passed through unvalidated)
-        is gone, so a project with no .core rejects every selection instead
-        of silently accepting names nothing can resolve."""
-        with pytest.raises(UnknownTargetError):
-            resolve_target_selection("anything", tmp_path)
 
 
 # ---------------------------------------------------------------------------
