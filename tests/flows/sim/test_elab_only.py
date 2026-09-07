@@ -21,8 +21,8 @@ from booley.flows.sim.build import (
 )
 from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, TargetResult
 from booley.flows.sim.flow import TestResult as SimTestResult
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.mcp.schema_extractor import extract_schema
+from booley.flows.sim.mode import SimulationMode
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
 
 def _result(output: str, *, rc: int = 0, **kwargs: object) -> SubprocessResult:
@@ -49,35 +49,68 @@ def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
                 str(tmp_path / "reports"),
                 "--target",
                 ",".join(targets),
-                "--elab-only",
+                "--mode",
+                "elab-only",
             ]
         )
     flow.read_state()
     return flow
 
 
-def test_elab_only_and_build_only_share_one_destination(tmp_path: Path) -> None:
-    canonical = SimulateFlow()
-    canonical.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--elab-only"])
-    alias = SimulateFlow()
-    alias.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--build-only"])
+@pytest.mark.parametrize(
+    ("spelling", "expected"),
+    [
+        ("simulate", SimulationMode.SIMULATE),
+        ("elab-only", SimulationMode.ELAB_ONLY),
+        ("elab_only_standalone", SimulationMode.ELAB_ONLY_STANDALONE),
+    ],
+)
+def test_canonical_modes_parse(
+    tmp_path: Path,
+    spelling: str,
+    expected: SimulationMode,
+) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", spelling])
 
-    assert canonical.args.elab_only is True
-    assert alias.args.elab_only is True
-    assert "--elab-only, --build-only" in canonical._parser.format_help()
+    assert flow.args.mode is expected
+
+
+@pytest.mark.parametrize("alias", ["--elab-only", "--build-only"])
+def test_legacy_elaboration_aliases_normalize(
+    tmp_path: Path,
+    alias: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", alias])
+
+    assert flow.args.mode is SimulationMode.ELAB_ONLY
+    assert caplog.messages == [
+        "--elab-only, --build-only, and --standalone are deprecated; use --mode"
+    ]
 
 
 def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     flow = SimulateFlow()
-    schema = extract_schema(flow._parser)
+    schema = flow.mcp_schema()
 
-    assert schema["properties"]["elab_only"]["type"] == "boolean"
-    assert "build_only" not in schema["properties"]
-    assert "elab_only=true" in flow.description
-    assert "--elab-only" in flow.description
-    assert "--build-only" in flow.description
+    assert schema["properties"]["mode"] == {
+        "type": "string",
+        "enum": ["simulate", "elab_only", "elab_only_standalone"],
+        "description": (
+            "Execution mode: run tests, elaborate only, or elaborate then "
+            "perform the standalone module sweep"
+        ),
+        "default": "simulate",
+    }
+    assert "_legacy_elab_only" not in schema["properties"]
+    assert "_legacy_standalone" not in schema["properties"]
+    assert "mode=elab_only" in flow.description
+    assert "mode=elab_only_standalone" in flow.description
 
 
+@pytest.mark.parametrize("mode", ["elab-only", "elab-only-standalone"])
 @pytest.mark.parametrize(
     ("extra", "argument"),
     [
@@ -89,17 +122,20 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     ],
 )
 def test_elab_only_rejects_run_stage_arguments(
-    tmp_path: Path, extra: list[str], argument: str
+    tmp_path: Path,
+    mode: str,
+    extra: list[str],
+    argument: str,
 ) -> None:
     flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--elab-only", *extra])
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", mode, *extra])
 
     result = flow._validate_mode_args()
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
     assert argument in result.report_text
-    assert "omit --elab-only" in result.report_text
+    assert "use --mode simulate" in result.report_text
 
 
 def test_standalone_requires_elab_only(tmp_path: Path) -> None:
@@ -110,7 +146,60 @@ def test_standalone_requires_elab_only(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
-    assert "requires --elab-only" in result.report_text
+    assert "--mode elab-only-standalone" in result.report_text
+
+
+def test_explicit_mode_conflicts_with_legacy_flags(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        SimulateFlow().parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--target",
+                "sim_dut",
+                "--mode",
+                "elab-only",
+                "--standalone",
+            ]
+        )
+
+
+def test_standalone_mode_runs_target_elaboration_before_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    flow.args.mode = SimulationMode.ELAB_ONLY_STANDALONE
+    events: list[str] = []
+    results = [
+        ElabOnlyTargetResult(
+            target="sim_dut",
+            outcome=BuildOutcome(True, "pass", None),
+        )
+    ]
+    monkeypatch.setattr(flow, "_elab_only_preflight", lambda: ["sim_dut"])
+
+    def campaign(_targets: list[str]) -> list[ElabOnlyTargetResult]:
+        events.append("target-elaboration")
+        return results
+
+    def standalone(_targets: list[str], actual: list[ElabOnlyTargetResult]):
+        assert actual is results
+        events.append("standalone-sweep")
+        return EXIT_SUCCESS, None
+
+    monkeypatch.setattr(flow, "_run_elab_only_campaign", campaign)
+    monkeypatch.setattr(flow, "_run_optional_standalone", standalone)
+    monkeypatch.setattr(
+        flow,
+        "_elab_only_result",
+        lambda *_args: McpToolResult(exit_code=EXIT_SUCCESS),
+    )
+
+    result = flow._run_elab_only()
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert events == ["target-elaboration", "standalone-sweep"]
 
 
 def test_build_stage_script_emits_record_before_run_half() -> None:

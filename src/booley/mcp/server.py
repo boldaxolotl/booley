@@ -3188,12 +3188,15 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
             raw_target,
             arguments.get("test"),
             arguments.get("skip"),
+            arguments.get("mode", "simulate"),
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
 
     campaign_budget_s = sim_seconds * work_units
-    if _ticket_baseline_required("cycle_count_"):
+    if arguments.get("mode", "simulate") == "simulate" and _ticket_baseline_required(
+        "cycle_count_"
+    ):
         campaign_budget_s *= 2
         work_units *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0

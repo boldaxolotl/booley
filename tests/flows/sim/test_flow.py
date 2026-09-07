@@ -55,6 +55,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
+from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
@@ -135,6 +136,21 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
         )
 
     assert units == 3  # two native processes plus one cocotb batch
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (SimulationMode.ELAB_ONLY, 2),
+        (SimulationMode.ELAB_ONLY_STANDALONE, 3),
+    ],
+)
+def test_campaign_work_units_count_elaboration_modes(
+    tmp_path: Path,
+    mode: SimulationMode,
+    expected: int,
+) -> None:
+    assert _resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
 def test_artifact_path_component_never_embeds_unsafe_test_names():

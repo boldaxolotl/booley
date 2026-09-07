@@ -434,6 +434,18 @@ class TestMcpToolTimeoutSeconds:
             )
         assert timeout == 3 * 600 + 3 * 90
 
+    def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "sim",
+            {
+                "target": "a,b",
+                "mode": "elab_only_standalone",
+                "timeout_ms": 10_000,
+            },
+            {"default_timeout": 1},
+        )
+        assert timeout == 3 * 10 + 30
+
     def test_non_simulate_uses_default(self):
         timeout = self._mcp_tool_timeout_seconds(
             "lint",

@@ -349,14 +349,14 @@ logs. A trace that fails to materialize downgrades a passing run to
 
 ## Simulation Elaboration Check
 
-`sim --elab-only` (alias `--build-only`) compiles, elaborates, and links the
+`sim --mode elab-only` compiles, elaborates, and links the
 ordinary untraced simulator image without running tests. It skips Pre-Run
 Commands, Cocotb Python import/execution, test selection, run guards, sentinels,
 and tracing. Because it uses the normal Simulation work root and build policy,
 a later full simulation can reuse the retained image.
 
-Only Simulation Targets are eligible. `--standalone` is an optional stronger
-module sweep and must be paired with `--elab-only`. The mode rejects run-only
+Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
+cumulative stronger module sweep. Both elaboration modes reject run-only
 arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
 `--no-kill`.
 
@@ -370,7 +370,8 @@ record before the run half begins. A later runtime failure, timeout, OOM, or
 signal cannot erase a successful elaboration result. Setup or Pre-Run Command
 failure before the build leaves the elaboration Criterion unchanged.
 
-Elab-only reports stay in the Simulation namespace with `mode: "elab_only"`.
+Elaboration reports stay in the Simulation namespace with canonical mode values
+`elab_only` or `elab_only_standalone`.
 Complete build logs are archived beneath the invocation report directory (or a
 unique log directory under the Simulation work root for a bare CLI run), while
 the shared build cache remains mutable and reusable.

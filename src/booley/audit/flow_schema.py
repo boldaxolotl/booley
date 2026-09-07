@@ -102,7 +102,7 @@ def _retired_flow_findings(flows: Mapping[str, Any]) -> list[ConfigFinding]:
             findings.append(
                 fail_finding(
                     f"booley.toml [flows.{retired}] is retired",
-                    "use `booley flow sim --elab-only` and move "
+                    "use `booley flow sim --mode elab-only` and move "
                     "standalone_frontend to [flows.sim].standalone_frontend",
                 )
             )
