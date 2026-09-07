@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import image_lifecycle as lifecycle
+from booley.harness import image_lifecycle as harness_lifecycle
+from booley.runtime import image_lifecycle as lifecycle
 
 
 class FakeDocker:
@@ -90,7 +91,7 @@ def _project(tmp_path: Path, image: str | None = None) -> Path:
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
-    from booley.harness import docker_base_contract
+    from booley.runtime import docker_base_contract
 
     builder = FakeBuilder(docker)
     stable_id = "sha256:" + "9" * 64
@@ -213,7 +214,7 @@ def test_check_rejects_local_base_when_stable_contract_changed(tmp_path: Path, m
 def test_packaged_install_accepts_exact_local_parent_when_contract_is_unavailable(
     tmp_path: Path, monkeypatch
 ):
-    from booley.harness import docker_base_contract
+    from booley.runtime import docker_base_contract
 
     root = _project(tmp_path)
     stable_id = "sha256:" + "9" * 64
@@ -706,7 +707,7 @@ def test_legacy_adapter_builds_user_owned_project_recipe_without_rewriting(
     dockerfile = docker_dir / "Dockerfile"
     original = "# booley:keep\nFROM booley-sandbox\nRUN echo mine\n"
     dockerfile.write_text(original, encoding="utf-8")
-    node = lifecycle._ImageNode(
+    node = lifecycle.ImageNode(
         "project-booley-sandbox",
         dockerfile,
         lifecycle.PayloadProvenance("1", "0.2.6", "payload"),
@@ -722,7 +723,7 @@ def test_legacy_adapter_builds_user_owned_project_recipe_without_rewriting(
         ),
     )
 
-    lifecycle._LegacyBuildAdapter(root, verbose=True).build(node, force=True)
+    harness_lifecycle._LegacyBuildAdapter(root, verbose=True).build(node, force=True)
 
     assert calls == [(node.reference, docker_dir, True)]
     assert dockerfile.read_text(encoding="utf-8") == original
@@ -743,7 +744,7 @@ def test_packaged_refresh_uses_pull_capable_builder(
         "Dockerfile" if reference == lifecycle.BASE_IMAGE else "Dockerfile.riscv"
     )
     recipe.write_text("FROM scratch\n", encoding="utf-8")
-    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     pulls: list[tuple[str, str]] = []
     monkeypatch.setattr(
         init_docker_image,
@@ -760,14 +761,14 @@ def test_packaged_refresh_uses_pull_capable_builder(
         "ensure_flavor_image",
         lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a flavor build"),
     )
-    node = lifecycle._ImageNode(
+    node = lifecycle.ImageNode(
         reference,
         recipe,
         lifecycle.PayloadProvenance("1", "0.2.6", "payload"),
         lifecycle.BuildProvenance("recipe", None),
     )
 
-    lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+    harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
 
     assert pulls == [("0.2.6", reference)]
 
@@ -994,9 +995,9 @@ def test_packaged_builder_reports_pull_failure(
     docker_dir.mkdir(parents=True)
     recipe = docker_dir / "Dockerfile"
     recipe.write_text("FROM scratch\n", encoding="utf-8")
-    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda *_args: False)
-    node = lifecycle._ImageNode(
+    node = lifecycle.ImageNode(
         lifecycle.BASE_IMAGE,
         recipe,
         lifecycle.PayloadProvenance("1", "0.2.6", "payload"),
@@ -1004,7 +1005,7 @@ def test_packaged_builder_reports_pull_failure(
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="could not pull"):
-        lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
 
 
 def test_local_builder_dispatches_each_managed_recipe(
@@ -1036,13 +1037,13 @@ def test_local_builder_dispatches_each_managed_recipe(
         "booley-sandbox-riscv",
         "project-booley-sandbox",
     ):
-        node = lifecycle._ImageNode(
+        node = lifecycle.ImageNode(
             reference,
             tmp_path / "recipe",
             payload,
             lifecycle.BuildProvenance("recipe", None),
         )
-        lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=False)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=False)
 
     assert calls == [
         lifecycle.BASE_IMAGE,
@@ -1058,7 +1059,7 @@ def test_local_builder_reports_step_and_user_recipe_failures(
 
     root = _project(tmp_path)
     payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
-    base = lifecycle._ImageNode(
+    base = lifecycle.ImageNode(
         lifecycle.BASE_IMAGE,
         tmp_path / "recipe",
         payload,
@@ -1070,13 +1071,13 @@ def test_local_builder_reports_step_and_user_recipe_failures(
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", fail_step)
     with pytest.raises(lifecycle.ImageLifecycleError, match="base build failed"):
-        lifecycle._LegacyBuildAdapter(root, verbose=False).build(base, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(base, force=True)
 
     docker_dir = root / ".booley_project" / "docker"
     docker_dir.mkdir()
     requirements = docker_dir / "requirements.txt"
     requirements.write_text("user-owned\n", encoding="utf-8")
-    project_node = lifecycle._ImageNode(
+    project_node = lifecycle.ImageNode(
         "project-booley-sandbox",
         docker_dir / "Dockerfile",
         payload,
@@ -1084,14 +1085,18 @@ def test_local_builder_reports_step_and_user_recipe_failures(
         lifecycle.BASE_IMAGE,
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match=r"Dockerfile.*missing"):
-        lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            project_node, force=True
+        )
 
     project_node.recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(
         lifecycle.project_image, "build_project_image", lambda *_args, **_kwargs: False
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match="failed to rebuild"):
-        lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
+            project_node, force=True
+        )
 
 
 def test_failed_backup_creation_cleans_earlier_backup(tmp_path: Path) -> None:
@@ -1109,7 +1114,7 @@ def test_failed_backup_creation_cleans_earlier_backup(tmp_path: Path) -> None:
     )
     payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
     nodes = tuple(
-        lifecycle._ImageNode(
+        lifecycle.ImageNode(
             reference,
             tmp_path / reference,
             payload,

@@ -201,25 +201,11 @@ COMPOSITION_PERMISSIONS = (
         "The MCP server classifies and composes Specialist endpoints.",
     ),
     CompositionPermission(
-        "C5",
+        "C8",
         "D6",
         "booley.runtime.incontainer_register",
-        "booley.harness.auto_doctor",
-        "In-container registration composes its Doctor command entry point.",
-    ),
-    CompositionPermission(
-        "C6",
-        "D6",
-        "booley.runtime.incontainer_register",
-        "booley.harness.upgrade_cli",
-        "In-container registration composes upgrade commands.",
-    ),
-    CompositionPermission(
-        "C7",
-        "D6",
-        "booley.runtime.incontainer_register",
-        "booley.harness.upgrade_review",
-        "In-container registration composes upgrade-review commands.",
+        "booley.harness.incontainer_register",
+        "The former module path remains an exact compatibility entry point.",
     ),
 )
 

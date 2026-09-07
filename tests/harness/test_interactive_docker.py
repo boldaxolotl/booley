@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from booley.config.settings import InteractiveConfig
-from booley.harness import interactive_docker as idk
+from booley.runtime import interactive_docker as idk
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:

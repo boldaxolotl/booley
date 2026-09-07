@@ -24,8 +24,8 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
-from booley.harness.devcontainer import EGRESS_NETWORK
 from booley.runtime.auth_token import config_dir
+from booley.runtime.devcontainer import EGRESS_NETWORK
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -57,7 +57,7 @@ _ALLOWED_TOP_LEVEL_KEYS = frozenset(
     }
 )
 _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "workspaceFolder"})
-_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
+_FIXED_REGISTRAR = "python -m booley.harness.incontainer_register"
 _FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
 _FIXED_SEED_FRAGMENTS = frozenset(
     {
@@ -1176,7 +1176,7 @@ def _require_project_data_mount(
 
 
 def _validate_state_volume(mounts: list[str], app: object, project: Path) -> None:
-    from booley.harness import devcontainer as dc
+    from booley.runtime import devcontainer as dc
 
     expected = dc.state_volume_mount(str(app), dc.canonical_project_id(project))
     targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
@@ -1246,7 +1246,7 @@ def _optional_license(project: Path) -> authority.LicenseProfile | None:
 
 
 def _resolve_image_id(image: str) -> str:
-    from booley.harness import interactive_docker as docker
+    from booley.runtime import interactive_docker as docker
 
     value = docker.image_id(image)
     if not value:
@@ -1261,7 +1261,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     moves this one private tag to the newly approved immutable ID. Runtime specs
     and stamps continue to use the ID itself as their authority boundary.
     """
-    from booley.harness import interactive_docker as docker
+    from booley.runtime import interactive_docker as docker
 
     try:
         retained_id = _resolve_image_id(issuance.keeper_image)
@@ -1290,7 +1290,7 @@ def _relay_image_id(profile: authority.LicenseProfile) -> str:
 
 def _validate_image_contract(image_id: str) -> None:
     """Inspect the fixed compatibility contract without executing image code."""
-    from booley.harness import interactive_docker as docker
+    from booley.runtime import interactive_docker as docker
 
     created = docker._run_docker(
         [

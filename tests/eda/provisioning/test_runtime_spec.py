@@ -14,8 +14,8 @@ import pytest
 
 from booley.eda.provisioning import authority, runtime_spec
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
-from booley.harness import devcontainer as dc
-from booley.harness import session_runtime
+from booley.runtime import devcontainer as dc
+from booley.runtime import session_runtime
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -444,7 +444,7 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
         retained[target] = retained[source]
 
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
-    monkeypatch.setattr("booley.harness.interactive_docker.tag_image", tag)
+    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", tag)
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
     assert retained[stamp.keeper_image] == new_id
@@ -641,7 +641,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     runtime_spec.seal(project, spec)
 
     from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
-    from booley.harness.session_runtime import docker_run_argv
+    from booley.runtime.session_runtime import docker_run_argv
 
     expected_networks = {
         dc.EGRESS_NETWORK,
@@ -1215,7 +1215,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
 def test_image_contract_is_inspected_without_starting_candidate_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.harness import interactive_docker
+    from booley.runtime import interactive_docker
 
     calls: list[list[str]] = []
 
