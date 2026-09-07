@@ -42,9 +42,9 @@ including `STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS`. Booley must therefore apply
 the profile strategy patch after Edalize creates the project but before its
 existing out-of-context patch. Reversing those two patches silently drops
 `-mode out_of_context`. The ordinary test binds the checked-in evidence to the
-exact Tcl bytes, while the licensed replay observes the resulting Vivado
-property. The production adapter must carry its own regression test when the
-public profile option lands.
+fixture's canonical UTF-8 text (LF line endings), while the licensed replay
+observes the resulting Vivado property. The production adapter must carry its
+own regression test when the public profile option lands.
 
 ## Interpretation
 

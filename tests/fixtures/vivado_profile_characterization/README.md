@@ -15,7 +15,8 @@ pytest -m slow tests/flows/fpga/backends/vivado/test_profile_characterization.py
 
 The opt-in test runs all three profiles. It never reads or prints license
 configuration. The ordinary test lane validates the evidence and fixture
-without launching Vivado.
+without launching Vivado. Fixture digests use canonical UTF-8 text with LF line
+endings so Git's platform-specific checkout conversion does not alter them.
 
 This experiment proves that the named strategies are recognized, expand to the
 captured vendor commands, preserve out-of-context mode, and complete routing.

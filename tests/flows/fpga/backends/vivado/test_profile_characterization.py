@@ -28,8 +28,10 @@ def _evidence() -> dict[str, object]:
     return json.loads((_FIXTURE / "evidence.json").read_text(encoding="utf-8"))
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _text_sha256(path: Path) -> str:
+    """Hash UTF-8 fixture text with checkout-independent line endings."""
+    canonical_bytes = path.read_text(encoding="utf-8").encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
 
 
 def _marker_values(output: str, marker: str) -> list[str]:
@@ -54,7 +56,8 @@ def test_checked_in_evidence_covers_every_portable_profile() -> None:
         "clock_period_ns": 10.0,
         "mode": "out_of_context",
         "sha256": {
-            name: _sha256(_FIXTURE / name) for name in ("top.sv", "top.xdc", "characterize.tcl")
+            name: _text_sha256(_FIXTURE / name)
+            for name in ("top.sv", "top.xdc", "characterize.tcl")
         },
     }
     assert tuple(evidence["profiles"]) == _PROFILES
