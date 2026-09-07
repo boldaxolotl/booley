@@ -9,6 +9,7 @@ per-Flow execution-location selection or host command boundary.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import os
@@ -17,8 +18,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
+from booley.core.boundary import BoundaryError
 from booley.flows import execution
+from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
 from booley.mcp.base import McpTool
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -400,6 +404,85 @@ class BooleyFlow(McpTool):
         if not fresh:
             logger.debug("boundary: skipping stale artifact %s (predates dispatch)", path)
         return not fresh
+
+
+class BuiltinFlow(BooleyFlow):
+    """Invocation seam shared only by Booley's four shipped Flows."""
+
+    default_timeout: ClassVar[int] = 600
+
+    def _add_common_args(self) -> None:
+        super()._add_common_args()
+        self._parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Resolve and validate the requested work without executing EDA tools",
+        )
+        self._parser.add_argument(
+            "--timeout-ms",
+            type=positive_milliseconds,
+            default=None,
+            help=(
+                "Active-time budget in milliseconds for each Flow work unit. "
+                "Overrides [flows.<name>].timeout_ms."
+            ),
+        )
+        self._parser.add_argument(
+            "--timeout",
+            dest="_legacy_timeout_ms",
+            type=positive_milliseconds,
+            default=None,
+            help=argparse.SUPPRESS,
+        )
+
+    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
+        """Parse and normalize the built-in-only compatibility aliases."""
+        args = super().parse_args(argv)
+        legacy = args._legacy_timeout_ms
+        if args.timeout_ms is not None and legacy is not None:
+            self._parser.error("--timeout-ms cannot be combined with deprecated --timeout")
+        if legacy is not None:
+            logger.warning("--timeout is deprecated; use --timeout-ms")
+            args.timeout_ms = legacy
+        del args._legacy_timeout_ms
+        return args
+
+    def _timeout_ms(self) -> int:
+        """Resolve the strict shared timeout precedence for this built-in Flow."""
+        return resolve_timeout_ms(
+            self.name,
+            Path(self.args.work_dir),
+            self.args.timeout_ms,
+        )
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        """Validate the shared invocation contract before dry-run can return."""
+        if (rejection := super()._pre_state_gate()) is not None:
+            return rejection
+        try:
+            self._timeout_ms()
+        except BoundaryError as exc:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"ERROR: {exc}")
+        return None
+
+    def _get_timeout(self) -> int:
+        """Return the active work-unit budget in whole seconds."""
+        return max(1, self._timeout_ms() // 1000)
+
+    def mcp_schema(self) -> dict[str, object]:
+        """Expose the canonical timeout while hiding the CLI-only alias."""
+        from booley.mcp.schema_extractor import extract_schema
+
+        schema = extract_schema(self._parser)
+        schema["additionalProperties"] = False
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("_legacy_timeout_ms", None)
+            timeout = properties.get("timeout_ms")
+            if isinstance(timeout, dict):
+                timeout["type"] = "integer"
+                timeout["minimum"] = 1
+        return schema
 
 
 def _drain_after_kill(proc: subprocess.Popen) -> tuple[str, str]:

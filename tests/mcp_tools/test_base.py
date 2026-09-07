@@ -115,6 +115,56 @@ def test_finalize_failure_propagates_without_persisting_replacement_result() -> 
     assert endpoint.post_run_called is False
 
 
+def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    before = state_file.read_bytes()
+
+    class DryRunMcpTool(ConcreteMcpTool):
+        JOB_CLASS = "agent"
+        non_persisting_dry_run = True
+        post_run_called = False
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            self.post_run_called = True
+
+    endpoint = DryRunMcpTool()
+    env = _env_with_state(state_file)
+    with (
+        mock.patch.dict(os.environ, env),
+        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+    ):
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert endpoint.post_run_called is False
+    assert state_file.read_bytes() == before
+    acquire_slot.assert_not_called()
+
+
+def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
+    class ExistingDryRunMcpTool(ConcreteMcpTool):
+        JOB_CLASS = "agent"
+        post_run_called = False
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            self.post_run_called = True
+
+    endpoint = ExistingDryRunMcpTool()
+    with mock.patch.object(endpoint, "_acquire_job_slot", return_value=(None, None)) as acquire:
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert endpoint.post_run_called is True
+    acquire.assert_called_once_with()
+
+
 class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 

@@ -17,6 +17,7 @@ from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -47,7 +48,7 @@ from booley.flows.sim.config import (
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
-from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay, selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -302,7 +303,7 @@ class SimulationExecution:
                 environment=_target_environment(handle),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
-                fusesoc_trace_overlay.validate_cocotb_trace_mode(
+                trace_overlay.validate_cocotb_trace_mode(
                     handle.selector,
                     overlay.mode,
                 )
@@ -514,7 +515,7 @@ def _build_policy(trace: bool) -> _BuildPolicy:
 
 
 def _trace_overlay(handle: TargetHandle) -> Any:
-    return fusesoc_trace_overlay.write_trace_overlay(handle)
+    return trace_overlay.write_trace_overlay(handle)
 
 
 def _is_cocotb(flow_options: Mapping[str, Any]) -> bool:

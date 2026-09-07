@@ -110,10 +110,15 @@ def resolve_target_campaign(
     explicit_scope: str | Sequence[str] | None = None,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
+    enforce_scope_match: bool = False,
 ) -> TargetCampaign:
     """Resolve criterion parameters, authorized scope, and runnable tests."""
     resolved_criteria = resolve_target_criteria(target, criterion_keys, criteria)
-    scope = resolve_campaign_scope(explicit_scope, resolved_criteria)
+    scope = resolve_campaign_scope(
+        explicit_scope,
+        resolved_criteria,
+        enforce_match=enforce_scope_match,
+    )
     suite = require_runnable_target_test_suite(
         target,
         test_names=test_names,

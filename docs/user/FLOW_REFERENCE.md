@@ -37,7 +37,10 @@ Common controls:
   requires it when the Flow/Target pair is outside the Acceptance Basis.
 - `--dry-run` validates inputs and previews commands or resolved build inputs,
   depending on the Flow, without running the EDA tool.
-- `--timeout <milliseconds>` bounds execution when the Flow exposes a timeout.
+- `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
+  work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
+  workload-specific default. Queue time is not charged. The old `--timeout`
+  spelling remains a deprecated CLI-only alias for one compatibility window.
 - `booley flow <name> --help` is the authoritative argument list.
 
 ## Shared result contract

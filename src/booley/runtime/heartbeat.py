@@ -14,26 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-# Use booley.terminal for output when available (pipeline context);
-# fall back to a minimal built-in for standalone usage (sim/syn scripts).
-try:
-    from booley.harness.colors import dim as _dim
-    from booley.harness.terminal import heartbeat_line as _heartbeat_line
-except ImportError:
-    import sys
-
-    def _dim(text: str) -> str:
-        if (
-            os.environ.get("NO_COLOR")
-            or not hasattr(sys.stdout, "isatty")
-            or not sys.stdout.isatty()
-        ):
-            return text
-        return f"\033[2m{text}\033[0m"
-
-    def _heartbeat_line(desc: str, elapsed_str: str, extra: str = "") -> None:
-        suffix = f" | {extra}" if extra else ""
-        print(_dim(f"  * [{desc}] elapsed: {elapsed_str}{suffix}"), flush=True)
+HeartbeatRenderer = Callable[[str, str, str], None]
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +58,7 @@ class Heartbeat:
     """Prints elapsed time every `interval` seconds while active.
 
     Usage:
-        hb = Heartbeat("Yosys synthesis", interval=60)
+        hb = Heartbeat("Yosys synthesis", render=render_heartbeat, interval=60)
         hb.start()
         subprocess.run(...)  # blocks for a long time
         hb.stop()
@@ -86,8 +67,16 @@ class Heartbeat:
     append to the heartbeat line (e.g. current stage from a checkpoint).
     """
 
-    def __init__(self, desc: str, interval: int = 300, status_fn: Callable | None = None) -> None:
+    def __init__(
+        self,
+        desc: str,
+        *,
+        render: HeartbeatRenderer,
+        interval: float = 300,
+        status_fn: Callable[[], str | None] | None = None,
+    ) -> None:
         self._desc = desc
+        self._render = render
         self._interval = interval
         self._status_fn = status_fn
         self._start: float | None = None
@@ -120,7 +109,7 @@ class Heartbeat:
                         extra = status
                 except (OSError, ValueError, RuntimeError):
                     pass
-            _heartbeat_line(self._desc, fmt_elapsed(elapsed), extra)
+            self._render(self._desc, fmt_elapsed(elapsed), extra)
 
     def __enter__(self) -> Heartbeat:
         self.start()

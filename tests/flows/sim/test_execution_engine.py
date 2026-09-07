@@ -565,7 +565,7 @@ def _assert_live_and_preview_build_variant(
     expected: str,
 ) -> None:
     handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
+    prepared = _prepared(handle, cocotb=trace)
     work_root = tmp_path / "work-root"
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=trace))
     trace_overlay = SimpleNamespace(
@@ -588,9 +588,12 @@ def _assert_live_and_preview_build_variant(
             return_value=["setup"],
         ) as setup,
         patch(
-            "booley.flows.sim.execution.engine._trace_overlay",
+            "booley.flows.sim.execution.engine.trace_overlay.write_trace_overlay",
             return_value=trace_overlay,
-        ),
+        ) as write_overlay,
+        patch(
+            "booley.flows.sim.execution.engine.trace_overlay.validate_cocotb_trace_mode"
+        ) as validate_trace,
     ):
         execution._prepare_build(handle)
         execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
@@ -603,6 +606,11 @@ def _assert_live_and_preview_build_variant(
     assert reset.call_args.args[1].variant == expected
     assert prepare.call_args.kwargs["variant"] == expected
     setup.assert_called_once_with(handle, build_root=work_root)
+    assert write_overlay.call_count == int(trace)
+    if trace:
+        validate_trace.assert_called_once_with(handle.selector, trace_overlay.mode)
+    else:
+        validate_trace.assert_not_called()
     assert trace_overlay.cleanup.call_count == int(trace)
 
 

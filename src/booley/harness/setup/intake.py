@@ -501,6 +501,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
     _apply_basis_selectors(ctx, template, expanded, criterion_params)
+    _seed_reviewer_scopes(ctx, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
@@ -514,17 +515,40 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     _reject_retired_criteria(ctx, expanded)
 
     _seed_project_criteria(ctx.work_dir, expanded, category_overrides, targets)
-    # Internal mandatory criterion (hidden from users via `_` prefix) -- the
-    # developer must call submit_run_report as its final action so a human
-    # reviewer gets a structured summary of what was done and why. Projects
-    # that don't consume the reports opt out via [developer] run_report =
-    # false; the criterion is then never seeded and the acceptance gate
-    # (criteria_acceptance) skips its check.
+    _seed_run_report_criterion(expanded)
+
+    _persist_initial_criteria_state(
+        ctx,
+        expanded,
+        category_overrides,
+        aliases,
+        criterion_params,
+    )
+
+    logger.info(
+        "Initialized criteria state for %s: %d criteria (%d mandatory)",
+        ctx.slug,
+        len(expanded),
+        sum(1 for v in expanded.values() if v),
+    )
+
+
+def _seed_run_report_criterion(expanded: dict[str, bool]) -> None:
+    """Add the internal report gate when the project enables run reports."""
     from booley.config.project_config import is_run_report_enabled
 
     if is_run_report_enabled():
         expanded["_report_submitted"] = True
 
+
+def _persist_initial_criteria_state(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    category_overrides: dict[str, str],
+    aliases: dict[str, str],
+    criterion_params: dict[str, dict[str, Any]],
+) -> None:
+    """Write the freshly expanded ticket criteria as one strict state."""
     state_path = migrate_runtime_file(ctx.logs_dir, "booley_state.json")
     state = DevelopmentState.load(state_path)
     state.slug = ctx.slug
@@ -537,13 +561,6 @@ def _init_criteria_state(ctx: TicketContext) -> None:
         strict=True,
     )
     state.save()
-
-    logger.info(
-        "Initialized criteria state for %s: %d criteria (%d mandatory)",
-        ctx.slug,
-        len(expanded),
-        sum(1 for v in expanded.values() if v),
-    )
 
 
 def _validate_retired_criteria(ctx: TicketContext) -> None:
@@ -573,10 +590,13 @@ def _apply_basis_selectors(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Seed basis identities and callable selectors into runtime Criteria."""
+    del template  # retained in the helper interface for focused intake tests
     basis = ctx.acceptance_basis
     if basis is None:
         return
     for key in expanded:
+        if key.startswith(("review_rtl_", "review_tb_")):
+            continue
         unique = _matching_basis_bindings(
             basis.bindings,
             criterion_key=key,
@@ -593,8 +613,6 @@ def _apply_basis_selectors(
             params = criterion_params.setdefault(key, {})
             params[TARGET_IDENTITY_PARAM] = binding.candidate
             params[TARGET_SELECTOR_PARAM] = binding.candidate_selector
-
-    _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
 
 
 def _matching_basis_bindings(
@@ -621,47 +639,26 @@ def _matching_basis_bindings(
     return matches
 
 
-def _derive_scalar_tb_review_binding(
+def _seed_reviewer_scopes(
     ctx: TicketContext,
-    template: CriteriaTemplate,
     expanded: dict[str, bool],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
-    """Bind a scalar TB review when structured simulation proves one owner."""
-    basis = ctx.acceptance_basis
-    assert basis is not None
-    review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
-    if not review_keys or all(
-        criterion_params.get(key, {}).get(TARGET_IDENTITY_PARAM) for key in review_keys
-    ):
-        return
+    """Persist directly callable source scopes for source-scoped specialists."""
+    from booley.fusesoc.fusesoc_registry import classified_sources
 
-    authored_targets = {
-        str(spec.params[TARGET_IDENTITY_PARAM])
-        for spec in template.specs
-        if spec.name.startswith("sim_pass_")
-        and isinstance(spec.params.get("tb_path"), str)
-        and isinstance(spec.params.get(TARGET_IDENTITY_PARAM), str)
-    }
-    owners: dict[tuple[str, str], AcceptanceTargetBinding] = {}
-    for authored in sorted(authored_targets):
-        unique = _matching_basis_bindings(
-            basis.bindings,
-            criterion_key="sim_pass",
-            authored=authored,
-        )
-        if len(unique) != 1:
-            return
-        owners.update(unique)
-    if len(owners) != 1:
-        return
-    owner = next(iter(owners.values()))
-    for key in review_keys:
-        params = criterion_params.setdefault(key, {})
-        if params.get(TARGET_IDENTITY_PARAM):
+    sources = classified_sources(ctx.work_dir)
+    rtl_known = set(sources.rtl_source_files)
+    tb_known = set(sources.tb_files)
+    for key in expanded:
+        if key.startswith("review_rtl_") or key.startswith("coverage_"):
+            scope = [path for path in ctx.scope if path in rtl_known]
+        elif key.startswith("review_tb_"):
+            scope = [path for path in ctx.scope if path in tb_known]
+        else:
             continue
-        params[TARGET_IDENTITY_PARAM] = owner.candidate
-        params[TARGET_SELECTOR_PARAM] = owner.candidate_selector
+        if scope:
+            criterion_params.setdefault(key, {})["scope"] = scope
 
 
 def _freeze_synthesis_recipe_fingerprints(

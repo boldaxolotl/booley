@@ -202,7 +202,14 @@ def _run_with_heartbeat(cmd: list[str], cwd: str, project_root: Path) -> int:
         touch_reaper_heartbeat()
         return _read_checkpoint_status(project_root) or "working..."
 
-    hb = Heartbeat("harness", interval=HEARTBEAT_INTERVAL, status_fn=status_fn)
+    from booley.harness.terminal import heartbeat_line
+
+    hb = Heartbeat(
+        "harness",
+        render=heartbeat_line,
+        interval=HEARTBEAT_INTERVAL,
+        status_fn=status_fn,
+    )
 
     # Touch once up front: the first periodic beat is a full interval away,
     # and BOOLEY_NO_HEARTBEAT suppresses the display thread entirely.

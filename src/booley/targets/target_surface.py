@@ -22,7 +22,7 @@ from typing import NotRequired, TypedDict, cast
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle, flow_can_drive
+from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle
 
 # Glob metacharacters: a `booley targets` positional containing any of these is
 # a filter pattern; anything else is a selection token for the detail view.
@@ -159,7 +159,7 @@ def filter_surface(
         for_flow = canonical(for_flow)
 
     def keep(entry: TargetHandle) -> bool:
-        if for_flow is not None and not flow_can_drive(for_flow, entry):
+        if for_flow is not None and for_flow not in entry.drivable_by:
             return False
         if glob is not None:
             candidates = (
@@ -245,8 +245,8 @@ def detail_payload(
     The cheap half always fills in (enumeration + Doctor metadata); when enabled,
     the resolved half runs ``fusesoc run --setup`` and lands under ``"resolved"``.
     A resolution failure lands under ``"resolved_error"`` instead of raising. Unknown and
-    ambiguous *token*\\ s DO raise (:class:`fusesoc_registry.UnknownTargetError`
-    / :class:`fusesoc_registry.AmbiguousTargetError`) — their messages already
+    ambiguous *token*\\ s DO raise (:class:`booley.targets.domain.UnknownTargetError`
+    / :class:`booley.targets.domain.AmbiguousTargetError`) — their messages already
     name the candidates. The remaining keyword arguments mirror
     :func:`fusesoc_registry.resolve_target`.
     """

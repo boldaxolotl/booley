@@ -149,11 +149,12 @@ or revoked authority fails closed before Flow execution.
 
 ### Lint (`[flows.lint]`)
 
-Beyond the shared `enabled` setting, lint takes an optional
-`warnings_as_errors` (default `true`):
+Beyond the shared `enabled` and positive-integer `timeout_ms` settings, lint
+takes an optional `warnings_as_errors` (default `true`):
 
 ```toml
 [flows.lint]
+timeout_ms = 120000
 warnings_as_errors = false
 ```
 
@@ -292,7 +293,7 @@ writing to the same place under two different names. Prefer the variable.
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-run commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands share the per-test
-timeout budget (`timeout_ms` / `--timeout`), `--dry-run` previews them in
+timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
 their real position, and `booley doctor` validates the shape and notes when
 they're configured.
 
