@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.core.boundary import BoundaryError, as_int, require_bool
+from booley.core.boundary import BoundaryError, require_bool
 from booley.flows.synth.backends.yosys.core import (
     FRONTEND_CHOICES,
     NAND2_AREA_UM2,
@@ -46,7 +46,7 @@ from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -80,6 +80,7 @@ from ..implementation_report import (
     ImplementationReport,
     build_implementation_aggregate,
 )
+from ..invocation import resolve_timeout_ms
 from ..recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
@@ -130,15 +131,7 @@ def _resolve_synth_timeout_ms(
     requested: Any = None,
 ) -> int:
     """Resolve the per-target synthesis budget for MCP and Flow callers."""
-    if requested is not None:
-        try:
-            return max(1, int(requested))
-        except (TypeError, ValueError):
-            return 1800000
-    if work_dir is None:
-        return 1800000
-    configured = as_int(_load_flow_config(work_dir).get("timeout_ms"), 1800000)
-    return max(1, configured if configured is not None else 1800000)
+    return resolve_timeout_ms("synth", work_dir, requested, 1_800_000)
 
 
 def _expected_latches(work_dir: Path) -> int:
@@ -963,7 +956,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-class AsicSynthesizeFlow(BooleyFlow):
+class AsicSynthesizeFlow(BuiltinFlow):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
     def _resolve_job_class(self) -> str:
@@ -995,6 +988,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: int = 7200
+    flow_timeout_default_ms = 1_800_000
     satisfies: ClassVar[list[str]] = ["synthesis_ok"]
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
@@ -1004,21 +998,6 @@ class AsicSynthesizeFlow(BooleyFlow):
             "--baseline",
             default=None,
             help="Baseline git ref (SHA/branch/tag) for comparison",
-        )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            default=False,
-            help="Print commands without executing",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=None,
-            help="Per-config timeout in ms. Overrides "
-            "[flows.synth].timeout_ms; both default to 1800000. "
-            "OpenROAD placement + repair on large designs needs the "
-            "headroom; the outer MCP budget scales with the matrix.",
         )
         # ADR 0031: explicit opt-in for the canned clock. A Target with no
         # file_type:SDC fileset is a hard error UNLESS this names a period, so
@@ -1547,21 +1526,6 @@ class AsicSynthesizeFlow(BooleyFlow):
         # is POSIX-separated because it is read inside the Linux Session
         # Runtime, where a Windows host's backslashes are meaningless.
         return posix_relpath(log_path, project_root)
-
-    def _timeout_ms(self) -> int:
-        """Resolve the per-config timeout in ms.
-
-        Precedence: explicit ``--timeout`` CLI/MCP arg (trusted, argparse-typed)
-        > ``[flows.synth].timeout_ms`` in booley.toml (validated) >
-        1800000 default. Making it a project knob lets a design whose OpenROAD
-        repair_timing needs more than 30 min raise the inner cap without a code
-        change; the MCP layer derives the aggregate matrix budget from it.
-        """
-        return _resolve_synth_timeout_ms(self.args.work_dir, self.args.timeout)
-
-    def _get_timeout(self) -> int:
-        """Per-config timeout in whole seconds (see :meth:`_timeout_ms`)."""
-        return max(1, self._timeout_ms() // 1000)
 
     # -- Formatting helpers ---------------------------------------------------
 

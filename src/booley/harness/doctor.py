@@ -4034,7 +4034,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout, and set "
+            "flows manually with a raised --timeout-ms, and set "
             "[flows.<flow>].timeout_ms so --deep honors a larger budget."
         )
     else:
@@ -6893,7 +6893,7 @@ def _flow_argv(
         "--diagnostic",
     ]
     if dry_run:
-        argv.extend(["--dry-run", "--timeout", "30000"])
+        argv.extend(["--dry-run", "--timeout-ms", "30000"])
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])

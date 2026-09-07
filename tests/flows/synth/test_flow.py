@@ -1396,7 +1396,7 @@ class TestSingleConfigRun:
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        flow.args.timeout = 1
+        flow.args.timeout_ms = 1
         build_root = work_root_for(tmp_path, "synth", "lite")
 
         with work_root_lease(build_root, timeout_s=1.0):

@@ -45,7 +45,7 @@ from booley.targets.parameter_integrity import validate_top_parameter_intent, vl
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -74,6 +74,7 @@ from ..implementation_report import (
     ImplementationReport,
     build_implementation_aggregate,
 )
+from ..invocation import resolve_timeout_ms
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -179,15 +180,7 @@ def _load_flow_config(work_dir: Path) -> dict[str, Any]:
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
-    if requested is not None:
-        try:
-            return max(1, int(requested))
-        except (TypeError, ValueError):
-            return 7_200_000
-    if work_dir is None:
-        return 7_200_000
-    configured = as_int(_load_flow_config(work_dir).get("timeout_ms"), 7_200_000)
-    return max(1, configured if configured is not None else 7_200_000)
+    return resolve_timeout_ms("fpga", work_dir, requested, 7_200_000)
 
 
 def _float_metric(data: dict[str, Any], key: str) -> float | None:
@@ -200,7 +193,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BooleyFlow):
+class FpgaImplFlow(BuiltinFlow):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -215,6 +208,7 @@ class FpgaImplFlow(BooleyFlow):
     )
     code_modifying: bool = False
     default_timeout: int = 7200
+    flow_timeout_default_ms = 7_200_000
     # F-14: a passing route otherwise prints nothing on the CLI (its verdict
     # lives in display_lines, which a bare CLI run drops). Surface the RESULT:
     # summary on stdout so PASS is never indistinguishable from a no-op.
@@ -228,20 +222,10 @@ class FpgaImplFlow(BooleyFlow):
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--baseline", default=None, help="Baseline git ref for comparison")
-        parser.add_argument("--dry-run", action="store_true", default=False)
         parser.add_argument(
             "--no-cache",
             action="store_true",
             help="Bypass reusable implementation results and run the recipe again",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=None,
-            help=(
-                "Per-config timeout in milliseconds. Falls back to "
-                "[flows.fpga].timeout_ms (both default to 7200000)."
-            ),
         )
 
     def _build_command(self) -> list[str]:
@@ -249,21 +233,6 @@ class FpgaImplFlow(BooleyFlow):
 
     def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
         return McpToolResult()
-
-    def _timeout_ms(self) -> int:
-        """Resolve the per-config timeout in ms.
-
-        Precedence: explicit ``--timeout`` CLI/MCP arg (trusted, argparse-typed)
-        > ``[flows.fpga].timeout_ms`` in booley.toml (validated) > a
-        7200000 (2h) default. FPGA impl runs are legitimately long, so the
-        default value is larger than asic synth's; only the resolution
-        *mechanism* is unified with asic (mirrors ``_timeout_ms`` there).
-        """
-        return _resolve_fpga_timeout_ms(self.args.work_dir, self.args.timeout)
-
-    def _get_timeout(self) -> int:
-        """Per-config timeout in whole seconds (see :meth:`_timeout_ms`)."""
-        return max(1, self._timeout_ms() // 1000)
 
     def _run(self) -> McpToolResult:
         # The initially selected worktree, captured before any baseline run

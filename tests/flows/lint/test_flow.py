@@ -609,7 +609,7 @@ class TestLintFlowArgs:
         )
         assert args.scope == ""
         assert args.dry_run is False
-        assert args.timeout == 120000
+        assert args.timeout_ms is None
 
     def test_scope_arg(self, state_file: Path):
         flow = LintFlow()
@@ -1704,7 +1704,7 @@ class TestTimeout:
             [
                 "--target",
                 "lite",
-                "--timeout",
+                "--timeout-ms",
                 "60000",
             ]
         )

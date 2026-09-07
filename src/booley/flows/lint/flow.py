@@ -39,7 +39,7 @@ from booley.targets.flow_names import config_section
 
 from .. import artifacts
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +382,7 @@ def _build_warning_details(
     return details
 
 
-class LintFlow(BooleyFlow):
+class LintFlow(BuiltinFlow):
     """Run the Target's linter for one or more Targets."""
 
     name: str = "lint"
@@ -391,6 +391,7 @@ class LintFlow(BooleyFlow):
         "resolved Target's flow_options.tool (Verilator or Verible)."
     )
     code_modifying: bool = False
+    flow_timeout_default_ms = 120_000
     satisfies: ClassVar[list[str]] = ["lint_clean"]
 
     # The built-in path is make-driven end-to-end in the Session Runtime.
@@ -399,17 +400,6 @@ class LintFlow(BooleyFlow):
             "--scope",
             default="",
             help="Comma-separated file paths to filter warnings",
-        )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Print lint commands without executing",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=120000,
-            help="Per-config lint timeout in milliseconds",
         )
 
     # --- Command building ---
@@ -421,10 +411,6 @@ class LintFlow(BooleyFlow):
     def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Not used вЂ” LintFlow overrides _run()."""
         return EndpointOutcome()
-
-    def _get_timeout(self) -> int:
-        """Per-config timeout in seconds (CLI flag is ms)."""
-        return self.args.timeout // 1000
 
     def _get_targets(self) -> tuple[TargetHandle, ...]:
         """Validated Target selection for this run (ADR 0030).

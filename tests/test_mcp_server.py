@@ -442,6 +442,30 @@ class TestMcpToolTimeoutSeconds:
         )
         assert timeout == 120
 
+    def test_lint_matrix_scales_after_default_floor(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "lint",
+            {"target": "a,b,c,d,e", "timeout_ms": 120_000},
+            {"default_timeout": 600},
+        )
+        assert timeout == 5 * 120 + 30
+
+    def test_canonical_timeout_wins_for_implementation(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "synth",
+            {"target": "core", "timeout_ms": 4_000_000},
+            {"default_timeout": 600},
+        )
+        assert timeout == 4000 + 60 + 120
+
+    def test_conflicting_timeout_spellings_are_rejected(self):
+        with pytest.raises(ValueError, match="conflicts"):
+            self._mcp_tool_timeout_seconds(
+                "lint",
+                {"target": "core", "timeout_ms": 1000, "timeout": 2000},
+                {"default_timeout": 600},
+            )
+
     def test_synth_matrix_budget_scales_per_target(self):
         timeout = self._mcp_tool_timeout_seconds(
             "synth",
@@ -518,7 +542,7 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 2 * 4000 + 2 * 60 + 120
 
     def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
-        """F4: with no --timeout arg the watchdog honors [flows.sim].timeout_ms.
+        """F4: without a call override, the watchdog honors [flows.sim].timeout_ms.
 
         Otherwise a config-only raise would be silently killed by the outer cap.
         """
@@ -540,7 +564,7 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 1830
 
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
-        """No --timeout and no config knob -> the wrapper default budget stands."""
+        """No call override or config knob -> the wrapper default budget stands."""
         from booley.runtime.project_dir import reset_cache
 
         reset_cache()

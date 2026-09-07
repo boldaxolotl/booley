@@ -12,7 +12,13 @@ from booley.audit.config_common import (
     failure,
     warn_finding,
 )
-from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_bool
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    is_str_list,
+    require_bool,
+    require_int,
+)
 from booley.targets.flow_names import (
     DEFAULT_TARGET_KEY,
     LEGACY_TO_CANONICAL,
@@ -22,7 +28,7 @@ from booley.targets.flow_names import (
 )
 
 SELECTIVE_FLOW_KNOBS = {
-    "timeout_ms": frozenset({"sim", "synth", "fpga"}),
+    "timeout_ms": frozenset({"sim", "lint", "synth", "fpga"}),
     "pre_run_commands": frozenset({"sim"}),
     "sim_time_grace_s": frozenset({"sim"}),
     "standalone_frontend": frozenset({"sim"}),
@@ -230,6 +236,21 @@ def _flow_shape_findings(
     section: Mapping[str, Any],
 ) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
+    if "timeout_ms" in section:
+        try:
+            timeout_ms = require_int(
+                section["timeout_ms"],
+                field=f"[flows.{flow_name}].timeout_ms",
+            )
+            if timeout_ms <= 0:
+                raise BoundaryError
+        except BoundaryError:
+            findings.append(
+                fail_finding(
+                    f"booley.toml [flows.{flow_name}].timeout_ms must be a positive integer",
+                    f"fix [flows.{flow_name}].timeout_ms",
+                )
+            )
     if "enabled" in section:
         try:
             require_bool(section, "enabled")
