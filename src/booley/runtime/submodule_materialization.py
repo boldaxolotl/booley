@@ -105,7 +105,7 @@ def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> 
     _materialize_selection(
         project_source.resolve(),
         project_destination.resolve(),
-        _submodule_paths(project_destination.resolve()),
+        submodule_paths(project_destination.resolve()),
     )
 
 
@@ -117,7 +117,7 @@ def _materialize_tree(
     created: list[tuple[Path, bool]],
     selected: list[Path] | None = None,
 ) -> None:
-    for relative in selected if selected is not None else _submodule_paths(destination_repo):
+    for relative in selected if selected is not None else submodule_paths(destination_repo):
         full_relative = prefix / relative
         source = source_root / full_relative
         destination = destination_root / full_relative
@@ -134,7 +134,7 @@ def _materialize_tree(
 
 
 def _selected_top_level_paths(destination_root: Path) -> list[Path]:
-    discovered = _submodule_paths(destination_root)
+    discovered = submodule_paths(destination_root)
     try:
         configured_paths = load_submodule_config(destination_root).paths
     except SubmoduleConfigError as exc:
@@ -148,7 +148,8 @@ def _selected_top_level_paths(destination_root: Path) -> list[Path]:
     return [path for path in discovered if path.as_posix() in configured_values]
 
 
-def _submodule_paths(repository: Path) -> list[Path]:
+def submodule_paths(repository: Path) -> list[Path]:
+    """Return validated stage-zero gitlink paths from a repository index."""
     result = _run_git(repository, "ls-files", "--stage", "-z")
     records = [record for record in result.stdout.split("\0") if record]
     paths: list[Path] = []
