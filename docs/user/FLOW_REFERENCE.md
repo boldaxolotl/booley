@@ -194,21 +194,24 @@ Structured output (`lint_report.json`):
 
 `synth` produces a fast ASIC quality-of-results estimate for RTL iteration. It
 is not tape-out synthesis or sign-off. The Target supplies the top, frontend,
-recipe, and optional SDC constraints; the built-in backend supplies its
+recipe, and SDC constraints for physical mode; the built-in backend supplies its
 Nangate45 technology inputs.
 
 Useful controls:
 
 - `--baseline <git-ref>` compares the candidate with its recorded baseline Target
   at another revision. Directed baseline/candidate Target pairs are supported.
-- `--default-clock <picoseconds>` supplies a clock only when the Target has no
-  SDC.
 - `--frontend <sv2v|slang>` overrides the Target's RTL frontend for diagnosis.
 - `--ppa-profile <compact|balanced|max_frequency>` selects a clean built-in PPA
   profile for this invocation.
 - `--flatten` / `--no-flatten` overrides the Target's hierarchy-flattening
   choice. Synthesis mode (`physical` or `logical`) remains Target-owned; there
   is no per-call `--synth-mode` option.
+
+Physical synthesis requires the selected Target to carry a `file_type: SDC`
+fileset that creates at least one clock. Booley loads those files in Target
+order and adds no generated timing constraints. Logical synthesis does not run
+STA and therefore does not require SDC.
 
 Expert Yosys controls:
 

@@ -582,8 +582,8 @@ separate columns (see "How a row resolves"). The standard checklist:
 9. **Vendored cores** — which directories get a `FUSESOC_IGNORE` quarantine
    marker, and which colliding cores are required dependencies that can't be
    hidden.
-10. **Constraints** — ASIC synth needs an SDC per synth Target (hard error
-    without one; `--default-clock` is the explicit opt-out), FPGA needs an XDC
+10. **Constraints** — physical ASIC synth needs an SDC per synth Target that
+    creates at least one clock (hard error without one); FPGA needs an XDC
     fileset. Does the repo ship them, or must they be authored?
 11. **Style lint** — offer Verible style lint as a second lint Target only if
     the user wants it (offer, never impose). "Never impose" means

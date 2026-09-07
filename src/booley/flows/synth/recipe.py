@@ -70,7 +70,6 @@ def default_recipe_args() -> argparse.Namespace:
         "setup_margin_ns",
         "repair_tns_percent",
         "frontend",
-        "default_clock",
     )
     return argparse.Namespace(**dict.fromkeys(names))
 
@@ -172,14 +171,13 @@ def synthesis_recipe_snapshot(
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
     liberty, _found = resolve_liberty_lenient(None)
     return {
-        "schema": 1,
+        "schema": 2,
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
         "parameters": jsonable(resolved.parameters),
         "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
         "constraints": constraints,
-        "default_clock_ps": getattr(args, "default_clock", None),
         "technology": {
             "liberty": liberty.as_posix(),
             "physical_pdk": "nangate45" if synth_mode == SynthMode.PHYSICAL else None,

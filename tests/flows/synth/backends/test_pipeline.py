@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.flows.synth.backends import configure as run_yosys_syn
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
@@ -37,7 +38,6 @@ def _spec(
     *,
     mode: str = "physical",
     frontend: str = "sv2v",
-    clock: str | None = None,
     sdc: tuple[Path, ...] = (),
     repair_timing: bool = True,
     slang_options: tuple[str, ...] = (),
@@ -48,6 +48,14 @@ def _spec(
     src.write_text("module dut(input clk); endmodule\n", encoding="utf-8")
     inc = tmp_path / "rtl" / "include"
     inc.mkdir(exist_ok=True)
+    if mode == "physical" and not sdc:
+        authored_sdc = tmp_path / "constraints" / "dut.sdc"
+        authored_sdc.parent.mkdir(exist_ok=True)
+        authored_sdc.write_text(
+            "create_clock -name clk -period 4.0 [get_ports clk]\n",
+            encoding="utf-8",
+        )
+        sdc = (authored_sdc,)
     return syn_make.SynthSpec(
         design_name="dut",
         sources=(src,),
@@ -62,10 +70,6 @@ def _spec(
         slang_options=slang_options,
         timing=StaTimingConfig(
             mode=mode,
-            clock=clock,
-            period_ps=4000.0,
-            input_delay_pct=30.0,
-            output_delay_pct=70.0,
             sdc=sdc,
             repair_timing=repair_timing,
         ),
@@ -102,7 +106,7 @@ class TestConfigureSynthesis:
         bd = plan.build_dir
         assert (bd / "Makefile").is_file()
         assert (bd / "synth.ys").is_file()
-        assert (bd / "sta_constraints.sdc").is_file()
+        assert not (bd / "sta_constraints.sdc").exists()
         assert (bd / "run_openroad.tcl").is_file()
         assert (bd / "reports" / "timing").is_dir()
         assert not (bd / "run_opensta.tcl").exists()
@@ -170,7 +174,8 @@ class TestConfigureSynthesis:
         assert "../" in makefile  # ... via an upward relative path
         assert str(tmp_path) not in sta_tcl
         assert "read_verilog {sta_dut.v}" in sta_tcl
-        assert "read_sdc {sta_constraints.sdc}" in sta_tcl
+        assert "read_sdc {" in sta_tcl
+        assert "constraints/dut.sdc}" in sta_tcl
 
     def test_boundary_command_passes_contract_regex(self, tmp_path: Path):
         import os
@@ -244,21 +249,14 @@ class TestConfigureSynthesis:
 
 
 class TestBoundarySdc:
-    def test_probe_block_when_no_static_clock(self, tmp_path: Path):
-        """No --clock and no authored ``create_clock -name`` → the netlist
-        doesn't exist at configure time, so the clock port is probed in Tcl."""
-        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-        sdc = (plan.build_dir / "sta_constraints.sdc").read_text(encoding="utf-8")
-        assert "foreach _c {clk_i clk clock i_clk aclk}" in sdc
-        assert "create_clock -name $_booley_clk" in sdc
-        assert "set_input_delay -clock $_booley_clk 1.200000" in sdc
-        assert "set_output_delay -clock $_booley_clk 2.800000" in sdc
-
-    def test_static_when_clock_configured(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(_spec(tmp_path, clock="clk"), _build_dir(tmp_path))
-        sdc = (plan.build_dir / "sta_constraints.sdc").read_text(encoding="utf-8")
-        assert "$_booley_clk" not in sdc
-        assert "create_clock -name clk -period 4.000000 [get_ports {clk}]" in sdc
+    def test_physical_requires_target_owned_sdc(self, tmp_path: Path):
+        spec = _spec(tmp_path, mode="logical")
+        spec = dataclasses.replace(
+            spec,
+            timing=StaTimingConfig(mode="physical", sdc=()),
+        )
+        with pytest.raises(BoundaryError, match="Target-owned SDC"):
+            syn_make.configure_synthesis(spec, _build_dir(tmp_path))
 
     def test_static_when_authored_sdc_names_its_clock(self, tmp_path: Path):
         authored = tmp_path / "dut.sdc"
@@ -267,11 +265,31 @@ class TestBoundarySdc:
             encoding="utf-8",
         )
         plan = syn_make.configure_synthesis(_spec(tmp_path, sdc=(authored,)), _build_dir(tmp_path))
-        sdc = (plan.build_dir / "sta_constraints.sdc").read_text(encoding="utf-8")
-        assert "$_booley_clk" not in sdc
-        # Authored SDC owns the clock; generated I/O delays reference its name.
-        assert sdc.count("create_clock") == 1
-        assert "set_input_delay -clock sys_clk" in sdc
+        script = (plan.build_dir / "run_openroad.tcl").read_text(encoding="utf-8")
+        assert authored.read_text(encoding="utf-8") == (
+            "create_clock -name sys_clk -period 2.0 [get_ports clk]\n"
+        )
+        assert "read_sdc {" in script
+        assert "dut.sdc}" in script
+        assert "\ncreate_clock" not in script
+        assert "set_input_delay" not in script
+        assert "set_output_delay" not in script
+        assert "[llength [all_clocks]] == 0" in script
+
+    def test_multiple_sdc_files_are_loaded_in_target_order(self, tmp_path: Path):
+        first = tmp_path / "first.sdc"
+        second = tmp_path / "second.sdc"
+        first.write_bytes(b"set_false_path -from [get_ports rst_n]\n")
+        second.write_bytes(b"create_clock -period 4 [get_ports clk]\n")
+
+        plan = syn_make.configure_synthesis(
+            _spec(tmp_path, sdc=(first, second)), _build_dir(tmp_path)
+        )
+        script = (plan.build_dir / "run_openroad.tcl").read_text(encoding="utf-8")
+
+        assert script.index("first.sdc}") < script.index("second.sdc}")
+        assert first.read_bytes() == b"set_false_path -from [get_ports rst_n]\n"
+        assert second.read_bytes() == b"create_clock -period 4 [get_ports clk]\n"
 
 
 # ===========================================================================
@@ -466,14 +484,17 @@ class TestBoundaryOutput:
 
 class TestResolveSpec:
     def _args(self, tmp_path: Path, extra: list[str] | None = None):
+        sdc = tmp_path / "constraints" / "dut.sdc"
+        sdc.parent.mkdir(parents=True, exist_ok=True)
+        sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
         argv = [
             "configure",
             "-t",
             "dut",
             "--extra-rtl",
             "rtl/dut.sv",
-            "--default-clock",
-            "4000",
+            "--sta-sdc",
+            "constraints/dut.sdc",
             "--synth-mode",
             "physical",
             *(extra or []),

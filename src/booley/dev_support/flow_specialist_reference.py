@@ -59,8 +59,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
     ),
     "synth": (
-        f"{_BASELINE_CONTROL}; `--default-clock <ps>` explicitly "
-        "supplies a clock only when the Target has no SDC"
+        f"{_BASELINE_CONTROL}; physical Targets must own an SDC fileset that creates a clock"
     ),
 }
 
