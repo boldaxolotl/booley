@@ -286,6 +286,8 @@ class _PreparedMcpExecution:
     """Adapter-owned state carried through the neutral execution sequence."""
 
     display_target: str | None
+    dry_run: bool
+    non_persisting_dry_run: bool
 
 
 class McpTool(ABC):
@@ -1002,8 +1004,16 @@ class McpTool(ABC):
         self.read_state()
         self._default_target_args()
         display_target = self._resolve_display_config()
-        _write_display_event(_endpoint_start_event(self.name, display_target))
-        return _PreparedMcpExecution(display_target)
+        dry_run = bool(getattr(self.args, "dry_run", False))
+        non_persisting_dry_run = self._is_non_persisting_dry_run()
+        _write_display_event(
+            _endpoint_start_event(
+                self.name,
+                display_target,
+                dry_run=dry_run,
+            )
+        )
+        return _PreparedMcpExecution(display_target, dry_run, non_persisting_dry_run)
 
     @contextmanager
     def admission(self, prepared: _PreparedMcpExecution) -> Iterator[None]:
@@ -1016,7 +1026,7 @@ class McpTool(ABC):
                 if rejection.report_text:
                     print(rejection.report_text, file=sys.stderr, flush=True)
                 raise EndpointRejectedError(rejection)
-            if self._is_non_persisting_dry_run():
+            if prepared.non_persisting_dry_run:
                 yield
                 return
             try:
@@ -1083,15 +1093,17 @@ class McpTool(ABC):
             prepared.display_target,
             started=started,
             acceptance_recorded=acceptance_recorded,
+            dry_run=prepared.dry_run,
+            non_persisting_dry_run=prepared.non_persisting_dry_run,
         )
 
     def record_acceptance(
         self,
-        _prepared: _PreparedMcpExecution,
+        prepared: _PreparedMcpExecution,
         outcome: EndpointOutcome,
     ) -> None:
         """Record immutable Ticket evidence before state/report persistence."""
-        if self._is_non_persisting_dry_run():
+        if prepared.non_persisting_dry_run:
             self._pending_criteria_set = ()
             return
         result = _as_mcp_tool_result(outcome)
@@ -1136,11 +1148,13 @@ class McpTool(ABC):
         started: float | None,
         *,
         acceptance_recorded: bool,
+        dry_run: bool,
+        non_persisting_dry_run: bool,
     ) -> int:
         """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
         duration = (time.monotonic() - started) if started is not None else 0.0
         try:
-            if acceptance_recorded and not self._is_non_persisting_dry_run():
+            if acceptance_recorded and not non_persisting_dry_run:
                 self._post_run(result, duration)
         finally:
             self._pending_criteria_set = None
@@ -1150,7 +1164,7 @@ class McpTool(ABC):
                     display_target,
                     result,
                     duration,
-                    dry_run=bool(getattr(self.args, "dry_run", False)),
+                    dry_run=dry_run,
                 ),
             )
         return result.exit_code

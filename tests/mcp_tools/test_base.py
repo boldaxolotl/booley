@@ -165,6 +165,29 @@ def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
     acquire.assert_called_once_with()
 
 
+def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None:
+    class MutatingDryRunMcpTool(ConcreteMcpTool):
+        non_persisting_dry_run = True
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _run(self) -> McpToolResult:
+            self.args.dry_run = False
+            return McpToolResult(exit_code=EXIT_SUCCESS)
+
+    endpoint = MutatingDryRunMcpTool()
+    with (
+        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+        mock.patch.object(endpoint, "_post_run") as post_run,
+    ):
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    acquire_slot.assert_not_called()
+    post_run.assert_not_called()
+
+
 class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 

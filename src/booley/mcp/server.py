@@ -776,7 +776,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # unreadable config falls back to empty config
+    except Exception:  # noqa: BLE001 - unreadable config falls back to empty config
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -832,6 +832,7 @@ def _mcp_tool_def_from_class(
         "schema": schema,
         "default_timeout": getattr(cls, "default_timeout", 0),
         "is_specialist": issubclass(cls, Specialist),
+        "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
     }
     result.update(extra)
     return result
@@ -1804,7 +1805,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
             payload["passed"] = report["passed"]
         _enforce_structured_budget(payload)
         return payload
-    except Exception:  # best-effort enrichment degrades to text-only
+    except Exception:  # noqa: BLE001 - best-effort enrichment degrades to text-only
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3154,7 +3155,10 @@ async def _dispatch_booley_mcp_tool(
     exit_code, stdout, stderr, timed_out = await _run_subprocess(cmd, timeout=mcp_tool_timeout)
     if timed_out:
         _write_synthetic_endpoint_end(name, mcp_tool_timeout)
-    report = _try_read_report()
+    skip_report = bool(arguments.get("dry_run")) and bool(
+        mcp_tool_def.get("non_persisting_dry_run")
+    )
+    report = None if skip_report else _try_read_report()
     content = [
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
@@ -3579,7 +3583,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # config preload must not block server startup
+    except Exception:  # noqa: BLE001 - config preload must not block server startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 

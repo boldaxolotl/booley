@@ -660,7 +660,8 @@ class TestDryRun:
         assert result.exit_code == 0
         assert "Dry run" in result.report_text
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lite"]
+        assert data["flow"] == "lint"
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script
@@ -684,9 +685,11 @@ class TestDryRun:
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
-        assert result.exit_code == 0
+        assert result.exit_code == EXIT_ERROR
         data = json.loads(capsys.readouterr().out)
-        assert data["lite"][0].startswith("ERROR: lint dry-run:")
+        assert data["flow"] == "lint"
+        assert data["work_units"] == []
+        assert data["aggregate_errors"] == ["lite: ERROR: lint dry-run: Unknown target 'lite'"]
 
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1079,29 @@ class TestErrorVsFailTaxonomy:
 
 
 class TestFullRun:
+    @patch.object(LintFlow, "_execute")
+    def test_late_preparation_error_prevents_every_linter_run(
+        self,
+        mock_exec,
+        state_file: Path,
+    ):
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite,full"])
+        flow.read_state()
+        with patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            side_effect=[
+                (["make", "-C", "lite"], _stub_resolved()),
+                RuntimeError("broken full Target"),
+            ],
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "full: lint setup failed: broken full Target" in result.report_text
+        mock_exec.assert_not_called()
+
     @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,
@@ -1665,7 +1691,7 @@ class TestVeribleTargets:
             result = flow._run()
         assert result.exit_code == 0
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lint_style"]
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script

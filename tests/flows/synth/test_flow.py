@@ -1176,10 +1176,27 @@ class TestDryRun:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        assert "dry-run" in result.report_text
-        # Per-config label keeps the config name visible (explicit-source mode has no -c).
-        assert "(lite)" in result.report_text
-        assert "(full)" in result.report_text
+        assert "Dry run" in result.report_text
+        assert [unit["selector"] for unit in result.detail["work_units"]] == [
+            "lite",
+            "full",
+        ]
+        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
+
+    def test_dry_and_real_preparation_have_same_semantic_fingerprint(
+        self, state_file: Path, tmp_path: Path
+    ) -> None:
+        flow = _dry_run_flow(tmp_path)
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
+        ):
+            dry_plan = flow._plan_synth_implementation(["lite"])
+            flow.args.dry_run = False
+            real_plan = flow._plan_synth_implementation(["lite"])
+
+        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
 
     def test_physical_dry_run_discloses_runtime_clock_validation(
         self, state_file: Path, tmp_path: Path
@@ -1194,7 +1211,8 @@ class TestDryRun:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        assert "clock creation is validated by OpenROAD at runtime" in result.report_text
+        recipe = result.detail["work_units"][0]["recipe"]
+        assert "clock creation is validated by OpenROAD at runtime" in recipe["clock_validation"]
 
     def test_dry_run_with_flags(self, state_file: Path, tmp_path: Path):
         # Synthesis-recipe knobs live on the Flow config, not the CLI.
@@ -1221,10 +1239,11 @@ class TestDryRun:
             side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
         ):
             result = flow._run()
-        assert "--flatten" in result.report_text
+        command = result.detail["work_units"][0]["commands"][0]["argv"]
+        assert "--flatten" in command
         # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
-        assert "--sdc" not in result.report_text
-        assert "--synth-mode logical" in result.report_text
+        assert "--sdc" not in command
+        assert command[command.index("--synth-mode") + 1] == "logical"
 
     def test_dry_run_records_evidence_for_projected_stealth_core(
         self, state_file: Path, tmp_path: Path
@@ -1269,9 +1288,13 @@ class TestDryRun:
             ),
         ):
             result = flow._run()
+            dry_plan = flow._flow_plan
+            flow.args.dry_run = False
+            real_plan = flow._plan_synth_implementation(["syn"])
 
         assert result.exit_code == EXIT_SUCCESS
-        assert "dry-run (syn)" in result.report_text
+        assert result.detail["work_units"][0]["selector"] == "syn"
+        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
         run_evidence = flow._recipe_evidence["syn"][2]
         assert run_evidence["source_sha256"]
 
@@ -1386,7 +1409,7 @@ class TestSingleConfigRun:
             try:
                 preview = dry_run._run()
                 assert marker.read_text(encoding="utf-8") == "live\n"
-                assert "workspace busy" in preview.report_text
+                assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release.set()
             result = running.result(timeout=10.0)
@@ -1438,7 +1461,7 @@ class TestSingleConfigRun:
             try:
                 preview = dry_run._run()
                 assert build_root.is_dir()
-                assert "workspace busy" in preview.report_text
+                assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release_copy.set()
             result = running.result(timeout=10.0)
@@ -2219,6 +2242,10 @@ class TestBaselineFlow:
         assert "baseline: abc1234" in result.report_text
         assert "delta" in result.report_text
         assert "PASS" in result.report_text
+        assert [(unit.role, unit.selector) for unit in flow._flow_plan.work_units] == [
+            ("baseline", "lite"),
+            ("candidate", "lite"),
+        ]
 
         # Two execute calls: baseline + current
         assert len(execute_calls) == 2
@@ -2400,7 +2427,9 @@ class TestBaselineFlow:
             flow._run()
 
         # Worktree cleanup ran and work_dir was restored despite the crash.
-        assert exited == [True]
+        # Aggregate planning validates the baseline in one disposable checkout;
+        # execution uses a fresh checkout. Both contexts must clean up.
+        assert exited == [True, True]
         assert Path(flow.args.work_dir) == tmp_path
 
 
@@ -3112,10 +3141,11 @@ class TestFlowConfigBoundary:
     def test_dry_run_surfaces_config_error(self, state_file: Path, tmp_path: Path):
         """Dry-run exists to vet the command — a config error must fail it."""
         flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        result = flow._dry_run(["lite"])
+        result = flow._dry_run_result(flow._plan_synth_implementation(["lite"]))
         assert result.exit_code == EXIT_ERROR
-        assert "config error" in result.report_text
+        assert result.detail["work_units"] == []
         assert "synth_mode" in result.report_text
+        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
 
 
 # ===========================================================================

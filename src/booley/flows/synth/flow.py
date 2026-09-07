@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -29,6 +30,15 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
+from booley.flows.plan import (
+    CommandPlan,
+    FlowPlan,
+    WorkUnitPlan,
+    WorkUnitRole,
+    normalize_plan_argv,
+    normalize_plan_path,
+    stable_unit_id,
+)
 from booley.flows.synth.backends.yosys.core import (
     FRONTEND_CHOICES,
     NAND2_AREA_UM2,
@@ -107,6 +117,14 @@ from .recipe import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PlannedSynthRecipe:
+    """Resolved synthesis recipe retained for candidate execution."""
+
+    command: tuple[str, ...]
+    resolved: Any
 
 
 def synth_target_report_slug(target: str) -> str:
@@ -939,7 +957,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     try:
         cur = compute_source_fingerprint(project_root)["rtl"]["digest"]
         base = compute_source_fingerprint(wt)["rtl"]["digest"]
-    except Exception:  # a guard must never fail the synthesis run
+    except Exception:  # noqa: BLE001 - guard must never fail the synthesis run
         logger.debug("baseline self-compare fingerprint check failed", exc_info=True)
         return None
     if cur != base:
@@ -1127,15 +1145,20 @@ class AsicSynthesizeFlow(BuiltinFlow):
         """Append the shared normalized synthesis recipe for this invocation."""
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
-    def _resolve_synth_target(self, target: str) -> fusesoc_registry.ResolvedTarget:
+    def _resolve_synth_target(
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
+    ) -> fusesoc_registry.ResolvedTarget:
         """Clean and resolve one FuseSoC Target into its isolated build root."""
-        build_root = self._synth_work_root(target)
-        shutil.rmtree(build_root, ignore_errors=True)
+        selected_root = build_root or self._synth_work_root(target)
+        shutil.rmtree(selected_root, ignore_errors=True)
         handle = self._target_handle(target)
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=build_root)
-        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
+            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
@@ -1170,7 +1193,12 @@ class AsicSynthesizeFlow(BuiltinFlow):
             evidence = self._recipe_evidence = {}
         evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
-    def _build_synth_cmd(self, target: str) -> list[str]:
+    def _resolve_synth_recipe(
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
+    ) -> _PlannedSynthRecipe:
         """Resolve *target* and build its validated run_yosys_syn spec argv.
 
         FuseSoC owns design description; this command-gen exception forwards
@@ -1178,7 +1206,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         Baselines point ``work_dir`` at a separate worktree, so resolution and
         artifacts remain isolated. The argv also remains runnable for dry-run.
         """
-        resolved = self._resolve_synth_target(target)
+        resolved = self._resolve_synth_target(target, build_root=build_root)
         self._record_recipe_evidence(target, resolved)
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
@@ -1188,7 +1216,11 @@ class AsicSynthesizeFlow(BuiltinFlow):
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
         cmd.extend(["-w", target])
-        return cmd
+        return _PlannedSynthRecipe(tuple(cmd), resolved)
+
+    def _build_synth_cmd(self, target: str) -> list[str]:
+        """Return the mutable compatibility argv for one resolved recipe."""
+        return list(self._resolve_synth_recipe(target).command)
 
     def _synth_work_root(self, target: str) -> Path:
         """Return the shared mutable work root for one synthesis Target."""
@@ -1261,7 +1293,16 @@ class AsicSynthesizeFlow(BuiltinFlow):
         # becomes an infra error for this target, not an unhandled crash of the
         # whole _run.
         try:
-            cmd = self._build_synth_cmd(target)
+            planned = None
+            if getattr(self, "_execution_role", "candidate") == "candidate":
+                planned = getattr(self, "_planned_candidate_synth_recipes", {}).get(target)
+            if planned is None:
+                planned = self._resolve_synth_recipe(target)
+            else:
+                # The recipe was resolved before baseline execution. Refresh
+                # only invocation-local evidence, retaining those planned inputs.
+                self._record_recipe_evidence(target, planned.resolved)
+            cmd = list(planned.command)
         except fusesoc_registry.TargetResolutionError as exc:
             logger.warning("Synth %s: FuseSoC resolution failed: %s", target, exc)
             return _infra_metrics(str(exc)), str(exc)
@@ -1744,6 +1785,216 @@ class AsicSynthesizeFlow(BuiltinFlow):
         self._baseline_full_sha = full_sha
         return error
 
+    def _synth_work_unit(
+        self,
+        target: str,
+        planned: _PlannedSynthRecipe,
+        *,
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> WorkUnitPlan:
+        """Project one resolved ASIC recipe into the shared plan contract."""
+        resolved = planned.resolved
+        root = Path(self.args.work_dir)
+        sources = tuple(
+            Path(item.name).as_posix()
+            for item in resolved.files
+            if item.file_type.lower() != "sdc"
+        )
+        constraints = tuple(Path(item.name).as_posix() for item in resolved.sdc_files)
+        snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
+        plan_recipe = dict(snapshot)
+        recipe_args = snapshot.get("recipe_args", [])
+        if "--synth-mode" in recipe_args:
+            index = recipe_args.index("--synth-mode")
+            if recipe_args[index + 1] == "physical":
+                plan_recipe["clock_validation"] = (
+                    "Target SDC clock creation is validated by OpenROAD at runtime"
+                )
+        build_dir = self._synth_build_dir(target)
+        handle = self._target_handle(target)
+        return WorkUnitPlan(
+            unit_id=stable_unit_id(
+                "synth",
+                target,
+                (target,),
+                role=role,
+                revision=revision,
+            ),
+            role=role,
+            revision=revision,
+            selector=target,
+            target_identity=handle.identity,
+            test_or_module_scope=(target,),
+            eda_tool="yosys",
+            timeout_ms=self._timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=resolved.parameters,
+            recipe=plan_recipe,
+            commands=(
+                CommandPlan(
+                    self._normalized_synth_plan_command(planned, root),
+                    cwd=".",
+                    template=True,
+                ),
+                CommandPlan(
+                    (
+                        "make",
+                        "-C",
+                        normalize_plan_path(build_dir, root),
+                    ),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(
+                normalize_plan_path(self._synth_work_root(target) / "run.log", root),
+            ),
+        )
+
+    @staticmethod
+    def _normalized_synth_plan_command(
+        planned: _PlannedSynthRecipe,
+        root: Path,
+    ) -> tuple[str, ...]:
+        """Replace disposable staged paths with their Target-owned names."""
+        replacements = {
+            posix_relpath(item.absolute(planned.resolved.build_root), root): Path(
+                item.name
+            ).as_posix()
+            for item in planned.resolved.files
+        }
+        replacements.update(
+            {
+                posix_relpath(item.absolute(planned.resolved.build_root).parent, root): (
+                    Path(item.name).parent.as_posix()
+                )
+                for item in planned.resolved.files
+                if item.is_include
+            }
+        )
+        return tuple(
+            replacements.get(argument, argument)
+            for argument in normalize_plan_argv(planned.command, root)
+        )
+
+    def _plan_synth_implementation(self, targets: list[str]) -> FlowPlan:
+        """Resolve candidate and baseline recipes before either revision runs."""
+        candidate_units: list[WorkUnitPlan] = []
+        baseline_units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        candidate_revision = git_full_sha("HEAD", Path(self.args.work_dir))
+        candidate_recipes: dict[str, _PlannedSynthRecipe] = {}
+        for target in targets:
+            try:
+                if self.args.dry_run:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".booley-synth-plan-",
+                        dir=self.args.work_dir,
+                    ) as scratch:
+                        planned = self._resolve_synth_recipe(
+                            target,
+                            build_root=Path(scratch) / target,
+                        )
+                        unit = self._synth_work_unit(
+                            target,
+                            planned,
+                            role="candidate",
+                            revision=candidate_revision,
+                        )
+                else:
+                    lease = edam.work_root_lease(
+                        self._synth_work_root(target),
+                        timeout_s=self._get_timeout(),
+                        on_wait=lambda selected=target: self._report_workspace_wait(selected),
+                    )
+                    with lease:
+                        planned = self._resolve_synth_recipe(target)
+                    candidate_recipes[target] = planned
+                    unit = self._synth_work_unit(
+                        target,
+                        planned,
+                        role="candidate",
+                        revision=candidate_revision,
+                    )
+                candidate_units.append(unit)
+            except (
+                BoundaryError,
+                edam.WorkRootLeaseError,
+                fusesoc_registry.FuseSocError,
+                OSError,
+                ValueError,
+            ) as exc:
+                errors.append(f"candidate {target}: {exc}")
+        self._planned_candidate_synth_recipes = candidate_recipes
+
+        baseline_ref = self.args.baseline
+        if baseline_ref:
+            baseline_units, baseline_errors = self._plan_synth_baselines(baseline_ref)
+            errors.extend(baseline_errors)
+        return FlowPlan(
+            flow="synth",
+            mode="implementation",
+            work_units=(*baseline_units, *candidate_units),
+            aggregate_errors=tuple(errors),
+            planning_disclosures=(
+                "FuseSoC setup may run in invocation-owned disposable scratch; "
+                "EDA commands are not executed.",
+            ),
+        )
+
+    def _plan_synth_baselines(
+        self,
+        baseline_ref: str,
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Resolve each unique baseline Target in a disposable checkout."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        project_root = Path(self.args.work_dir)
+        revision = git_full_sha(baseline_ref, project_root) or baseline_ref
+        candidate_handles = self._target_handles
+        candidate_refs = self._target_execution_refs
+        candidate_evidence = dict(getattr(self, "_recipe_evidence", {}))
+        try:
+            with baseline_worktree(project_root, baseline_ref) as worktree:
+                self.args.work_dir = worktree
+                self._target_handles, self._target_execution_refs = baseline_execution_context(
+                    self._target_pairs,
+                    worktree,
+                )
+                seen: set[str] = set()
+                for pair in self._target_pairs:
+                    target = pair.baseline.selector
+                    if target in seen:
+                        continue
+                    seen.add(target)
+                    try:
+                        planned = self._resolve_synth_recipe(target)
+                        units.append(
+                            self._synth_work_unit(
+                                target,
+                                planned,
+                                role="baseline",
+                                revision=revision,
+                            )
+                        )
+                    except (
+                        BoundaryError,
+                        fusesoc_registry.FuseSocError,
+                        OSError,
+                        ValueError,
+                    ) as exc:
+                        errors.append(f"baseline {target}: {exc}")
+        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
+            errors.append(f"baseline: {exc}")
+        finally:
+            self.args.work_dir = project_root
+            self._target_handles = candidate_handles
+            self._target_execution_refs = candidate_refs
+            self._recipe_evidence = candidate_evidence
+        return units, errors
+
     def _run(self) -> McpToolResult:
         """Execute synthesis for all targets, optionally comparing to baseline."""
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
@@ -1752,6 +2003,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         self._baseline_selfcompare_msg: str | None = None
         self._baseline_full_sha: str | None = None
         self._implementation_reports: dict[str, ImplementationReport] = {}
+        self._execution_role = "candidate"
 
         handles = TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
@@ -1770,8 +2022,32 @@ class AsicSynthesizeFlow(BuiltinFlow):
         preparation_error = self._prepare_target_pairs(handles)
         if preparation_error is not None:
             return preparation_error
+        plan = self._plan_synth_implementation(targets)
+        self._flow_plan = plan
         if self.args.dry_run:
-            return self._dry_run(targets)
+            return self._dry_run_result(plan)
+        if plan.aggregate_errors:
+            detail: dict[str, Any] = {"plan": plan.as_dict()}
+            for target in targets:
+                prefix = f"candidate {target}: "
+                message = next(
+                    (
+                        error.removeprefix(prefix)
+                        for error in plan.aggregate_errors
+                        if error.startswith(prefix)
+                    ),
+                    None,
+                )
+                if message is not None:
+                    detail[target] = {"infra_error": message}
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "synth: infrastructure error during planning: "
+                    + "; ".join(plan.aggregate_errors)
+                ),
+                detail=detail,
+            )
         self.reserve_invocation_dir()
         self._write_progress_report(targets, {}, {}, phase="starting")
         baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
@@ -1899,74 +2175,6 @@ class AsicSynthesizeFlow(BuiltinFlow):
         ):
             self._baseline_selfcompare_msg = None
 
-    def _dry_run(self, targets: list[str]) -> McpToolResult:
-        """Print the boundary command + the spec it is rendered from.
-
-        The executed command is a bare ``make -C <rel>`` (ADR 0037 §8); the
-        recipe knobs live in the scripts the configure half renders into that
-        dir, so the preview also shows the resolved run_yosys_syn spec argv —
-        the validated carrier of every flag. Building it requires the resolved
-        RTL, so this resolves every target through FuseSoC (one ``fusesoc run
-        --setup`` each) — an honest preview, not a cheap ``.core`` read. The
-        per-target label keeps the target name visible.
-
-        When resolution itself is unavailable (no ``fusesoc`` outside the
-        sandbox), dry-run must still succeed — the contract says dry-run needs
-        no EDA tools — so it degrades to the cheap ``setup_command`` preview
-        the make-driven built-ins use.
-        """
-        lines = []
-        for tgt in targets:
-            try:
-                with edam.try_work_root_lease(self._synth_work_root(tgt)) as leased:
-                    if leased is None:
-                        lines.append(self._setup_preview(tgt, "workspace busy"))
-                        continue
-                    cmd = self._build_synth_cmd(tgt)
-                    rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
-                    lines.append(
-                        f"[synth] dry-run ({tgt}): make -C {rel}"
-                        f"  # rendered at configure time from: {' '.join(cmd)}"
-                        f"{self._dry_run_clock_note(cmd)}",
-                    )
-            except BoundaryError as exc:
-                # A wrong-typed config knob fails the preview loudly — dry-run
-                # exists to vet the command, so hiding a config error here would
-                # defeat its purpose.
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"[synth] dry-run ({tgt}): config error: {exc}",
-                )
-            except fusesoc_registry.TargetResolutionError as exc:
-                lines.append(self._setup_preview(tgt, str(exc)))
-            except edam.WorkRootLeaseError as exc:
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"[synth] dry-run ({tgt}): infrastructure error: {exc}",
-                )
-        return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
-
-    @staticmethod
-    def _dry_run_clock_note(cmd: list[str]) -> str:
-        """Describe deferred clock validation for a physical synth preview."""
-        mode_index = cmd.index("--synth-mode")
-        if cmd[mode_index + 1] != SynthMode.PHYSICAL:
-            return ""
-        return "  # Target SDC clock creation is validated by OpenROAD at runtime"
-
-    def _setup_preview(self, target: str, reason: str) -> str:
-        """Return the non-mutating preview used when full resolution is unavailable."""
-        handle = self._target_handle(target)
-        setup_cmd = fusesoc_registry.setup_command_for_handle(
-            handle,
-            build_root=self._synth_work_root(target),
-        )
-        return (
-            f"[synth] dry-run ({target}): {' '.join(setup_cmd)}"
-            " && make -C <configured synth build dir>"
-            f"  # full preview unavailable here: {reason}"
-        )
-
     def _run_baseline_configs(
         self,
         pairs: Sequence[TargetPairPlan],
@@ -1987,9 +2195,11 @@ class AsicSynthesizeFlow(BuiltinFlow):
                 self._project_root = project_root
                 current_handles = getattr(self, "_target_handles", {})
                 current_refs = getattr(self, "_target_execution_refs", {})
+                current_role = getattr(self, "_execution_role", "candidate")
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     pairs, wt
                 )
+                self._execution_role = "baseline"
                 if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
                     self._baseline_selfcompare_msg = _baseline_self_compare_warning(
                         project_root, wt
@@ -1999,6 +2209,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
                 finally:
                     self._target_handles = current_handles
                     self._target_execution_refs = current_refs
+                    self._execution_role = current_role
                     self.args.work_dir = project_root
                     self._project_root = None
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
