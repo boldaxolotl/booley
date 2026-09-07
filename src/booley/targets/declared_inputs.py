@@ -6,13 +6,16 @@ import re
 import shlex
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
+from typing import cast
+
+from booley.core.boundary import as_dict
 
 _PROGRAM_SUFFIXES = frozenset({".bash", ".js", ".pl", ".py", ".rb", ".sh", ".tcl"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _TARGET_COMMAND_KEYS = frozenset({"pre_run"})
 _COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
-_INTERPRETER_INLINE_OPTIONS = {
+_INTERPRETER_INLINE_OPTIONS: dict[str, tuple[str, ...]] = {
     "bash": ("-c",),
     "node": ("-e", "--eval", "-p", "--print"),
     "perl": ("-e", "-E"),
@@ -22,7 +25,7 @@ _INTERPRETER_INLINE_OPTIONS = {
     "sh": ("-c",),
     "tclsh": (),
 }
-_INTERPRETER_VALUE_OPTIONS = {
+_INTERPRETER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "bash": frozenset({"-O", "-o", "--init-file", "--rcfile"}),
     "node": frozenset({"-r", "--require", "--import", "--loader", "--input-type"}),
     "perl": frozenset({"-I", "-M", "-m"}),
@@ -65,29 +68,26 @@ def _core_program_candidates(doc: Mapping[str, object], *, strict: bool) -> tupl
 
 
 def _script_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
-    scripts = doc.get("scripts")
-    if not isinstance(scripts, Mapping):
+    scripts = as_dict(doc.get("scripts"))
+    if scripts is None:
         return
-    for spec in scripts.values():
-        if not isinstance(spec, Mapping):
+    for raw_spec in scripts.values():
+        spec = as_dict(raw_spec)
+        if spec is None:
             continue
-        command = spec.get("cmd")
-        appended = spec.get("cmd_append", [])
-        if (
-            isinstance(command, list)
-            and all(isinstance(item, str) for item in command)
-            and isinstance(appended, list)
-            and all(isinstance(item, str) for item in appended)
-        ):
+        command = _argv(spec.get("cmd"))
+        appended = _argv(spec.get("cmd_append", []))
+        if command is not None and appended is not None:
             yield from _argv_program_candidates([*command, *appended])
 
 
 def _generator_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
-    generators = doc.get("generators")
-    if not isinstance(generators, Mapping):
+    generators = as_dict(doc.get("generators"))
+    if generators is None:
         return
-    for spec in generators.values():
-        if not isinstance(spec, Mapping):
+    for raw_spec in generators.values():
+        spec = as_dict(raw_spec)
+        if spec is None:
             continue
         command = spec.get("command")
         if isinstance(command, str) and command:
@@ -95,14 +95,15 @@ def _generator_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
 
 
 def _target_program_candidates(doc: Mapping[str, object], *, strict: bool) -> Iterator[str]:
-    targets = doc.get("targets")
-    if not isinstance(targets, Mapping):
+    targets = as_dict(doc.get("targets"))
+    if targets is None:
         return
-    for target in targets.values():
-        if not isinstance(target, Mapping):
+    for raw_target in targets.values():
+        target = as_dict(raw_target)
+        if target is None:
             continue
-        options = target.get("flow_options")
-        if not isinstance(options, Mapping):
+        options = as_dict(target.get("flow_options"))
+        if options is None:
             continue
         for key in _TARGET_COMMAND_KEYS:
             command = options.get(key)
@@ -118,23 +119,32 @@ def project_config_program_paths(
 ) -> tuple[Path, ...]:
     """Return programs invoked by configured Simulation Pre-Run Commands."""
     candidates: list[str] = []
-    flows = config.get("flows")
-    if isinstance(flows, Mapping):
-        for flow in flows.values():
-            if not isinstance(flow, Mapping):
+    flows = as_dict(config.get("flows"))
+    if flows is not None:
+        for raw_flow in flows.values():
+            flow = as_dict(raw_flow)
+            if flow is None:
                 continue
-            commands = flow.get("pre_run_commands")
-            if not isinstance(commands, list):
+            commands = _argv(flow.get("pre_run_commands"))
+            if commands is None:
                 continue
             for command in commands:
-                if isinstance(command, str):
-                    candidates.extend(_shell_program_candidates(command, strict=strict))
+                candidates.extend(_shell_program_candidates(command, strict=strict))
     return _resolve_program_paths(
         candidates,
         search_root=project_root,
         project_root=project_root,
         strict=strict,
     )
+
+
+def _argv(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = cast(list[object], value)
+    if not all(isinstance(item, str) for item in items):
+        return None
+    return cast(list[str], items)
 
 
 def _shell_program_candidates(command: str, *, strict: bool) -> tuple[str, ...]:
