@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
+from booley.criteria.templates import cycle_count_criterion_key
 from booley.harness.console.widgets import (
     BottomStrip,
     MainPane,
@@ -308,15 +309,139 @@ class TestTicketHeader:
             header.toggle_expanded()
             await pilot.pause()
             content = str(header.query_one("#header-content").render())
-            i_lint = content.find("lint_clean")
-            i_sim = content.find("sim_pass")
-            i_syn = content.find("synthesis_ok")
+            i_lint = content.find("Lint")
+            i_sim = content.find("Simulation")
+            i_syn = content.find("ASIC synthesis")
             i_formal = content.find("formal_check")
             assert 0 <= i_sim < i_syn < i_formal < i_lint
             assert "✗ Failing" in content
             assert "↻ Needs recheck" in content
             assert "○ Not run" in content
             assert "✓ Met" in content
+
+    @pytest.mark.asyncio
+    async def test_expanded_cycle_count_explains_scope_requirement_and_observation(self):
+        async with TicketHeaderTestApp().run_test() as pilot:
+            header = pilot.app.query_one(TicketHeader)
+            header.set_ticket_info("test", "feature", "main")
+            encoded_key = cycle_count_criterion_key("sim_core", "packet_encode")
+            header.update_criteria(
+                {
+                    encoded_key: {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {
+                            "cycles": 92_400,
+                            "baseline_cycles": 100_000,
+                            "checks": [
+                                {
+                                    "param": "cycle_count_max",
+                                    "value": 92_400,
+                                    "pass": True,
+                                },
+                                {
+                                    "param": "cycle_count_reduce_at_least",
+                                    "current": 92_400,
+                                    "baseline": 100_000,
+                                    "pct": -7.6,
+                                    "pass": True,
+                                },
+                            ],
+                        },
+                        "params": {
+                            "target": "sim_core",
+                            "test": "packet_encode",
+                            "cycle_count_max": 100_000,
+                            "cycle_count_reduce_at_least": 5,
+                        },
+                    }
+                }
+            )
+            header.toggle_expanded()
+            await pilot.pause()
+
+            content = str(header.query_one("#header-content").render())
+            assert "Cycle count · packet_encode" in content
+            assert "target sim_core · required ≤ 100,000 cycles · reduction ≥ 5%" in content
+            assert "observed 92,400 cycles · reduction 7.6%" in content
+            assert encoded_key not in content
+
+    @pytest.mark.asyncio
+    async def test_expanded_builtin_criteria_use_short_labels_and_requirements(self):
+        async with TicketHeaderTestApp().run_test() as pilot:
+            header = pilot.app.query_one(TicketHeader)
+            header.set_ticket_info("test", "feature", "main")
+            header.update_criteria(
+                {
+                    "sim_pass_tb_packet_tb.sv_sim_packet_all": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {},
+                        "params": {
+                            "tb_path": "tb/packet_tb.sv",
+                            "target": "sim_packet",
+                            "test_selector": "all",
+                        },
+                    },
+                    "synthesis_ok_synth_core_fast": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {},
+                        "params": {"cell_count_max": 12_000},
+                    },
+                    "review_rtl_security_clean": {
+                        "met": False,
+                        "mandatory": False,
+                        "detail": {"issues": 2},
+                        "params": {},
+                    },
+                }
+            )
+            header.toggle_expanded()
+            await pilot.pause()
+
+            content = str(header.query_one("#header-content").render())
+            assert "Simulation · sim_packet" in content
+            assert "tb packet_tb.sv · required all selected tests pass" in content
+            assert "ASIC synthesis · synth_core_fast" in content
+            assert "required cells ≤ 12,000" in content
+            assert "RTL security review" in content
+            assert "goal no open findings · observed 2 issues" in content
+            assert "sim_pass_tb_packet_tb.sv_sim_packet_all" not in content
+            assert "synthesis_ok_synth_core_fast" not in content
+            assert "review_rtl_security_clean" not in content
+
+    @pytest.mark.asyncio
+    async def test_expanded_never_run_groups_keep_individual_requirements(self):
+        async with TicketHeaderTestApp().run_test() as pilot:
+            header = pilot.app.query_one(TicketHeader)
+            header.set_ticket_info("test", "feature", "main")
+            header.update_criteria(
+                {
+                    "review_rtl_bugs_clean": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {},
+                        "params": {},
+                    },
+                    "mutation_score_sim_core": {
+                        "met": False,
+                        "mandatory": False,
+                        "detail": {},
+                        "params": {"min_detected": 8, "total": 10},
+                    },
+                }
+            )
+            header.toggle_expanded()
+            await pilot.pause()
+
+            content = str(header.query_one("#header-content").render())
+            assert "RTL bugs review" in content
+            assert "required no open findings" in content
+            assert "Mutation testing · sim_core" in content
+            assert "goal ≥ 8/10 mutations detected" in content
+            assert "reviews (not yet run)" not in content
+            assert "mutation (not yet run)" not in content
 
     @pytest.mark.asyncio
     async def test_toggle_expanded(self):
