@@ -41,6 +41,7 @@ _RISCV_RELEASE_JOBS = {
     "picorv32-demo-flows",
     "ibex-lint-demo",
 }
+_PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
 
 
 def _mapping(value: object, label: str) -> dict[str, Any]:
@@ -93,6 +94,22 @@ def validate_pr_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
         errors.append("ci-required must depend on release-semantic")
     if not any("--budget-seconds 60" in command for command in _commands(semantic)):
         errors.append("release-semantic must enforce a 60-second duration budget")
+    return tuple(errors)
+
+
+def validate_publication_topology(
+    workflow: dict[str, Any], source_workflow: dict[str, Any]
+) -> tuple[str, ...]:
+    jobs = _mapping(workflow.get("jobs"), "publish workflow jobs")
+    source_validation = _mapping(jobs.get("source-validation"), "source-validation job")
+    granted = _mapping(source_validation.get("permissions"), "source-validation permissions")
+    required = _mapping(source_workflow.get("permissions"), "test workflow permissions")
+    errors: list[str] = []
+    for scope, access in required.items():
+        required_level = _PERMISSION_LEVELS.get(str(access), -1)
+        granted_level = _PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
+        if granted_level < required_level:
+            errors.append(f"source-validation must grant {scope}: {access} required by test.yml")
     return tuple(errors)
 
 
@@ -197,10 +214,15 @@ def _candidate_sha(repo: Path) -> str:
 
 def validate_repository(repo: Path, *, candidate_sha: str | None = None) -> dict[str, object]:
     pr = _load_workflow(repo / ".github/workflows/test.yml")
+    publication = _load_workflow(repo / ".github/workflows/publish.yml")
     release = _load_workflow(repo / ".github/workflows/docker-publish.yml")
     checks = [
         _check("classifier.release-sensitive", _classifier_errors()),
         _check("workflow.pr-topology", validate_pr_topology(pr)),
+        _check(
+            "workflow.publication-topology",
+            validate_publication_topology(publication, pr),
+        ),
         _check("workflow.release-topology", validate_release_topology(release)),
     ]
     errors = [error for check in checks for error in check["errors"]]

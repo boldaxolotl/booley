@@ -13,6 +13,7 @@ jobs:
   source-validation:
     uses: ./.github/workflows/test.yml
     permissions:
+      actions: read
       contents: read
       packages: read
 

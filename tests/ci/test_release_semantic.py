@@ -25,6 +25,7 @@ def test_repository_release_semantics_are_valid() -> None:
     assert {check["id"] for check in evidence["checks"]} >= {
         "classifier.release-sensitive",
         "workflow.pr-topology",
+        "workflow.publication-topology",
         "workflow.release-topology",
     }
     assert all(check["status"] == "pass" for check in evidence["checks"])
@@ -48,6 +49,17 @@ def test_pr_topology_requires_one_minute_semantic_budget() -> None:
     errors = semantic.validate_pr_topology(workflow)
 
     assert errors == ("release-semantic must enforce a 60-second duration budget",)
+
+
+def test_publication_topology_grants_reusable_workflow_permissions() -> None:
+    publication = yaml.safe_load(
+        (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    )
+    publication["jobs"]["source-validation"]["permissions"].pop("actions")
+
+    errors = semantic.validate_publication_topology(publication, _test_workflow())
+
+    assert errors == ("source-validation must grant actions: read required by test.yml",)
 
 
 def test_release_topology_splits_validation_by_image_dependency() -> None:
