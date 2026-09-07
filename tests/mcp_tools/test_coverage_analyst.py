@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
@@ -135,6 +135,222 @@ def test_dry_run_stops_before_prerequisites_agents_and_eda(tmp_path: Path) -> No
     assert result.detail["mode"] == "dry_run"
     prerequisites.assert_not_called()
     phase_one.assert_not_called()
+
+
+def test_run_returns_campaign_and_input_errors_before_execution() -> None:
+    endpoint = _make_endpoint_with_args(dry_run=False)
+    campaign_error = McpToolResult(exit_code=EXIT_ERROR, report_text="campaign")
+    input_error = McpToolResult(exit_code=EXIT_ERROR, report_text="input")
+
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=campaign_error),
+        patch.object(endpoint, "_prepare_run_inputs") as prepare,
+    ):
+        assert endpoint._run() is campaign_error
+        prepare.assert_not_called()
+
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=input_error),
+        patch.object(endpoint, "_execute_coverage_analysis") as execute,
+    ):
+        assert endpoint._run() is input_error
+        execute.assert_not_called()
+
+
+def test_run_delegates_to_coverage_execution_after_validation() -> None:
+    endpoint = _make_endpoint_with_args(dry_run=False)
+    expected = McpToolResult(exit_code=EXIT_SUCCESS, report_text="complete")
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=None),
+        patch.object(endpoint, "_check_prerequisites", return_value=None),
+        patch.object(endpoint, "_execute_coverage_analysis", return_value=expected),
+    ):
+        assert endpoint._run() is expected
+
+
+def _coverage_input_endpoint(**kwargs) -> CoverageAnalystSpecialist:
+    kwargs.setdefault("criteria", "")
+    endpoint = _make_endpoint_with_args(**kwargs)
+    endpoint._target_campaign = types.SimpleNamespace(scope=("rtl/dut.sv",))
+    return endpoint
+
+
+def _coverage_catalog(*, rtl_files=("rtl/dut.sv",)) -> MagicMock:
+    catalog = MagicMock()
+    catalog.inspect.return_value = types.SimpleNamespace(rtl_files=rtl_files)
+    return catalog
+
+
+def test_prepare_run_inputs_rejects_multiple_targets() -> None:
+    endpoint = _coverage_input_endpoint(target="sim,lint")
+
+    result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "exactly one Target" in result.report_text
+
+
+def test_prepare_run_inputs_reports_target_metadata_failure() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            side_effect=fusesoc_registry.FuseSocError("bad target"),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "could not resolve Target metadata" in result.report_text
+
+
+def test_prepare_run_inputs_requires_target_toplevel() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value=""),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "does not declare a toplevel" in result.report_text
+
+
+def test_prepare_run_inputs_rejects_scope_outside_target() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(rtl_files=()),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "outside the Target RTL closure" in result.report_text
+
+
+def test_prepare_run_inputs_validates_criteria() -> None:
+    endpoint = _coverage_input_endpoint(criteria="toggle,unknown")
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(),
+        ),
+    ):
+        invalid = endpoint._prepare_run_inputs()
+        endpoint.args.criteria = "toggle,branch"
+        valid = endpoint._prepare_run_inputs()
+
+    assert invalid is not None
+    assert "unknown --criteria: unknown" in invalid.report_text
+    assert valid is None
+
+
+def test_measure_target_coverage_propagates_errors_and_builds_measurement(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    trace_error = McpToolResult(exit_code=EXIT_ERROR, report_text="trace")
+    phase_error = McpToolResult(exit_code=EXIT_ERROR, report_text="phase")
+    trace_dirs = [tmp_path / "trace"]
+
+    with patch.object(endpoint, "_ensure_target_traces", return_value=([], [], trace_error)):
+        assert endpoint._measure_target_coverage(tmp_path, []) is trace_error
+
+    with (
+        patch.object(
+            endpoint,
+            "_ensure_target_traces",
+            return_value=(["rtl/dut.sv"], trace_dirs, None),
+        ),
+        patch.object(
+            endpoint,
+            "_run_phase1_measurement_for_suite",
+            return_value=([], [], [], [], phase_error),
+        ),
+    ):
+        assert endpoint._measure_target_coverage(tmp_path, []) is phase_error
+
+    stats = [_sig("dut.valid")]
+    with (
+        patch.object(
+            endpoint,
+            "_ensure_target_traces",
+            return_value=(["rtl/dut.sv"], trace_dirs, None),
+        ),
+        patch.object(
+            endpoint,
+            "_run_phase1_measurement_for_suite",
+            return_value=(stats, ["noise"], [], [], None),
+        ),
+    ):
+        measurement = endpoint._measure_target_coverage(tmp_path, [])
+
+    assert not isinstance(measurement, McpToolResult)
+    assert measurement.stats == stats
+    assert measurement.trace_dirs == trace_dirs
+
+
+def test_execute_coverage_analysis_assembles_and_scores_report(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    measurement = types.SimpleNamespace(
+        stats=[_sig("dut.valid")],
+        structural_noise=["noise"],
+        toggle_failures=[],
+        low_diversity=[],
+        trace_dirs=[tmp_path / "trace"],
+    )
+    phases = ([], [], FsmResult(), [], {}, [], ReviewerResult())
+    expected = McpToolResult(exit_code=EXIT_SUCCESS, report_text="scored")
+    with (
+        patch.object(endpoint, "_measure_target_coverage", return_value=measurement),
+        patch.object(endpoint, "_read_rtl_sources", return_value="module dut; endmodule"),
+        patch.object(endpoint, "_get_active_criteria", return_value={"coverage_toggle"}),
+        patch.object(endpoint, "_run_phases_2_to_4", return_value=phases),
+        patch.object(endpoint, "_build_coverage_result", return_value=expected) as build_result,
+    ):
+        result = endpoint._execute_coverage_analysis()
+
+    assert result is expected
+    report = build_result.call_args.args[0]
+    assert report.signal_stats == measurement.stats
+    assert report.structural_noise == ["noise"]
+
+
+def test_execute_coverage_analysis_propagates_measurement_error(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    expected = McpToolResult(exit_code=EXIT_ERROR, report_text="measurement")
+    with patch.object(endpoint, "_measure_target_coverage", return_value=expected):
+        assert endpoint._execute_coverage_analysis() is expected
+
+
+def test_ensure_trace_reports_typed_setup_failure(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    with (
+        patch.object(endpoint, "_check_tb_dump_calls", return_value=None),
+        patch.object(endpoint, "_derive_trace_scope", return_value="dut"),
+        patch.object(endpoint, "_build_edalize_trace_cmd", side_effect=ValueError("bad EDAM")),
+    ):
+        result = endpoint._ensure_trace(tmp_path / "trace", tmp_path)
+
+    assert result is not None
+    assert result.exit_code == EXIT_ERROR
+    assert "Traced simulation setup failed: bad EDAM" in result.report_text
+
+
+def test_reviewer_prompt_includes_steering_context() -> None:
+    endpoint = _make_endpoint_with_args(steer=["Prioritize reset coverage"])
+
+    prompt = endpoint._build_reviewer_resume_prompt([], [], active_criteria=set())
+
+    assert "## Caller Context\nPrioritize reset coverage" in prompt
 
 
 def test_coverage_records_each_active_target_criterion() -> None:
