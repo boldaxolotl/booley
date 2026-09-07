@@ -138,6 +138,26 @@ class TestExtraRtlParsing:
 
 
 class TestTimingArgs:
+    def test_physical_resolve_requires_target_owned_sdc(self, tmp_path):
+        from booley.flows.synth.backends import configure as mod
+
+        rtl = tmp_path / "dut.sv"
+        rtl.write_text("module dut; endmodule\n", encoding="utf-8")
+        args = mod._build_parser().parse_args(
+            [
+                "configure",
+                "-t",
+                "dut",
+                "--extra-rtl",
+                str(rtl),
+                "--synth-mode",
+                "physical",
+            ]
+        )
+
+        with pytest.raises(SystemExit, match="requires a Target-owned"):
+            mod.resolve_spec(args, project_root=tmp_path, require_liberty=False)
+
     def test_profiles_and_backend_overrides_parse(self):
         from booley.flows.synth.backends.configure import _build_parser
 
