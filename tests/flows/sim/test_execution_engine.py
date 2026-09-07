@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +22,7 @@ from booley.flows.sim.adapter_transport import (
     partial_result_identity,
     write_adapter_result,
 )
-from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
+from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import (
     DefaultSelection,
     NamedTests,
@@ -144,6 +145,41 @@ def _write_transport(
         prepared.build_root / ".booley-adapter-abc123.json",
     )
     write_adapter_result(identity, result)
+
+
+def _passing_attempt_invoker(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    attempts: tuple[tuple[str, tuple[str, ...]], ...],
+    *,
+    adapter: str,
+) -> Callable[..., SubprocessResult]:
+    remaining = iter(attempts)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        token, names = next(remaining)
+        identity = AdapterTransportIdentity(
+            adapter,
+            token,
+            handle.identity,
+            names,
+            prepared.build_root / f".booley-adapter-{token}.json",
+        )
+        result = AdapterResult(
+            True,
+            False,
+            0,
+            names,
+            test_results=tuple(AdapterTestResult(name, "pass") for name in names),
+        )
+        write_adapter_result(identity, result)
+        return SubprocessResult(
+            returncode=0,
+            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\n",
+        )
+
+    return invoke
 
 
 def _write_partial_timeout_transport(
@@ -498,21 +534,76 @@ def test_adapter_programmer_value_error_propagates(tmp_path: Path) -> None:
         _run_execution(handle, prepared, MagicMock(), ("smoke",), cocotb=False)
 
 
-def test_fresh_build_reset_failure_is_not_recorded_as_success(tmp_path: Path) -> None:
+def test_fresh_build_reset_failure_is_typed_infrastructure(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=True))
-    build_root = tmp_path / "build"
-    build_root.mkdir()
 
     with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            return_value=tmp_path / "build",
+        ),
         patch("booley.flows.sim.execution.engine.shutil.rmtree", side_effect=OSError("busy")),
-        pytest.raises(
-            SimulationBuildPreparationError,
-            match="could not reset traced Simulation build root",
+    ):
+        outcome = execution.run(handle, NamedTests(("smoke",)))
+
+    assert outcome.verdict == "error"
+    assert outcome.tests == ()
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "build"
+    assert "could not reset traced Simulation build root" in outcome.infrastructure_failure.detail
+
+
+def _assert_live_and_preview_build_variant(
+    tmp_path: Path,
+    *,
+    trace: bool,
+    expected: str,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    work_root = tmp_path / "work-root"
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=trace))
+    trace_overlay = SimpleNamespace(
+        vlnv="acme:lib:demo_trace:1",
+        mode=TraceMode.NATIVE_FST,
+        cleanup=MagicMock(),
+    )
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            return_value=work_root,
+        ) as work_root_for,
+        patch.object(execution, "_reset_build_root") as reset,
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_build",
+            return_value=prepared,
+        ) as prepare,
+        patch(
+            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+            return_value=["setup"],
+        ) as setup,
+        patch(
+            "booley.flows.sim.execution.engine._trace_overlay",
+            return_value=trace_overlay,
         ),
     ):
-        execution._reset_fresh_build_root(build_root)
+        execution._prepare_build(handle)
+        execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
 
-    assert execution._reset_build_roots == set()
+    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [
+        expected,
+        expected,
+    ]
+    assert reset.call_args.args[0] == work_root
+    assert reset.call_args.args[1].variant == expected
+    assert prepare.call_args.kwargs["variant"] == expected
+    setup.assert_called_once_with(handle, build_root=work_root)
+    assert trace_overlay.cleanup.call_count == int(trace)
 
 
 @pytest.mark.parametrize(
@@ -535,46 +626,7 @@ def test_live_and_preview_use_the_same_build_variant(
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
     else:
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, doctor_kind)
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    work_root = tmp_path / "work-root"
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(trace=trace))
-    trace_overlay = SimpleNamespace(
-        vlnv="acme:lib:demo_trace:1",
-        mode=TraceMode.NATIVE_FST,
-        cleanup=MagicMock(),
-    )
-
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
-            return_value=work_root,
-        ) as work_root_for,
-        patch.object(execution, "_reset_fresh_build_root") as reset,
-        patch(
-            "booley.flows.sim.execution.engine.prepare_simulation_build",
-            return_value=prepared,
-        ) as prepare,
-        patch(
-            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
-            return_value=["setup"],
-        ) as setup,
-        patch(
-            "booley.flows.sim.execution.engine._trace_overlay",
-            return_value=trace_overlay,
-        ),
-    ):
-        execution._prepare_build(handle)
-        execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
-
-    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [
-        expected,
-        expected,
-    ]
-    reset.assert_called_once_with(work_root)
-    assert prepare.call_args.kwargs["variant"] == expected
-    setup.assert_called_once_with(handle, build_root=work_root)
-    assert trace_overlay.cleanup.call_count == int(trace)
+    _assert_live_and_preview_build_variant(tmp_path, trace=trace, expected=expected)
 
 
 @pytest.mark.parametrize("cocotb, groups_per_run", [(False, 2), (True, 1)])
@@ -586,35 +638,42 @@ def test_fresh_build_root_resets_once_per_run(
 ) -> None:
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
     handle = _handle(tmp_path)
-    build_root = tmp_path / "build-root"
-    outcome = SimulationTargetOutcome(
-        target="sim",
-        target_identity=handle.identity,
-        toplevel="tb_demo",
-        eda_tool="icarus",
-        passed=True,
-        verdict="pass",
-        elapsed_s=0.0,
-        tests=(SimulationTestOutcome("a", "pass", True),),
+    prepared = _prepared(handle, cocotb=cocotb)
+    groups = (("a", "b"),) if cocotb else (("a",), ("b",))
+    tokens = tuple(f"{index:032x}" for index in range(groups_per_run * 2))
+    attempts = tuple(zip(tokens, groups * 2, strict=True))
+    invoke = _passing_attempt_invoker(
+        handle,
+        prepared,
+        attempts,
+        adapter="cocotb" if cocotb else "icarus",
     )
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-
-    def run_group(_handle: TargetHandle, _test_names: tuple[str, ...]) -> SimulationTargetOutcome:
-        execution._reset_fresh_build_root(build_root)
-        return outcome
-
-    execution._run_group = MagicMock(side_effect=run_group)
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
     with (
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=cocotb),
         ),
+        patch(
+            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            return_value=prepared.build_root,
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_build",
+            return_value=prepared,
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.new_attempt_token",
+            side_effect=tokens,
+        ),
         patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset,
     ):
-        execution.run(handle, NamedTests(("a", "b")))
-        execution.run(handle, NamedTests(("a", "b")))
+        outcomes = (
+            execution.run(handle, NamedTests(("a", "b"))),
+            execution.run(handle, NamedTests(("a", "b"))),
+        )
 
-    assert execution._run_group.call_count == groups_per_run * 2
+    assert all(outcome.passed for outcome in outcomes)
     assert reset.call_count == 2
 
 
@@ -622,15 +681,40 @@ def test_ordinary_build_root_is_never_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    build_root = tmp_path / "build-root"
-    build_root.mkdir()
-    sentinel = build_root / "cached"
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    sentinel = prepared.build_root / "cached"
     sentinel.write_text("keep\n", encoding="utf-8")
+    invoke = _passing_attempt_invoker(
+        handle,
+        prepared,
+        (("0" * 32, ("smoke",)),),
+        adapter="icarus",
+    )
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
 
-    with patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset:
-        execution._reset_fresh_build_root(build_root)
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.edam_layer.work_root_for",
+            return_value=prepared.build_root,
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.prepare_simulation_build",
+            return_value=prepared,
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.new_attempt_token",
+            return_value="0" * 32,
+        ),
+        patch("booley.flows.sim.execution.engine.shutil.rmtree") as reset,
+    ):
+        outcome = execution.run(handle, NamedTests(("smoke",)))
 
+    assert outcome.passed is True
     reset.assert_not_called()
     assert sentinel.read_text(encoding="utf-8") == "keep\n"
 
