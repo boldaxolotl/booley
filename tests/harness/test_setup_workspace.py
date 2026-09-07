@@ -96,13 +96,14 @@ class TestMaterializedAcceptanceBasis:
 
         ctx = self._context(tmp_path)
         with patch(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
             return_value=None,
         ) as validate:
             result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 
         assert result is None
-        validate.assert_called_once_with(ctx.acceptance_basis, tmp_path)
+        validate.assert_called_once_with(ctx.project_root, ctx.acceptance_basis, tmp_path)
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
@@ -111,8 +112,11 @@ class TestMaterializedAcceptanceBasis:
         from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 
         with patch(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
-            side_effect=AcceptanceBasisError("protected input changed"),
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
+            side_effect=AcceptanceBasisError(
+                "acceptance-input-change-required: protected input changed"
+            ),
         ):
             result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 

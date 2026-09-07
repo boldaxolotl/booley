@@ -192,7 +192,8 @@ class TestBooleyFlowExecution:
             load_basis,
         )
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
@@ -204,16 +205,21 @@ class TestBooleyFlowExecution:
         assert loaded_slugs == ["actual-ticket"]
 
         def reject_change(*_args, **_kwargs):
-            raise AcceptanceBasisError("protected path changed")
+            raise AcceptanceBasisError(
+                "acceptance-input-change-required: protected path changed"
+            )
 
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged", reject_change
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
+            reject_change,
         )
         rejected = flow._pre_state_gate()
 
         assert rejected is not None
         assert rejected.exit_code == EXIT_ERROR
         assert "acceptance-input-change-required" in rejected.report_text
+        assert rejected.report_text.count("acceptance-input-change-required") == 1
 
     def test_acceptance_basis_uses_nonblank_runtime_ticket_slug(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -236,7 +242,8 @@ class TestBooleyFlowExecution:
             load_basis,
         )
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
@@ -279,7 +286,8 @@ class TestBooleyFlowExecution:
         )
         monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_basis.assert_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation."
+            "assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))

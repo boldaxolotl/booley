@@ -164,10 +164,9 @@ class BooleyFlow(McpTool):
         if not ticket_file:
             return None
         from booley.runtime.project_dir import resolve_checkout_project_dir
-        from booley.ticket_board.acceptance_basis import (
-            BLOCK_REASON,
-            AcceptanceBasisError,
-            assert_inputs_unchanged,
+        from booley.ticket_board.acceptance_basis import BLOCK_REASON, AcceptanceBasisError
+        from booley.ticket_board.acceptance_validation import (
+            assert_ticket_worktree_inputs_unchanged,
         )
         from booley.ticket_board.helpers import (
             TicketSlugError,
@@ -189,11 +188,16 @@ class BooleyFlow(McpTool):
             )
             self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
-            assert_inputs_unchanged(basis, work_dir)
-        except (OSError, AcceptanceBasisError, TicketSlugError) as exc:
+            assert_ticket_worktree_inputs_unchanged(project_root, basis, work_dir)
+        except TicketSlugError as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
+            )
+        except (OSError, AcceptanceBasisError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"BLOCKED: {exc}",
             )
         return None
 
