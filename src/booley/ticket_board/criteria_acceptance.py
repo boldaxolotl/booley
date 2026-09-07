@@ -352,8 +352,8 @@ def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], no
             entry,
             categories=categories,
             now=now,
-            reason=f"Reviewer Target requirement can no longer be resolved: {exc}",
-            dimensions=["target_surface"],
+            reason=f"Reviewer source context can no longer be resolved: {exc}",
+            dimensions=["source_context"],
         )
     if not changed:
         return False
@@ -424,6 +424,11 @@ def _refresh_verification_entry(
         now=now,
     ):
         return True
+    if (
+        key.startswith(("review_rtl_", "review_tb_"))
+        and (entry.detail or {}).get("review_detail_version") == 4
+    ):
+        return False
     return _source_evidence_is_stale(
         entry,
         work_dir=work_dir,
