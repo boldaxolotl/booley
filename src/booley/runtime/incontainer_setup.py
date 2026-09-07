@@ -674,7 +674,6 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
         return _apply_codex_credential(token, home)
     return "none"
 
-
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -701,4 +700,3 @@ def register(app: str, *, home: Path | None = None) -> str:
         mcp = "written" if changed else "current"
         return f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
     return "none"
-
