@@ -129,6 +129,12 @@ class TargetCatalog:
         tokens = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
         return tuple(self.select(token, for_flow=for_flow) for token in tokens)
 
+    def declaration_count(self, name: str, *, include_private: bool = False) -> int:
+        """Count declarations without granting handles to hidden Doctor Targets."""
+        self._require_fresh()
+        refs = next((refs for target_name, refs in self._declarations if target_name == name), ())
+        return len(refs if include_private else self._visible(refs))
+
     def inspect(self, handle: TargetHandle) -> TargetInspection:
         """Inspect a handle through this snapshot's shared FuseSoC library view."""
         self._require_handle(handle)

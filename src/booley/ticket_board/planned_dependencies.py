@@ -16,7 +16,8 @@ from booley.core.boundary import BoundaryError, require_dict, require_list, requ
 from booley.core.models import TargetPlanRole
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
-from booley.targets.target import inspect_target_selector
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 from .acceptance_basis import (
     AcceptanceBasisError,
@@ -82,7 +83,7 @@ def _tests_tables(path: Path) -> set[str]:
     return set(raw) - {TEST_LISTS_TABLE}
 
 
-def _owned_tests(checkout: Path, target: str) -> tuple[str, Any]:
+def _owned_tests(checkout: Path, target: str, catalog: TargetCatalog) -> tuple[str, Any]:
     tests_path = resolve_checkout_project_dir(checkout) / "tests.toml"
     if not tests_path.is_file():
         return "", None
@@ -94,8 +95,7 @@ def _owned_tests(checkout: Path, target: str) -> tuple[str, Any]:
     if target in raw:
         return _owned_test_table(target, raw[target])
     if bare in raw:
-        declarations = fusesoc_registry.target_declarations(checkout).get(bare, [])
-        if len(declarations) != 1:
+        if catalog.declaration_count(bare, include_private=True) != 1:
             raise PlannedDependencyError(
                 f"provider Target {target!r} has ambiguous bare tests.toml ownership"
             )
@@ -111,20 +111,21 @@ def _owned_test_table(key: str, value: Any) -> tuple[str, Any]:
 
 def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
     try:
-        ref = fusesoc_registry.resolve_ref(checkout, target)
-        document = fusesoc_registry.read_core(ref.core_file)
-    except fusesoc_registry.FuseSocError as exc:
+        catalog = TargetCatalog.build(checkout)
+        handle = catalog.select(target)
+        document = fusesoc_registry.read_core(handle.core_file)
+    except FuseSocError as exc:
         raise PlannedDependencyError(str(exc)) from exc
     targets = document.get("targets")
-    if not isinstance(targets, dict) or ref.name not in targets:
+    if not isinstance(targets, dict) or handle.name not in targets:
         raise PlannedDependencyError(f"provider Target {target!r} has no declaration")
-    tests_key, tests = _owned_tests(checkout, target)
+    tests_key, tests = _owned_tests(checkout, handle.identity, catalog)
     controls = {key: value for key, value in document.items() if key != "targets"}
     digest = hashlib.sha256(
-        canonical_json({"controls": controls, "target": targets[ref.name], "tests": tests})
+        canonical_json({"controls": controls, "target": targets[handle.name], "tests": tests})
     ).hexdigest()
     try:
-        core_path = ref.core_file.resolve().relative_to(checkout.resolve())
+        core_path = handle.core_file.resolve().relative_to(checkout.resolve())
     except ValueError as exc:
         raise PlannedDependencyError(
             f"provider Target {target!r} is outside its checkout"
@@ -439,8 +440,8 @@ def _provider_placeholders(checkout: Path, provider: _Provider, target: str) -> 
     ):
         return ()
     try:
-        inputs = inspect_target_selector(checkout, target).inputs
-    except (OSError, fusesoc_registry.FuseSocError) as exc:
+        inputs = _inspect_provider_inputs(checkout, target)
+    except (OSError, FuseSocError) as exc:
         raise PlannedDependencyError(
             f"cannot inspect provider Target {target!r} inputs: {exc}"
         ) from exc
@@ -464,6 +465,11 @@ def _provider_placeholders(checkout: Path, provider: _Provider, target: str) -> 
             ) from exc
         placeholders.append(path)
     return tuple(sorted(set(placeholders)))
+
+
+def _inspect_provider_inputs(checkout: Path, target: str) -> tuple[Any, ...]:
+    catalog = TargetCatalog.build(checkout)
+    return catalog.inspect(catalog.select(target)).inputs
 
 
 def _provider_exports(provider: _Provider) -> tuple[Any, ...]:
@@ -619,6 +625,7 @@ def materialize_planned_dependencies(
     marker = _marker_path(root, slug, generation)
     if marker.is_file():
         materialization = _require_marker_dependencies(_load_marker(marker), dependencies)
+        _validate_marker_exports(materialization, providers)
         _restore_materialized_surfaces(root, providers, workspace, materialization)
         validate_materialized_surfaces(workspace, materialization)
         return materialization
@@ -626,6 +633,23 @@ def materialize_planned_dependencies(
     _validate_materialization(result)
     atomic_replace_bytes(marker, _serialize(result))
     return result
+
+
+def _validate_marker_exports(
+    materialization: ProviderMaterialization, providers: list[_Provider]
+) -> None:
+    effective = set(_export_owners(providers))
+    expected = {
+        (provider.slug, entry.target, entry.role.value)
+        for provider in providers
+        for entry in _provider_exports(provider)
+        if entry.target in effective
+    }
+    actual = {(row.provider, row.target, row.role) for row in materialization.bindings}
+    if actual != expected:
+        raise PlannedDependencyError(
+            "planned provider exports changed after materialization; recreate the workspace"
+        )
 
 
 def _restore_materialized_surfaces(
@@ -748,7 +772,7 @@ def validate_planned_dependencies(
     _validate_replacement_owners(active)
     _validate_provider_dependencies(fields, dependencies, active)
     providers = _dependency_providers(root, tickets_dir, dependencies, active)
-    _export_owners(providers)
+    _validate_marker_exports(materialization, providers)
     if not materialization.bindings:
         return materialization
     by_slug = {provider.slug: provider for provider in providers}

@@ -815,6 +815,16 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     for t in tickets:
         if t.get("status") != "waiting":
             continue
+        provider_error = _waiting_provider_error(tio, t, tickets)
+        if provider_error:
+            slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
+            print(
+                f"Error: cannot promote '{slug}': acceptance-input-change-required: "
+                f"{provider_error}",
+                file=sys.stderr,
+            )
+            _block_failed_basis_refresh(tio, slug)
+            continue
         deps = t.get("dependencies", [])
         if deps and not all(d in done_slugs for d in deps):
             continue
@@ -823,6 +833,33 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
             promoted.append(promoted_entry)
 
     return promoted
+
+
+def _waiting_provider_error(
+    tio: Any, ticket: dict[str, Any], tickets: list[dict[str, Any]]
+) -> str:
+    if ticket.get("acceptance_basis") is None:
+        return ""
+    available = {
+        slug_from_file(item.get("file", ""))
+        for item in tickets
+        if item.get("status") != "archived"
+    }
+    dependencies = {
+        item for item in ticket.get("dependencies", ()) if isinstance(item, str)
+    }
+    unavailable = dependencies - available
+    if not unavailable:
+        return ""
+    slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    from .acceptance_basis import AcceptanceBasisError
+
+    try:
+        basis = tio.load_basis(slug)
+    except AcceptanceBasisError as exc:
+        return f"invalid Acceptance Basis: {exc}"
+    missing = sorted({row.provider for row in basis.providers} & unavailable)
+    return "provider unavailable: " + ", ".join(missing) if missing else ""
 
 
 def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] | None:

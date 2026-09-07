@@ -323,9 +323,18 @@ def test_planned_target_can_append_with_conventional_separator(repository: Path)
     assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
 
 
-def test_bare_planned_table_rejected_when_target_name_is_ambiguous(repository: Path) -> None:
+@pytest.mark.parametrize(
+    "other_target",
+    [
+        "{flow: lint}",
+        "{flow: lint, flow_options: {booley: {doctor_selftest: true}}}",
+    ],
+)
+def test_bare_planned_table_rejected_when_target_name_is_ambiguous(
+    repository: Path, other_target: str
+) -> None:
     (repository / "other.core").write_text(
-        "CAPI=2:\nname: acme:lib:other:1.0\ntargets:\n  lint_new: {flow: lint}\n",
+        f"CAPI=2:\nname: acme:lib:other:1.0\ntargets:\n  lint_new: {other_target}\n",
         encoding="utf-8",
     )
     _git(repository, "add", "other.core")

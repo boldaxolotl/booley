@@ -26,6 +26,8 @@ from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
 
 from .acceptance_targets import (
     AcceptanceTargetBinding,
+    canonical_acceptance_bindings,
+    criterion_targets,
 )
 
 

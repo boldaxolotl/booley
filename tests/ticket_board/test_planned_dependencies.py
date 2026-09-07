@@ -586,8 +586,8 @@ def _materialize_placeholder_provider(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(planned_dependencies, "materialize_basis_checkout", lambda *_: source)
     monkeypatch.setattr(
         planned_dependencies,
-        "inspect_target_selector",
-        lambda *_: SimpleNamespace(inputs=(target_input,)),
+        "_inspect_provider_inputs",
+        lambda *_: (target_input,),
     )
     result = _materialize_provider(tmp_path, provider, workspace, set(), {}, {"future"})
     return workspace, target_input, result
@@ -609,12 +609,12 @@ def test_provider_new_input_is_a_consumer_validation_exemption(
     assert fields == {"scope": []}
     assert effective["scope"] == ["rtl/future.sv [new]"]
 
+    catalog = SimpleNamespace(select=lambda *_args, **_kwargs: SimpleNamespace(selector="future"))
     monkeypatch.setattr(
         acceptance_targets,
-        "select_target",
-        lambda *_args: SimpleNamespace(flow="lint", eda_tool="verilator"),
+        "TargetCatalog",
+        SimpleNamespace(build=lambda *_args: catalog),
     )
-    monkeypatch.setattr(acceptance_targets, "flow_can_drive", lambda *_args: True)
     monkeypatch.setattr(
         acceptance_targets,
         "_missing_target_inputs",
@@ -685,6 +685,36 @@ def test_existing_empty_marker_rechecks_new_active_provider(tmp_path: Path, monk
     monkeypatch.setattr(planned_dependencies, "resolve_checkout_project_dir", lambda root: root)
 
     with pytest.raises(PlannedDependencyError, match="missing provider dependencies"):
+        materialize_planned_dependencies(tmp_path, ticket, "consumer", "a" * 16, tmp_path)
+
+
+def test_existing_empty_marker_rejects_new_export_from_existing_dependency(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text(
+        "---\ncriteria: {mandatory: {sim_pass: [future]}}\ndependencies: [provider]\n---\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "marker.json"
+    marker.write_bytes(
+        planned_dependencies._serialize(ProviderMaterialization(dependencies=("provider",)))
+    )
+    provider = _Provider(
+        "provider",
+        {},
+        SimpleNamespace(
+            target_plan=TargetPlan.from_value(
+                [{"target": "acme:lib:toy:1.0#future", "role": "persistent"}]
+            ),
+            removal_targets=(),
+        ),
+    )
+    monkeypatch.setattr(planned_dependencies, "_marker_path", lambda *_: marker)
+    monkeypatch.setattr(planned_dependencies, "_active_providers", lambda *_: [provider])
+    monkeypatch.setattr(planned_dependencies, "resolve_checkout_project_dir", lambda root: root)
+
+    with pytest.raises(PlannedDependencyError, match="provider exports changed"):
         materialize_planned_dependencies(tmp_path, ticket, "consumer", "a" * 16, tmp_path)
 
 

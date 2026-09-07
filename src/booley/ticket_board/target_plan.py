@@ -18,8 +18,8 @@ import yaml
 
 from booley.config.project_config import TEST_LISTS_TABLE
 from booley.core.models import TargetPlan, TargetPlanEntry, TargetPlanError, TargetPlanRole
-from booley.fusesoc import fusesoc_registry
-from booley.targets.target import TARGET_AWARE_FLOWS, flow_can_drive
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 from .acceptance_targets import canonical_acceptance_bindings, criterion_targets
 from .target_surface_edit import (
@@ -238,25 +238,23 @@ def _validate_new_core(baseline: bytes | None, current: bytes | None, path: Path
         raise TargetPlanValidationError(f"new .core {path} must define at least one Target")
 
 
-def _canonical_entry(root: Path, entry: TargetPlanEntry) -> TargetPlanEntry:
+def _canonical_entry(catalog: TargetCatalog, entry: TargetPlanEntry) -> TargetPlanEntry:
     try:
-        target = fusesoc_registry.resolve_ref(root, entry.target)
-        target_identity = f"{target.vlnv}#{target.name}"
+        target = catalog.select(entry.target)
+        target_identity = target.identity
         baseline_identity = ""
         if entry.role is TargetPlanRole.REPLACEMENT:
-            baseline = fusesoc_registry.resolve_ref(root, entry.replaces)
-            baseline_identity = f"{baseline.vlnv}#{baseline.name}"
-            target_flows = {flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, target)}
-            baseline_flows = {
-                flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, baseline)
-            }
+            baseline = catalog.select(entry.replaces)
+            baseline_identity = baseline.identity
+            target_flows = set(target.drivable_by)
+            baseline_flows = set(baseline.drivable_by)
             if not target_flows & baseline_flows:
                 raise TargetPlanValidationError(
                     "replacement candidate and baseline must use the same Booley Flow: "
                     f"{target_identity} supports {sorted(target_flows)}, "
                     f"{baseline_identity} supports {sorted(baseline_flows)}"
                 )
-    except fusesoc_registry.FuseSocError as exc:
+    except FuseSocError as exc:
         raise TargetPlanValidationError(str(exc)) from exc
     return TargetPlanEntry(target_identity, entry.role, baseline_identity)
 
@@ -265,7 +263,7 @@ def _validate_test_tables(
     delta: _SurfaceDelta,
     plan: TargetPlan | None,
     provider_test_tables: frozenset[str],
-    project_root: Path,
+    catalog: TargetCatalog,
 ) -> None:
     changed_shared = TEST_LISTS_TABLE in {
         *delta.added_test_tables,
@@ -293,11 +291,11 @@ def _validate_test_tables(
         raise TargetPlanValidationError(
             "target_plan omission requires no Ticket-authored tests.toml tables"
         )
-    _validate_authored_test_tables(authored_tables, plan, project_root)
+    _validate_authored_test_tables(authored_tables, plan, catalog)
 
 
 def _validate_authored_test_tables(
-    authored_tables: tuple[str, ...], plan: TargetPlan, project_root: Path
+    authored_tables: tuple[str, ...], plan: TargetPlan, catalog: TargetCatalog
 ) -> None:
     owners = {
         table: [
@@ -313,11 +311,10 @@ def _validate_authored_test_tables(
             "tests.toml table additions are not owned by a planned Target: "
             + ", ".join(unexpected)
         )
-    declarations = fusesoc_registry.target_declarations(project_root)
     ambiguous = sorted(
         table
         for table in authored_tables
-        if "#" not in table and len(declarations.get(table, ())) > 1
+        if "#" not in table and catalog.declaration_count(table, include_private=True) > 1
     )
     if ambiguous:
         raise TargetPlanValidationError(
@@ -326,7 +323,7 @@ def _validate_authored_test_tables(
         )
 
 
-def _canonical_plan(fields: Mapping[str, Any], project_root: Path) -> TargetPlan | None:
+def _canonical_plan(fields: Mapping[str, Any], catalog: TargetCatalog) -> TargetPlan | None:
     raw_plan = fields.get("target_plan")
     try:
         authored = TargetPlan.from_value(raw_plan) if raw_plan is not None else None
@@ -334,7 +331,7 @@ def _canonical_plan(fields: Mapping[str, Any], project_root: Path) -> TargetPlan
         raise TargetPlanValidationError(str(exc)) from exc
     if authored is None:
         return None
-    entries = [_canonical_entry(project_root, entry).as_dict() for entry in authored.entries]
+    entries = [_canonical_entry(catalog, entry).as_dict() for entry in authored.entries]
     try:
         return TargetPlan.from_value(entries)
     except TargetPlanError as exc:
@@ -428,7 +425,11 @@ def analyze_target_plan(
         raise TargetPlanValidationError(
             "Ticket creation cannot modify or delete existing Targets: " + ", ".join(changed)
         )
-    canonical = _canonical_plan(fields, project_root)
+    try:
+        catalog = TargetCatalog.build(project_root)
+    except FuseSocError as exc:
+        raise TargetPlanValidationError(str(exc)) from exc
+    canonical = _canonical_plan(fields, catalog)
     added, planned = _validate_surface_coverage(delta, canonical, provider_targets)
     invalid_baselines = (
         sorted(
@@ -444,7 +445,7 @@ def analyze_target_plan(
             "replacement baselines must exist on the destination baseline: "
             + ", ".join(invalid_baselines)
         )
-    _validate_test_tables(delta, canonical, provider_test_tables, project_root)
+    _validate_test_tables(delta, canonical, provider_test_tables, catalog)
     _validate_plan_bindings(
         fields,
         project_root,

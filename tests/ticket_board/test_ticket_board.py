@@ -2480,6 +2480,36 @@ class TestOpPromoteWaiting:
         _path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "waiting"
 
+    def test_archived_bound_provider_blocks_for_return_to_draft(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "archived", "dep-a")
+        make_ticket_in_dir(
+            tio,
+            "waiting",
+            "child",
+            extra_fields={
+                "dependencies": ["dep-a"],
+                "acceptance_basis": {
+                    "schema": 1,
+                    "participants": [],
+                },
+            },
+        )
+        provider = SimpleNamespace(provider="dep-a")
+        monkeypatch.setattr(
+            tio,
+            "load_basis",
+            lambda _slug: SimpleNamespace(providers=(provider,)),
+        )
+
+        assert op_promote_waiting(tio) == []
+
+        _path, status = find_ticket_file(tio.tickets_dir, "child")
+        assert status == "blocked"
+        assert "provider unavailable: dep-a" in capsys.readouterr().err
+
     def test_no_waiting_tickets(self, tmp_path):
         """Returns empty list when no waiting tickets exist."""
         tio = make_tio(tmp_path)

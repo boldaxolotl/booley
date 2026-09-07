@@ -13,7 +13,6 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 from booley.core.models import TargetPlan
-from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
@@ -21,6 +20,8 @@ from booley.runtime.project_dir import (
     runtime_dir,
 )
 from booley.runtime.ticket_repositories import paired_project_repository
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 from .acceptance_basis import (
     AcceptanceBasis,
@@ -176,15 +177,19 @@ def _reapply_targets(old: Path, new: Path, plan: TargetPlan | None) -> None:
     if plan is None:
         return
     grouped: dict[Path, list[str]] = {}
+    try:
+        catalog = TargetCatalog.build(old)
+    except FuseSocError as exc:
+        raise BasisRefreshError(f"cannot inspect approved Targets: {exc}") from exc
     for entry in plan.entries:
         try:
-            ref = fusesoc_registry.resolve_ref(old, entry.target)
-            relative = ref.core_file.resolve().relative_to(old.resolve())
-        except (ValueError, fusesoc_registry.FuseSocError) as exc:
+            handle = catalog.select(entry.target)
+            relative = handle.core_file.resolve().relative_to(old.resolve())
+        except (ValueError, FuseSocError) as exc:
             raise BasisRefreshError(
                 f"cannot recover approved Target {entry.target!r}: {exc}"
             ) from exc
-        grouped.setdefault(relative, []).append(ref.name)
+        grouped.setdefault(relative, []).append(handle.name)
     for relative, names in grouped.items():
         source_path = old / relative
         destination_path = new / relative
