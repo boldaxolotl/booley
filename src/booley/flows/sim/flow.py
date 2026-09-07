@@ -32,8 +32,12 @@ from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
     WorkUnitPlan,
+    WorkUnitRole,
     normalize_plan_argv,
+    normalize_plan_inputs,
     normalize_plan_path,
+    normalize_plan_paths,
+    plan_value_fingerprint,
     stable_unit_id,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
@@ -83,6 +87,7 @@ from .execution import (
     SimulationArtifactEvidence,
     SimulationExecution,
     SimulationOptions,
+    SimulationPreview,
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
@@ -1421,9 +1426,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         test_names_map: dict[str, list[str]],
     ) -> FlowPlan:
         """Resolve all Simulation work units before any executable is dispatched."""
+        baseline_units, baseline_errors = self._plan_cycle_count_baseline_units(
+            targets,
+            test_names_map,
+        )
+        candidate_role: WorkUnitRole = "candidate" if baseline_units else "ordinary"
+        candidate_units, candidate_errors = self._plan_simulation_targets(
+            targets,
+            test_names_map,
+            role=candidate_role,
+            revision=None,
+        )
+        return FlowPlan(
+            flow="sim",
+            mode=self.args.mode.value,
+            work_units=(*baseline_units, *candidate_units),
+            aggregate_errors=(*baseline_errors, *candidate_errors),
+        )
+
+    def _plan_simulation_targets(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        *,
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Plan one checkout's selected Simulation Targets."""
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
-        previews = {}
         execution = self._simulation_execution()
         for target in targets:
             tests = self._resolve_tests_to_run(target, test_names_map)
@@ -1435,61 +1466,57 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target}: {exc}")
                 continue
-            previews[target] = preview
             for group, command in zip(preview.groups, preview.commands, strict=True):
-                build_root = edam_layer.work_root_for(
-                    self.args.work_dir,
-                    "sim",
-                    target,
-                    variant="trace" if self.args.trace else "",
-                )
                 units.append(
-                    WorkUnitPlan(
-                        unit_id=stable_unit_id("sim", target, group),
-                        role="ordinary",
-                        revision=None,
-                        selector=target,
-                        target_identity=preview.target_identity,
-                        test_or_module_scope=group,
-                        eda_tool=preview.eda_tool,
-                        timeout_ms=self._effective_timeout_ms(),
-                        sources=tuple(
-                            normalize_plan_path(path, self.args.work_dir)
-                            for path in preview.sources
-                        ),
-                        constraints=tuple(
-                            normalize_plan_path(path, self.args.work_dir)
-                            for path in preview.constraints
-                        ),
-                        parameters=preview.parameters,
-                        recipe={
-                            "flow_options": preview.flow_options,
-                            "mode": self.args.mode.value,
-                            "result_verbosity": self.args.result_verbosity,
-                            "toplevel": preview.toplevel,
-                            "trace": self.args.trace,
-                        },
-                        commands=(
-                            CommandPlan(
-                                normalize_plan_argv(
-                                    self._redact_plan_environment(target, command),
-                                    self.args.work_dir,
-                                ),
-                                cwd=".",
-                                template=True,
-                            ),
-                        ),
-                        expected_artifacts=(
-                            normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
-                        ),
-                    )
+                    self._simulation_work_unit(target, preview, group, command, role, revision)
                 )
-        self._simulation_previews = previews
-        return FlowPlan(
-            flow="sim",
-            mode=self.args.mode.value,
-            work_units=tuple(units),
-            aggregate_errors=tuple(errors),
+        return units, errors
+
+    def _simulation_work_unit(
+        self,
+        target: str,
+        preview: SimulationPreview,
+        group: tuple[str, ...],
+        command: tuple[str, ...],
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> WorkUnitPlan:
+        """Normalize one resolved Simulation command into the shared plan model."""
+        build_root = edam_layer.work_root_for(
+            self.args.work_dir,
+            "sim",
+            target,
+            variant="trace" if self.args.trace else "",
+        )
+        sources = normalize_plan_paths(preview.sources, self.args.work_dir)
+        constraints = normalize_plan_paths(preview.constraints, self.args.work_dir)
+        environment = self._target_sim_env(target)
+        redacted = self._redact_plan_environment(target, command)
+        recipe = {
+            "environment_fingerprint": plan_value_fingerprint(environment),
+            "flow_options": preview.flow_options,
+            "mode": self.args.mode.value,
+            "result_verbosity": self.args.result_verbosity,
+            "toplevel": preview.toplevel,
+            "trace": self.args.trace,
+        }
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", target, group, role=role, revision=revision),
+            role=role,
+            revision=revision,
+            selector=target,
+            target_identity=preview.target_identity,
+            test_or_module_scope=group,
+            eda_tool=preview.eda_tool,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=preview.parameters,
+            recipe=recipe,
+            commands=(CommandPlan(normalize_plan_argv(redacted, self.args.work_dir), ".", True),),
+            expected_artifacts=(
+                normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+            ),
         )
 
     def _redact_plan_environment(
@@ -1507,6 +1534,40 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 f"export {name}=<configured>",
             )
         return (*command[:2], script)
+
+    def _plan_cycle_count_baseline_units(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Plan every baseline Simulation before the candidate can execute."""
+        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        if error is not None:
+            return [], [error]
+        if baseline_ref is None:
+            return [], []
+        project_root = Path(self.args.work_dir)
+        expected = {target: self._target_handle(target).identity for target in baseline_targets}
+        try:
+            with baseline_worktree(project_root, baseline_ref) as worktree:
+                self.args.work_dir = worktree
+                units, errors = self._plan_simulation_targets(
+                    baseline_targets,
+                    test_names_map,
+                    role="baseline",
+                    revision=baseline_ref,
+                )
+                mismatches = [
+                    f"{unit.selector}: baseline resolves to {unit.target_identity!r}, "
+                    f"expected {expected[unit.selector]!r}"
+                    for unit in units
+                    if unit.target_identity != expected[unit.selector]
+                ]
+                return units, [*errors, *mismatches]
+        except (BaselineWorktreeError, fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            return [], [f"sim: Cycle Count baseline planning failed: {exc}"]
+        finally:
+            self.args.work_dir = project_root
 
     def _run(self) -> McpToolResult:
         """Run the selected shape and stamp its canonical mode on every result."""
@@ -1756,67 +1817,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         errors: list[str] = []
         for target in targets:
             try:
-                handle = self._target_handle(target)
-                inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-                command = tuple(self._elab_only_dry_command(target))
-                if len(command) == 1 and command[0].startswith("ERROR:"):
-                    raise ValueError(command[0])
+                units.append(self._elaboration_work_unit(target))
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target}: {exc}")
-                continue
-            constraints = tuple(
-                item.path for item in inspection.inputs if item.file_type.lower() == "sdc"
-            )
-            sources = tuple(
-                item.path for item in inspection.inputs if item.file_type.lower() != "sdc"
-            )
-            build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
-            units.append(
-                WorkUnitPlan(
-                    unit_id=stable_unit_id("sim", target, ("elaboration",)),
-                    role="ordinary",
-                    revision=None,
-                    selector=target,
-                    target_identity=handle.identity,
-                    test_or_module_scope=("elaboration",),
-                    eda_tool=inspection.eda_tool,
-                    timeout_ms=self._effective_timeout_ms(),
-                    sources=tuple(
-                        normalize_plan_path(path, self.args.work_dir) for path in sources
-                    ),
-                    constraints=tuple(
-                        normalize_plan_path(path, self.args.work_dir) for path in constraints
-                    ),
-                    parameters=inspection.parameters,
-                    recipe={
-                        "flow_options": inspection.flow_options,
-                        "mode": self.args.mode.value,
-                        "toplevel": inspection.toplevel,
-                    },
-                    commands=(
-                        CommandPlan(
-                            normalize_plan_argv(
-                                self._redact_plan_environment(target, command),
-                                self.args.work_dir,
-                            ),
-                            cwd=".",
-                            template=True,
-                        ),
-                    ),
-                    expected_artifacts=(
-                        normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
-                    ),
-                )
-            )
-
-        if self._standalone_requested():
-            try:
-                standalone = self._plan_standalone_check(targets)
-            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
-                errors.append(f"standalone: {exc}")
-            else:
-                self._standalone_plan_recipe = standalone
-                units.append(self._standalone_work_unit(targets, standalone))
+        standalone, standalone_error = self._planned_standalone_unit(targets)
+        if standalone is not None:
+            units.append(standalone)
+        if standalone_error is not None:
+            errors.append(standalone_error)
 
         return FlowPlan(
             flow="sim",
@@ -1824,6 +1832,63 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             work_units=tuple(units),
             aggregate_errors=tuple(errors),
         )
+
+    def _elaboration_work_unit(self, target: str) -> WorkUnitPlan:
+        """Normalize one resolved elaboration recipe."""
+        handle = self._target_handle(target)
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+        command = tuple(self._elab_only_dry_command(target))
+        if len(command) == 1 and command[0].startswith("ERROR:"):
+            raise ValueError(command[0])
+        sources, constraints = normalize_plan_inputs(inspection.inputs, self.args.work_dir)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        recipe = {
+            "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
+            "flow_options": inspection.flow_options,
+            "mode": self.args.mode.value,
+            "toplevel": inspection.toplevel,
+        }
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", target, ("elaboration",)),
+            role="ordinary",
+            revision=None,
+            selector=target,
+            target_identity=handle.identity,
+            test_or_module_scope=("elaboration",),
+            eda_tool=inspection.eda_tool,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=inspection.parameters,
+            recipe=recipe,
+            commands=(
+                CommandPlan(
+                    normalize_plan_argv(
+                        self._redact_plan_environment(target, command),
+                        self.args.work_dir,
+                    ),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(
+                normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+            ),
+        )
+
+    def _planned_standalone_unit(
+        self,
+        targets: list[str],
+    ) -> tuple[WorkUnitPlan | None, str | None]:
+        """Plan the optional standalone sweep and preserve its execution recipe."""
+        if not self._standalone_requested():
+            return None, None
+        try:
+            standalone = self._plan_standalone_check(targets)
+        except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            return None, f"standalone: {exc}"
+        self._standalone_plan_recipe = standalone
+        return self._standalone_work_unit(targets, standalone), None
 
     def _standalone_work_unit(
         self,
@@ -2229,7 +2294,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         test_names_map: dict[str, list[str]],
     ) -> dict[str, TargetResult] | McpToolResult:
         """Run each relative Cycle Count Target once in a throwaway baseline tree."""
-        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        del targets  # Selection is frozen in the FlowPlan before execution.
+        baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
         if error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
         if baseline_ref is None:
@@ -2256,6 +2322,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                             self._tb_top_for_target(target),
                             test_names_map,
                             [],
+                            plan_role="baseline",
                         )
                         result.target_identity = baseline_handle.identity
                         results[result.target_identity] = result
@@ -2271,6 +2338,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.args.work_dir = project_root
             return self._cycle_baseline_failure(exc, baseline_targets)
         return results
+
+    def _planned_cycle_baseline_selection(
+        self,
+    ) -> tuple[str | None, list[str], str | None]:
+        """Read the baseline revision and Target order from the frozen plan."""
+        baseline_units = tuple(
+            unit for unit in self._flow_plan.work_units if unit.role == "baseline"
+        )
+        if not baseline_units:
+            return None, [], None
+        revisions = {unit.revision for unit in baseline_units}
+        if len(revisions) != 1 or None in revisions:
+            return (
+                None,
+                [],
+                "sim: planned Cycle Count baseline has no unique revision",
+            )
+        baseline_ref = next(iter(revisions))
+        assert baseline_ref is not None
+        baseline_targets = list(dict.fromkeys(unit.selector for unit in baseline_units))
+        return baseline_ref, baseline_targets, None
 
     def _cycle_baseline_failure(
         self,
@@ -2786,6 +2874,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         tb_top: str,
         test_names_map: dict[str, list[str]],
         output_lines: list[str],
+        *,
+        plan_role: WorkUnitRole | None = None,
     ) -> TargetResult:
         """Execute one selected Target through the deep Simulation boundary."""
         del tb_top
@@ -2795,11 +2885,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
         selection = self._execution_selection(tests_to_run)
         execution = self._simulation_execution()
-        planned_groups = tuple(
-            unit.test_or_module_scope
-            for unit in self._flow_plan.work_units
-            if unit.selector == target and unit.role == "ordinary"
-        )
+        planned_groups = self._planned_simulation_groups(target, plan_role)
         outcome = execution.run(
             self._target_handle(target),
             selection,
@@ -2815,6 +2901,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             passed = sum(1 for test in result.tests if test.passed)
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
         return result
+
+    def _planned_simulation_groups(
+        self,
+        target: str,
+        role: WorkUnitRole | None,
+    ) -> tuple[tuple[str, ...], ...]:
+        """Read the exact test grouping authorized by the current FlowPlan."""
+        groups = tuple(
+            unit.test_or_module_scope
+            for unit in self._flow_plan.work_units
+            if unit.selector == target
+            and (unit.role == role if role is not None else unit.role in {"ordinary", "candidate"})
+        )
+        if not groups:
+            label = role or "candidate"
+            raise RuntimeError(f"Simulation plan has no {label} work for {target!r}")
+        return groups
 
     def _simulation_execution(self) -> SimulationExecution:
         """Compose the execution boundary with the Flow's process transport."""

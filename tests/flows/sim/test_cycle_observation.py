@@ -29,6 +29,17 @@ _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
 
 
+def _install_baseline_plan(
+    flow: SimulateFlow,
+    *,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str = "b" * 40,
+) -> None:
+    unit = _plan_unit("baseline", selector, identity, revision)
+    flow._flow_plan = FlowPlan("sim", "simulate", (unit,))
+
+
 def _plan_unit(
     role: WorkUnitRole,
     selector: str = _TARGET_SELECTOR,
@@ -56,7 +67,7 @@ def test_simulation_plan_includes_baseline_before_candidate() -> None:
 
     plan = flow._plan_simulation([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
 
-    assert plan == FlowPlan("sim", "simulate", (baseline, candidate))
+    assert plan.work_units == (baseline, candidate)
 
 
 def _patch_catalog_select(monkeypatch, resolver) -> None:
@@ -258,6 +269,7 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
         return_value=TargetResult(target="sim_core", passed=True, tests=[])
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow, identity="sim_core")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -278,7 +290,13 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
 
     assert result["sim_core"].passed is True
     assert flow.args.work_dir == current
-    flow._run_target.assert_called_once_with("sim_core", "tb_top", {"sim_core": ["coremark"]}, [])
+    flow._run_target.assert_called_once_with(
+        "sim_core",
+        "tb_top",
+        {"sim_core": ["coremark"]},
+        [],
+        plan_role="baseline",
+    )
 
 
 def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None:
@@ -298,6 +316,7 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
         )
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -329,6 +348,7 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -361,6 +381,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     flow._args.work_dir = current
     flow._target_handles[_TARGET_SELECTOR].project_root = current
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
 
     def ambiguous_target(*_args, **_kwargs):

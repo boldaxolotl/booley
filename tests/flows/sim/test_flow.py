@@ -13,6 +13,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.plan import FlowPlan
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -1476,6 +1477,7 @@ class TestReportGeneration:
 
     def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite,full")
+        flow._flow_plan = FlowPlan("sim", "simulate", ())
         first = TargetResult(
             target="lite",
             tb_top="alu_tb",
