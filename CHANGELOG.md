@@ -7,6 +7,18 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## 0.2.14 - 07 SEP 2026
+
+### Bug fixes
+
+- Python release publication now grants reusable source validation permission
+  to inspect workflow artifacts, allowing exact-tag validation to start before
+  PyPI upload and GitHub Release creation. This patch supersedes v0.2.13, whose
+  tested container images published successfully but whose Python publication
+  workflow was rejected before any job started.
+
+[Full changes from v0.2.13](https://github.com/boldaxolotl/booley/compare/v0.2.13...v0.2.14)
+
 ## 0.2.13 - 07 SEP 2026
 
 ### New features
