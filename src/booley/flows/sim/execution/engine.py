@@ -128,6 +128,8 @@ class SimulationExecution:
         self,
         handle: TargetHandle,
         selection: SimulationSelection,
+        *,
+        planned_groups: tuple[tuple[str, ...], ...] | None = None,
     ) -> SimulationTargetOutcome:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
@@ -135,7 +137,11 @@ class SimulationExecution:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:
             return _setup_failure(handle, str(exc), started)
-        groups = _work_groups(selection, _is_cocotb(inspection.flow_options))
+        groups = (
+            planned_groups
+            if planned_groups is not None
+            else _work_groups(selection, _is_cocotb(inspection.flow_options))
+        )
         try:
             results = [self._run_group(handle, names) for names in groups]
         except SimulationBuildPreparationError as exc:
@@ -172,7 +178,20 @@ class SimulationExecution:
         commands = tuple(
             self._preview_group(handle, inspection, names, cocotb) for names in groups
         )
-        return SimulationPreview(commands)
+        inputs = getattr(inspection, "inputs", ())
+        constraints = tuple(item.path for item in inputs if item.file_type.lower() == "sdc")
+        sources = tuple(item.path for item in inputs if item.file_type.lower() != "sdc")
+        return SimulationPreview(
+            commands=commands,
+            groups=groups,
+            target_identity=handle.identity,
+            toplevel=inspection.toplevel,
+            eda_tool=inspection.eda_tool,
+            sources=sources,
+            constraints=constraints,
+            parameters=getattr(inspection, "parameters", {}),
+            flow_options=inspection.flow_options,
+        )
 
     def _run_group(
         self,

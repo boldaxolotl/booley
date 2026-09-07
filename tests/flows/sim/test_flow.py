@@ -949,6 +949,11 @@ class TestDryRun:
         captured = capsys.readouterr()
         commands = json.loads(captured.out)
         assert len(commands) == 3  # one per test
+        assert [unit.test_or_module_scope for unit in flow._flow_plan.work_units] == [
+            ("smoke",),
+            ("stress",),
+            ("boot",),
+        ]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

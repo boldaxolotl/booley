@@ -1077,6 +1077,29 @@ class TestErrorVsFailTaxonomy:
 
 class TestFullRun:
     @patch.object(LintFlow, "_execute")
+    def test_late_preparation_error_prevents_every_linter_run(
+        self,
+        mock_exec,
+        state_file: Path,
+    ):
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite,full"])
+        flow.read_state()
+        with patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            side_effect=[
+                (["make", "-C", "lite"], _stub_resolved()),
+                RuntimeError("broken full Target"),
+            ],
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "full: lint setup failed: broken full Target" in result.report_text
+        mock_exec.assert_not_called()
+
+    @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,
         "_prepare_lint_command",

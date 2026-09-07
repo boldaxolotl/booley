@@ -30,6 +30,17 @@ def _result(output: str, *, rc: int = 0, **kwargs: object) -> SubprocessResult:
 
 
 def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
+    target_entries = "".join(
+        f"  {target}:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n"
+        "    toplevel: tb_demo\n"
+        for target in targets
+    )
+    (tmp_path / "sim.core").write_text(
+        "CAPI=2:\nname: ::sim:0\ntargets:\n" + target_entries,
+        encoding="utf-8",
+    )
     state_file = tmp_path / "state.json"
     state = DevelopmentState.load(state_file)
     state.init_criteria({f"elab_pass_{target}": True for target in targets})

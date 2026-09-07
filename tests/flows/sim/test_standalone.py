@@ -174,6 +174,35 @@ class TestStandaloneSweep:
         assert [arg for arg in by_module["top"] if arg.endswith(".sv")] == ["rtl/top.sv"]
         assert all(not arg.startswith("-P") for arg in by_module["alu"])
 
+    def test_complete_sweep_shares_one_deadline(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.flows.sim import standalone as standalone_module
+
+        flow = _make_flow(tmp_path)
+        monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 2_500)
+        monotonic_values = iter((0.0, 0.0, 1.2))
+        monkeypatch.setattr(standalone_module.time, "monotonic", lambda: next(monotonic_values))
+        observed_timeouts: list[int] = []
+
+        def execute(_command: list[str], *, timeout: int) -> SubprocessResult:
+            observed_timeouts.append(timeout)
+            return SubprocessResult(returncode=0)
+
+        monkeypatch.setattr(flow, "_execute", execute)
+
+        failures, unparsed, _logs, error = flow._run_standalone_probes(
+            [("one", "one.sv"), ("two", "two.sv")],
+            [],
+            "iverilog",
+            gap_is_credible=False,
+        )
+
+        assert not failures and not unparsed and not error
+        assert observed_timeouts == [3, 2]
+
     def test_design_failure_names_module_and_records_fail(
         self,
         tmp_path: Path,

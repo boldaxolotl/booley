@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +145,16 @@ class _StandaloneOutcome:
     eda_tool_failed: bool = False
     detail: dict[str, Any] = field(default_factory=dict)
     display: str = ""
+
+
+@dataclass(frozen=True)
+class _StandalonePlanRecipe:
+    """Resolved standalone sweep shared by planning and execution."""
+
+    frontend: str
+    modules: tuple[tuple[str, str], ...]
+    shared: tuple[str, ...]
+    commands: tuple[tuple[str, ...], ...]
 
 
 class StandaloneMixin:
@@ -311,9 +323,22 @@ class StandaloneMixin:
         failures: list[dict[str, str]] = []
         unparsed: list[dict[str, str]] = []
         log_chunks: list[str] = []
+        deadline = time.monotonic() + (self._effective_timeout_ms() / 1000)
         for module, rel in modules:
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                return (
+                    failures,
+                    unparsed,
+                    log_chunks,
+                    f"{frontend} standalone sweep timed out after {self._get_timeout()}s",
+                )
             cmd = self._standalone_compile_command(module, rel, shared, frontend)
-            proc = self._execute(cmd)
+            timeout_s = max(1, math.ceil(remaining_s))
+            if "timeout" in signature(self._execute).parameters:
+                proc = self._execute(cmd, timeout=timeout_s)
+            else:  # Compatibility with narrow test/custom execution doubles.
+                proc = self._execute(cmd)
             combined = (proc.stdout + proc.stderr).strip()
             log_chunks.append(f"$ {shlex.join(cmd)}\n{combined}\n")
             if proc.returncode == 0:
@@ -385,27 +410,42 @@ class StandaloneMixin:
             "standalone",
             edam_layer.work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
         )
+        planned = getattr(self, "_standalone_plan_recipe", None)
+        if isinstance(planned, _StandalonePlanRecipe):
+            return planned.frontend, list(planned.modules), list(planned.shared)
         try:
-            frontend = self._resolve_standalone_frontend()
+            planned = self._plan_standalone_check(targets)
         except ValueError as exc:
             return self._standalone_error(str(exc))
+        return planned.frontend, list(planned.modules), list(planned.shared)
+
+    def _plan_standalone_check(self, targets: list[str]) -> _StandalonePlanRecipe:
+        """Resolve the complete standalone scope without opening logs or running tools."""
+        frontend = self._resolve_standalone_frontend()
         try:
             scope = self._standalone_rtl_scope(targets)
         except (fusesoc_registry.FuseSocError, OSError) as exc:
             logger.debug("standalone: RTL scope resolution failed", exc_info=True)
-            return self._standalone_error(
-                f"could not resolve RTL source scope: {exc}",
-            )
+            raise ValueError(f"could not resolve RTL source scope: {exc}") from exc
         modules, shared = self._scan_standalone_scope(scope)
         if not modules:
             # Zero modules would make a green criterion vacuous — the same
             # false-pass family the lint toplevel check hard-fails.
-            return self._standalone_error(
+            raise ValueError(
                 f"no module declarations found in the RTL source scope "
                 f"({len(scope)} files) — the criterion would be vacuous. "
                 "Check the Targets' RTL filesets.",
             )
-        return frontend, modules, shared
+        commands = tuple(
+            tuple(self._standalone_compile_command(module, rel, shared, frontend))
+            for module, rel in modules
+        )
+        return _StandalonePlanRecipe(
+            frontend=frontend,
+            modules=tuple(modules),
+            shared=tuple(shared),
+            commands=commands,
+        )
 
     def _standalone_probe_error(
         self,

@@ -9,7 +9,7 @@ import pytest
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.domain import _HANDLE_FACTORY_KEY, TargetHandle, TargetInspection
 
 
 def make_target_handle(
@@ -78,7 +78,18 @@ class _LenientCatalog:
 
     def inspect(self, handle: TargetHandle):
         catalog = self._real_catalog_build(self.project_root)
-        return catalog.inspect(catalog.select(handle.selector))
+        try:
+            return catalog.inspect(catalog.select(handle.selector))
+        except fusesoc_registry.UnknownTargetError:
+            return TargetInspection(
+                handle=handle,
+                toplevel=handle.declared_toplevel,
+                flow=handle.flow,
+                eda_tool=handle.eda_tool,
+                flow_options={},
+                parameters={},
+                inputs=(),
+            )
 
     def core_closure(self, handles):
         # Intentional test-adapter seam: production consumers cannot reach this
