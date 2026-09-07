@@ -73,6 +73,66 @@ def _compile_binary(source: Path, build: Path, *options: str) -> Path:
     return binary
 
 
+def _write_generated_coverage_source(path: Path) -> None:
+    path.write_text(
+        """
+module counted(input logic clk, input logic enable, output logic [2:0] value = 0);
+  always_ff @(posedge clk) if (enable) value <= value + 1'b1;
+endmodule
+module coverage_top;
+  logic clk = 0;
+  logic [2:0] first, second;
+  counted one(.clk(clk), .enable(1'b1), .value(first));
+  counted two(.clk(clk), .enable(first[0]), .value(second));
+  always #1 clk = ~clk;
+  initial begin
+    repeat (8) @(posedge clk);
+    cover (first != second);
+    $display("PASS generated coverage");
+    $finish;
+  end
+endmodule
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_custom_coverage_sources(source: Path, main: Path) -> None:
+    source.write_text(
+        """
+module custom_dut(input logic clk, output logic [2:0] value = 0);
+  always_ff @(posedge clk) value <= value + 1'b1;
+endmodule
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    main.write_text(
+        """
+#include <cstdlib>
+#include "Vcustom_dut.h"
+#include "verilated.h"
+#include "verilated_cov.h"
+int main(int argc, char** argv) {
+    VerilatedContext context;
+    context.commandArgs(argc, argv);
+    Vcustom_dut dut{&context};
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        dut.clk = 0; dut.eval();
+        dut.clk = 1; dut.eval();
+    }
+    const char* path = std::getenv("BOOLEY_COVERAGE_FILE");
+    if (!path) return 2;
+    VerilatedCov::write(path);
+    dut.final();
+    return 0;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
 def test_pinned_release_identity_is_immutable() -> None:
     version = subprocess.run(
         ["verilator", "--version"],
@@ -150,28 +210,7 @@ def test_generated_main_native_coverage_is_per_instance_and_mergeable(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "coverage_top.sv"
-    source.write_text(
-        """
-module counted(input logic clk, input logic enable, output logic [2:0] value = 0);
-  always_ff @(posedge clk) if (enable) value <= value + 1'b1;
-endmodule
-module coverage_top;
-  logic clk = 0;
-  logic [2:0] first, second;
-  counted one(.clk(clk), .enable(1'b1), .value(first));
-  counted two(.clk(clk), .enable(first[0]), .value(second));
-  always #1 clk = ~clk;
-  initial begin
-    repeat (8) @(posedge clk);
-    cover (first != second);
-    $display("PASS generated coverage");
-    $finish;
-  end
-endmodule
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_generated_coverage_source(source)
     binary = _compile_binary(source, tmp_path / "build", *_COVERAGE_FLAGS)
     raw_one = tmp_path / "one.dat"
     raw_two = tmp_path / "two.dat"
@@ -202,39 +241,8 @@ endmodule
 
 def test_custom_main_writes_selected_native_database(tmp_path: Path) -> None:
     source = tmp_path / "custom_dut.sv"
-    source.write_text(
-        """
-module custom_dut(input logic clk, output logic [2:0] value = 0);
-  always_ff @(posedge clk) value <= value + 1'b1;
-endmodule
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
     main = tmp_path / "custom_main.cpp"
-    main.write_text(
-        """
-#include <cstdlib>
-#include "Vcustom_dut.h"
-#include "verilated.h"
-#include "verilated_cov.h"
-int main(int argc, char** argv) {
-    VerilatedContext context;
-    context.commandArgs(argc, argv);
-    Vcustom_dut dut{&context};
-    for (int cycle = 0; cycle < 8; ++cycle) {
-        dut.clk = 0; dut.eval();
-        dut.clk = 1; dut.eval();
-    }
-    const char* path = std::getenv("BOOLEY_COVERAGE_FILE");
-    if (!path) return 2;
-    VerilatedCov::write(path);
-    dut.final();
-    return 0;
-}
-""".lstrip(),
-        encoding="utf-8",
-    )
+    _write_custom_coverage_sources(source, main)
     build = tmp_path / "build"
     _run(
         [

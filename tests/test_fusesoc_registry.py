@@ -573,6 +573,10 @@ class TestDoctorTargetMetadata:
                 "custom_main_hooks must be an array",
             ),
             (
+                "booley: {coverage: {custom_main_hooks: [[start_hook]]}}",
+                "custom_main_hooks must contain only strings",
+            ),
+            (
                 "booley: {coverage: {custom_main_hooks: [write_hook, write_hook]}}",
                 "must not contain duplicates",
             ),

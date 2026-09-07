@@ -28,6 +28,7 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("verilator_coverage") is None,
     reason="real smoke runs inside the pinned Booley Session Image",
 )
+_TOOL_TIMEOUT_S = 120
 
 
 class _RealVerilatorExecution:
@@ -38,6 +39,7 @@ class _RealVerilatorExecution:
     def build(self, request) -> SimulationBuildResult:
         version = subprocess.run(
             ["verilator", "--version"],
+            timeout=30,
             check=True,
             capture_output=True,
             text=True,
@@ -64,6 +66,7 @@ class _RealVerilatorExecution:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationBuildResult(
             success=result.returncode == 0,
@@ -82,6 +85,7 @@ class _RealVerilatorExecution:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationRunResult(
             verdict="pass" if result.returncode == 0 else "fail",
@@ -96,6 +100,7 @@ class _RealVerilatorExecution:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationCommandResult(
             returncode=result.returncode,
@@ -178,61 +183,106 @@ def _invoke(command: list[str], *, timeout: int) -> SubprocessResult:
     )
 
 
-def test_real_target_collects_through_simulation_execution_path(tmp_path: Path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "tb").mkdir()
-    (tmp_path / "rtl" / "counter.sv").write_text(
+def _write_generated_target(root: Path, *, post_reset: bool = False) -> None:
+    (root / "rtl").mkdir()
+    (root / "tb").mkdir()
+    (root / "rtl" / "counter.sv").write_text(
         "module counter(input logic clk, output logic [1:0] value);\n"
-        "  always_ff @(posedge clk) value <= value + 1'b1;\n"
-        "endmodule\n",
+        "  always_ff @(posedge clk) value <= value + 1'b1;\nendmodule\n",
         encoding="utf-8",
     )
-    (tmp_path / "tb" / "counter_tb.sv").write_text(
-        "module counter_tb;\n"
-        "  logic clk = 0; logic [1:0] value;\n"
-        "  counter dut(.clk(clk), .value(value));\n"
-        "  always #1 clk = ~clk;\n"
-        "  initial begin repeat (4) @(posedge clk);\n"
-        '    $display("[SIM_RESULT] PASSED"); $finish; end\n'
-        "endmodule\n",
+    declaration = '  import "DPI-C" function void booley_coverage_start();\n' if post_reset else ""
+    start = "repeat (2) @(posedge clk); booley_coverage_start(); " if post_reset else ""
+    (root / "tb" / "counter_tb.sv").write_text(
+        "module counter_tb;\n  logic clk = 0; logic [1:0] value;\n"
+        "  counter dut(.clk(clk), .value(value));\n  always #1 clk = ~clk;\n"
+        f"{declaration}  initial begin {start}repeat (4) @(posedge clk);\n"
+        '    $display("[SIM_RESULT] PASSED"); $finish; end\nendmodule\n',
         encoding="utf-8",
     )
-    (tmp_path / "counter.core").write_text(
+    coverage = "      booley: {coverage: {reset_included: false}}\n" if post_reset else ""
+    _write_core(root, "tb/counter_tb.sv", "counter_tb", "[--timing, --main, --exe]", coverage)
+
+
+def _write_custom_target(root: Path) -> None:
+    (root / "rtl").mkdir()
+    (root / "tb").mkdir()
+    (root / "rtl" / "counter.sv").write_text(
+        "module counter(input logic clk, output logic [1:0] value = 0);\n"
+        "  always_ff @(posedge clk) value <= value + 1'b1;\nendmodule\n",
+        encoding="utf-8",
+    )
+    _write_custom_main(root / "tb" / "main.cpp")
+    coverage = (
+        "      booley:\n        coverage:\n          reset_included: false\n"
+        "          custom_main_hooks: [start_hook, write_hook]\n"
+    )
+    _write_core(root, "tb/main.cpp", "counter", "[--timing]", coverage)
+
+
+def _write_custom_main(path: Path) -> None:
+    path.write_text(
         textwrap.dedent(
             """\
-            CAPI=2:
-            name: booley:smoke:coverage:1
-            filesets:
-              rtl:
-                files:
-                  - rtl/counter.sv: {file_type: systemVerilogSource}
-              tb:
-                files:
-                  - tb/counter_tb.sv: {file_type: systemVerilogSource}
-                tags: [tb]
-            targets:
-              sim:
-                flow: sim
-                default_tool: verilator
-                flow_options:
-                  tool: verilator
-                  verilator_options: [--timing, --main, --exe]
-                filesets: [rtl, tb]
-                toplevel: counter_tb
+            #include "Vcounter.h"
+            #include "booley_coverage.h"
+            #include "verilated.h"
+            #include <iostream>
+            int main(int argc, char** argv) {
+                VerilatedContext context; context.commandArgs(argc, argv);
+                Vcounter dut{&context}; booley_coverage_start();
+                for (int cycle = 0; cycle < 8; ++cycle) {
+                    dut.clk = 0; dut.eval(); dut.clk = 1; dut.eval();
+                }
+                dut.final(); booley_coverage_write();
+                std::cout << "[SIM_RESULT] PASSED\\n"; return 0;
+            }
             """
         ),
         encoding="utf-8",
     )
-    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
 
-    result = collect_target_coverage(
+
+def _write_core(root: Path, testbench: str, top: str, options: str, coverage: str) -> None:
+    file_type = "cppSource" if testbench.endswith(".cpp") else "systemVerilogSource"
+    content = f"""\
+CAPI=2:
+name: booley:smoke:coverage:1
+filesets:
+  rtl:
+    files:
+      - rtl/counter.sv: {{file_type: systemVerilogSource}}
+  tb:
+    files:
+      - {testbench}: {{file_type: {file_type}}}
+    tags: [tb]
+targets:
+  sim:
+    flow: sim
+    default_tool: verilator
+    flow_options:
+      tool: verilator
+      verilator_options: {options}
+{coverage}    filesets: [rtl, tb]
+    toplevel: {top}
+"""
+    (root / "counter.core").write_text(content, encoding="utf-8")
+
+
+def _collect_target(root: Path, test: str):
+    handle = TargetCatalog.build(root).select("sim", for_flow="sim")
+    return collect_target_coverage(
         handle,
-        selected_tests=("smoke",),
-        artifact_root=tmp_path / "campaign",
+        selected_tests=(test,),
+        artifact_root=root / "campaign",
         invoke=_invoke,
         options=SimulationOptions(timeout_ms=30_000),
     )
 
+
+def test_real_target_collects_through_simulation_execution_path(tmp_path: Path) -> None:
+    _write_generated_target(tmp_path)
+    result = _collect_target(tmp_path, "smoke")
     assert result.status == "complete", [
         (finding.code, finding.message) for finding in result.findings
     ]
@@ -241,81 +291,19 @@ def test_real_target_collects_through_simulation_execution_path(tmp_path: Path) 
     assert any(point.identity.metric == "line" for point in result.points)
 
 
+def test_real_hdl_post_reset_collection_uses_packaged_hook_bridge(tmp_path: Path) -> None:
+    _write_generated_target(tmp_path, post_reset=True)
+    result = _collect_target(tmp_path, "hdl_post_reset")
+    assert result.status == "complete", [
+        (finding.code, finding.message) for finding in result.findings
+    ]
+    assert result.coverage_window.mode == "post_reset"
+    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+
+
 def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "tb").mkdir()
-    (tmp_path / "rtl" / "counter.sv").write_text(
-        "module counter(input logic clk, output logic [1:0] value = 0);\n"
-        "  always_ff @(posedge clk) value <= value + 1'b1;\n"
-        "endmodule\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "tb" / "main.cpp").write_text(
-        textwrap.dedent(
-            """\
-            #include "Vcounter.h"
-            #include "booley_coverage.h"
-            #include "verilated.h"
-            #include <iostream>
-
-            int main(int argc, char** argv) {
-                VerilatedContext context;
-                context.commandArgs(argc, argv);
-                Vcounter dut{&context};
-                booley_coverage_start();
-                for (int cycle = 0; cycle < 8; ++cycle) {
-                    dut.clk = 0; dut.eval();
-                    dut.clk = 1; dut.eval();
-                }
-                dut.final();
-                booley_coverage_write();
-                std::cout << "[SIM_RESULT] PASSED\\n";
-                return 0;
-            }
-            """
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "counter.core").write_text(
-        textwrap.dedent(
-            """\
-            CAPI=2:
-            name: booley:smoke:custom-coverage:1
-            filesets:
-              rtl:
-                files:
-                  - rtl/counter.sv: {file_type: systemVerilogSource}
-              tb:
-                files:
-                  - tb/main.cpp: {file_type: cppSource}
-                tags: [tb]
-            targets:
-              sim:
-                flow: sim
-                default_tool: verilator
-                flow_options:
-                  tool: verilator
-                  verilator_options: [--timing]
-                  booley:
-                    coverage:
-                      reset_included: false
-                      custom_main_hooks: [start_hook, write_hook]
-                filesets: [rtl, tb]
-                toplevel: counter
-            """
-        ),
-        encoding="utf-8",
-    )
-    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-
-    result = collect_target_coverage(
-        handle,
-        selected_tests=("custom",),
-        artifact_root=tmp_path / "campaign",
-        invoke=_invoke,
-        options=SimulationOptions(timeout_ms=30_000),
-    )
-
+    _write_custom_target(tmp_path)
+    result = _collect_target(tmp_path, "custom")
     assert result.status == "complete", [
         (finding.code, finding.message) for finding in result.findings
     ]

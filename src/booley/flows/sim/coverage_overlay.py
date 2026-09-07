@@ -51,8 +51,16 @@ def _custom_main_hooks(flow_options: dict) -> tuple[str, ...]:
     return tuple(str(hook) for hook in hooks) if isinstance(hooks, list) else ()
 
 
-def _inject_custom_main_bridge(document: dict, target: str) -> None:
-    """Compile Booley's hook implementation into an opted-in custom main."""
+def _needs_coverage_bridge(flow_options: dict) -> bool:
+    booley = flow_options.get("booley")
+    coverage = booley.get("coverage") if isinstance(booley, dict) else None
+    if not isinstance(coverage, dict):
+        return False
+    return coverage.get("reset_included") is False or bool(_custom_main_hooks(flow_options))
+
+
+def _inject_coverage_bridge(document: dict, target: str) -> None:
+    """Compile Booley's hook implementation into a hook-bearing Target."""
     from booley.fusesoc.fusesoc_registry import FuseSocError
     from booley.runtime.paths import refs_dir
 
@@ -132,8 +140,8 @@ def write_coverage_overlay(
         authored_options,
         instrumentation,
     )
-    if _custom_main_hooks(flow_options):
-        _inject_custom_main_bridge(document, handle.name)
+    if _needs_coverage_bridge(flow_options):
+        _inject_coverage_bridge(document, handle.name)
 
     kind = "trace-coverage" if trace else "coverage"
     overlay_path = handle.core_file.with_name(

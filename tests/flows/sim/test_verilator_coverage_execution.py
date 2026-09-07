@@ -95,6 +95,26 @@ def test_prepare_collection_projects_resolved_sources_and_custom_main_recipe(
 def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     tmp_path: Path, monkeypatch
 ) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    build = execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    )
+    run = execution.run(_run_request(target, raw_path))
+
+    assert build.success is True
+    assert build.collector == PINNED_VERILATOR
+    assert captured["prepare"]["variant"] == "coverage"
+    assert captured["prepare"]["resolution_vlnv"] == "::coverage:0"
+    assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
+    assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
+    assert run.verdict == "pass"
+
+
+def _execution_fixture(tmp_path: Path, monkeypatch):
     _write_target(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "build" / "coverage"
@@ -115,23 +135,56 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
         make_argv=("make",),
     )
     captured = {}
+    raw_path = tmp_path / "artifacts" / "raw.dat"
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.write_coverage_overlay",
+        _fake_overlay(tmp_path),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.prepare_simulation_build",
+        _fake_prepare(prepared, captured),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.prepare_adapter_invocation",
+        _fake_adapter(captured),
+    )
+    execution = VerilatorCoverageExecution(
+        handle,
+        invoke=_fake_invoke(captured, raw_path),
+        options=SimulationOptions(),
+        provenance_path=provenance,
+    )
+    target = CoverageTarget(handle.identity, handle.selector, "counter_tb", "generated_main", ())
+    return execution, target, raw_path, captured
 
+
+def _fake_overlay(tmp_path: Path):
     def fake_overlay(*args, **kwargs):
         return CoverageOverlay(
             tmp_path / "missing-overlay.core", "::coverage:0", TraceMode.VCD_FIFO
         )
 
+    return fake_overlay
+
+
+def _fake_prepare(prepared, captured):
     def fake_prepare(*args, **kwargs):
         captured["prepare"] = kwargs
-        build_root.mkdir(parents=True, exist_ok=True)
+        prepared.build_root.mkdir(parents=True, exist_ok=True)
         return prepared
 
+    return fake_prepare
+
+
+def _fake_adapter(captured):
     def fake_adapter(work):
         captured["work"] = work
         return ["true"]
 
-    raw_path = tmp_path / "artifacts" / "raw.dat"
+    return fake_adapter
 
+
+def _fake_invoke(captured, raw_path: Path):
     def fake_invoke(command, *, timeout):
         if command == ["verilator", "--version"]:
             return SubprocessResult(returncode=0, stdout="Verilator 5.052 2026-09-05\n")
@@ -165,52 +218,17 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
         captured["run_script"] = script
         return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
 
-    monkeypatch.setattr(
-        "booley.flows.sim.verilator_coverage_execution.write_coverage_overlay", fake_overlay
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.verilator_coverage_execution.prepare_simulation_build", fake_prepare
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.verilator_coverage_execution.prepare_adapter_invocation", fake_adapter
-    )
-    execution = VerilatorCoverageExecution(
-        handle,
-        invoke=fake_invoke,
-        options=SimulationOptions(),
-        provenance_path=provenance,
-    )
-    target = CoverageTarget(
-        identity=handle.identity,
-        selector=handle.selector,
-        toplevel="counter_tb",
-        harness="generated_main",
-        sources=(),
-    )
-    build = execution.build(
-        SimulationBuildRequest(
-            target,
-            SimulationBuildVariant(trace=False, coverage=True),
-            VERILATOR_COVERAGE_INSTRUMENTATION,
-        )
-    )
-    run = execution.run(
-        SimulationRunRequest(
-            target=target,
-            test=SelectedCoverageTest("wrap"),
-            run_id="run:001:wrap",
-            raw_path=raw_path,
-            hook_evidence_path=None,
-            trace=False,
-            argv_suffix=(f"+verilator+coverage+file+{raw_path}",),
-            environment={"BOOLEY_COVERAGE_RUN_ID": "run:001:wrap"},
-        )
-    )
+    return fake_invoke
 
-    assert build.success is True
-    assert build.collector == PINNED_VERILATOR
-    assert captured["prepare"]["variant"] == "coverage"
-    assert captured["prepare"]["resolution_vlnv"] == "::coverage:0"
-    assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
-    assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
-    assert run.verdict == "pass"
+
+def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest:
+    return SimulationRunRequest(
+        target=target,
+        test=SelectedCoverageTest("wrap"),
+        run_id="run:001:wrap",
+        raw_path=raw_path,
+        hook_evidence_path=None,
+        trace=False,
+        argv_suffix=(f"+verilator+coverage+file+{raw_path}",),
+        environment={"BOOLEY_COVERAGE_RUN_ID": "run:001:wrap"},
+    )

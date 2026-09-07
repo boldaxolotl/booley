@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 import re
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +21,12 @@ from .coverage_campaign import (
     CoverageRun,
     FrozenJson,
     SimulationVerdict,
+)
+from .execution.freshness import (
+    ArtifactStamp,
+    ArtifactValidationError,
+    snapshot_artifact,
+    validate_fresh_artifact,
 )
 
 CoverageHarness = Literal["generated_main", "custom_main", "cocotb", "hdl_testbench"]
@@ -62,7 +67,6 @@ _RECORD_METRICS = {
     "covergroup": "covergroup",
 }
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
-_FRESHNESS_CLOCK_TOLERANCE_NS = 1_000_000_000
 
 
 class _NativeRecordError(ValueError):
@@ -287,6 +291,17 @@ class _CollectedRun:
     hook_artifact: CoverageArtifact | None = None
 
 
+@dataclass(frozen=True)
+class _RunContext:
+    run_id: str
+    index: int
+    test: SelectedCoverageTest
+    raw_path: Path
+    raw_before: ArtifactStamp | None
+    hook_path: Path | None
+    hook_before: ArtifactStamp | None
+
+
 def _path_component(name: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
     return value or "test"
@@ -299,13 +314,25 @@ def _parse_attributes(identity: str) -> Mapping[str, str]:
             continue
         key, separator, value = field.partition("\x02")
         if not separator or not key or key in attributes:
-            raise ValueError("malformed or duplicate native coverage attribute")
+            raise _NativeRecordError("malformed or duplicate native coverage attribute")
         attributes[key] = value
     return MappingProxyType(dict(sorted(attributes.items())))
 
 
+def _validate_record_attributes(attributes: Mapping[str, str]) -> None:
+    for name in ("l", "n"):
+        value = attributes.get(name)
+        if value is not None and not value.isdigit():
+            raise _NativeRecordError(
+                f"native coverage attribute {name!r} must be a nonnegative integer"
+            )
+
+
 def _parse_native(path: Path) -> tuple[_NativeRecord, ...]:
-    lines = path.read_text(encoding="utf-8").splitlines()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise _NativeRecordError("native coverage database is not readable UTF-8") from exc
     if not lines or lines[0] != _NATIVE_HEADER:
         raise _NativeFormatError("incompatible Verilator native coverage header")
     records: list[_NativeRecord] = []
@@ -316,10 +343,12 @@ def _parse_native(path: Path) -> tuple[_NativeRecord, ...]:
         if match is None:
             raise _NativeRecordError("malformed Verilator native coverage record")
         identity = match["identity"]
+        attributes = _parse_attributes(identity)
+        _validate_record_attributes(attributes)
         records.append(
             _NativeRecord(
                 identity=identity,
-                attributes=_parse_attributes(identity),
+                attributes=attributes,
                 hits=int(match["hits"]),
             )
         )
@@ -354,6 +383,20 @@ def _collect_one_run(
     index: int,
     selected: SelectedCoverageTest,
 ) -> _CollectedRun:
+    context = _prepare_run(request, index, selected)
+    result = execution.run(_run_request(request, context))
+    failure = _read_raw_artifact(request, context, result.verdict)
+    if isinstance(failure, _CollectedRun):
+        return failure
+    raw_artifact, records = failure
+    return _finish_run(request, context, result.verdict, raw_artifact, records)
+
+
+def _prepare_run(
+    request: CoverageCollectionRequest,
+    index: int,
+    selected: SelectedCoverageTest,
+) -> _RunContext:
     run_id = f"run:{index:03d}:{_path_component(selected.name)}"
     raw_path = (
         request.artifact_root
@@ -366,175 +409,130 @@ def _collect_one_run(
         if not request.reset_included or request.target.harness == "custom_main"
         else None
     )
-    dispatched_ns = time.time_ns()
-    custom_main = request.target.harness == "custom_main"
-    argv_suffix = () if custom_main else (f"+verilator+coverage+file+{raw_path}",)
-    environment = {"BOOLEY_COVERAGE_FILE": str(raw_path)} if custom_main else {}
-    environment["BOOLEY_COVERAGE_RUN_ID"] = run_id
-    if hook_path is not None:
-        environment["BOOLEY_COVERAGE_HOOK_EVIDENCE"] = str(hook_path)
-    run_result = execution.run(
-        SimulationRunRequest(
-            target=request.target,
-            test=selected,
-            run_id=run_id,
-            raw_path=raw_path,
-            hook_evidence_path=hook_path,
-            trace=request.trace,
-            argv_suffix=argv_suffix,
-            environment=MappingProxyType(environment),
-        )
+    return _RunContext(
+        run_id,
+        index,
+        selected,
+        raw_path,
+        snapshot_artifact(raw_path),
+        hook_path,
+        snapshot_artifact(hook_path) if hook_path is not None else None,
     )
-    if not raw_path.is_file():
-        finding = CoverageFinding(
-            severity="error",
-            code="COV_RAW_FILE_MISSING",
-            pointer=f"/tests/runs/{index - 1}/raw_artifact",
-            message=f"Test {selected.name!r} produced no native coverage database.",
+
+
+def _run_request(request: CoverageCollectionRequest, context: _RunContext) -> SimulationRunRequest:
+    custom_main = request.target.harness == "custom_main"
+    suffix = () if custom_main else (f"+verilator+coverage+file+{context.raw_path}",)
+    environment = {"BOOLEY_COVERAGE_FILE": str(context.raw_path)} if custom_main else {}
+    environment["BOOLEY_COVERAGE_RUN_ID"] = context.run_id
+    if context.hook_path is not None:
+        environment["BOOLEY_COVERAGE_HOOK_EVIDENCE"] = str(context.hook_path)
+    return SimulationRunRequest(
+        request.target,
+        context.test,
+        context.run_id,
+        context.raw_path,
+        context.hook_path,
+        request.trace,
+        suffix,
+        MappingProxyType(environment),
+    )
+
+
+def _read_raw_artifact(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    verdict: SimulationVerdict,
+) -> tuple[CoverageArtifact, tuple[_NativeRecord, ...]] | _CollectedRun:
+    try:
+        validate_fresh_artifact(
+            context.raw_path,
+            roots=(request.artifact_root,),
+            before=context.raw_before,
         )
-        return _CollectedRun(
-            run=CoverageRun(
-                id=run_id,
-                test=selected.name,
-                simulation_verdict=run_result.verdict,
-                collection="collector_error",
-                raw_artifact=None,
-                attributes=MappingProxyType({}),
-            ),
-            artifact=None,
-            records=(),
-            findings=(finding,),
-        )
-    artifact_id = f"artifact:raw:{index:03d}"
-    if raw_path.stat().st_mtime_ns < dispatched_ns - _FRESHNESS_CLOCK_TOLERANCE_NS:
-        finding = CoverageFinding(
-            severity="error",
-            code="COV_RAW_FILE_STALE",
-            pointer=f"/tests/runs/{index - 1}/raw_artifact",
-            message=f"Test {selected.name!r} did not freshly write its native database.",
-        )
-        return _CollectedRun(
-            run=CoverageRun(
-                id=run_id,
-                test=selected.name,
-                simulation_verdict=run_result.verdict,
-                collection="collector_error",
-                raw_artifact=artifact_id,
-                attributes=MappingProxyType({}),
-            ),
-            artifact=_artifact(
-                raw_path,
-                request.artifact_root,
-                artifact_id=artifact_id,
-                kind="raw_native",
-                run_id=run_id,
-                state="stale",
-            ),
-            records=(),
-            findings=(finding,),
+    except ArtifactValidationError:
+        missing = not context.raw_path.is_file()
+        return _run_failure(
+            request,
+            context,
+            verdict,
+            code="COV_RAW_FILE_MISSING" if missing else "COV_RAW_FILE_STALE",
+            message=_raw_freshness_message(context.test.name, missing),
+            state=None if missing else "stale",
         )
     try:
-        records = _parse_native(raw_path)
+        records = _parse_native(context.raw_path)
     except _NativeFormatError:
-        finding = CoverageFinding(
-            severity="error",
+        return _run_failure(
+            request,
+            context,
+            verdict,
             code="COV_NATIVE_FORMAT_INCOMPATIBLE",
-            pointer=f"/tests/runs/{index - 1}/raw_artifact",
-            message=f"Test {selected.name!r} produced an incompatible native database.",
-        )
-        return _CollectedRun(
-            run=CoverageRun(
-                id=run_id,
-                test=selected.name,
-                simulation_verdict=run_result.verdict,
-                collection="collector_error",
-                raw_artifact=artifact_id,
-                attributes=MappingProxyType({}),
-            ),
-            artifact=_artifact(
-                raw_path,
-                request.artifact_root,
-                artifact_id=artifact_id,
-                kind="raw_native",
-                run_id=run_id,
-                state="incompatible",
-            ),
-            records=(),
-            findings=(finding,),
+            message=f"Test {context.test.name!r} produced an incompatible native database.",
+            state="incompatible",
         )
     except _NativeRecordError:
-        finding = CoverageFinding(
-            severity="error",
+        return _run_failure(
+            request,
+            context,
+            verdict,
             code="COV_RAW_NOT_QUERYABLE",
-            pointer=f"/tests/runs/{index - 1}/raw_artifact",
-            message=f"Test {selected.name!r} produced an unqueryable native database.",
+            message=f"Test {context.test.name!r} produced an unqueryable native database.",
+            state="unqueryable",
         )
-        return _CollectedRun(
-            run=CoverageRun(
-                id=run_id,
-                test=selected.name,
-                simulation_verdict=run_result.verdict,
-                collection="collector_error",
-                raw_artifact=artifact_id,
-                attributes=MappingProxyType({}),
-            ),
-            artifact=_artifact(
-                raw_path,
-                request.artifact_root,
-                artifact_id=artifact_id,
-                kind="raw_native",
-                run_id=run_id,
-                state="unqueryable",
-            ),
-            records=(),
-            findings=(finding,),
-        )
-    raw_artifact = _artifact(
-        raw_path,
+    artifact = _artifact(
+        context.raw_path,
         request.artifact_root,
-        artifact_id=artifact_id,
+        artifact_id=f"artifact:raw:{context.index:03d}",
         kind="raw_native",
-        run_id=run_id,
+        run_id=context.run_id,
     )
+    return artifact, records
+
+
+def _raw_freshness_message(test: str, missing: bool) -> str:
+    if missing:
+        return f"Test {test!r} produced no native coverage database."
+    return f"Test {test!r} did not freshly write its native database."
+
+
+def _finish_run(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    verdict: SimulationVerdict,
+    raw_artifact: CoverageArtifact,
+    records: tuple[_NativeRecord, ...],
+) -> _CollectedRun:
     hook_artifact = None
-    if hook_path is not None:
+    if context.hook_path is not None:
         try:
             hook_artifact = _validate_hook_evidence(
-                hook_path,
+                context.hook_path,
                 request.artifact_root,
-                run_id=run_id,
-                index=index,
-                dispatched_ns=dispatched_ns,
+                run_id=context.run_id,
+                index=context.index,
+                before=context.hook_before,
                 require_start=not request.reset_included,
                 require_write=request.target.harness == "custom_main",
             )
         except _HookEvidenceError as exc:
-            finding = CoverageFinding(
-                severity="error",
+            return _run_failure(
+                request,
+                context,
+                verdict,
                 code=exc.code,
-                pointer=f"/tests/runs/{index - 1}/hook_evidence",
                 message=str(exc),
-            )
-            return _CollectedRun(
-                run=CoverageRun(
-                    id=run_id,
-                    test=selected.name,
-                    simulation_verdict=run_result.verdict,
-                    collection="collector_error",
-                    raw_artifact=artifact_id,
-                    attributes=MappingProxyType({}),
-                ),
                 artifact=raw_artifact,
                 records=records,
-                findings=(finding,),
+                pointer="hook_evidence",
             )
     return _CollectedRun(
         run=CoverageRun(
-            id=run_id,
-            test=selected.name,
-            simulation_verdict=run_result.verdict,
+            id=context.run_id,
+            test=context.test.name,
+            simulation_verdict=verdict,
             collection="included",
-            raw_artifact=artifact_id,
+            raw_artifact=raw_artifact.id,
             attributes=MappingProxyType({}),
         ),
         artifact=raw_artifact,
@@ -543,27 +541,72 @@ def _collect_one_run(
     )
 
 
+def _run_failure(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    verdict: SimulationVerdict,
+    *,
+    code: str,
+    message: str,
+    state: str | None = None,
+    artifact: CoverageArtifact | None = None,
+    records: tuple[_NativeRecord, ...] = (),
+    pointer: str = "raw_artifact",
+) -> _CollectedRun:
+    artifact_id = f"artifact:raw:{context.index:03d}" if state else None
+    if state is not None:
+        artifact = _artifact(
+            context.raw_path,
+            request.artifact_root,
+            artifact_id=artifact_id or "",
+            kind="raw_native",
+            run_id=context.run_id,
+            state=state,
+        )
+    run = CoverageRun(
+        context.run_id,
+        context.test.name,
+        verdict,
+        "collector_error",
+        artifact.id if artifact is not None else None,
+        MappingProxyType({}),
+    )
+    finding = CoverageFinding("error", code, f"/tests/runs/{context.index - 1}/{pointer}", message)
+    return _CollectedRun(run, artifact, records, (finding,))
+
+
 def _validate_hook_evidence(
     path: Path,
     root: Path,
     *,
     run_id: str,
     index: int,
-    dispatched_ns: int,
+    before: ArtifactStamp | None,
     require_start: bool,
     require_write: bool,
 ) -> CoverageArtifact:
-    if (
-        not path.is_file()
-        or path.stat().st_mtime_ns < dispatched_ns - _FRESHNESS_CLOCK_TOLERANCE_NS
-    ):
+    try:
+        validate_fresh_artifact(path, roots=(root,), before=before)
+    except ArtifactValidationError as exc:
         raise _HookEvidenceError(
             "COV_WINDOW_HOOK_MISSING",
             "Coverage start hook produced no fresh evidence.",
-        )
+        ) from exc
+    document = _read_hook_document(path, run_id)
+    _validate_hook_events(document["events"], require_start, require_write)
+    return _artifact(
+        path,
+        root,
+        artifact_id=f"artifact:hook:{index:03d}",
+        kind="coverage_hook_evidence",
+        run_id=run_id,
+    )
+
+
+def _read_hook_document(path: Path, run_id: str) -> dict[str, object]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
         raise _HookEvidenceError(
             "COV_WINDOW_HOOK_INVALID",
             "Coverage hook evidence was not valid JSON.",
@@ -579,6 +622,11 @@ def _validate_hook_evidence(
             "COV_WINDOW_HOOK_INVALID",
             "Coverage hook evidence does not identify its run.",
         )
+    return document
+
+
+def _validate_hook_events(events: object, require_start: bool, require_write: bool) -> None:
+    assert isinstance(events, list)
     starts = _hook_events(events, "start")
     writes = _hook_events(events, "write")
     start_sequence = _require_hook(starts, "WINDOW") if require_start else None
@@ -592,13 +640,6 @@ def _validate_hook_evidence(
             "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
             "Custom-main start_hook must run before write_hook.",
         )
-    return _artifact(
-        path,
-        root,
-        artifact_id=f"artifact:hook:{index:03d}",
-        kind="coverage_hook_evidence",
-        run_id=run_id,
-    )
 
 
 def _hook_events(events: list[object], name: str) -> list[dict[str, object]]:
@@ -741,16 +782,16 @@ def _capabilities_and_findings(
     }
     capabilities: list[CoverageCapability] = []
     findings: list[CoverageFinding] = []
-    for record_type in sorted(record_types):
+    for record_type in sorted(set(_RECORD_METRICS) | record_types):
         record_class = _RECORD_METRICS.get(record_type, record_type)
         capabilities.append(
             CoverageCapability(
                 record_class=record_class,
-                status="reported",
+                status="reported" if record_type in record_types else "absent",
                 attributes=MappingProxyType({"native_record_type": record_type}),
             )
         )
-        if record_type not in _RECORD_METRICS:
+        if record_type in record_types and record_type not in _RECORD_METRICS:
             findings.append(
                 CoverageFinding(
                     severity="warning",
@@ -768,6 +809,7 @@ def _merge(
     collected: tuple[_CollectedRun, ...],
 ) -> tuple[CoverageArtifact, tuple[_NativeRecord, ...]]:
     merged_path = request.artifact_root / "native" / "merged" / "coverage.dat"
+    before = snapshot_artifact(merged_path)
     raw_paths = tuple(
         request.artifact_root / item.artifact.path
         for item in collected
@@ -783,54 +825,54 @@ def _merge(
         cwd=request.artifact_root,
         output_path=merged_path,
     )
-    dispatched_ns = time.time_ns()
     result = execution.command(command)
     if result.returncode != 0:
         raise _MergeError("COV_NATIVE_MERGE_FAILED", "Verilator native merge failed.")
-    if not merged_path.is_file():
-        raise _MergeError(
-            "COV_NATIVE_MERGE_MISSING",
-            "Verilator native merge produced no output database.",
-        )
-    if merged_path.stat().st_mtime_ns < dispatched_ns - _FRESHNESS_CLOCK_TOLERANCE_NS:
-        artifact = _artifact(
-            merged_path,
-            request.artifact_root,
-            artifact_id="artifact:merged",
-            kind="merged_native",
-            run_id=None,
-            state="stale",
-        )
-        raise _MergeError(
-            "COV_NATIVE_MERGE_STALE",
-            "Verilator native merge output was not freshly written.",
-            artifact=artifact,
-        )
+    _validate_merged_freshness(request, merged_path, before)
     try:
         records = _parse_native(merged_path)
-    except (_NativeFormatError, _NativeRecordError, UnicodeError):
-        artifact = _artifact(
-            merged_path,
-            request.artifact_root,
-            artifact_id="artifact:merged",
-            kind="merged_native",
-            run_id=None,
-            state="unqueryable",
-        )
+    except (_NativeFormatError, _NativeRecordError):
         raise _MergeError(
             "COV_NATIVE_MERGE_NOT_QUERYABLE",
             "Verilator native merge output was not queryable.",
-            artifact=artifact,
+            artifact=_merged_artifact(request, merged_path, state="unqueryable"),
         ) from None
-    return (
-        _artifact(
-            merged_path,
-            request.artifact_root,
-            artifact_id="artifact:merged",
-            kind="merged_native",
-            run_id=None,
-        ),
-        records,
+    return _merged_artifact(request, merged_path), records
+
+
+def _validate_merged_freshness(
+    request: CoverageCollectionRequest,
+    path: Path,
+    before: ArtifactStamp | None,
+) -> None:
+    try:
+        validate_fresh_artifact(path, roots=(request.artifact_root,), before=before)
+    except ArtifactValidationError:
+        if not path.is_file():
+            raise _MergeError(
+                "COV_NATIVE_MERGE_MISSING",
+                "Verilator native merge produced no output database.",
+            ) from None
+        raise _MergeError(
+            "COV_NATIVE_MERGE_STALE",
+            "Verilator native merge output was not freshly written.",
+            artifact=_merged_artifact(request, path, state="stale"),
+        ) from None
+
+
+def _merged_artifact(
+    request: CoverageCollectionRequest,
+    path: Path,
+    *,
+    state: str = "fresh_queryable",
+) -> CoverageArtifact:
+    return _artifact(
+        path,
+        request.artifact_root,
+        artifact_id="artifact:merged",
+        kind="merged_native",
+        run_id=None,
+        state=state,
     )
 
 
@@ -865,6 +907,13 @@ def _window_evidence(
 def _request_finding(request: CoverageCollectionRequest) -> CoverageFinding | None:
     target = request.target
     if target.harness != "custom_main":
+        if target.custom_main_hooks:
+            return CoverageFinding(
+                "error",
+                "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
+                "/target/custom_main_hooks",
+                "custom_main_hooks is allowed only for a custom-main Target.",
+            )
         return None
     hooks = target.custom_main_hooks
     if len(set(hooks)) != len(hooks):
@@ -945,21 +994,47 @@ def _build_error_result(
     )
 
 
-def collect(  # noqa: PLR0911 - each return preserves a distinct evidence gate
+def _result(
+    request: CoverageCollectionRequest,
+    build: CoverageBuildEvidence,
+    collected: tuple[_CollectedRun, ...],
+    *,
+    status: CoverageCollectionStatus,
+    capabilities: tuple[CoverageCapability, ...] = (),
+    findings: tuple[CoverageFinding, ...] = (),
+    merge: NativeMergeEvidence,
+    compatibility: Literal["compatible", "incompatible", "unknown"],
+    extra_artifacts: tuple[CoverageArtifact, ...] = (),
+) -> CoverageCollectionResult:
+    return CoverageCollectionResult(
+        status=status,
+        build=build,
+        runs=tuple(item.run for item in collected),
+        artifacts=(*_result_artifacts(collected), *extra_artifacts),
+        points=_normalize_points(request, collected),
+        capabilities=capabilities,
+        findings=findings,
+        merge=merge,
+        native_format=NativeFormatEvidence("verilator-coverage", compatibility),
+        coverage_window=_window_evidence(request, collected),
+        collector=PINNED_VERILATOR,
+    )
+
+
+def _build_collection(
     request: CoverageCollectionRequest,
     execution: SimulationExecutionPort,
-) -> CoverageCollectionResult:
-    """Collect and normalize one Verilator-native database per selected test."""
+) -> tuple[CoverageBuildEvidence, CoverageCollectionResult | None]:
     variant = SimulationBuildVariant(trace=request.trace, coverage=True)
     build = CoverageBuildEvidence(variant, VERILATOR_COVERAGE_INSTRUMENTATION)
     request_finding = _request_finding(request)
     if request_finding is not None:
-        return _preflight_error_result(request, build, request_finding)
+        return build, _preflight_error_result(request, build, request_finding)
     build_result = execution.build(
         SimulationBuildRequest(request.target, variant, VERILATOR_COVERAGE_INSTRUMENTATION)
     )
     if not build_result.success:
-        return _build_error_result(request, build, build_result.output)
+        return build, _build_error_result(request, build, build_result.output)
     if build_result.collector != PINNED_VERILATOR:
         finding = CoverageFinding(
             "error",
@@ -967,89 +1042,110 @@ def collect(  # noqa: PLR0911 - each return preserves a distinct evidence gate
             "/collector/version",
             "Coverage collection requires the exact pinned stable Verilator identity.",
         )
-        return _preflight_error_result(request, build, finding)
+        return build, _preflight_error_result(request, build, finding)
+    return build, None
+
+
+def _merge_collection(
+    request: CoverageCollectionRequest,
+    execution: SimulationExecutionPort,
+    build: CoverageBuildEvidence,
+    collected: tuple[_CollectedRun, ...],
+) -> CoverageCollectionResult:
+    capabilities, normalization_findings = _capabilities_and_findings(collected)
+    try:
+        merged_artifact, merged_records = _merge(request, execution, collected)
+    except _MergeError as exc:
+        finding = CoverageFinding("error", exc.code, "/collection/merge", str(exc))
+        extra = (exc.artifact,) if exc.artifact is not None else ()
+        return _result(
+            request,
+            build,
+            collected,
+            status="collector_error",
+            capabilities=capabilities,
+            findings=(*normalization_findings, finding),
+            merge=NativeMergeEvidence("failed"),
+            compatibility="compatible",
+            extra_artifacts=extra,
+        )
+    if not _merge_is_equivalent(collected, merged_records):
+        return _merge_mismatch_result(
+            request, build, collected, capabilities, normalization_findings, merged_artifact
+        )
+    return _result(
+        request,
+        build,
+        collected,
+        status="complete",
+        capabilities=capabilities,
+        findings=normalization_findings,
+        merge=NativeMergeEvidence("equivalent", merged_artifact.id),
+        compatibility="compatible",
+        extra_artifacts=(merged_artifact,),
+    )
+
+
+def _merge_is_equivalent(
+    collected: tuple[_CollectedRun, ...], merged: tuple[_NativeRecord, ...]
+) -> bool:
+    raw = tuple(record for item in collected for record in item.records)
+    return _record_totals(raw) == _record_totals(merged)
+
+
+def _merge_mismatch_result(
+    request: CoverageCollectionRequest,
+    build: CoverageBuildEvidence,
+    collected: tuple[_CollectedRun, ...],
+    capabilities: tuple[CoverageCapability, ...],
+    findings: tuple[CoverageFinding, ...],
+    artifact: CoverageArtifact,
+) -> CoverageCollectionResult:
+    mismatch = CoverageFinding(
+        "error",
+        "COV_NATIVE_MERGE_MISMATCH",
+        "/collection/merge",
+        "Native merge disagrees with independently normalized per-run counts.",
+    )
+    return _result(
+        request,
+        build,
+        collected,
+        status="collector_error",
+        capabilities=capabilities,
+        findings=(*findings, mismatch),
+        merge=NativeMergeEvidence("mismatch", artifact.id),
+        compatibility="compatible",
+        extra_artifacts=(artifact,),
+    )
+
+
+def collect(
+    request: CoverageCollectionRequest,
+    execution: SimulationExecutionPort,
+) -> CoverageCollectionResult:
+    """Collect and normalize one Verilator-native database per selected test."""
+    build, failure = _build_collection(request, execution)
+    if failure is not None:
+        return failure
     collected = tuple(
         _collect_one_run(request, execution, index, selected)
         for index, selected in enumerate(request.selected_tests, start=1)
     )
     findings = tuple(finding for item in collected for finding in item.findings)
     if findings:
-        return CoverageCollectionResult(
+        compatibility = (
+            "incompatible"
+            if any(item.code == "COV_NATIVE_FORMAT_INCOMPATIBLE" for item in findings)
+            else "unknown"
+        )
+        return _result(
+            request,
+            build,
+            collected,
             status="collector_error",
-            build=build,
-            runs=tuple(item.run for item in collected),
-            artifacts=_result_artifacts(collected),
-            points=_normalize_points(request, collected),
-            capabilities=(),
             findings=findings,
             merge=NativeMergeEvidence("not_run"),
-            native_format=NativeFormatEvidence(
-                "verilator-coverage",
-                "incompatible"
-                if any(finding.code == "COV_NATIVE_FORMAT_INCOMPATIBLE" for finding in findings)
-                else "unknown",
-            ),
-            coverage_window=_window_evidence(request, collected),
-            collector=PINNED_VERILATOR,
+            compatibility=compatibility,
         )
-    points = _normalize_points(request, collected)
-    capabilities, normalization_findings = _capabilities_and_findings(collected)
-    try:
-        merged_artifact, merged_records = _merge(request, execution, collected)
-    except _MergeError as exc:
-        finding = CoverageFinding(
-            "error",
-            exc.code,
-            "/collection/merge",
-            str(exc),
-        )
-        artifacts = _result_artifacts(collected)
-        if exc.artifact is not None:
-            artifacts = (*artifacts, exc.artifact)
-        return CoverageCollectionResult(
-            status="collector_error",
-            build=build,
-            runs=tuple(item.run for item in collected),
-            artifacts=artifacts,
-            points=points,
-            capabilities=capabilities,
-            findings=(*normalization_findings, finding),
-            merge=NativeMergeEvidence("failed"),
-            native_format=NativeFormatEvidence("verilator-coverage", "compatible"),
-            coverage_window=_window_evidence(request, collected),
-            collector=PINNED_VERILATOR,
-        )
-    raw_totals = _record_totals(tuple(record for item in collected for record in item.records))
-    if raw_totals != _record_totals(merged_records):
-        finding = CoverageFinding(
-            "error",
-            "COV_NATIVE_MERGE_MISMATCH",
-            "/collection/merge",
-            "Native merge disagrees with independently normalized per-run counts.",
-        )
-        return CoverageCollectionResult(
-            status="collector_error",
-            build=build,
-            runs=tuple(item.run for item in collected),
-            artifacts=(*_result_artifacts(collected), merged_artifact),
-            points=points,
-            capabilities=capabilities,
-            findings=(*normalization_findings, finding),
-            merge=NativeMergeEvidence("mismatch", merged_artifact.id),
-            native_format=NativeFormatEvidence("verilator-coverage", "compatible"),
-            coverage_window=_window_evidence(request, collected),
-            collector=PINNED_VERILATOR,
-        )
-    return CoverageCollectionResult(
-        status="complete",
-        build=build,
-        runs=tuple(item.run for item in collected),
-        artifacts=(*_result_artifacts(collected), merged_artifact),
-        points=points,
-        capabilities=capabilities,
-        findings=normalization_findings,
-        merge=NativeMergeEvidence("equivalent", merged_artifact.id),
-        native_format=NativeFormatEvidence("verilator-coverage", "compatible"),
-        coverage_window=_window_evidence(request, collected),
-        collector=PINNED_VERILATOR,
-    )
+    return _merge_collection(request, execution, build, collected)

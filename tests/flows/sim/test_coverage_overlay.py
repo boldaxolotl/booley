@@ -101,3 +101,20 @@ class TestCoverageOverlay:
             assert "booley_verilator_coverage_bridge" in document["targets"]["sim"]["filesets"]
         finally:
             overlay.cleanup()
+
+    def test_injects_packaged_bridge_for_non_custom_post_reset_window(self, tmp_path: Path):
+        core = _CORE_TEXT.replace(
+            "      tool: verilator\n",
+            "      tool: verilator\n      booley: {coverage: {reset_included: false}}\n",
+        )
+        _write_core(tmp_path / "ip", core)
+        overlay = write_coverage_overlay(
+            TargetCatalog.build(tmp_path).select("sim"),
+            instrumentation=self._INSTRUMENTATION,
+            trace=False,
+        )
+        try:
+            document = read_core(overlay.core_file)
+            assert "booley_verilator_coverage_bridge" in document["filesets"]
+        finally:
+            overlay.cleanup()

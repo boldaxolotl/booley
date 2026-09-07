@@ -13,14 +13,7 @@ from typing import cast
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.sim import trace_overlay
-from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
-from booley.flows.sim.adapter_transport import (
-    AdapterResult,
-    AdapterTransportError,
-    AdapterTransportIdentity,
-    partial_result_identity,
-    read_adapter_result,
-)
+from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
@@ -29,28 +22,19 @@ from booley.flows.sim.build import (
     new_attempt_token,
     prepare_simulation_build,
 )
-from booley.flows.sim.config import (
-    resolve_max_rundir_bytes,
-    resolve_sim_time_grace_s,
-    resolve_sim_timeout_ms,
-    resolve_trace_args,
-    resolve_trace_files,
-)
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
+from booley.flows.sim.execution.attempt import (
+    AdapterAttemptOutcome,
+    AdapterAttemptRequest,
+    ProcessInvoker,
+    execute_adapter_attempt,
+)
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.execution.engine import (
-    ProcessInvoker,
-    _simulation_plusargs,  # pyright: ignore[reportPrivateUsage]
-    _simulation_run_cwd,  # pyright: ignore[reportPrivateUsage]
-    _target_environment,  # pyright: ignore[reportPrivateUsage]
+    prepare_simulation_work,
+    simulation_target_environment,
 )
-from booley.flows.sim.execution.freshness import (
-    ArtifactValidationError,
-    snapshot_artifact,
-    validate_fresh_artifact,
-)
-from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -76,7 +60,7 @@ from .verilator_coverage import (
 
 _PROVENANCE_PATH = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
 _VERSION_RE = re.compile(r"\bVerilator (?P<version>[0-9]+\.[0-9]+)\b")
-_TRACE_CLEANUP_MARGIN_S = 90
+_ADAPTER_CLEANUP_MARGIN_S = 90
 
 
 class VerilatorCoverageExecution:
@@ -104,6 +88,12 @@ class VerilatorCoverageExecution:
         identity, version_output = self._collector_identity()
         if identity is None:
             return SimulationBuildResult(False, version_output)
+        prepared = self._prepare_build(request)
+        if isinstance(prepared, str):
+            return SimulationBuildResult(False, prepared)
+        return self._execute_build(prepared, identity)
+
+    def _prepare_build(self, request: SimulationBuildRequest) -> PreparedSimulationBuild | str:
         variant = request.variant.name
         build_root = edam_layer.work_root_for(
             self._handle.project_root,
@@ -116,10 +106,9 @@ class VerilatorCoverageExecution:
         except FileNotFoundError:
             pass
         except OSError as exc:
-            return SimulationBuildResult(False, f"could not reset coverage build root: {exc}")
+            return f"could not reset coverage build root: {exc}"
 
         overlay: CoverageOverlay | None = None
-        trace_mode = self._trace_mode
         try:
             overlay = write_coverage_overlay(
                 self._handle,
@@ -130,26 +119,31 @@ class VerilatorCoverageExecution:
                 self._handle,
                 variant=variant,
                 resolution_vlnv=overlay.vlnv,
-                environment=_target_environment(self._handle),
+                environment=simulation_target_environment(self._handle),
             )
             if prepared.resolved.cocotb_module and request.variant.trace:
                 trace_overlay.validate_cocotb_trace_mode(
                     self._handle.selector,
                     overlay.trace_mode,
                 )
-            trace_mode = overlay.trace_mode.value
+            self._trace_mode = overlay.trace_mode.value
         except (SimulationBuildPreparationError, FuseSocError) as exc:
-            return SimulationBuildResult(False, str(exc))
+            return str(exc)
         finally:
             if overlay is not None:
                 overlay.cleanup()
-        self._trace_mode = trace_mode
+        return prepared
 
+    def _execute_build(
+        self,
+        prepared: PreparedSimulationBuild,
+        identity: VerilatorCollectorIdentity,
+    ) -> SimulationBuildResult:
         token = new_attempt_token()
         script = build_stage_script(
             prepared.make_argv,
             token,
-            environment=_target_environment(self._handle),
+            environment=simulation_target_environment(self._handle),
         )
         script = _in_directory_script(self._handle.project_root, script)
         process = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
@@ -167,10 +161,7 @@ class VerilatorCoverageExecution:
         if request.target.identity != self._handle.identity:
             return SimulationRunResult("inconclusive", "coverage Target identity mismatch")
 
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        if request.hook_evidence_path is not None:
-            request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
-
+        _prepare_artifact_directories(request)
         token = new_attempt_token()
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         test_names = (request.test.name,)
@@ -181,36 +172,29 @@ class VerilatorCoverageExecution:
             selected_tests=test_names,
             result_path=prepared.build_root / f".booley-coverage-adapter-{token}.json",
         )
-        work = self._prepared_work(prepared, transport, request)
+        work = prepare_simulation_work(
+            self._handle,
+            prepared,
+            transport,
+            self._options,
+            trace=request.trace,
+            trace_mode=self._trace_mode,
+            plusargs_suffix=request.argv_suffix,
+        )
         invocation = prepare_adapter_invocation(work)
-        environment = {**_target_environment(self._handle), **request.environment}
+        environment = {**simulation_target_environment(self._handle), **request.environment}
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        terminal_before = snapshot_artifact(transport.result_path)
-        partial = partial_result_identity(transport)
-        partial_before = snapshot_artifact(partial.result_path)
-        process = self._invoke(
-            ["sh", "-c", script],
-            timeout=work.timeout_s + (_TRACE_CLEANUP_MARGIN_S if request.trace else 0),
+        executed = execute_adapter_attempt(
+            self._invoke,
+            AdapterAttemptRequest(
+                ("sh", "-c", script),
+                work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
+                transport,
+                prepared.build_root,
+            ),
         )
-        output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-        try:
-            result_identity = transport
-            before = terminal_before
-            if not transport.result_path.exists() and process.timed_out:
-                result_identity = partial
-                before = partial_before
-            validate_fresh_artifact(
-                result_identity.result_path,
-                roots=(prepared.build_root,),
-                before=before,
-            )
-            adapter_result = read_adapter_result(result_identity)
-            verdict = _adapter_verdict(adapter_result, request.test.name, process)
-        except (AdapterTransportError, ArtifactValidationError, OSError) as exc:
-            verdict = "timeout" if process.timed_out else "inconclusive"
-            output = f"{output}\n{exc}".strip()
-        return SimulationRunResult(verdict, output)
+        return _simulation_run_result(executed, request.test.name)
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
@@ -237,46 +221,6 @@ class VerilatorCoverageExecution:
         ):
             return None, f"{output}\n{provenance}".strip()
         return PINNED_VERILATOR, output
-
-    def _prepared_work(
-        self,
-        prepared: PreparedSimulationBuild,
-        identity: AdapterTransportIdentity,
-        request: SimulationRunRequest,
-    ) -> PreparedSimulationWork:
-        root = self._handle.project_root
-        rel = edam_layer.relpath_for_make(prepared.build_root, root)
-        passes, fails = resolve_sim_sentinels(root)
-        plusargs = _simulation_plusargs(
-            self._handle,
-            identity.selected_tests,
-            prepared.resolved.parameters,
-        )
-        plusargs.extend(request.argv_suffix)
-        return PreparedSimulationWork(
-            adapter=cast(AdapterKind, identity.adapter),
-            build_dir=rel,
-            run_cwd=_simulation_run_cwd(root, rel),
-            timeout_s=max(1, (self._options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
-            eda_tool=prepared.eda_tool,
-            max_rundir_bytes=resolve_max_rundir_bytes(root),
-            plusargs=tuple(plusargs),
-            trace=request.trace,
-            trace_mode=self._trace_mode,
-            trace_scope=prepared.toplevel,
-            trace_args=tuple(resolve_trace_args(root)),
-            trace_files=tuple(resolve_trace_files(root)),
-            pass_sentinels=tuple(passes),
-            fail_sentinels=tuple(fails),
-            top=prepared.toplevel,
-            cocotb_module=prepared.resolved.cocotb_module or "",
-            tests=identity.selected_tests,
-            result_verbosity=self._options.result_verbosity,
-            sim_time_grace_s=resolve_sim_time_grace_s(root),
-            adapter_result_path=str(identity.result_path),
-            attempt_token=identity.attempt_token,
-            target_identity=identity.target_identity,
-        )
 
 
 def prepare_coverage_collection(
@@ -381,6 +325,21 @@ def _environment_script(environment: Mapping[str, str], invocation: list[str]) -
 
 def _in_directory_script(directory: Path, script: str) -> str:
     return f"cd {shlex.quote(str(directory))}\n{script}"
+
+
+def _prepare_artifact_directories(request: SimulationRunRequest) -> None:
+    request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+    if request.hook_evidence_path is not None:
+        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> SimulationRunResult:
+    process = attempt.process
+    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
+    if attempt.error is not None or attempt.result is None:
+        verdict: SimulationVerdict = "timeout" if process.timed_out else "inconclusive"
+        return SimulationRunResult(verdict, f"{output}\n{attempt.error or ''}".strip())
+    return SimulationRunResult(_adapter_verdict(attempt.result, test_name, process), output)
 
 
 def _adapter_verdict(

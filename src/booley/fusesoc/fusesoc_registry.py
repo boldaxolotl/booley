@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 from fusesoc.capi2.exprs import Exprs
 
+from booley.core.boundary import is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -593,6 +594,9 @@ def _check_coverage_target_metadata(value: Any, label: str, errors: list[str]) -
     hooks = value["custom_main_hooks"]
     if not isinstance(hooks, list):
         errors.append(f"{coverage_label}.custom_main_hooks must be an array")
+        return
+    if not is_str_list(hooks):
+        errors.append(f"{coverage_label}.custom_main_hooks must contain only strings")
         return
     invalid = [hook for hook in hooks if hook not in {"start_hook", "write_hook"}]
     if invalid:

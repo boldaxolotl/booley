@@ -26,6 +26,29 @@ _LINE_POINT = (
 )
 
 
+def _request(
+    tmp_path: Path,
+    test: str,
+    *,
+    harness: str = "generated_main",
+    hooks: tuple[str, ...] = (),
+    reset_included: bool = True,
+) -> CoverageCollectionRequest:
+    return CoverageCollectionRequest(
+        target=CoverageTarget(
+            identity="acme:demo:counter:1.0#sim_counter",
+            selector="sim_counter",
+            toplevel="counter",
+            harness=harness,
+            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
+            custom_main_hooks=hooks,
+        ),
+        selected_tests=(SelectedCoverageTest(test),),
+        artifact_root=tmp_path / "campaign",
+        reset_included=reset_included,
+    )
+
+
 def _native_record(
     record_type: str,
     comment: str,
@@ -68,16 +91,19 @@ class _MissingRawExecution(_GeneratedMainExecution):
 
 class _StaleRawExecution(_MissingRawExecution):
     def run(self, request) -> SimulationRunResult:
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        request.raw_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
-        os.utime(request.raw_path, ns=(1, 1))
         return SimulationRunResult(verdict="fail")
 
 
 class _MalformedRawExecution(_MissingRawExecution):
+    def __init__(self, payload: str | bytes = _HEADER + "not a coverage record\n") -> None:
+        self.payload = payload
+
     def run(self, request) -> SimulationRunResult:
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        request.raw_path.write_text(_HEADER + "not a coverage record\n", encoding="utf-8")
+        if isinstance(self.payload, bytes):
+            request.raw_path.write_bytes(self.payload)
+        else:
+            request.raw_path.write_text(self.payload, encoding="utf-8")
         return SimulationRunResult(verdict="timeout")
 
 
@@ -249,27 +275,22 @@ class _WrongVerilatorExecution(_NoExecution):
 def test_generated_main_collects_one_native_database_and_normalizes_line_point(
     tmp_path: Path,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(
-                CoverageSource(
-                    native_path="rtl/counter.sv",
-                    path="rtl/counter.sv",
-                    kind="rtl",
-                ),
-            ),
-        ),
-        selected_tests=(SelectedCoverageTest("reset"),),
-        artifact_root=tmp_path / "reports" / "sim" / "000001" / "sim_counter",
-    )
-
-    result = collect(request, _GeneratedMainExecution())
+    result = collect(_request(tmp_path, "reset"), _GeneratedMainExecution())
 
     assert result.status == "complete"
+    _assert_build_evidence(result)
+    _assert_line_point(result.points[0])
+    assert [(run.test, run.simulation_verdict, run.collection) for run in result.runs] == [
+        ("reset", "pass", "included")
+    ]
+    assert [artifact.kind for artifact in result.artifacts] == [
+        "raw_native",
+        "merged_native",
+    ]
+    assert result.merge.status == "equivalent"
+
+
+def _assert_build_evidence(result) -> None:
     assert result.collector == VerilatorCollectorIdentity(
         tag="v5.052",
         commit="ea338be98e1e838d3518809ce8899f85a009963c",
@@ -283,15 +304,9 @@ def test_generated_main_collects_one_native_database_and_normalizes_line_point(
         "--coverage-user",
         "--coverage-per-instance",
     )
-    assert [(run.test, run.simulation_verdict, run.collection) for run in result.runs] == [
-        ("reset", "pass", "included")
-    ]
-    assert [artifact.kind for artifact in result.artifacts] == [
-        "raw_native",
-        "merged_native",
-    ]
-    assert len(result.points) == 1
-    point = result.points[0]
+
+
+def _assert_line_point(point) -> None:
     assert point.identity.metric == "line"
     assert point.identity.location == {
         "source": "rtl/counter.sv",
@@ -302,7 +317,6 @@ def test_generated_main_collects_one_native_database_and_normalizes_line_point(
     assert point.identity.subject == {"basic_block": "block"}
     assert dict(point.hits_by_run) == {"run:001:reset": 2}
     assert point.disposition == {"kind": "eligible"}
-    assert result.merge.status == "equivalent"
 
 
 def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None:
@@ -364,6 +378,10 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
         artifact_root=tmp_path / "campaign",
     )
 
+    raw = request.artifact_root / "native" / "raw" / "001-wrap.dat"
+    raw.parent.mkdir(parents=True)
+    raw.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+
     result = collect(request, _StaleRawExecution())
 
     assert result.status == "collector_error"
@@ -372,6 +390,26 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
     assert [artifact.state for artifact in result.artifacts] == ["stale"]
     assert result.points == ()
     assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_STALE"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _HEADER + "C '\x01f\x02rtl/counter.sv\x01f\x02duplicate\x01t\x02line' 1\n",
+        _HEADER + "C '\x01f\x02rtl/counter.sv\x01l\x02ten\x01t\x02line' 1\n",
+        _HEADER.encode() + b"C '\x01t\x02line\xff' 1\n",
+    ],
+)
+def test_malformed_native_attributes_are_structured_errors(
+    tmp_path: Path, payload: str | bytes
+) -> None:
+    request = _request(tmp_path, "malformed")
+
+    result = collect(request, _MalformedRawExecution(payload))
+
+    assert result.status == "collector_error"
+    assert result.runs[0].simulation_verdict == "timeout"
+    assert [finding.code for finding in result.findings] == ["COV_RAW_NOT_QUERYABLE"]
 
 
 def test_malformed_raw_database_is_unqueryable_and_preserves_timeout(tmp_path: Path) -> None:
@@ -439,6 +477,14 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
     result = collect(request, _RichNativeExecution())
 
     assert result.status == "complete"
+    _assert_rich_points(result)
+    _assert_rich_capabilities(result)
+    assert [(finding.severity, finding.code) for finding in result.findings] == [
+        ("warning", "COV_NATIVE_RECORD_UNKNOWN")
+    ]
+
+
+def _assert_rich_points(result) -> None:
     assert [point.identity.metric for point in result.points] == [
         "branch",
         "cover_property",
@@ -459,6 +505,9 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
     assert dispositions["fsm"] == "unscored"
     assert dispositions["covergroup"] == "unscored"
     assert dispositions["toggle"] == "eligible"
+
+
+def _assert_rich_capabilities(result) -> None:
     assert {capability.record_class: capability.status for capability in result.capabilities} == {
         "branch": "reported",
         "cover_property": "reported",
@@ -469,9 +518,23 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
         "line": "reported",
         "toggle": "reported",
     }
-    assert [(finding.severity, finding.code) for finding in result.findings] == [
-        ("warning", "COV_NATIVE_RECORD_UNKNOWN")
-    ]
+
+
+def test_supported_but_unobserved_record_classes_are_explicitly_absent(
+    tmp_path: Path,
+) -> None:
+    result = collect(_request(tmp_path, "line_only"), _GeneratedMainExecution())
+
+    statuses = {capability.record_class: capability.status for capability in result.capabilities}
+    assert statuses == {
+        "branch": "absent",
+        "cover_property": "absent",
+        "covergroup": "absent",
+        "expression": "absent",
+        "fsm": "absent",
+        "line": "reported",
+        "toggle": "absent",
+    }
 
 
 def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Path) -> None:
@@ -524,6 +587,27 @@ def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(
     assert [artifact.kind for artifact in result.artifacts] == ["raw_native"]
     assert [finding.code for finding in result.findings] == ["COV_WINDOW_HOOK_MISSING"]
     assert result.merge.status == "not_run"
+
+
+def test_unchanged_prior_hook_evidence_is_rejected_as_stale(tmp_path: Path) -> None:
+    request = _request(tmp_path, "post_reset", reset_included=False)
+    hook = request.artifact_root / "hooks" / "001-post_reset.json"
+    hook.parent.mkdir(parents=True)
+    hook.write_text(
+        json.dumps(
+            {
+                "$schema": "booley.coverage-hook/v1",
+                "run_id": "run:001:post_reset",
+                "events": [{"hook": "start", "sequence": 1, "success": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = collect(request, _GeneratedMainExecution())
+
+    assert result.status == "collector_error"
+    assert [finding.code for finding in result.findings] == ["COV_WINDOW_HOOK_MISSING"]
 
 
 @pytest.mark.parametrize(
@@ -606,6 +690,18 @@ def test_invalid_custom_main_hook_declarations_fail_before_execution(
     assert result.status == "collector_error"
     assert result.runs == ()
     assert [finding.code for finding in result.findings] == [expected_code]
+
+
+def test_non_custom_target_rejects_custom_main_hooks_before_execution(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, "generated", hooks=("write_hook",))
+
+    result = collect(request, _NoExecution())
+
+    assert result.status == "collector_error"
+    assert result.runs == ()
+    assert [finding.code for finding in result.findings] == ["COV_CUSTOM_MAIN_HOOK_FORBIDDEN"]
 
 
 def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) -> None:
@@ -713,6 +809,11 @@ def test_bad_native_merge_never_discards_per_run_evidence(
         selected_tests=(SelectedCoverageTest("reset"),),
         artifact_root=tmp_path / "campaign",
     )
+    if mode == "stale":
+        merged = request.artifact_root / "native" / "merged" / "coverage.dat"
+        merged.parent.mkdir(parents=True)
+        merged.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+        os.utime(merged, ns=(1, 1))
 
     result = collect(request, _BadMergeExecution(mode))
 
