@@ -107,9 +107,7 @@ def _tracked_paths_since(repository: Path, authoring_sha: str) -> set[str]:
         )
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-            raise AcceptanceBasisError(
-                f"git {' '.join(command)} failed in {repository}: {detail}"
-            )
+            raise AcceptanceBasisError(f"git {' '.join(command)} failed in {repository}: {detail}")
         paths.update(path for path in result.stdout.split("\0") if path)
     return paths
 

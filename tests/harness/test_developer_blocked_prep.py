@@ -160,8 +160,7 @@ def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
     )
     block = MagicMock()
     monkeypatch.setattr(
-        "booley.ticket_board.acceptance_validation."
-        "assert_ticket_worktree_inputs_unchanged",
+        "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
         validate,
     )
     monkeypatch.setattr(developer, "block_ticket", block)

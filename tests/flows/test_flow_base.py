@@ -192,8 +192,7 @@ class TestBooleyFlowExecution:
             load_basis,
         )
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
@@ -205,13 +204,10 @@ class TestBooleyFlowExecution:
         assert loaded_slugs == ["actual-ticket"]
 
         def reject_change(*_args, **_kwargs):
-            raise AcceptanceBasisError(
-                "acceptance-input-change-required: protected path changed"
-            )
+            raise AcceptanceBasisError("acceptance-input-change-required: protected path changed")
 
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             reject_change,
         )
         rejected = flow._pre_state_gate()
@@ -242,8 +238,7 @@ class TestBooleyFlowExecution:
             load_basis,
         )
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
@@ -286,8 +281,7 @@ class TestBooleyFlowExecution:
         )
         monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
         monkeypatch.setattr(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))

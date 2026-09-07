@@ -96,8 +96,7 @@ class TestMaterializedAcceptanceBasis:
 
         ctx = self._context(tmp_path)
         with patch(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             return_value=None,
         ) as validate:
             result = _validate_materialized_acceptance_basis(ctx, tmp_path)
@@ -112,8 +111,7 @@ class TestMaterializedAcceptanceBasis:
         from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 
         with patch(
-            "booley.ticket_board.acceptance_validation."
-            "assert_ticket_worktree_inputs_unchanged",
+            "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
             side_effect=AcceptanceBasisError(
                 "acceptance-input-change-required: protected input changed"
             ),

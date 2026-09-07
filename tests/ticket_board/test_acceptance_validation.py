@@ -87,9 +87,7 @@ def _project_with_projection(
     (project_dir / "tickets/board/drafts").mkdir(parents=True)
     (project_dir / "cores").mkdir()
     (root / ".gitignore").write_text("/.booley-projected-*.core\n", encoding="utf-8")
-    (project_dir / ".gitignore").write_text(
-        "/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8"
-    )
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text(
         "[flows]\n[stealth]\nenabled = true\n"
         f"ignore_native_cores = {str(ignore_native_cores).lower()}\n",
@@ -157,9 +155,7 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBas
     project_dir = root / ".booley_project"
     (project_dir / "tickets/board/drafts").mkdir(parents=True)
     (project_dir / "cores").mkdir()
-    (project_dir / ".gitignore").write_text(
-        "/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8"
-    )
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text(
         "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
         encoding="utf-8",

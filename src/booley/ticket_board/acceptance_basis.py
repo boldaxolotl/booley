@@ -1552,7 +1552,9 @@ def _repository_changed_paths(
             generated_commands,
             None,
         )
-        candidates = generated | reference_generated if include_reference_only_generated else generated
+        candidates = (
+            generated | reference_generated if include_reference_only_generated else generated
+        )
         generated = {
             path
             for path in candidates
