@@ -49,6 +49,9 @@ from mcp.types import (
 )
 from mcp.types import Tool as McpSdkTool
 
+if TYPE_CHECKING:
+    from booley.flows.invocation import BudgetPlan
+
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
@@ -3139,7 +3142,10 @@ async def _dispatch_booley_mcp_tool(
         module_path = mcp_tool_def.get("module_path") or f"booley.mcp.{module}"
         cmd = ["python", "-m", module_path, *argv]
 
-    mcp_tool_timeout = _mcp_tool_timeout_seconds(name, arguments, mcp_tool_def)
+    try:
+        mcp_tool_timeout = _mcp_tool_timeout_seconds(name, arguments, mcp_tool_def)
+    except ValueError as exc:
+        return [TextContent(type="text", text=f"ERROR: invalid Flow timeout: {exc}")]
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
     if name in _ASYNC_JOB_MCP_TOOLS:
@@ -3157,41 +3163,98 @@ async def _dispatch_booley_mcp_tool(
 
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:
     """Whole-campaign sim watchdog derived from its sequential work units."""
+    from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
     from booley.flows.sim.flow import (
         _TRACE_CLEANUP_MARGIN_S,
         _resolve_sim_campaign_work_units,
         _resolve_sim_timeout_ms,
     )
+    from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
     work_dir_raw = arguments.get("work_dir")
     work_dir = Path(work_dir_raw) if work_dir_raw else Path.cwd()
-    requested = arguments.get("timeout")
+    requested = requested_timeout_ms(arguments)
     if requested is None:
-        sim_seconds = max(1, _resolve_sim_timeout_ms(work_dir) // 1000)
+        timeout_ms = _resolve_sim_timeout_ms(work_dir)
     else:
-        try:
-            sim_seconds = max(1, int(requested) // 1000)
-        except (TypeError, ValueError):
-            return default
-
+        timeout_ms = resolve_timeout_ms("sim", None, requested)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
+    mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
     try:
         work_units = _resolve_sim_campaign_work_units(
             work_dir,
             raw_target,
             arguments.get("test"),
             arguments.get("skip"),
+            mode,
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
 
-    campaign_budget_s = sim_seconds * work_units
-    if _ticket_baseline_required("cycle_count_"):
-        campaign_budget_s *= 2
+    if mode is SimulationMode.SIMULATE and _ticket_baseline_required("cycle_count_"):
+        work_units *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
     call_margin_s = 0 if arguments.get("trace") else 30
-    return max(default, campaign_budget_s) + trace_margin_s + call_margin_s
+    return BudgetPlan(
+        timeout_ms=timeout_ms,
+        work_units=work_units,
+        setup_grace_per_unit_s=0,
+        finalize_grace_s=trace_margin_s + call_margin_s,
+        execution_floor_s=default,
+    ).outer_timeout_s
+
+
+def _target_count(arguments: dict[str, Any]) -> int:
+    """Count comma-separated selectors without resolving project state."""
+    raw_target = str(arguments.get("target") or "").strip()
+    return max(1, len([token for token in raw_target.split(",") if token.strip()]))
+
+
+def _implementation_budget_plan(
+    name: str,
+    arguments: dict[str, Any],
+    default: int,
+) -> BudgetPlan:
+    """Plan the pre-spawn watchdog for synthesis or FPGA implementation."""
+    from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
+
+    work_dir_raw = arguments.get("work_dir")
+    timeout_ms = resolve_timeout_ms(
+        name,
+        Path(work_dir_raw) if work_dir_raw else None,
+        requested_timeout_ms(arguments),
+    )
+    criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
+    has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(criterion_prefix)
+    work_units = _target_count(arguments) * (2 if has_baseline else 1)
+    return BudgetPlan(
+        timeout_ms=timeout_ms,
+        work_units=work_units,
+        setup_grace_per_unit_s=60,
+        finalize_grace_s=120,
+        outer_floor_s=default,
+    )
+
+
+def _lint_budget_plan(arguments: dict[str, Any], default: int) -> BudgetPlan:
+    """Plan one active timeout budget for every selected lint Target."""
+    from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
+
+    work_dir_raw = arguments.get("work_dir")
+    timeout_ms = resolve_timeout_ms(
+        "lint",
+        Path(work_dir_raw) if work_dir_raw else None,
+        requested_timeout_ms(arguments),
+    )
+    work_units = _target_count(arguments)
+    return BudgetPlan(
+        timeout_ms=timeout_ms,
+        work_units=work_units,
+        setup_grace_per_unit_s=0,
+        finalize_grace_s=30,
+        outer_floor_s=default,
+    )
 
 
 def _mcp_tool_timeout_seconds(
@@ -3211,41 +3274,10 @@ def _mcp_tool_timeout_seconds(
     name = canonical(name)
     default = int(mcp_tool_def.get("default_timeout") or 600)
     if name in {"synth", "fpga"}:
-        # Implementation-flow public timeouts are PER TARGET, while this
-        # watchdog owns the whole sequential matrix. Budget every selected
-        # target and both baseline/current passes, plus orchestration headroom.
-        if name == "synth":
-            from booley.flows.synth.flow import _resolve_synth_timeout_ms
+        return _implementation_budget_plan(name, arguments, default).outer_timeout_s
 
-            timeout_resolver = _resolve_synth_timeout_ms
-            criterion_prefix = "synthesis_ok_"
-        else:
-            from booley.flows.fpga.flow import _resolve_fpga_timeout_ms
-
-            timeout_resolver = _resolve_fpga_timeout_ms
-            criterion_prefix = "fpga_impl_ok_"
-
-        work_dir_raw = arguments.get("work_dir")
-        work_dir = Path(work_dir_raw) if work_dir_raw else None
-        try:
-            per_target_s = max(
-                1,
-                timeout_resolver(work_dir, arguments.get("timeout")) // 1000,
-            )
-        except Exception:  # noqa: BLE001 — malformed config is graded by the child
-            return default
-        raw_target = str(arguments.get("target") or "").strip()
-        target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
-        has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(
-            criterion_prefix
-        )
-        pass_count = target_count * (2 if has_baseline else 1)
-        setup_margin_s = 60 * pass_count
-        finalize_margin_s = 120
-        return max(
-            default,
-            per_target_s * pass_count + setup_margin_s + finalize_margin_s,
-        )
+    if name == "lint":
+        return _lint_budget_plan(arguments, default).outer_timeout_s
 
     if name != "sim":
         return default

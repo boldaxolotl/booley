@@ -241,7 +241,7 @@ owns the exact simulation keys and defaults, while its
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
-(debug-only; never a pass/fail source), `--timeout`, and `--dry-run` resolve
+(debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
 **Pre-Run Commands** (`[flows.sim].pre_run_commands`) are the one
@@ -349,14 +349,14 @@ logs. A trace that fails to materialize downgrades a passing run to
 
 ## Simulation Elaboration Check
 
-`sim --elab-only` (alias `--build-only`) compiles, elaborates, and links the
+`sim --mode elab-only` compiles, elaborates, and links the
 ordinary untraced simulator image without running tests. It skips Pre-Run
 Commands, Cocotb Python import/execution, test selection, run guards, sentinels,
 and tracing. Because it uses the normal Simulation work root and build policy,
 a later full simulation can reuse the retained image.
 
-Only Simulation Targets are eligible. `--standalone` is an optional stronger
-module sweep and must be paired with `--elab-only`. The mode rejects run-only
+Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
+cumulative stronger module sweep. Both elaboration modes reject run-only
 arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
 `--no-kill`.
 
@@ -370,7 +370,8 @@ record before the run half begins. A later runtime failure, timeout, OOM, or
 signal cannot erase a successful elaboration result. Setup or Pre-Run Command
 failure before the build leaves the elaboration Criterion unchanged.
 
-Elab-only reports stay in the Simulation namespace with `mode: "elab_only"`.
+Elaboration reports stay in the Simulation namespace with canonical mode values
+`elab_only` or `elab_only_standalone`.
 Complete build logs are archived beneath the invocation report directory (or a
 unique log directory under the Simulation work root for a bare CLI run), while
 the shared build cache remains mutable and reusable.
@@ -410,8 +411,8 @@ edit lands in the diff like any other change, where ticket Scope and the
 Reviewer agent ([CONTEXT.md](../CONTEXT.md)) are the control.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
-*and* the Criteria counts with them), `--dry-run`, and `--timeout` (ms, default
-120000).
+*and* the Criteria counts with them), `--dry-run`, and `--timeout-ms` (positive
+integer milliseconds; `[flows.lint].timeout_ms` fallback; default 120000).
 
 ### Verdict semantics
 

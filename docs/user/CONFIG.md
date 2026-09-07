@@ -149,11 +149,12 @@ or revoked authority fails closed before Flow execution.
 
 ### Lint (`[flows.lint]`)
 
-Beyond the shared `enabled` setting, lint takes an optional
-`warnings_as_errors` (default `true`):
+Beyond the shared `enabled` and positive-integer `timeout_ms` settings, lint
+takes an optional `warnings_as_errors` (default `true`):
 
 ```toml
 [flows.lint]
+timeout_ms = 120000
 warnings_as_errors = false
 ```
 
@@ -292,7 +293,7 @@ writing to the same place under two different names. Prefer the variable.
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-run commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands share the per-test
-timeout budget (`timeout_ms` / `--timeout`), `--dry-run` previews them in
+timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
 their real position, and `booley doctor` validates the shape and notes when
 they're configured.
 
@@ -536,11 +537,14 @@ design as success.
 
 ### Elaboration Check (`[flows.sim]`)
 
-`booley flow sim --target <sim-target> --elab-only` compiles, elaborates, and
+`booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
 without running Pre-Run Commands, simulator tests, Cocotb Python, or tracing.
-`--build-only` is an equivalent permanent alias. Only simulation Targets are
-eligible; synthesis Targets belong to `synth`.
+Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
+and then sweep every RTL module from its declaring file. `--elab-only` and
+`--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
+aliases. Only simulation Targets are eligible; synthesis Targets belong to
+`synth`.
 
 ```toml
 [flows.sim]

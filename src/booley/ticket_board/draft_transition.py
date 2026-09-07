@@ -27,6 +27,12 @@ from booley.runtime.project_dir import (
     runtime_dir,
 )
 from booley.runtime.ticket_repositories import resolve_inner_project_repo, ticket_project_worktree
+from booley.runtime.worktree_relocation import (
+    WorktreeMove,
+    WorktreeRelocationError,
+    preflight_worktree_moves,
+    relocate_worktree,
+)
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis
 from .frontmatter import format_frontmatter, parse_frontmatter
@@ -319,15 +325,63 @@ def _move_worktree(repository: Path, ref: str, destination: Path) -> None:
     source = _worktree_for_ref(repository, ref)
     if source.resolve() == destination.resolve():
         return
-    if destination.exists():
+    if source.exists() and destination.exists():
         raise DraftTransitionError(f"worktree destination already exists: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    _git(repository, "worktree", "move", str(source), str(destination))
+    try:
+        relocate_worktree(repository, ref, source, destination)
+    except WorktreeRelocationError as exc:
+        raise DraftTransitionError(str(exc)) from exc
 
 
 def _move_worktree_if_present(repository: Path, ref: str, destination: Path) -> None:
     if _find_worktree_for_ref(repository, ref) is not None:
         _move_worktree(repository, ref, destination)
+
+
+def _preflight_relocation(
+    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+) -> None:
+    operation = _operation_dir(root, journal.operation_id)
+    canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
+    project_repository = resolve_inner_project_repo(root)
+    old_outer = basis.participant("outer")
+    new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
+    moves: list[WorktreeMove] = []
+    old_outer_path = _find_worktree_for_ref(root, old_outer.ticket_ref)
+    if old_outer_path is not None:
+        moves.append(
+            WorktreeMove(root, old_outer.ticket_ref, old_outer_path, operation / "old-outer")
+        )
+    new_outer_path = _worktree_for_ref(root, new_ref)
+    moves.append(WorktreeMove(root, new_ref, new_outer_path, canonical_outer))
+    if journal.has_project:
+        if project_repository is None:
+            raise DraftTransitionError("paired project repository is unavailable")
+        old_project_path = _find_worktree_for_ref(
+            project_repository, basis.participant("project").ticket_ref
+        )
+        if old_project_path is not None:
+            moves.append(
+                WorktreeMove(
+                    project_repository,
+                    basis.participant("project").ticket_ref,
+                    old_project_path,
+                    operation / "old-project",
+                )
+            )
+        new_project_path = _worktree_for_ref(project_repository, new_ref)
+        moves.append(
+            WorktreeMove(
+                project_repository,
+                new_ref,
+                new_project_path,
+                operation / "new-project-moving",
+            )
+        )
+    try:
+        preflight_worktree_moves(tuple(moves))
+    except WorktreeRelocationError as exc:
+        raise DraftTransitionError(str(exc)) from exc
 
 
 def _relocate_worktrees(
@@ -338,9 +392,11 @@ def _relocate_worktrees(
     project_repository = resolve_inner_project_repo(root)
     old_outer = basis.participant("outer")
     new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
+    if journal.has_project and project_repository is None:
+        raise DraftTransitionError("paired project repository is unavailable")
+    _preflight_relocation(root, journal, basis)
     if journal.has_project:
-        if project_repository is None:
-            raise DraftTransitionError("paired project repository is unavailable")
+        assert project_repository is not None
         old_project = basis.participant("project")
         _move_worktree_if_present(
             project_repository, old_project.ticket_ref, operation / "old-project"

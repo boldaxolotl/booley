@@ -48,6 +48,7 @@ from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
+from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
@@ -575,6 +576,7 @@ class MutationRunPlan:
     scope_hashes: dict[str, str]
     work_dir: Path
     target: str
+    tb_top: str
     report_dir: Path | None
     min_detected: int
     count: int
@@ -646,6 +648,8 @@ class MutationTesterSpecialist(Specialist):
         "tester builds isolated variants"
     )
     code_modifying: bool = False
+    target_required: bool = True
+    non_persisting_dry_run: bool = True
     announce_success_report: bool = True
     min_model: str = "standard"
     default_timeout: int = 1800
@@ -659,31 +663,9 @@ class MutationTesterSpecialist(Specialist):
     MAX_VERIFICATION_ROUNDS: ClassVar[int] = 3
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--scope",
-            default=None,
-            help="Comma-separated RTL files to mutate; defaults from the Target criterion",
-        )
-        parser.add_argument(
-            "--tb-top",
-            default=None,
-            help="Testbench top module name. Defaults to the resolved sim Target's toplevel.",
-        )
-        parser.add_argument(
-            "--dut-top",
-            default=None,
-            help="Optional DUT top hint included in the read-only creator prompt.",
-        )
-        parser.add_argument(
-            "--dut-files",
-            nargs="+",
-            default=None,
-            help=(
-                "DUT source files (space-separated). Optional: defaults to the "
-                "RTL (non-tb) source files of the --target Target, resolved from "
-                "the .core in either mode. Pass explicitly only to override that "
-                "or when the Target cannot be resolved."
-            ),
+        self._add_scope_arg(
+            parser,
+            help_text="Comma-separated RTL files eligible for mutation",
         )
 
         def _count_type(v: str) -> int | str:
@@ -705,16 +687,11 @@ class MutationTesterSpecialist(Specialist):
                 "accept a partial mutation score."
             ),
         )
-        parser.add_argument(
-            "--steer",
-            default=None,
-            help="Developer Agent context for mutation targeting",
+        self._add_steer_arg(
+            parser,
+            help_text="Developer Agent context for mutation targeting.",
         )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Compute the source-size budget without running mutations",
-        )
+        self._add_dry_run_arg(parser)
         parser.add_argument(
             "--regen-lock",
             action="store_true",
@@ -741,8 +718,9 @@ class MutationTesterSpecialist(Specialist):
         scope_str = ", ".join(scope_files)
         count = self.args.count
         steer_section = ""
-        if self.args.steer:
-            steer_section = f"\n## Developer Agent Context\n\n{self.args.steer}\n"
+        steer_text = self.steering_text()
+        if steer_text:
+            steer_section = f"\n## Developer Agent Context\n\n{steer_text}\n"
 
         boundary_section = self._mutation_boundary_section()
         task_section = self._creator_task_section(count)
@@ -796,20 +774,19 @@ variant, runs the complete Target suite, and restores the pristine bytes. The
 untouched project—not a selector branch—is the campaign baseline."""
 
     def _mutation_boundary_section(self) -> str:
-        top = self._dut_top_module()
         files = self._dut_files()
-        if not top and not files:
+        if not files:
             return ""
         lines = ["\n## Mutation Boundary\n"]
-        if top:
-            lines.append(f"- Top module: `{top}`")
-        if files:
-            lines.append(f"- DUT files: {', '.join(files)}")
+        lines.append(f"- Target RTL closure: {', '.join(files)}")
+        lines.append("- Mutation proposals remain limited to the declared RTL scope above.")
         lines.append("")
         return "\n".join(lines)
 
     def _build_retry_prompt(self, outcome: VerificationOutcome) -> str:
         """Ask for a complete replacement proposal list after validation fails."""
+        steer = self.steering_text()
+        steer_section = f"\nDeveloper Agent context:\n{steer}\n" if steer else ""
         return f"""Your mutation proposals failed exact replacement validation or
 isolated compilation.
 
@@ -820,6 +797,7 @@ Diagnostic tail:
 ```
 {outcome.log_tail}
 ```
+{steer_section}
 
 Do not edit any file. Return a complete fresh JSON mutation list. Every
 `original_code` must be copied exactly from the declared starting line, every
@@ -846,8 +824,18 @@ replacement must differ, and every proposal must remain a single source edit.
                 self.satisfies,
                 self.state.criteria,
                 explicit_scope=self.args.scope,
+                enforce_scope_match=(
+                    self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
+                ),
             )
-        except CampaignScopeError:
+        except CampaignScopeError as exc:
+            if exc.reason == "mismatch":
+                return McpToolResult(
+                    exit_code=EXIT_FAILURE,
+                    report_text=(
+                        "mutation_tester: --scope does not match the sealed Target criterion scope"
+                    ),
+                )
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
@@ -888,9 +876,8 @@ replacement must differ, and every proposal must remain a single source edit.
         subprocess-free ``.core`` read, <1s) turns that into an instant,
         self-correcting error with a "did you mean" hint.
 
-        Fails open (returns ``None``) when the target can't be resolved or its
-        source list is empty — Interactive-Mode ``--dut-files`` invocations author
-        no ``.core``, and must keep running.
+        Fails open (returns ``None``) when the Target cannot be resolved or its
+        source list is empty; downstream Target validation then reports the error.
         """
         target = getattr(self.args, "target", "") or ""
         if not target:
@@ -919,18 +906,8 @@ replacement must differ, and every proposal must remain a single source edit.
             )
         return None
 
-    def _dut_top_module(self) -> str:
-        """Return an explicit top hint without inspecting HDL syntax."""
-        return getattr(self.args, "dut_top", None) or ""
-
     def _dut_files(self) -> list[str]:
-        """Resolve DUT source files exposed as creator prompt context.
-
-        Priority: explicit ``--dut-files`` arg (Interactive Mode) > the RTL
-        (non-``tb``) source files of the resolved sim Target, read straight from
-        the ``.core`` (ADR 0022 dec 13). The ``.core`` read is used rather than a
-        resolved Target to keep this lookup subprocess-free. Empty list when
-        neither is available.
+        """Resolve the Target RTL closure exposed as creator context.
 
         The read spans the ``depend`` closure, not just the root core's own
         filesets. In a layered repo the sim Target's root fileset owns the
@@ -939,12 +916,6 @@ replacement must differ, and every proposal must remain a single source edit.
         instantiates it — so a root-only read finds no DUT at all and
         mutation fails before injection (F-27).
         """
-        explicit = getattr(self.args, "dut_files", None)
-        if explicit:
-            return [
-                fusesoc_registry.canonical_project_path(self.args.work_dir, path)
-                for path in explicit
-            ]
         target = getattr(self.args, "target", "") or ""
         if not target:
             return []
@@ -955,12 +926,7 @@ replacement must differ, and every proposal must remain a single source edit.
             return []
 
     def _validate_interactive_args(self) -> McpToolResult | None:
-        """Reject invocations whose Target or mutation scope is incomplete.
-
-        ``--tb-top`` is waived for a Cocotb Target: its binary is ``Vtop`` and
-        the testbench is a Python module, so there is no SV testbench top to
-        name and demanding one blocks an otherwise runnable Target (SETUP-F-40).
-        """
+        """Validate that the selected Target can run a mutation campaign."""
         target = getattr(self.args, "target", "") or ""
         if not target.strip():
             return McpToolResult(
@@ -973,17 +939,9 @@ replacement must differ, and every proposal must remain a single source edit.
             )
         try:
             self._validate_target_runner(target, self.args.work_dir)
-            is_cocotb = self.cocotb_target(target, self.args.work_dir) is not None
+            self.cocotb_target(target, self.args.work_dir)
         except UnsupportedSimTargetError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
-        if not is_cocotb and not getattr(self.args, "tb_top", None):
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "mutation_tester: --tb-top is required when running "
-                    "outside a ticket (testbench top module, e.g. 'tb')."
-                ),
-            )
         return None
 
     # ------------------------------------------------------------------
@@ -1040,28 +998,78 @@ replacement must differ, and every proposal must remain a single source edit.
         scope_files = self._scope_files()
         if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
             return validation_error
+        try:
+            tb_top = tb_top_for_target(target, work_dir, resolved=None)
+        except (OSError, fusesoc_registry.FuseSocError) as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation_tester: could not derive Target toplevel: {exc}",
+            )
+        if not tb_top:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="mutation_tester: selected Target does not declare a toplevel",
+            )
         count, source_size_budget, formula_count, auto_mode = self._resolve_count(
             scope_files,
             work_dir,
         )
-        if getattr(self.args, "dry_run", False):
-            budget = source_size_budget or compute_source_size_budget(scope_files, work_dir)
-            output = json.dumps(budget, indent=2)
-            print(output)
-            return McpToolResult(exit_code=EXIT_SUCCESS, report_text=output)
-        self.args.count = count
-        return MutationRunPlan(
+        min_detected = self.args.min_detected if self.args.min_detected is not None else count
+        if count_error := self._validate_count(count, min_detected):
+            return count_error
+        plan = MutationRunPlan(
             scope_files=scope_files,
             scope_hashes=lock_mod.compute_scope_hashes(scope_files, work_dir),
             work_dir=work_dir,
             target=target,
+            tb_top=tb_top,
             report_dir=self.args.report_dir,
-            min_detected=(self.args.min_detected if self.args.min_detected is not None else count),
+            min_detected=min_detected,
             count=count,
             auto_mode=auto_mode,
             formula_count=formula_count,
             source_size_budget=source_size_budget,
         )
+        if getattr(self.args, "dry_run", False):
+            return self._dry_run_preview(plan)
+        self.args.count = count
+        return plan
+
+    def _dry_run_preview(self, plan: MutationRunPlan) -> McpToolResult:
+        """Describe the validated mutation campaign without executing it."""
+        budget = plan.source_size_budget or compute_source_size_budget(
+            plan.scope_files,
+            plan.work_dir,
+        )
+        summary = (
+            f"mutation_tester dry-run: target={plan.target}; "
+            f"scope={len(plan.scope_files)} file(s); top={plan.tb_top}; "
+            f"count={plan.count}; min_detected={plan.min_detected}"
+        )
+        return self._dry_run_result(
+            summary=summary,
+            detail={
+                "target": plan.target,
+                "scope": plan.scope_files,
+                "tb_top": plan.tb_top,
+                "rtl_closure": self._dut_files(),
+                "tests": [unit.display_name for unit in self._target_campaign.execution_units()],
+                "count": plan.count,
+                "min_detected": plan.min_detected,
+                "source_size_budget": budget,
+            },
+        )
+
+    @staticmethod
+    def _validate_count(count: int, min_detected: int) -> McpToolResult | None:
+        if count <= 0:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text="--count must be positive")
+        if min_detected < 0 or min_detected > count:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="--min-detected must be between 0 and --count",
+            )
+        return None
 
     def _validate_run_inputs(
         self,
@@ -1069,6 +1077,11 @@ replacement must differ, and every proposal must remain a single source edit.
         work_dir: Path,
         scope_files: list[str],
     ) -> McpToolResult | None:
+        if len([part for part in target.split(",") if part.strip()]) != 1:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="mutation_tester: --target must select exactly one Target",
+            )
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
         try:
@@ -1392,7 +1405,7 @@ replacement must differ, and every proposal must remain a single source edit.
             plan.target,
             plan.work_dir,
             build_path,
-            self.args.tb_top,
+            plan.tb_top,
         )
         output = self._suite_output(runs)
         self._persist_baseline_log(output)
@@ -2193,7 +2206,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 plan.target,
                 plan.work_dir,
                 build_path,
-                self.args.tb_top,
+                plan.tb_top,
             )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)

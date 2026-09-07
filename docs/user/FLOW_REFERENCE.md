@@ -37,7 +37,10 @@ Common controls:
   requires it when the Flow/Target pair is outside the Acceptance Basis.
 - `--dry-run` validates inputs and previews commands or resolved build inputs,
   depending on the Flow, without running the EDA tool.
-- `--timeout <milliseconds>` bounds execution when the Flow exposes a timeout.
+- `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
+  work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
+  workload-specific default. Queue time is not charged. The old `--timeout`
+  spelling remains a deprecated CLI-only alias for one compatibility window.
 - `booley flow <name> --help` is the authoritative argument list.
 
 ## Shared result contract
@@ -96,10 +99,13 @@ selects Verilator or Icarus and whether the testbench is HDL or cocotb.
 
 Useful controls:
 
-- `--elab-only` compiles, elaborates, and links the ordinary untraced simulator
-  image without running tests. `--build-only` is an equivalent alias.
-- `--standalone` adds the stronger reusable-module sweep and requires
-  `--elab-only`.
+- `--mode simulate` builds and runs selected tests (the default).
+- `--mode elab-only` compiles, elaborates, and links the ordinary untraced
+  simulator image without running tests.
+- `--mode elab-only-standalone` performs ordinary Target elaboration first,
+  then adds the stronger reusable-module sweep.
+- `--elab-only`, `--build-only`, and their combination with `--standalone`
+  remain deprecated CLI-only aliases for one compatibility window.
 - `--test <substring>` selects every registered test whose name contains the
   substring. For a Target with no registered test list, the value is passed
   through as the test name.
@@ -145,7 +151,7 @@ Structured output (`sim_<target>.json`):
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
 Elaboration Check structured output uses the same `sim_<target>.json` name and
-sets `mode` to `elab_only`:
+sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
 
 | Field | Contents |
 |---|---|
@@ -154,7 +160,7 @@ sets `mode` to `elab_only`:
 | `compile_command`, `fileset` | Generated build command and resolved `rtl`/`tb` source lists when setup succeeded. |
 | `log` | Complete archived build log. |
 
-When `--standalone` is requested, the invocation report also carries
+When `mode=elab_only_standalone` is requested, the invocation report also carries
 `detail.standalone` with `modules_checked`, `shared_files`, `frontend`,
 `failures`, optional `unparsed` modules, and the standalone log pointer.
 The sweep can satisfy `elaborate_standalone`; an unavailable or untrustworthy

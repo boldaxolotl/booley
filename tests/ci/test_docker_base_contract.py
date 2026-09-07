@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import docker_base_contract
+from booley.runtime import docker_base_contract
 
 _SCRIPT = Path(".github/scripts/docker_base_contract.py").resolve()
 _MANIFEST = Path("src/booley/data/docker/stable-base-inputs.txt")

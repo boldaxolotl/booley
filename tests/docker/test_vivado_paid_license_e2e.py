@@ -25,8 +25,8 @@ from tests.license_evidence import (
 from booley.eda.provisioning import authority, runtime_spec
 from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.harness import devcontainer as dc
-from booley.harness import session_runtime
+from booley.runtime import devcontainer as dc
+from booley.runtime import session_runtime
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_mount_poc"
 _PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$")

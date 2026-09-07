@@ -20,8 +20,9 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.eda.provisioning import runtime_spec
-from booley.harness import devcontainer as dc
-from booley.harness import session_runtime as sr
+from booley.runtime import devcontainer as dc
+from booley.runtime import session_runtime as sr
+from booley.runtime import session_spec
 
 
 @pytest.fixture
@@ -990,7 +991,7 @@ def _write_spec(workspace: Path, spec: dict) -> None:
 @pytest.fixture
 def wired(workspace: Path, request: pytest.FixtureRequest):
     """A workspace with a spec on disk and mocked external boundaries."""
-    from booley.harness import image_lifecycle
+    from booley.runtime import image_lifecycle
 
     _write_spec(workspace, _spec())
     lifecycle_reconcile = (
@@ -1576,7 +1577,7 @@ class TestRefreshContainerTransactions:
 
     def test_validate_blocks_while_refresh_recovery_is_pending(self, tmp_path: Path):
         with (
-            patch("booley.harness.session_refresh.has_pending_refresh", return_value=True),
+            patch("booley.runtime.session_refresh.has_pending_refresh", return_value=True),
             patch.object(sr, "_load_spec") as load_spec,
             pytest.raises(sr.SessionError, match="recovery is pending"),
         ):
@@ -1668,7 +1669,7 @@ class TestUp:
         wired,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley.harness import image_lifecycle
+        from booley.runtime import image_lifecycle
 
         workspace, _run = wired
         project_dir = workspace / ".booley_project"
@@ -2511,11 +2512,10 @@ class TestImageDriftWarning:
     def test_pinned_digest_matching_configured_tag_is_silent(
         self, workspace: Path, caplog, monkeypatch
     ):
-        from booley.harness import init_cmd
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            init_cmd, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
         )
         monkeypatch.setattr(
             sr.idk,
@@ -2530,11 +2530,10 @@ class TestImageDriftWarning:
     def test_pinned_digest_different_from_configured_tag_warns(
         self, workspace: Path, caplog, monkeypatch
     ):
-        from booley.harness import init_cmd
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            init_cmd, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
         )
         monkeypatch.setattr(
             sr.idk,
@@ -2574,7 +2573,7 @@ class TestStaleBooleyBakeWarning:
     stay silent."""
 
     def test_mismatch_warns_and_names_the_fix(self, workspace, caplog):
-        from booley.harness import image_lifecycle
+        from booley.runtime import image_lifecycle
 
         result = image_lifecycle.LifecycleResult(
             "booley-sandbox", "sha256:old", image_lifecycle.Status.STALE
@@ -2590,7 +2589,7 @@ class TestStaleBooleyBakeWarning:
         assert "booley session refresh" in caplog.text
 
     def test_external_image_is_silent(self, workspace, caplog):
-        from booley.harness import image_lifecycle
+        from booley.runtime import image_lifecycle
 
         result = image_lifecycle.LifecycleResult(
             "custom/image", None, image_lifecycle.Status.EXTERNAL
@@ -2600,7 +2599,7 @@ class TestStaleBooleyBakeWarning:
         assert "stale Booley code" not in caplog.text
 
     def test_match_is_silent(self, workspace, caplog):
-        from booley.harness import image_lifecycle
+        from booley.runtime import image_lifecycle
 
         result = image_lifecycle.LifecycleResult(
             "booley-sandbox", "sha256:new", image_lifecycle.Status.CURRENT
@@ -2981,8 +2980,8 @@ class TestRunProjectCommand:
             ),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.harness.runtime_attachment.run_command") as run,
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.runtime_attachment.run_command") as run,
         ):
             run.return_value = SimpleNamespace(exit_code=0)
             assert sr.run_project_command(workspace, command, tty=True) == 0
@@ -3004,8 +3003,8 @@ class TestRunProjectCommand:
             patch.object(sr, "_strict_running_interactive_states", return_value=[]),
             patch.object(sr, "_run_up_transaction") as start,
             patch.object(sr, "_warn_on_stale_session_containers"),
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.harness.runtime_attachment.run_command") as run,
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.runtime_attachment.run_command") as run,
         ):
             run.return_value = SimpleNamespace(exit_code=0)
             assert sr.run_project_command(workspace, command, tty=False) == 0
@@ -3037,8 +3036,8 @@ class TestRunProjectCommand:
             patch.object(sr, "_strict_running_interactive_states", return_value=running),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.harness.runtime_attachment.run_command") as run,
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.runtime_attachment.run_command") as run,
         ):
             run.return_value = SimpleNamespace(exit_code=0)
             assert sr.run_project_command(workspace, ["claude", "setup-token"]) == 0
@@ -3056,7 +3055,7 @@ class TestRunProjectCommand:
                 side_effect=sr.SessionError("recovered interrupted refresh"),
             ) as recover,
             patch.object(sr, "_select_or_start_project_runtime", select),
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             pytest.raises(sr.SessionError, match="recovered interrupted refresh"),
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
@@ -3069,7 +3068,7 @@ class TestRunProjectCommand:
         workspace: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley.harness import lifecycle_lock
+        from booley.runtime import lifecycle_lock
 
         probe = _ParallelEnterProbe(self.COMMAND_ENV)
 
@@ -3084,7 +3083,7 @@ class TestRunProjectCommand:
         monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
         monkeypatch.setattr(sr, "_select_or_start_project_runtime", probe.select_runtime)
         monkeypatch.setattr(
-            "booley.harness.runtime_attachment.run_command",
+            "booley.runtime.runtime_attachment.run_command",
             probe.run_command,
         )
 
@@ -3111,7 +3110,7 @@ class TestRunProjectCommand:
             ),
             patch.object(sr, "_container_matches_issuance", return_value=False),
             patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             pytest.raises(sr.SessionError, match="does not match the current host issuance"),
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
@@ -3130,7 +3129,7 @@ class TestRunProjectCommand:
             patch.object(sr, "_strict_running_interactive_states", return_value=running),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             pytest.raises(sr.SessionError, match="multiple running Session Runtimes"),
         ):
             sr.run_project_command(workspace, ["claude", "setup-token"])
@@ -3145,9 +3144,9 @@ class TestRunProjectCommand:
                 return_value=("runtime", self.COMMAND_ENV),
             ),
             patch.object(sr, "_recover_before_lifecycle"),
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch(
-                "booley.harness.runtime_attachment.run_command",
+                "booley.runtime.runtime_attachment.run_command",
                 side_effect=OSError("docker disappeared"),
             ),
             pytest.raises(sr.SessionError, match=r"could not attach.*docker disappeared"),
@@ -3177,8 +3176,8 @@ class TestEnterAlwaysSetsTERM:
                 return_value=("booley-session-x", {}),
             ),
             patch.object(sr, "_recover_before_lifecycle"),
-            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
-            patch("booley.harness.runtime_attachment.run_command") as run,
+            patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.runtime.runtime_attachment.run_command") as run,
             patch.dict(sr.os.environ, env, clear=(term_env is None)),
         ):
             run.return_value = SimpleNamespace(exit_code=0)
@@ -3232,7 +3231,7 @@ class TestSessionRefresh:
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import auto_doctor, booley, session_refresh
         from booley.harness.booley import _build_parser
-        from booley.harness.image_lifecycle import LifecycleResult, Status
+        from booley.runtime.image_lifecycle import LifecycleResult, Status
 
         args = _build_parser().parse_args(["session", "refresh"])
         result = LifecycleResult("booley-sandbox", "sha256:fresh", Status.CHANGED)
@@ -3297,21 +3296,20 @@ class TestSessionRefresh:
         args = _build_parser().parse_args(["session", "refresh"])
         with (
             patch.object(
-                sr,
-                "strict_conflicting_vscode_session",
-                return_value="vscode-owned",
-            ),
-            patch.object(session_refresh, "inspect_refreshable_session_image") as refresh,
+                session_refresh,
+                "refresh",
+                side_effect=sr.SessionError("VS Code owns Session Runtime 'vscode-owned'"),
+            ) as refresh,
         ):
             assert booley._cmd_session(args, tmp_path) == 2
 
-        refresh.assert_not_called()
+        refresh.assert_called_once_with(tmp_path, verbose=False)
 
     def test_refresh_runs_host_bootstrap_then_rebuilds_selected_flavor(
         self, tmp_path: Path, monkeypatch
     ):
         from booley.harness import bootstrap, init_cmd
-        from booley.harness.image_lifecycle import (
+        from booley.runtime.image_lifecycle import (
             Intent,
             LifecycleResult,
             ProjectImageScope,
@@ -3360,7 +3358,7 @@ class TestSessionRefresh:
 
     def test_refresh_fails_when_host_bootstrap_cannot_converge(self, tmp_path: Path, monkeypatch):
         from booley.harness import bootstrap, init_cmd
-        from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
+        from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 
         monkeypatch.setattr(
             init_cmd,
@@ -3387,7 +3385,7 @@ class TestSessionRefresh:
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
-        from booley.harness.image_lifecycle import LifecycleResult, Status
+        from booley.runtime.image_lifecycle import LifecycleResult, Status
 
         monkeypatch.setattr(
             init_cmd,
@@ -3420,10 +3418,10 @@ class TestSessionRefresh:
             ),
         )
 
-        snapshot = init_cmd.capture_session_spec(tmp_path)
+        snapshot = session_spec.capture_session_spec(tmp_path)
         spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
         stamp_path.write_text("new stamp\n", encoding="utf-8")
-        init_cmd.restore_session_spec(tmp_path, snapshot)
+        session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == old_spec
         assert stamp_path.read_bytes() == b"old stamp\n"
@@ -3448,12 +3446,12 @@ class TestSessionRefresh:
                 argv, 1, stdout="", stderr="tag failed"
             ),
         )
-        snapshot = init_cmd.capture_session_spec(tmp_path)
+        snapshot = session_spec.capture_session_spec(tmp_path)
         spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
         stamp_path.write_text("new stamp\n", encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="Session Image keeper: tag failed"):
-            init_cmd.restore_session_spec(tmp_path, snapshot)
+            session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == old_spec
         assert stamp_path.read_bytes() == b"old stamp\n"
@@ -3463,7 +3461,7 @@ class TestSessionRefresh:
 
         spec_path = tmp_path / "devcontainer.json"
         stamp_path = tmp_path / "stamp.json"
-        snapshot = init_cmd.SessionSpecSnapshot(
+        snapshot = session_spec.SessionSpecSnapshot(
             spec_path,
             b"old spec",
             0o644,
@@ -3479,15 +3477,14 @@ class TestSessionRefresh:
         monkeypatch.setattr(init_cmd.subprocess, "run", missing_docker)
 
         with pytest.raises(RuntimeError, match="Session Image keeper: docker missing"):
-            init_cmd.restore_session_spec(tmp_path, snapshot)
+            session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == b"old spec"
         assert stamp_path.read_bytes() == b"old stamp"
 
     def test_snapshot_file_failures_are_aggregated(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
 
-        snapshot = init_cmd.SessionSpecSnapshot(
+        snapshot = session_spec.SessionSpecSnapshot(
             tmp_path / "devcontainer.json",
             b"old spec",
             0o644,
@@ -3497,10 +3494,10 @@ class TestSessionRefresh:
             None,
         )
         restore = Mock(side_effect=[OSError("spec busy"), None])
-        monkeypatch.setattr(init_cmd, "_restore_snapshot_file", restore)
+        monkeypatch.setattr(session_spec, "_restore_snapshot_file", restore)
 
         with pytest.raises(RuntimeError, match="Session spec: spec busy"):
-            init_cmd.restore_session_spec(tmp_path, snapshot)
+            session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert restore.call_count == 2
 

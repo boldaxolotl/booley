@@ -58,7 +58,6 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_projected_cores,
 )
-from booley.harness import devcontainer as dc
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -67,7 +66,6 @@ from booley.harness import devcontainer as dc
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
 from booley.harness import doctor_stamp, nangate_pdk
-from booley.harness import interactive_docker as idk
 from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
@@ -125,6 +123,8 @@ from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token
+from booley.runtime import devcontainer as dc
+from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
@@ -941,7 +941,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
     """
     # Deferred import: session_runtime is the container-lifecycle module and it
     # imports back into init_cmd (project_sandbox_image), so keep it lazy.
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     for name in sr.sessions_on_stale_image(ctx.project_root, image):
         warn(
@@ -1078,34 +1078,6 @@ def _step_image_lifecycle(
 # ---------------------------------------------------------------------------
 
 
-def project_sandbox_image(project_root: Path) -> str:
-    """Return the project-selected sandbox image, or the base image.
-
-    Public: this is what the generated devcontainer spec's ``image`` is derived
-    from, so ``booley session up`` compares against it to detect spec-vs-toml
-    image drift (F-6).
-    """
-    try:
-        project_dir = resolve_project_dir(project_root)
-    except FileNotFoundError:
-        return DOCKER_IMAGE
-    toml_path = project_dir / "booley.toml"
-    if not toml_path.is_file():
-        return DOCKER_IMAGE
-    try:
-        with toml_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return DOCKER_IMAGE
-    raw = data.get("sandbox", {}).get("image", "")
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    dockerfile = project_dir / "docker" / "Dockerfile"
-    if dockerfile.is_file():
-        return pi.project_image_name(project_root)
-    return DOCKER_IMAGE
-
-
 def inspect_refreshable_session_image(
     project_root: Path, *, verbose: bool = False
 ) -> LifecycleResult:
@@ -1168,114 +1140,6 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
         raise RuntimeError("Session Runtime spec reissuance failed: " + "; ".join(failures))
 
 
-@dataclass(frozen=True)
-class SessionSpecSnapshot:
-    """Recoverable host-spec state retained across a runtime replacement."""
-
-    spec_path: Path
-    spec_content: bytes | None
-    spec_mode: int
-    stamp_path: Path
-    stamp_content: bytes | None
-    stamp_mode: int
-    image_id: str | None
-
-
-def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
-    """Capture the spec, issuance stamp, and prior immutable image identity."""
-    from booley.eda.provisioning import runtime_spec
-
-    spec_path = dc.devcontainer_path(project_root)
-    stamp_path = runtime_spec.stamp_path(project_root)
-    spec_content = spec_path.read_bytes() if spec_path.is_file() else None
-    stamp_content = stamp_path.read_bytes() if stamp_path.is_file() else None
-    image_id = None
-    if spec_content is not None:
-        try:
-            raw_image = json.loads(spec_content).get("image")
-        except (json.JSONDecodeError, AttributeError):
-            raw_image = None
-        if isinstance(raw_image, str) and raw_image.startswith("sha256:"):
-            image_id = raw_image
-    return SessionSpecSnapshot(
-        spec_path,
-        spec_content,
-        stat.S_IMODE(spec_path.stat().st_mode) if spec_content is not None else 0o644,
-        stamp_path,
-        stamp_content,
-        stat.S_IMODE(stamp_path.stat().st_mode) if stamp_content is not None else 0o600,
-        image_id,
-    )
-
-
-def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None:
-    if path.is_symlink() or path.parent.is_symlink():
-        raise OSError(f"recovery path must not be a symlink: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if content is None:
-        path.unlink(missing_ok=True)
-        _fsync_snapshot_directory(path.parent)
-        return
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temporary)
-    try:
-        if os.name != "nt":
-            os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-        if os.name == "nt":
-            path.chmod(mode)
-        _fsync_snapshot_directory(path.parent)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def _fsync_snapshot_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:
-    """Restore the prior host issuance after Session replacement rolled back."""
-    from booley.eda.provisioning import runtime_spec
-
-    errors: list[str] = []
-    if snapshot.image_id is not None:
-        try:
-            result = subprocess.run(
-                ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"Session Image keeper: {exc}")
-        else:
-            if result.returncode != 0:
-                errors.append(
-                    "Session Image keeper: " + (result.stderr.strip() or "docker tag failed")
-                )
-    for label, path, content, mode in (
-        ("Session spec", snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode),
-        ("issuance stamp", snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode),
-    ):
-        try:
-            _restore_snapshot_file(path, content, mode)
-        except OSError as exc:
-            errors.append(f"{label}: {exc}")
-    if errors:
-        raise RuntimeError("could not fully restore prior host issuance: " + "; ".join(errors))
-
-
 def _project_sandbox_memory(project_root: Path) -> str:
     """Return the project's single container memory limit (ADR 0028), or ''.
 
@@ -1302,7 +1166,7 @@ def _project_mask_paths(project_root: Path) -> list[str]:
     (oracle artifacts, competing lanes, private notes): each becomes a
     read-only bind of an always-empty host dir over the path's container view
     (both views, for a ``.booley_project/`` subtree — see
-    :func:`booley.harness.devcontainer._mask_mounts`). An invalid knob is
+    :func:`booley.runtime.devcontainer._mask_mounts`). An invalid knob is
     reported and ignored AS A WHOLE. A partially applied mask list would leave
     the user believing a path is
     hidden when it is not, which is worse than masking nothing loudly.
@@ -1530,7 +1394,7 @@ def _reconcile_issued_headless_runtime(
     issuance: object,
 ) -> bool:
     """Reconcile prior stopped runtime state and translate errors into init results."""
-    from booley.harness import session_runtime
+    from booley.runtime import session_runtime
 
     try:
         reconciled = session_runtime.reconcile_stopped_headless_runtime(
@@ -1627,7 +1491,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         _mask_source_dir().mkdir(parents=True, exist_ok=True)
     spec = dc.build_devcontainer_spec(
         app,
-        image=session_image_id or project_sandbox_image(ctx.project_root),
+        image=session_image_id or pi.project_sandbox_image(ctx.project_root),
         project_dir_source=docker_mount_path(project_data_source),
         project_id=dc.canonical_project_id(ctx.project_root),
         # docker_mount_path keeps every mount source in ONE path style — the
@@ -2407,14 +2271,14 @@ def _run_init_unlocked(
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run Project initialization without racing host Docker mutations."""
     if getattr(args, "check_only", False):
-        from booley.harness.session_refresh import shared_recovery_blocks_command
+        from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         if shared_recovery_blocks_command(read_only=True):
             err("an interrupted Session refresh requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
-    from booley.harness.lifecycle_lock import host_lifecycle_lock
-    from booley.harness.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("project init"):
         if shared_recovery_blocks_command(read_only=False):

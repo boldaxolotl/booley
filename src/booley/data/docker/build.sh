@@ -45,7 +45,7 @@ echo ">>> Using Python for build: $("$PYBUILD" -c 'import sys; print(sys.executa
 # (F-5). Generated, not tracked — see .gitignore.
 #
 # The rule for *what* to stamp (short HEAD, `+dirty` suffix, empty outside a
-# checkout) lives in booley.harness.build_stamp, which `booley init`'s own wheel
+# checkout) lives in booley.runtime.build_stamp, which `booley init`'s own wheel
 # build calls too — a second copy here is how init ended up building unstamped
 # wheels in the first place (F-3).
 STAMP="$BOOLEY_ROOT/src/booley/_build_commit.py"
@@ -54,7 +54,7 @@ STAMP="$BOOLEY_ROOT/src/booley/_build_commit.py"
 # baked commit it doesn't have (and fails test_absent_stamp_module_yields_none).
 trap 'rm -f "$STAMP"' EXIT
 COMMIT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
-  'import sys; from pathlib import Path; from booley.harness.build_stamp import write_build_stamp; print(write_build_stamp(Path(sys.argv[1])))' \
+  'import sys; from pathlib import Path; from booley.runtime.build_stamp import write_build_stamp; print(write_build_stamp(Path(sys.argv[1])))' \
   "$BOOLEY_ROOT")"
 echo ">>> Stamped build commit: ${COMMIT:-<unknown>}"
 

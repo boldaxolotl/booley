@@ -1,7 +1,7 @@
 """Preparation and classification for the Simulation build stage.
 
 This module is the single authority for the untraced simulator image shared by
-ordinary simulation and ``sim --elab-only``.  Process execution remains owned
+ordinary simulation and ``sim --mode elab-only``. Process execution remains owned
 by :class:`booley.flows.base.BooleyFlow`; the helpers here only prepare the
 command and turn one completed process into typed build evidence.
 """

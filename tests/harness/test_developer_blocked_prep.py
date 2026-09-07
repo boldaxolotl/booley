@@ -8,6 +8,7 @@ import pytest
 
 from booley.harness import developer
 from booley.harness.models import StepResult, TicketContext
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 
 
 def _context(tmp_path: Path, **overrides: Any) -> TicketContext:
@@ -142,6 +143,35 @@ def test_basis_bound_resume_without_worktree_reports_basis_failure(tmp_path: Pat
 
     assert developer._resumed_basis_failure(ctx) == (
         "acceptance-input-change-required: Ticket worktree is unavailable"
+    )
+
+
+def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worktree = tmp_path / "worktree"
+    basis = MagicMock()
+    ctx = _context(tmp_path, acceptance_basis=basis, worktree_path=worktree)
+    validate = MagicMock(
+        side_effect=AcceptanceBasisError(
+            "acceptance-input-change-required: projected core changed"
+        )
+    )
+    block = MagicMock()
+    monkeypatch.setattr(
+        "booley.ticket_board.acceptance_validation.assert_ticket_worktree_inputs_unchanged",
+        validate,
+    )
+    monkeypatch.setattr(developer, "block_ticket", block)
+
+    assert developer._block_changed_acceptance_basis(ctx, run_index=3) is True
+    validate.assert_called_once_with(tmp_path, basis, worktree)
+    block.assert_called_once_with(
+        ctx,
+        "acceptance-input-change-required: projected core changed",
+        "developer",
+        run_index=3,
     )
 
 
