@@ -43,7 +43,7 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import MissingTargetToplevelError, TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
@@ -568,7 +568,7 @@ class LintFlow(BuiltinFlow):
         try:
             return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
         except fusesoc_registry.FuseSocError as exc:
-            if "has no toplevel" not in str(exc) and not target.doctor_private:
+            if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
                 raise
             return None
 

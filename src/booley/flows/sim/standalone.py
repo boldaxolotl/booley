@@ -10,7 +10,6 @@ import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
-from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -308,19 +307,7 @@ class StandaloneMixin:
         *,
         gap_is_credible: bool,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str], str]:
-        """Probe every module and sort the outcomes into three buckets.
-
-        Returns ``(failures, unparsed, log_chunks, eda_tool_error)``:
-
-        * *failures* — the compiler ran and rejected the module: a design
-          finding, the point of the criterion;
-        * *unparsed* — the compiler could not read the construct at all, and
-          (per *gap_is_credible*) a different frontend demonstrably could:
-          no verdict about that module, but the sweep keeps going so the
-          modules it CAN grade still get graded;
-        * *eda_tool_error* — the probe never ran (spawn failure / timeout), which
-          says nothing about any module and aborts the sweep.
-        """
+        """Probe every module under one deadline and classify its outcome."""
         failures: list[dict[str, str]] = []
         unparsed: list[dict[str, str]] = []
         log_chunks: list[str] = []
@@ -334,34 +321,48 @@ class StandaloneMixin:
                     log_chunks,
                     f"{frontend} standalone sweep timed out after {self._get_timeout()}s",
                 )
-            cmd = self._standalone_compile_command(module, rel, shared, frontend)
-            timeout_s = max(1, math.ceil(remaining_s))
-            if "timeout" in signature(self._execute).parameters:
-                proc = self._execute(cmd, timeout=timeout_s)
-            else:  # Compatibility with narrow test/custom execution doubles.
-                proc = self._execute(cmd)
-            combined = (proc.stdout + proc.stderr).strip()
-            log_chunks.append(f"$ {shlex.join(cmd)}\n{combined}\n")
-            if proc.returncode == 0:
-                continue
-            if proc.returncode < 0:
-                # Spawn failure / timeout — no verdict about the RTL.
-                eda_tool_error = (
-                    f"{frontend} timed out after {self._get_timeout()}s"
-                    if proc.timed_out
-                    else f"{frontend} could not run (is it installed in the Session Runtime?)"
-                )
-                if combined:
-                    eda_tool_error += f": {combined}"
+            record, log_chunk, eda_tool_error = self._run_standalone_probe(
+                module,
+                rel,
+                shared,
+                frontend,
+                timeout_s=max(1, math.ceil(remaining_s)),
+            )
+            log_chunks.append(log_chunk)
+            if eda_tool_error:
                 return failures, unparsed, log_chunks, eda_tool_error
-            if gap_is_credible and _PARSE_GAP_RE.search(combined):
-                # A *different* frontend compiled these very sources, so the
-                # construct is legal and it is the probe frontend that is short
-                # — no verdict about the module (F-25).
-                unparsed.append({"module": module, "file": rel, "error": combined})
-                continue
-            failures.append({"module": module, "file": rel, "error": combined})
+            if record is not None:
+                parse_gap = gap_is_credible and _PARSE_GAP_RE.search(record["error"])
+                destination = unparsed if parse_gap else failures
+                destination.append(record)
         return failures, unparsed, log_chunks, ""
+
+    def _run_standalone_probe(
+        self,
+        module: str,
+        rel: str,
+        shared: list[str],
+        frontend: str,
+        *,
+        timeout_s: int,
+    ) -> tuple[dict[str, str] | None, str, str]:
+        """Run one bounded probe and return its finding, log, and tool error."""
+        command = self._standalone_compile_command(module, rel, shared, frontend)
+        proc = self._execute(command, timeout=timeout_s)
+        combined = (proc.stdout + proc.stderr).strip()
+        log_chunk = f"$ {shlex.join(command)}\n{combined}\n"
+        if proc.returncode == 0:
+            return None, log_chunk, ""
+        if proc.returncode >= 0:
+            return {"module": module, "file": rel, "error": combined}, log_chunk, ""
+        message = (
+            f"{frontend} timed out after {self._get_timeout()}s"
+            if proc.timed_out
+            else f"{frontend} could not run (is it installed in the Session Runtime?)"
+        )
+        if combined:
+            message += f": {combined}"
+        return None, log_chunk, message
 
     def _run_standalone_check(
         self,

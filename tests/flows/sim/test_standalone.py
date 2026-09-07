@@ -96,7 +96,8 @@ def _stub_probes(
     captured: list[list[str]] = []
     by_module = results or {}
 
-    def execute(command: list[str]) -> SubprocessResult:
+    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
+        assert timeout > 0
         captured.append(command)
         flag = "-s" if command[0] == "iverilog" else "--top-module"
         module = command[command.index(flag) + 1]
