@@ -22,7 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.harness.build_stamp import (
+from booley.harness.setup.common import InitContext, err, info, ok, skip, warn
+from booley.runtime.build_stamp import (
     build_stamp,
     embedded_payload_fingerprint,
     iter_payload_files,
@@ -30,8 +31,7 @@ from booley.harness.build_stamp import (
     resolve_payload_fingerprint,
     resolve_source_updated_at,
 )
-from booley.harness.docker_base_contract import contract as runtime_base_contract
-from booley.harness.setup.common import InitContext, err, info, ok, skip, warn
+from booley.runtime.docker_base_contract import contract as runtime_base_contract
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,

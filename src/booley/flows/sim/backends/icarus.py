@@ -350,6 +350,7 @@ def _prepare_icarus_run(
 
 
 def _execute_icarus_run(run: _IcarusRun, timeout: int, max_rundir_bytes: int):
+    from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
     print(f"\n{'=' * 60}")
@@ -357,7 +358,7 @@ def _execute_icarus_run(run: _IcarusRun, timeout: int, max_rundir_bytes: int):
     print(f"{'=' * 60}")
     print(f"CWD: {run.run_cwd}")
     print(f"CMD: {' '.join(run.command)}\n")
-    heartbeat = Heartbeat("iverilog sim", interval=60)
+    heartbeat = Heartbeat("iverilog sim", render=render_heartbeat, interval=60)
     heartbeat.start()
     try:
         return _stream_output(

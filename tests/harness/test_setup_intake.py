@@ -107,14 +107,9 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         project_root=tmp_path,
         acceptance_basis=_qualified_target_basis(),
     )
-    template = CriteriaTemplate.from_yaml(
-        {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
-    )
-    expanded = {
-        "lint_clean_acme:ip:uart:1.0#lint_uart": True,
-        **template.expand([]),
-    }
-    criterion_params: dict[str, dict[str, object]] = template.expand_params([])
+    template = CriteriaTemplate.from_yaml({"mandatory": {"lint_clean": ["lint_uart"]}})
+    expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
+    criterion_params: dict[str, dict[str, object]] = {}
 
     _apply_basis_selectors(ctx, template, expanded, criterion_params)
 
@@ -122,10 +117,6 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         "lint_clean_acme:ip:uart:1.0#lint_uart": {
             "target": "acme:ip:uart:1.0#lint_uart",
             "_target_selector": "uart#lint_uart",
-        },
-        "review_tb_quality_clean": {
-            "target": "acme:ip:uart:1.0#sim_uart",
-            "_target_selector": "uart#sim_uart",
         },
     }
     entry = CriterionEntry(
@@ -139,7 +130,7 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
     )
 
 
-def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) -> None:
+def test_scalar_tb_review_does_not_derive_target_binding(tmp_path: Path) -> None:
     from booley.harness.setup.intake import _apply_basis_selectors
 
     identity = "acme:ip:uart:1.0#sim_uart"
@@ -186,9 +177,47 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
 
     _apply_basis_selectors(ctx, template, expanded, params)
 
-    assert params["review_tb_quality_clean"] == {
-        "target": identity,
-        "_target_selector": "uart#sim_uart",
+    assert "review_tb_quality_clean" not in params
+
+
+def test_reviewer_scopes_are_seeded_by_source_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.harness.setup.intake import _seed_reviewer_scopes
+
+    ctx = TicketContext(
+        slug="scoped-review",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="verification",
+        branch="main",
+        summary="Scoped review",
+        project_root=tmp_path,
+        scope_raw=["rtl/uart.sv", "tb/test_uart.py"],
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.classified_sources",
+        lambda _root: SimpleNamespace(
+            rtl_source_files=("rtl/uart.sv",),
+            tb_files=("tb/test_uart.py",),
+        ),
+    )
+    params: dict[str, dict[str, object]] = {}
+
+    _seed_reviewer_scopes(
+        ctx,
+        {
+            "review_rtl_bugs_clean": True,
+            "review_tb_quality_clean": True,
+            "coverage_sim": True,
+        },
+        params,
+    )
+
+    assert params == {
+        "review_rtl_bugs_clean": {"scope": ["rtl/uart.sv"]},
+        "review_tb_quality_clean": {"scope": ["tb/test_uart.py"]},
+        "coverage_sim": {"scope": ["rtl/uart.sv"]},
     }
 
 

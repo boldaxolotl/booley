@@ -90,6 +90,12 @@ def planned_invocation(key: str, entry: Any) -> str | None:
     if target and "--target" not in command:
         command = f"{command} --target {target}"
 
+    scope = params.get("scope")
+    if isinstance(scope, list):
+        scope_values = [str(path).strip() for path in scope if str(path).strip()]
+        if scope_values and "--scope" not in command:
+            command = f"{command} --scope {','.join(scope_values)}"
+
     selector = params.get("test_selector") or params.get("selector")
     if family == "sim_pass" and isinstance(selector, str) and selector not in {"", "all"}:
         command = f"{command} --test {selector}"

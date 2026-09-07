@@ -124,7 +124,7 @@ def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | N
     # token. Capturing stdout would hide the URL and leave the user staring at a
     # frozen terminal.
     if in_project:
-        from booley.harness import session_runtime
+        from booley.runtime import session_runtime
 
         try:
             returncode = session_runtime.run_project_command(

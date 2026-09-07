@@ -19,12 +19,13 @@ import pytest
 from booley import __version__
 from booley.audit import config_common, design_size, project_schema, resource_policy
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import devcontainer as dc
-from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
+from booley.harness import developer_probe, doctor, doctor_stamp
 from booley.runtime import (
     auth_token,
     runtime_context,
+    session_runtime,
 )
+from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -225,7 +226,7 @@ def _write_tickets_tree(project_dir: Path) -> None:
 def _seed_interactive(root: Path) -> None:
     """Seed the ADR-0018 artifacts a healthy interactive setup has: an untracked
     devcontainer spec and the git info/exclude entries."""
-    from booley.harness import devcontainer as dc
+    from booley.runtime import devcontainer as dc
 
     dc.write_devcontainer(root, dc.build_devcontainer_spec(dc.APP_NONE))
     info_dir = root / ".git" / "info"
@@ -1660,20 +1661,19 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     )
 
 
-def test_validate_one_flow_table_warns_on_set_but_ignored_knob():
-    """A knob honored elsewhere but not by this Flow is flagged, not failed (F4)."""
+def test_validate_one_flow_table_accepts_lint_timeout_ms():
+    """Lint reads the same persistent timeout policy as every other built-in Flow."""
     fails: list[str] = []
     warns: list[str] = []
 
-    # lint does not read timeout_ms (only simulate/asic_synthesize do): warn.
     ok = doctor._validate_one_flow_table(
         "lint",
         {"timeout_ms": 900000},
         warns.append,
         lambda msg, fix="": fails.append(msg),
     )
-    assert ok is True  # well-typed, just inert — a warning, never a failure
-    assert any("[flows.lint].timeout_ms" in m and "ignores it" in m for m in warns)
+    assert ok is True
+    assert warns == []
 
     # simulate DOES read timeout_ms → no set-but-ignored warning.
     warns.clear()
@@ -3270,7 +3270,7 @@ class TestStateVolumeCheck:
         )
 
     def _run(self, tmp_path, monkeypatch, vols, *, verbose=False) -> _Rec:
-        from booley.harness import interactive_docker as idk
+        from booley.runtime import interactive_docker as idk
 
         monkeypatch.setattr(idk, "state_volumes", lambda: vols)
         rec = _Rec()
@@ -3369,8 +3369,7 @@ class TestWcpServerCheck:
         in_container: bool = False,
         probe=None,
     ) -> _Rec:
-        from booley.harness import session_runtime
-        from booley.runtime import runtime_context
+        from booley.runtime import runtime_context, session_runtime
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
@@ -3477,7 +3476,7 @@ class TestDevcontainerSpecStaleness:
         image: str | None = None,
         declared_provider: str | None = None,
     ) -> _Rec:
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         # Isolate from git; tracking is exercised by other tests.
         monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
@@ -3499,14 +3498,14 @@ class TestDevcontainerSpecStaleness:
         return rec
 
     def test_fresh_claude_spec_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch)
         assert rec.kinds() == {"pass"}
 
     def test_verified_pdk_without_spec_mount_warns(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
@@ -3520,7 +3519,7 @@ class TestDevcontainerSpecStaleness:
         )
 
     def test_verified_pdk_with_spec_mount_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
@@ -3536,7 +3535,7 @@ class TestDevcontainerSpecStaleness:
     def test_image_drift_warns_not_fails(self, tmp_path, monkeypatch):
         # Spec frozen on the base image while [sandbox].image now names a custom
         # project image (extra toolchain) — the openc910/Xuantie blocker shape.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
@@ -3548,7 +3547,7 @@ class TestDevcontainerSpecStaleness:
 
     def test_matching_custom_image_passes(self, tmp_path, monkeypatch):
         # Spec built for the same custom image the project configures: no drift.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
@@ -3624,7 +3623,7 @@ class TestDevcontainerSpecStaleness:
         # still said claude. incontainer_register then wrote the Booley MCP
         # entry into ~/.claude.json while the Codex session — the only agent
         # actually running — saw no Booley MCP tools at all.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
@@ -3632,7 +3631,7 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_agent_app_matching_declared_provider_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
@@ -3641,7 +3640,7 @@ class TestDevcontainerSpecStaleness:
     def test_undeclared_provider_mutes_the_app_drift_warn(self, tmp_path, monkeypatch):
         # No [agent] provider: the seeder falls back to host detection, so
         # there is nothing the on-disk app can be drift-checked against.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=None)
@@ -3651,7 +3650,7 @@ class TestDevcontainerSpecStaleness:
         # A mismatched spec still mounts a volume for the app it *names*, so the
         # persistence check would pass and hide the real problem. Order matters:
         # the app drift must be what the user is told to fix.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         assert dc.spec_state_is_persisted(spec) is True  # the misleading "all good"
@@ -3661,7 +3660,7 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
@@ -3678,8 +3677,8 @@ class TestDevcontainerSpecStaleness:
         # A credential stored AFTER the spec was seeded: VS Code sessions can't
         # see it (no sidecar mount), so they silently run on the refreshing
         # credential — surface the drift, don't fail.
-        from booley.harness import devcontainer as dc
         from booley.runtime import auth_token
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -3692,8 +3691,8 @@ class TestDevcontainerSpecStaleness:
         assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
 
     def test_stored_token_with_seed_mount_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
         from booley.runtime import auth_token
+        from booley.runtime import devcontainer as dc
 
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         path = auth_token.store_token("sk-ant-oat01-stored")
@@ -3710,7 +3709,7 @@ class TestDevcontainerSpecStaleness:
         # and pins no WCP settings; an image rebuild never fixes that, so the
         # agent's scoped `bwave gui` fails in every session — surface it.
         # Exact shape hit live on a real project 2026-07-14.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
@@ -3725,7 +3724,7 @@ class TestDevcontainerSpecStaleness:
         # A spec seeded before the SystemVerilog highlighting extension landed
         # renders RTL as plain text in attached windows; extensions are
         # spec-delivered (never image-baked), so only a re-seed fixes it.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = [
@@ -5828,7 +5827,7 @@ class TestVenueCheck:
 class TestHostAgentSession:
     """An agent on the host gets no Booley Flows and no error — Doctor must say so.
 
-    MCP registration is container-side (booley.runtime.incontainer_register runs from
+    MCP registration is container-side (booley.harness.incontainer_register runs from
     the devcontainer hooks), so a host-launched agent has no `booley` MCP
     server at all. Nothing else reports that absence.
     """
@@ -7147,7 +7146,7 @@ class TestDisplayReportDir:
     def test_container_mount_is_rendered_repo_relative(self):
         from types import SimpleNamespace
 
-        from booley.harness.devcontainer import PROJECT_DIR_TARGET
+        from booley.runtime.devcontainer import PROJECT_DIR_TARGET
 
         project = SimpleNamespace(project_dir=Path(PROJECT_DIR_TARGET))
         report_dir = Path(PROJECT_DIR_TARGET) / "tmp" / "doctor" / "flow-reports"

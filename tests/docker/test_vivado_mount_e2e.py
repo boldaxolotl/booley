@@ -21,9 +21,9 @@ import pytest
 
 from booley.eda.provisioning import authority, runtime_spec
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
-from booley.harness import devcontainer as dc
-from booley.harness import interactive_docker as idk
-from booley.harness import session_runtime
+from booley.runtime import devcontainer as dc
+from booley.runtime import interactive_docker as idk
+from booley.runtime import session_runtime
 
 _IMAGE = "booley-sandbox"
 _VIVADO_ENV = "BOOLEY_VIVADO_ROOT"

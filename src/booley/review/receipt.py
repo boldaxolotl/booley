@@ -1,4 +1,4 @@
-"""Persist and evaluate the non-source dimensions of Reviewer freshness."""
+"""Persist and evaluate the source-scoped Reviewer contract."""
 
 from __future__ import annotations
 
@@ -10,14 +10,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.fusesoc import fusesoc_registry
+from booley.core.boundary import as_dict, as_str_list
+from booley.targets.flow_names import config_section
 
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
+REVIEW_DETAIL_VERSION = 4
+_FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
 
 
-class ReviewTicketError(OSError):
-    """The persisted Ticket context can no longer be read."""
+class ReviewContextError(OSError):
+    """Persisted review context can no longer be read."""
+
+
+# Compatibility for callers which catch the old, narrower error name.
+ReviewTicketError = ReviewContextError
 
 
 @dataclass(frozen=True)
@@ -29,9 +36,8 @@ class ReviewInvocation:
     focus: str
     scope: tuple[str, ...]
     mode: str
-    targets: tuple[str, ...]
-    target_kind: str
-    ticket_path: Path | None = None
+    spec_path: Path | None = None
+    steering: str = ""
 
 
 def _digest(value: Any) -> str:
@@ -39,87 +45,103 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _ticket_source(work_dir: Path, ticket_path: Path | None) -> dict[str, str]:
-    """Resolve and persist the documents which bind a review to its Ticket."""
-    logs = Path(os.environ["BOOLEY_LOGS_DIR"]) if os.environ.get("BOOLEY_LOGS_DIR") else None
-    logs_ticket = logs / _TICKET_FILE if logs else None
-    if logs_ticket is not None and not logs_ticket.is_absolute():
-        logs_ticket = work_dir / logs_ticket
-    resolved_ticket = (
-        logs_ticket if logs_ticket is not None and logs_ticket.is_file() else ticket_path
-    )
-    if resolved_ticket is not None and not resolved_ticket.is_absolute():
-        resolved_ticket = work_dir / resolved_ticket
-    decisions = logs / _DECISIONS_FILE if logs else None
-    if decisions is None and resolved_ticket is not None:
-        decisions = resolved_ticket.parent / _DECISIONS_FILE
-    elif decisions is not None and not decisions.is_absolute():
-        decisions = work_dir / decisions
-    return {
-        "ticket": str(resolved_ticket.resolve()) if resolved_ticket else "",
-        "accepted_decisions": str(decisions.resolve()) if decisions else "",
-    }
+def _resolved(path: Path | None, work_dir: Path) -> Path | None:
+    if path is None:
+        return None
+    return path if path.is_absolute() else work_dir / path
 
 
-def _optional_document(path_value: object) -> str:
-    if not isinstance(path_value, str) or not path_value:
-        return ""
-    path = Path(path_value)
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8", errors="replace")
+def _ticket_path(work_dir: Path) -> Path | None:
+    logs_value = os.environ.get("BOOLEY_LOGS_DIR")
+    if not logs_value:
+        return None
+    candidate = _resolved(Path(logs_value) / _TICKET_FILE, work_dir)
+    return candidate if candidate is not None and candidate.is_file() else None
 
 
-def _ticket_context_digest(source: Mapping[str, object]) -> str:
-    """Hash one persisted Ticket source without consulting ambient state."""
+def _decisions_path(work_dir: Path, ticket: Path | None) -> Path | None:
+    logs_value = os.environ.get("BOOLEY_LOGS_DIR")
+    candidate = Path(logs_value) / _DECISIONS_FILE if logs_value else None
+    if candidate is None and ticket is not None:
+        candidate = ticket.parent / _DECISIONS_FILE
+    return _resolved(candidate, work_dir)
+
+
+def _linked_spec_path(ticket: Path, work_dir: Path) -> Path | None:
+    from booley.ticket_board.frontmatter import parse_frontmatter
+
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8", errors="replace"))
+    value = fields.get("spec")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _resolved(Path(value.strip()), work_dir)
+
+
+def _document_digest(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return _digest("")
     try:
-        ticket_value = source.get("ticket")
-        ticket = ""
-        if isinstance(ticket_value, str) and ticket_value:
-            ticket = Path(ticket_value).read_text(encoding="utf-8", errors="replace")
-        return _digest(
-            {
-                "ticket": ticket,
-                "accepted_decisions": _optional_document(source.get("accepted_decisions")),
-            }
-        )
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise ReviewTicketError(
-            f"Could not read persisted Reviewer Ticket context: {exc}"
-        ) from exc
+        raise ReviewContextError(f"Could not read persisted Reviewer context: {exc}") from exc
 
 
-def target_surface_digest(work_dir: Path) -> str:
-    """Hash authored FuseSoC Target declarations without running FuseSoC."""
-    rows: list[dict[str, str]] = []
-    for core_file in fusesoc_registry.discover_cores(work_dir):
-        try:
-            rel = core_file.relative_to(work_dir).as_posix()
-        except ValueError:
-            rel = str(core_file)
-        rows.append({"path": rel, "sha256": hashlib.sha256(core_file.read_bytes()).hexdigest()})
-    return _digest(rows)
+def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for raw in sorted(scope):
+        normalized = raw.replace("\\", "/").removeprefix("./")
+        path = work_dir / normalized
+        hashes[normalized] = _document_digest(path)
+    return hashes
+
+
+def _tb_policy_digest(work_dir: Path, category: str) -> str:
+    if category != "tb":
+        return _digest({})
+    try:
+        from booley.runtime.shared_infra import _load_rtl_config
+
+        cfg = _load_rtl_config(work_dir)
+    except ImportError:
+        cfg = None
+    flows = as_dict((cfg or {}).get("flows"), default={}) or {}
+    sim = config_section(flows, "sim")
+    policy = {
+        "pass_sentinels": as_str_list(sim.get("pass_sentinels")),
+        "fail_sentinels": as_str_list(sim.get("fail_sentinels")),
+        "trace_files": as_str_list(sim.get("trace_files")),
+    }
+    return _digest(policy)
 
 
 def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
-    ticket_source = _ticket_source(invocation.work_dir, invocation.ticket_path)
+    ticket = _ticket_path(invocation.work_dir)
+    spec = _linked_spec_path(ticket, invocation.work_dir) if ticket else None
+    if spec is None and ticket is None:
+        spec = _resolved(invocation.spec_path, invocation.work_dir)
+    decisions = _decisions_path(invocation.work_dir, ticket)
+    scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     return {
+        "version": REVIEW_DETAIL_VERSION,
         "category": invocation.category,
         "focus": invocation.focus,
-        "scope": sorted(path.replace("\\", "/") for path in invocation.scope),
+        "scope": list(scope),
+        "scope_hashes": _scope_hashes(invocation.work_dir, scope),
         "mode": invocation.mode,
-        "targets": list(invocation.targets),
-        "target_kind": invocation.target_kind,
-        "ticket_source": ticket_source,
-        "ticket_digest": _ticket_context_digest(ticket_source),
-        "target_surface_digest": target_surface_digest(invocation.work_dir),
+        "ticket_source": str(ticket.resolve()) if ticket else "",
+        "ticket_digest": _document_digest(ticket),
+        "spec_source": str(spec.resolve()) if spec else "",
+        "spec_digest": _document_digest(spec),
+        "decisions_source": str(decisions.resolve()) if decisions else "",
+        "decisions_digest": _document_digest(decisions),
+        "tb_policy_digest": _tb_policy_digest(invocation.work_dir, invocation.category),
+        "steering_digest": _digest(invocation.steering),
     }
 
 
 def finalize_review_detail(
-    detail: Mapping[str, Any],
-    source_fingerprint: Mapping[str, Any],
+    detail: Mapping[str, Any], source_fingerprint: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Attach one source stamp and derive its receipt ID atomically."""
     finalized = dict(detail)
@@ -132,17 +154,63 @@ def finalize_review_detail(
     return finalized
 
 
+def review_invocation_changed(
+    previous: object,
+    current: Mapping[str, Any],
+) -> bool:
+    """Whether two contracts ask different review questions.
+
+    Scoped source hashes are freshness evidence, not invocation identity: an
+    edit to a reviewed file must preserve its finding lifecycle so the next
+    review can verify or rediscover it.
+    """
+    if not isinstance(previous, Mapping):
+        return True
+
+    def identity(contract: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in contract.items()
+            if key not in _FRESHNESS_ONLY_CONTRACT_FIELDS
+        }
+
+    return identity(previous) != identity(current)
+
+
+def _persisted_document_changed(contract: Mapping[str, Any], name: str) -> bool:
+    raw_path = contract.get(f"{name}_source")
+    path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
+    if path is not None and not path.is_file():
+        raise ReviewContextError(f"Could not read persisted Reviewer context: {path}")
+    return contract.get(f"{name}_digest") != _document_digest(path)
+
+
 def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]:
-    """Return changed non-source dimensions for a persisted review receipt."""
-    contract = detail.get("contract")
-    if not isinstance(contract, Mapping):
+    """Return changed dimensions for a persisted source-scoped receipt."""
+    if detail.get("review_detail_version") != REVIEW_DETAIL_VERSION:
+        # Pre-v4 receipts continue through the legacy source-fingerprint path
+        # in criteria_acceptance. Upgrading Booley must not discard otherwise
+        # current findings and explicit waivers merely because their persisted
+        # representation predates the source-scoped contract.
         return []
-    changed: list[str] = []
-    source = contract.get("ticket_source")
-    if not isinstance(source, Mapping):
-        source = _ticket_source(work_dir, None)
-    if contract.get("ticket_digest") != _ticket_context_digest(source):
-        changed.append("ticket")
-    if contract.get("target_surface_digest") != target_surface_digest(work_dir):
-        changed.append("target_surface")
+    contract = detail.get("contract")
+    if not isinstance(contract, Mapping) or contract.get("version") != REVIEW_DETAIL_VERSION:
+        return ["contract_version"]
+    changed = [
+        name
+        for name in ("ticket", "spec", "decisions")
+        if _persisted_document_changed(contract, name)
+    ]
+    raw_scope = contract.get("scope")
+    scope = (
+        tuple(item for item in raw_scope if isinstance(item, str))
+        if isinstance(raw_scope, list)
+        else ()
+    )
+    if contract.get("scope_hashes") != _scope_hashes(work_dir, scope):
+        changed.append("scope")
+    category = contract.get("category")
+    category = category if isinstance(category, str) else ""
+    if contract.get("tb_policy_digest") != _tb_policy_digest(work_dir, category):
+        changed.append("tb_policy")
     return changed

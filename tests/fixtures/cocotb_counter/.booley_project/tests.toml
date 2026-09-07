@@ -15,7 +15,7 @@ tests = ["test_reset", "test_count", "test_fail_assert"]
 [sim_crash]
 tests = ["test_py_exception", "test_rtl_fatal"]
 
-# G11: the timeout-kill shape (run with a small --timeout).
+# G11: the timeout-kill shape (run with a small --timeout-ms).
 [sim_hang]
 tests = ["test_hang"]
 

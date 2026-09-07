@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -54,7 +55,7 @@ class TestHeartbeat:
 
     def test_start_stop_lifecycle(self):
         """Heartbeat can be started and stopped without error."""
-        hb = Heartbeat("test", interval=1)
+        hb = Heartbeat("test", render=MagicMock(), interval=1)
         hb.start()
         assert hb._thread is not None
         assert hb._thread.is_alive()
@@ -64,67 +65,84 @@ class TestHeartbeat:
 
     def test_context_manager(self):
         """Heartbeat works as a context manager."""
-        with Heartbeat("test", interval=1) as hb:
+        with Heartbeat("test", render=MagicMock(), interval=1) as hb:
             assert hb._thread.is_alive()
         assert not hb._thread.is_alive()
 
     def test_stop_idempotent(self):
         """Calling stop() twice should not raise."""
-        hb = Heartbeat("test", interval=1)
+        hb = Heartbeat("test", render=MagicMock(), interval=1)
         hb.start()
         hb.stop()
         hb.stop()  # second call should be fine
 
-    @patch("booley.runtime.heartbeat._heartbeat_line")
-    def test_heartbeat_fires(self, mock_hb_line):
+    def test_heartbeat_fires(self):
         """Heartbeat should call _heartbeat_line after the interval."""
-        hb = Heartbeat("sim", interval=0.05)  # very short for testing
+        fired = threading.Event()
+        calls: list[tuple[str, str, str]] = []
+
+        def render(description: str, elapsed: str, extra: str) -> None:
+            calls.append((description, elapsed, extra))
+            fired.set()
+
+        hb = Heartbeat("sim", render=render, interval=0.01)
         hb.start()
-        time.sleep(0.2)  # wait for at least one fire
+        assert fired.wait(timeout=1)
         hb.stop()
-        assert mock_hb_line.call_count >= 1
-        # Check first call args: desc should be "sim"
-        first_call = mock_hb_line.call_args_list[0]
-        assert first_call[0][0] == "sim"
+        assert calls[0][0] == "sim"
 
     @patch("booley.runtime.heartbeat.touch_reaper_heartbeat")
-    @patch("booley.runtime.heartbeat._heartbeat_line")
-    def test_heartbeat_keeps_session_runtime_alive(self, _mock_line, mock_touch):
-        hb = Heartbeat("sim", interval=0.05)
+    def test_heartbeat_keeps_session_runtime_alive(self, mock_touch):
+        fired = threading.Event()
+        hb = Heartbeat(
+            "sim",
+            render=lambda *_args: fired.set(),
+            interval=0.01,
+        )
         hb.start()
-        time.sleep(0.15)
+        assert fired.wait(timeout=1)
         hb.stop()
 
         assert mock_touch.call_count >= 2  # immediate touch plus at least one tick
 
-    @patch("booley.runtime.heartbeat._heartbeat_line")
-    def test_status_fn_appended(self, mock_hb_line):
+    def test_status_fn_appended(self):
         """status_fn return value should be passed as extra."""
         status_fn = MagicMock(return_value="stage: planning")
-        hb = Heartbeat("harness", interval=0.05, status_fn=status_fn)
+        fired = threading.Event()
+        extras: list[str] = []
+
+        def render(_description: str, _elapsed: str, extra: str) -> None:
+            extras.append(extra)
+            fired.set()
+
+        hb = Heartbeat(
+            "harness",
+            render=render,
+            interval=0.01,
+            status_fn=status_fn,
+        )
         hb.start()
-        time.sleep(0.2)
+        assert fired.wait(timeout=1)
         hb.stop()
         assert status_fn.call_count >= 1
-        # The extra argument should contain "stage: planning"
-        for call in mock_hb_line.call_args_list:
-            if call[0][2]:  # extra arg
-                assert "stage: planning" in call[0][2]
-                break
+        assert "stage: planning" in extras
 
-    @patch("booley.runtime.heartbeat._heartbeat_line")
-    def test_status_fn_exception_swallowed(self, mock_hb_line):
+    def test_status_fn_exception_swallowed(self):
         """Exceptions from status_fn should be silently swallowed."""
 
         def bad_fn():
             raise RuntimeError("oops")
 
-        hb = Heartbeat("harness", interval=0.05, status_fn=bad_fn)
+        fired = threading.Event()
+        hb = Heartbeat(
+            "harness",
+            render=lambda *_args: fired.set(),
+            interval=0.01,
+            status_fn=bad_fn,
+        )
         hb.start()
-        time.sleep(0.2)
+        assert fired.wait(timeout=1)
         hb.stop()
-        # Should still have fired without crashing
-        assert mock_hb_line.call_count >= 1
 
 
 # ---------------------------------------------------------------------------

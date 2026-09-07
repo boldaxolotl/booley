@@ -309,6 +309,10 @@ class McpTool(ABC):
     # Target-aware deterministic Flows override this so both argparse and the
     # generated MCP schema require an explicit selection.
     target_required: bool = False
+    # Source-scoped endpoints may opt out of Target selection entirely.
+    accepts_target: bool = True
+    # Preview-only dry runs opt in to bypassing admission and persistence.
+    non_persisting_dry_run: bool = False
     # F-14: on a human/standalone (no-state-file) run, ``report_text`` is only
     # surfaced on *failure* — the PASS verdict lives in ``display_lines``, which
     # the harness UI renders but a bare CLI run drops. For an endpoint whose success
@@ -392,11 +396,12 @@ class McpTool(ABC):
         )
         # Kept default="" (not argparse required) so each endpoint's validation can
         # produce specific guidance and discovery can represent no selection.
-        self._parser.add_argument(
-            "--target",
-            required=self.target_required,
-            help=self.target_help,
-        )
+        if self.accepts_target:
+            self._parser.add_argument(
+                "--target",
+                required=self.target_required,
+                help=self.target_help,
+            )
         self._parser.add_argument(
             "--diagnostic",
             action="store_true",
@@ -560,7 +565,7 @@ class McpTool(ABC):
             )
             return stamped
         source_detail = freshness.to_detail()
-        if is_review and stamped.get("review_detail_version") == 3:
+        if is_review and stamped.get("review_detail_version") == 4:
             from booley.review.receipt import finalize_review_detail
 
             return finalize_review_detail(stamped, source_detail)
@@ -923,6 +928,10 @@ class McpTool(ABC):
         values = [str(v) for v in values]
         return "\n".join(v for v in values if v)
 
+    def _is_non_persisting_dry_run(self) -> bool:
+        """Return whether this invocation is an opted-in preview-only run."""
+        return self.non_persisting_dry_run and bool(getattr(self.args, "dry_run", False))
+
     # --- Main execution ---
 
     @abstractmethod
@@ -1007,6 +1016,9 @@ class McpTool(ABC):
                 if rejection.report_text:
                     print(rejection.report_text, file=sys.stderr, flush=True)
                 raise EndpointRejectedError(rejection)
+            if self._is_non_persisting_dry_run():
+                yield
+                return
             try:
                 slot_store, slot_token = self._acquire_job_slot()
             except job_slots.QueueFullError as exc:
@@ -1079,6 +1091,9 @@ class McpTool(ABC):
         outcome: EndpointOutcome,
     ) -> None:
         """Record immutable Ticket evidence before state/report persistence."""
+        if self._is_non_persisting_dry_run():
+            self._pending_criteria_set = ()
+            return
         result = _as_mcp_tool_result(outcome)
         if self._state is not None and self._state._file_path is not None:
             self.state.work_dir = str(Path(self.args.work_dir).resolve())
@@ -1125,7 +1140,7 @@ class McpTool(ABC):
         """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
         duration = (time.monotonic() - started) if started is not None else 0.0
         try:
-            if acceptance_recorded:
+            if acceptance_recorded and not self._is_non_persisting_dry_run():
                 self._post_run(result, duration)
         finally:
             self._pending_criteria_set = None
@@ -1239,7 +1254,7 @@ class McpTool(ABC):
         endpoint_args: dict[str, Any] | None = None
         if self._args:
             _ta: dict[str, Any] = {}
-            for attr in ("category", "config", "reason"):
+            for attr in ("category", "config", "reason", "dry_run"):
                 val = getattr(self._args, attr, None)
                 if val:
                     _ta[attr] = val

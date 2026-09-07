@@ -218,7 +218,7 @@ def run_command(
     env: Mapping[str, str] | None = None,
 ) -> ExecutionResult:
     """Run one explicit command and own it through complete scoped cleanup."""
-    from booley.harness.session_runtime import exec_argv
+    from booley.runtime.session_runtime import exec_argv
 
     execution_id = uuid.uuid4().hex
     project_data = resolve_checkout_project_dir(project_root)
