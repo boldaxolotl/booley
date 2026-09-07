@@ -198,6 +198,60 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
     assert list(results) == ["fpga_after"]
 
 
+def test_baseline_plan_restores_candidate_execution_context(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    flow = _flow(tmp_path, state_file, "--baseline", "baseline-ref")
+    candidate_handles = {"default": _layer_target_handle(tmp_path, "default")}
+    candidate_refs = {
+        "default": TargetExecutionRef("::fpga_demo:0#default", "default", "::fpga_demo:0")
+    }
+    flow._target_handles = candidate_handles
+    flow._target_execution_refs = candidate_refs
+    baseline = SimpleNamespace(selector="baseline")
+    flow._target_pairs = (
+        SimpleNamespace(baseline=baseline),
+        SimpleNamespace(baseline=baseline),
+    )
+    baseline_handle = _layer_target_handle(tmp_path, "baseline")
+    baseline_ref = TargetExecutionRef(
+        baseline_handle.identity,
+        baseline_handle.selector,
+        baseline_handle.vlnv,
+    )
+    planned_unit = SimpleNamespace(role="baseline", selector="baseline")
+
+    @contextmanager
+    def fake_worktree(_project_root, _ref):
+        worktree = tmp_path / ".booley_project" / ".baseline-plan"
+        worktree.mkdir(parents=True)
+        yield worktree
+
+    with (
+        patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
+        patch("booley.flows.fpga.flow.git_full_sha", return_value="b" * 40),
+        patch(
+            "booley.flows.fpga.flow.baseline_execution_context",
+            return_value=(
+                {"baseline": baseline_handle},
+                {"baseline": baseline_ref},
+            ),
+        ),
+        patch.object(flow, "_resolve_fpga_recipe", return_value=object()) as resolve,
+        patch.object(flow, "_fpga_work_unit", return_value=planned_unit) as project_unit,
+    ):
+        units, errors = flow._plan_fpga_baselines("baseline-ref")
+
+    assert units == [planned_unit]
+    assert errors == []
+    resolve.assert_called_once_with("baseline")
+    project_unit.assert_called_once()
+    assert flow.args.work_dir == tmp_path
+    assert flow._target_handles is candidate_handles
+    assert flow._target_execution_refs is candidate_refs
+
+
 def test_changed_fpga_recipe_is_evidence_not_a_rejection(
     tmp_path: Path,
     state_file: Path,
