@@ -200,7 +200,7 @@ read_verilog {{{sta_netlist.as_posix()}}}
 link_design {design_name}
 {read_sdc}
 if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
-foreach_in_collection _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
+foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 -core_space 2.0 \\
   -site {_SITE}

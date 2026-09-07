@@ -974,7 +974,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         "paths) come from the Target's `file_type: SDC` fileset in the .core, "
         "NOT booley.toml: add an SDC file with your create_clock / "
         "set_input_delay / set_output_delay / set_false_path to the Target. A "
-        "A physical Target with NO SDC is a hard configuration error; logical "
+        "physical Target with NO SDC is a hard configuration error; logical "
         "synthesis remains valid without timing constraints. "
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
         "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
@@ -1924,16 +1924,10 @@ class AsicSynthesizeFlow(BuiltinFlow):
                         continue
                     cmd = self._build_synth_cmd(tgt)
                     rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
-                    clock_note = (
-                        "  # Target SDC clock creation is validated by OpenROAD at runtime"
-                        if cmd[cmd.index("--synth-mode") : cmd.index("--synth-mode") + 2]
-                        == ["--synth-mode", "physical"]
-                        else ""
-                    )
                     lines.append(
                         f"[synth] dry-run ({tgt}): make -C {rel}"
                         f"  # rendered at configure time from: {' '.join(cmd)}"
-                        f"{clock_note}",
+                        f"{self._dry_run_clock_note(cmd)}",
                     )
             except BoundaryError as exc:
                 # A wrong-typed config knob fails the preview loudly — dry-run
@@ -1951,6 +1945,14 @@ class AsicSynthesizeFlow(BuiltinFlow):
                     report_text=f"[synth] dry-run ({tgt}): infrastructure error: {exc}",
                 )
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
+
+    @staticmethod
+    def _dry_run_clock_note(cmd: list[str]) -> str:
+        """Describe deferred clock validation for a physical synth preview."""
+        mode_index = cmd.index("--synth-mode")
+        if cmd[mode_index + 1] != SynthMode.PHYSICAL:
+            return ""
+        return "  # Target SDC clock creation is validated by OpenROAD at runtime"
 
     def _setup_preview(self, target: str, reason: str) -> str:
         """Return the non-mutating preview used when full resolution is unavailable."""

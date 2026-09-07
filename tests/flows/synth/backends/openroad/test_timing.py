@@ -106,6 +106,12 @@ class TestWriteScript:
         assert "c.sdc" in text
         assert "add create_clock" in text
 
+    def test_initial_clock_probe_uses_native_tcl_foreach(self, tmp_path):
+        text = self._write(tmp_path)
+        before_collection_shim = text.split("proc foreach_in_collection", maxsplit=1)[0]
+        assert "foreach _clk [all_clocks]" in before_collection_shim
+        assert "foreach_in_collection _clk [all_clocks]" not in before_collection_shim
+
     def test_wire_rc_layers(self, tmp_path):
         text = self._write(tmp_path)
         assert "set_wire_rc -signal -layer metal3" in text
