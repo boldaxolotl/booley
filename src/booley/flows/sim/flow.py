@@ -8,6 +8,7 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -78,6 +79,7 @@ from .execution import (
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.failures import find_missing_executable
+from .mode import SimulationMode, normalize_simulation_mode, parse_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
@@ -538,7 +540,7 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
     ``[flows.sim].sim_time_grace_s`` bounds how long a cocotb run may sit
     at *exactly* 0.00 ns of simulation time before Booley aborts it with the
     run-loop-mismatch diagnosis instead of burning the whole ``timeout_ms``
-    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under Verilator 5.046, then
+    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under an older Verilator, then
     no timed callback ever fired — 600 s of wall clock, zero sim time). ``0``
     disables the watchdog; anything else is a wall-clock second count.
     Defaults to :data:`run_guard.DEFAULT_SIM_TIME_GRACE_S`.
@@ -666,6 +668,7 @@ def _resolve_sim_campaign_work_units(
     target_arg: str,
     test_selector: str | None = None,
     skip_arg: str | None = None,
+    mode: SimulationMode | str = SimulationMode.SIMULATE,
 ) -> int:
     """Count sequential simulator processes selected by one sim invocation.
 
@@ -677,6 +680,11 @@ def _resolve_sim_campaign_work_units(
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
         return 1
+    selected_mode = normalize_simulation_mode(mode)
+    if selected_mode is SimulationMode.ELAB_ONLY:
+        return len(targets)
+    if selected_mode is SimulationMode.ELAB_ONLY_STANDALONE:
+        return len(targets) + 1
     test_names = _get_test_names(work_dir)
     configured_skips = _get_test_skips(work_dir)
     units = 0
@@ -1106,9 +1114,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     name: str = "sim"
     description: str = (
-        "Run RTL simulation for one or more Targets. Set elab_only=true to "
+        "Run RTL simulation for one or more Targets. Set mode=elab_only to "
         "compile, elaborate, and link the ordinary untraced simulator image "
-        "without running tests (CLI: --elab-only; --build-only is an alias). "
+        "without running tests, or mode=elab_only_standalone to add the "
+        "reusable-module sweep. "
         "Do NOT use --trace for initial pass/fail checks — tracing adds "
         "overhead and is only useful after a failure, when you need waveforms "
         "for debugging via the B-Wave (`bwave`) MCP tool."
@@ -1127,8 +1136,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         "cycle_count",
     ]
     satisfies_args: ClassVar[dict[str, str]] = {
-        "elab_pass": "--elab-only",
-        "elaborate_standalone": "--elab-only --standalone",
+        "elab_pass": "--mode elab-only",
+        "elaborate_standalone": "--mode elab-only-standalone",
     }
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
@@ -1155,22 +1164,64 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     @staticmethod
     def _add_elaboration_args(parser: Any) -> None:
-        """Add the compile-only Simulation mode and its optional sweep."""
+        """Add the canonical mode plus CLI-only compatibility aliases."""
+        parser.add_argument(
+            "--mode",
+            type=parse_simulation_mode,
+            choices=list(SimulationMode),
+            default=None,
+            metavar="{simulate,elab-only,elab-only-standalone}",
+            help="Execution mode: run tests, elaborate only, or elaborate then "
+            "perform the standalone module sweep",
+        )
         parser.add_argument(
             "--elab-only",
             "--build-only",
-            dest="elab_only",
+            dest="_legacy_elab_only",
             action="store_true",
-            help="Compile, elaborate, and link the ordinary untraced simulation "
-            "image without running tests, Cocotb Python, Pre-Run Commands, or "
-            "tracing. --build-only is a permanent alias.",
+            help=argparse.SUPPRESS,
         )
         parser.add_argument(
             "--standalone",
+            dest="_legacy_standalone",
             action="store_true",
-            help="With --elab-only, also check every RTL module from its "
-            "declaring file using [flows.sim].standalone_frontend.",
+            help=argparse.SUPPRESS,
         )
+
+    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
+        """Normalize legacy mode flags into the single canonical selector."""
+        args = super().parse_args(argv)
+        legacy_requested = args._legacy_elab_only or args._legacy_standalone
+        if args.mode is not None and legacy_requested:
+            self._parser.error("--mode cannot be combined with legacy mode flags")
+        args._legacy_standalone_without_elab = (
+            args._legacy_standalone and not args._legacy_elab_only
+        )
+        if legacy_requested:
+            logger.warning(
+                "--elab-only, --build-only, and --standalone are deprecated; use --mode"
+            )
+        if args._legacy_elab_only and args._legacy_standalone:
+            args.mode = SimulationMode.ELAB_ONLY_STANDALONE
+        elif args._legacy_elab_only:
+            args.mode = SimulationMode.ELAB_ONLY
+        elif args.mode is None:
+            args.mode = SimulationMode.SIMULATE
+        vars(args).pop("_legacy_elab_only")
+        vars(args).pop("_legacy_standalone")
+        return args
+
+    def mcp_schema(self) -> dict[str, object]:
+        """Advertise one mode field and hide all compatibility flags."""
+        schema = super().mcp_schema()
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("_legacy_elab_only", None)
+            properties.pop("_legacy_standalone", None)
+            mode = properties.get("mode")
+            if isinstance(mode, dict):
+                mode["default"] = SimulationMode.SIMULATE.value
+        return schema
 
     @staticmethod
     def _add_run_control_args(parser: Any) -> None:
@@ -1348,12 +1399,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         return None
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run(self) -> McpToolResult:
+        """Run the selected shape and stamp its canonical mode on every result."""
+        result = self._run_selected_mode()
+        result.detail["mode"] = self.args.mode.value
+        return result
+
+    def _run_selected_mode(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
             return mode_error
-        if self.args.elab_only:
+        if self.args.mode.elaborates_only:
             return self._run_elab_only()
         total_start = time.monotonic()
         resolution_started = total_start
@@ -1421,6 +1478,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets_passed = sum(1 for r in all_results if r.passed)
         any_elab_failed = any(r.elab_failed for r in all_results)
         detail: dict[str, Any] = {
+            "mode": self.args.mode.value,
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
@@ -1484,12 +1542,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _validate_mode_args(self) -> McpToolResult | None:
         """Reject run-stage arguments that have no meaning in elab-only mode."""
-        if self.args.standalone and not self.args.elab_only:
+        if self.args._legacy_standalone_without_elab:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="sim: --standalone requires --elab-only; add --elab-only or remove --standalone.",
+                report_text=(
+                    "sim: --standalone alone is invalid; use --mode elab-only-standalone"
+                ),
             )
-        if not self.args.elab_only:
+        if not self.args.mode.elaborates_only:
             return None
         conflicts = (
             ("--test", self.args.test is not None),
@@ -1503,8 +1563,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return McpToolResult(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {argument} conflicts with --elab-only; remove "
-                        f"{argument} or omit --elab-only."
+                        f"sim: {argument} conflicts with --mode {self.args.mode.value}; "
+                        f"remove {argument} or use --mode simulate."
                     ),
                 )
         return None
@@ -1520,7 +1580,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if missing is not None:
             target, exc = missing
             result = self._missing_executable_result(exc, target)
-            result.detail["mode"] = "elab_only"
+            result.detail["mode"] = self.args.mode.value
             result.detail["targets"] = [
                 self._elab_only_detail(target_result) for target_result in results
             ]
@@ -1558,16 +1618,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
-                detail={"mode": "elab_only"},
+                detail={"mode": self.args.mode.value},
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, McpToolResult):
-            targets_or_error.detail["mode"] = "elab_only"
+            targets_or_error.detail["mode"] = self.args.mode.value
             return targets_or_error
         targets = targets_or_error
         target_error = self._validate_interactive_args(targets)
         if target_error is not None:
-            target_error.detail["mode"] = "elab_only"
+            target_error.detail["mode"] = self.args.mode.value
             return target_error
         if self.args.dry_run:
             return self._handle_elab_only_dry_run(targets)
@@ -1630,7 +1690,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
         detail: dict[str, Any] = {
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "targets": [self._elab_only_detail(result) for result in results],
         }
         artifacts = {
@@ -1756,7 +1816,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             result.outcome.passed,
             source_target=result.target,
             detail={
-                "mode": "elab_only",
+                "mode": self.args.mode.value,
                 "target": result.target,
                 "elapsed_s": round(result.outcome.elapsed_s, 3),
                 "error_gist": (
@@ -1812,7 +1872,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return
         report = {
             "flow": "sim",
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
@@ -1838,7 +1898,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload = {
             "flow": self.name,
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -1856,7 +1916,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
             report_text=f"Dry run: {len(commands)} elab-only build command(s)",
-            detail={"mode": "elab_only", "commands": commands},
+            detail={"mode": self.args.mode.value, "commands": commands},
         )
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
@@ -2133,6 +2193,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target_result.passed,
             source_target=target_result.target,
             detail={
+                "mode": self.args.mode.value,
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
@@ -2168,6 +2229,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
+                "mode": self.args.mode.value,
                 "target": target_result.target,
                 "target_identity": target_result.target_identity,
                 "test": test_name,
@@ -2808,7 +2870,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
             report_text=f"Dry run: {len(commands)} command(s)",
-            detail={"commands": commands},
+            detail={"mode": self.args.mode.value, "commands": commands},
         )
 
     def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
@@ -2834,6 +2896,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Compose best-effort build context around one Target verdict."""
         report: dict[str, Any] = {
             "flow": self.name,
+            "mode": self.args.mode.value,
             "target": result.target,
             "target_identity": result.target_identity,
             "tb_top": result.tb_top,
@@ -2880,6 +2943,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         completed = [result.target for result in results]
         payload: dict[str, Any] = {
             "flow": self.name,
+            "mode": self.args.mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -2929,7 +2993,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"elab_pass_{result.target}",
             met,
             source_target=result.target,
-            detail={"mode": "simulation", "target": result.target, "attempts": attempts},
+            detail={"mode": self.args.mode.value, "target": result.target, "attempts": attempts},
         )
 
 

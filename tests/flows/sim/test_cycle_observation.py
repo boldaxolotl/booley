@@ -15,6 +15,7 @@ from booley.flows.sim.flow import (
     parse_cycles,
 )
 from booley.flows.sim.flow import TestResult as SimTestResult
+from booley.flows.sim.mode import SimulationMode
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
@@ -86,7 +87,12 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     state.init_criteria(template.expand([]), criterion_params=template.expand_params([]))
     flow = object.__new__(SimulateFlow)
     flow._state = state
-    flow._args = MagicMock(state_file="state.json", test=None, work_dir=".")
+    flow._args = MagicMock(
+        state_file="state.json",
+        test=None,
+        work_dir=".",
+        mode=SimulationMode.SIMULATE,
+    )
     flow._target_handles = {
         "sim_core": MagicMock(
             identity="sim_core",
@@ -361,6 +367,7 @@ def test_cycle_criterion_grades_named_test_independently_from_target() -> None:
     flow.set_criterion.assert_called_once()
     assert flow.set_criterion.call_args.args == (key, True)
     assert flow.set_criterion.call_args.kwargs["detail"]["cycles"] == 95
+    assert flow.set_criterion.call_args.kwargs["detail"]["mode"] == "simulate"
 
 
 def test_schema_four_cycle_criterion_grades_selector_evidence() -> None:

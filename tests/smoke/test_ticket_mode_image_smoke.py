@@ -235,7 +235,7 @@ def _criterion(state: DevelopmentState, prefix: str) -> Any:
 async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> None:
     for endpoint, arguments in (
         ("lint", {"target": "lint_smoke"}),
-        ("sim", {"target": "sim_smoke", "elab_only": True}),
+        ("sim", {"target": "sim_smoke", "mode": "elab_only"}),
         ("sim", {"target": "sim_smoke"}),
         ("synth", {"target": "synth_smoke"}),
     ):
@@ -253,7 +253,7 @@ async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> No
     state = _load_state()
     observations["freshness"] = {key: value.met for key, value in state.criteria.items()}
     for arguments in (
-        {"target": "sim_smoke", "elab_only": True},
+        {"target": "sim_smoke", "mode": "elab_only"},
         {"target": "sim_smoke"},
     ):
         code, text = await driver.call("sim", arguments)

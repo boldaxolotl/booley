@@ -48,8 +48,8 @@ of making container paths part of Project configuration.
 
 | Booley Flow | EDA tool | Provisioning | Trace | Requirements |
 |---|---|---|---|---|
-| `sim` (including `--elab-only`) | Verilator | image | waveform (enabling/disabling trace forces a Verilator recompile) | ships in the standard image; cocotb testbenches supported |
-| `sim` (including `--elab-only`) | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
+| `sim` (including `--mode elab-only`) | Verilator | image | waveform (enabling/disabling trace forces a Verilator recompile) | ships in the standard image; cocotb testbenches supported |
+| `sim` (including `--mode elab-only`) | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
 | `lint` | Verilator | image | none | ships in the standard image |
 | `lint` | Verible (`verible-verilog-lint`, style/naming rules) | image | none | ships in the standard image |
 | `synth` | Yosys (+ OpenROAD in physical mode) | image + setup cache | none | tools ship in the standard image; `booley bootstrap` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |
@@ -155,7 +155,7 @@ may override the Python rows (see
 |---|---|
 | Base image | `ubuntu:24.04` |
 | Python | 3.13 (deadsnakes PPA) |
-| Verilator | v5.046 (built from source) |
+| Verilator | v5.052, source commit `ea338be98e1e838d3518809ce8899f85a009963c` |
 | Icarus Verilog | v13_0 |
 | Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
 | sv2v | v0.0.13 |

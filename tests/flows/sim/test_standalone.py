@@ -55,10 +55,9 @@ def _make_flow(
             str(tmp_path / "reports"),
             "--target",
             "sim_dut",
-            "--elab-only",
+            "--mode",
+            "elab-only-standalone" if standalone else "elab-only",
         ]
-        if standalone:
-            args.append("--standalone")
         flow.parse_args(args)
     flow.read_state()
     return flow
@@ -169,6 +168,10 @@ class TestStandaloneSweep:
 
         assert outcome.passed
         assert flow.state.criteria["elaborate_standalone"].met is True
+        assert flow.state.criteria["elaborate_standalone"].detail["mode"] == (
+            "elab_only_standalone"
+        )
+        assert outcome.detail["mode"] == "elab_only_standalone"
         assert outcome.detail["modules_checked"] == 2
         by_module = {command[command.index("-s") + 1]: command for command in commands}
         assert [arg for arg in by_module["alu"] if arg.endswith(".sv")] == ["rtl/alu.sv"]
