@@ -200,6 +200,36 @@ def test_core_referenced_files_ignore_invalid_entries(
     assert "constraints/toy.sdc" in paths
 
 
+def test_acceptance_control_paths_ignore_verilator_timescale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text("CAPI=2:\nname: acme:lib:toy:1\n", encoding="utf-8")
+    document = {
+        "targets": {
+            "sim": {
+                "flow": "sim",
+                "flow_options": {
+                    "tool": "verilator",
+                    "verilator_options": ["--timing", "--timescale", "1ns/1ns"],
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(
+        acceptance_targets.fusesoc_registry, "discover_cores", lambda _root: (core,)
+    )
+    monkeypatch.setattr(acceptance_targets.fusesoc_registry, "read_core", lambda _path: document)
+    monkeypatch.setattr(acceptance_targets, "_project_control_files", lambda _root: ())
+    monkeypatch.setattr(
+        acceptance_targets.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed("git"),
+    )
+
+    assert acceptance_targets.acceptance_control_paths(tmp_path) == ("toy.core",)
+
+
 def test_tracked_gitlinks_reports_git_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

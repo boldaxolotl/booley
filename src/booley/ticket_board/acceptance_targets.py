@@ -22,7 +22,7 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import referenced_program_paths
+from booley.targets.declared_inputs import core_program_paths, project_config_program_paths
 from booley.targets.domain import (
     FuseSocError,
     TargetInput,
@@ -177,13 +177,10 @@ def _core_auxiliary_paths(root: Path, core_file: Path, doc: Mapping[str, Any]) -
     for candidate in _core_referenced_files(root, core_file, doc):
         if candidate.suffix.casefold() in {".sdc", ".xdc"} and candidate.is_file():
             paths.add(candidate)
-    imperative = {
-        key: doc[key] for key in ("generators", "generate", "scripts", "targets") if key in doc
-    }
     paths.update(
-        referenced_program_paths(
-            imperative,
-            search_roots=(core_file.parent,),
+        core_program_paths(
+            doc,
+            core_file=core_file,
             project_root=root,
             strict=True,
         )
@@ -194,9 +191,8 @@ def _core_auxiliary_paths(root: Path, core_file: Path, doc: Mapping[str, Any]) -
 def _config_auxiliary_paths(root: Path, config_path: Path) -> set[Path]:
     """Find executable hooks referenced by Target-selection configuration."""
     return set(
-        referenced_program_paths(
+        project_config_program_paths(
             _target_config(config_path),
-            search_roots=(root, config_path.parent),
             project_root=root,
             strict=True,
         )

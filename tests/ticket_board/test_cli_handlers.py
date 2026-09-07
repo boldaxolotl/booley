@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.criteria.state import DevelopmentState
+from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.cli_handlers import (
     _cmd_board,
@@ -21,6 +24,7 @@ from booley.ticket_board.cli_handlers import (
     _cmd_slug,
     _cmd_timing,
     _cmd_validate_logs,
+    _cmd_validate_ticket,
 )
 from booley.ticket_board.paths import existing_runtime_file
 
@@ -38,6 +42,81 @@ class TestCmdSlug:
         assert rc == 0
         out = capsys.readouterr().out.strip()
         assert out == "fix-counter-overflow-bug"
+
+
+def test_validate_ticket_accepts_verilator_timescale(
+    tio, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nsummary: Test\n---\n## Description\nTest.\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options:\n"
+        "      tool: verilator\n"
+        "      verilator_options: [--timing, --timescale, 1ns/1ns]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_handlers, "detect_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        cli_handlers.TicketWorkspace,
+        "ensure_authoring",
+        lambda *_args: SimpleNamespace(outer=tmp_path),
+    )
+    monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(acceptance_targets, "_project_control_files", lambda _root: ())
+    monkeypatch.setattr(
+        acceptance_targets.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["git"], 0, "", ""),
+    )
+
+    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=True))
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "errors": [],
+        "warnings": [],
+        "valid": True,
+    }
+
+
+def test_validate_ticket_reports_missing_program_without_traceback(
+    tio, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nsummary: Test\n---\n## Description\nTest.\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1\n"
+        "scripts:\n"
+        "  prepare:\n"
+        "    cmd: [python3, hooks/missing.py]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_handlers, "detect_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        cli_handlers.TicketWorkspace,
+        "ensure_authoring",
+        lambda *_args: SimpleNamespace(outer=tmp_path),
+    )
+    monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(acceptance_targets, "_project_control_files", lambda _root: ())
+
+    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=True))
+
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "errors": [
+            "Acceptance input discovery failed: "
+            "referenced program is unavailable: hooks/missing.py"
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------

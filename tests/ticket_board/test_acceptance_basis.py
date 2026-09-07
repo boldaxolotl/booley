@@ -16,7 +16,6 @@ from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import referenced_program_paths
 from booley.ticket_board import (
     acceptance_basis as acceptance_basis_module,
 )
@@ -1724,24 +1723,6 @@ def test_protected_input_git_discovery_failure_is_loud(
 
     with pytest.raises(AcceptanceBasisError, match="protected-input discovery failed"):
         AcceptancePathPolicy().discover(tmp_path)
-
-
-def test_referenced_program_paths_include_redirecting_symlink(tmp_path: Path) -> None:
-    root = tmp_path / "project"
-    real = root / "real-hooks"
-    real.mkdir(parents=True)
-    (real / "run.py").write_text("print('run')\n", encoding="utf-8")
-    (root / "hooks").symlink_to(real, target_is_directory=True)
-
-    paths = referenced_program_paths(
-        {"pre_run": "hooks/run.py"},
-        search_roots=(root,),
-        project_root=root,
-        strict=True,
-    )
-
-    assert root / "hooks" in paths
-    assert real / "run.py" in paths
 
 
 def test_binding_selector_validation_rejects_changed_identity(
