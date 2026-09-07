@@ -574,15 +574,7 @@ class LintFlow(BuiltinFlow):
 
     def _lint_plan_command(self, target: TargetHandle) -> tuple[str, ...]:
         """Render the command shape used by the lint plan."""
-        if target.core_file.exists():
-            command = tuple(self._dry_run_command(target))
-        else:
-            build_root = edam_layer.work_root_for(
-                self.args.work_dir,
-                "lint",
-                target.selector,
-            )
-            command = ("make", "-C", edam_layer.relpath_for_make(build_root, self.args.work_dir))
+        command = tuple(self._dry_run_command(target))
         if len(command) == 1 and command[0].startswith("ERROR:"):
             raise ValueError(command[0])
         return command
