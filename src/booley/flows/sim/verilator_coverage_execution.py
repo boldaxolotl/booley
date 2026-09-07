@@ -12,6 +12,7 @@ from typing import cast
 
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -35,6 +36,7 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
+from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.execution.engine import (
@@ -49,8 +51,6 @@ from booley.flows.sim.execution.freshness import (
     validate_fresh_artifact,
 )
 from booley.flows.sim.runner import resolve_sim_sentinels
-from booley.fusesoc import fusesoc_trace_overlay
-from booley.fusesoc.fusesoc_coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -133,7 +133,7 @@ class VerilatorCoverageExecution:
                 environment=_target_environment(self._handle),
             )
             if prepared.resolved.cocotb_module and request.variant.trace:
-                fusesoc_trace_overlay.validate_cocotb_trace_mode(
+                trace_overlay.validate_cocotb_trace_mode(
                     self._handle.selector,
                     overlay.trace_mode,
                 )

@@ -1,4 +1,4 @@
-"""Ephemeral FuseSoC build overlays for Verilator-native coverage."""
+"""Simulation-owned FuseSoC build overlays for Verilator-native coverage."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.flows.sim.trace_recipe import TraceMode, TraceRecipeError, resolve_verilator_trace_mode
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.targets.domain import TargetHandle
 
-from .fusesoc_trace_overlay import (
+from .trace_overlay import (
     DEFAULT_TRACE_DEPTH,
     _with_trace_options,
     _write_overlay_core_file,
 )
+from .trace_recipe import TraceMode, TraceRecipeError, resolve_verilator_trace_mode
 
 logger = logging.getLogger(__name__)
 

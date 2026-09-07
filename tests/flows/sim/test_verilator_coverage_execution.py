@@ -12,6 +12,7 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
@@ -27,7 +28,6 @@ from booley.flows.sim.verilator_coverage_execution import (
     VerilatorCoverageExecution,
     prepare_coverage_collection,
 )
-from booley.fusesoc.fusesoc_coverage_overlay import CoverageOverlay
 from booley.targets.catalog import TargetCatalog
 
 
