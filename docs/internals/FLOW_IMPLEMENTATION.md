@@ -514,15 +514,15 @@ SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
 [CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth).
 
-A physical Target with **no** SDC fileset **and** no explicit clock is a **hard
-error**, not a silent default: the run fails loudly, naming the Target and the
-fix, rather than fabricating a clock the author never chose. Logical mode does
-not run STA, so it neither requires nor consumes SDC. The only way to a canned
-clock in physical mode without SDC is the explicit per-run `--default-clock
-<ps>` opt-in.
-When the Target's SDC declares its own `create_clock` / `set_input_delay` /
-`set_output_delay`, that fully owns the timing intent and the Fmax readout
-recovers the effective period from the SDC's `create_clock`, not a config scalar.
+A physical Target with **no** SDC fileset is a **hard error**, not a silent
+default: the run fails before EDA execution, naming the Target and the fix,
+rather than fabricating a clock the author never chose. Logical mode does not
+run STA, so it neither requires nor consumes SDC. OpenROAD loads the Target's
+SDC files in deterministic fileset order without adding generated clocks, I/O
+delays, drive/load constraints, or other timing defaults. After loading them it
+requires at least one clock; a clockless SDC is classified as an input/config
+error. The Fmax readout recovers the effective period from the authored SDC or
+the clock OpenROAD reports after evaluating dynamic Tcl.
 
 **Constrain the clock near the design's realistic target.** Too aggressive a
 clock, say a 4 ns (250 MHz) constraint on a design whose real speed is tens of

@@ -27,11 +27,6 @@ def _make_args(**overrides) -> argparse.Namespace:
         "abc_recipe": "balanced",
         "frontend": "sv2v",
         "synth_mode": "physical",
-        "clock": None,
-        "period_ps": None,
-        "default_clock": None,
-        "input_delay_pct": None,
-        "output_delay_pct": None,
         "sta_sdc": None,
         "utilization_pct": None,
         "repair_timing": None,
@@ -224,7 +219,7 @@ class TestTimingArgs:
             },
         )
         args = mod._build_parser().parse_args(
-            ["configure", "-t", "top", "--default-clock", "4000"]
+            ["configure", "-t", "top", "--synth-mode", "logical"]
         )
         _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
         timing = mod._resolve_syn_timing(args, openroad)
@@ -246,8 +241,8 @@ class TestTimingArgs:
                 "configure",
                 "-t",
                 "top",
-                "--default-clock",
-                "4000",
+                "--synth-mode",
+                "logical",
                 "--ppa-profile",
                 "compact",
             ]
@@ -257,6 +252,16 @@ class TestTimingArgs:
         assert timing.utilization_pct == 40.0
         assert timing.repair_timing is True
         assert timing.placement_density == 0.65
+
+    @pytest.mark.parametrize(
+        "option",
+        ["--default-clock", "--clock", "--period-ps", "--input-delay-pct", "--output-delay-pct"],
+    )
+    def test_generated_constraint_options_are_not_accepted(self, option):
+        from booley.flows.synth.backends.configure import _build_parser
+
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["configure", "-t", "top", option, "4000"])
 
 
 # ---------------------------------------------------------------------------
