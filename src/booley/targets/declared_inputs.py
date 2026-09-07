@@ -12,16 +12,24 @@ _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _TARGET_COMMAND_KEYS = frozenset({"pre_run"})
 _COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
-_INTERPRETER_SAFE_FLAGS = {
-    "bash": frozenset({"-e", "-f", "-n", "-u", "-v", "-x"}),
-    "node": frozenset({"--no-warnings"}),
-    "perl": frozenset({"-w"}),
-    "python": frozenset({"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v", "-x"}),
-    "python3": frozenset(
-        {"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v", "-x"}
-    ),
-    "ruby": frozenset({"-w"}),
-    "sh": frozenset({"-e", "-f", "-n", "-u", "-v", "-x"}),
+_INTERPRETER_INLINE_OPTIONS = {
+    "bash": ("-c",),
+    "node": ("-e", "--eval", "-p", "--print"),
+    "perl": ("-e", "-E"),
+    "python": ("-c", "-m"),
+    "python3": ("-c", "-m"),
+    "ruby": ("-e",),
+    "sh": ("-c",),
+    "tclsh": (),
+}
+_INTERPRETER_VALUE_OPTIONS = {
+    "bash": frozenset({"-O", "-o", "--init-file", "--rcfile"}),
+    "node": frozenset({"-r", "--require", "--import", "--loader", "--input-type"}),
+    "perl": frozenset({"-I", "-M", "-m"}),
+    "python": frozenset({"-W", "-X", "--check-hash-based-pycs"}),
+    "python3": frozenset({"-W", "-X", "--check-hash-based-pycs"}),
+    "ruby": frozenset({"-E", "-I", "-r", "--encoding"}),
+    "sh": frozenset({"-o"}),
     "tclsh": frozenset(),
 }
 
@@ -39,7 +47,7 @@ def core_program_paths(
     explicitly executable Target options are parsed; other options and symbolic
     hook/generator references are deliberately ignored.
     """
-    candidates = _core_program_candidates(doc)
+    candidates = _core_program_candidates(doc, strict=strict)
     return _resolve_program_paths(
         candidates,
         search_root=core_file.parent,
@@ -48,11 +56,11 @@ def core_program_paths(
     )
 
 
-def _core_program_candidates(doc: Mapping[str, object]) -> tuple[str, ...]:
+def _core_program_candidates(doc: Mapping[str, object], *, strict: bool) -> tuple[str, ...]:
     return (
         *_script_program_candidates(doc),
         *_generator_program_candidates(doc),
-        *_target_program_candidates(doc),
+        *_target_program_candidates(doc, strict=strict),
     )
 
 
@@ -64,8 +72,14 @@ def _script_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
         if not isinstance(spec, Mapping):
             continue
         command = spec.get("cmd")
-        if isinstance(command, list) and all(isinstance(item, str) for item in command):
-            yield from _argv_program_candidates(command)
+        appended = spec.get("cmd_append", [])
+        if (
+            isinstance(command, list)
+            and all(isinstance(item, str) for item in command)
+            and isinstance(appended, list)
+            and all(isinstance(item, str) for item in appended)
+        ):
+            yield from _argv_program_candidates([*command, *appended])
 
 
 def _generator_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
@@ -80,7 +94,7 @@ def _generator_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
             yield command
 
 
-def _target_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
+def _target_program_candidates(doc: Mapping[str, object], *, strict: bool) -> Iterator[str]:
     targets = doc.get("targets")
     if not isinstance(targets, Mapping):
         return
@@ -93,7 +107,7 @@ def _target_program_candidates(doc: Mapping[str, object]) -> Iterator[str]:
         for key in _TARGET_COMMAND_KEYS:
             command = options.get(key)
             if isinstance(command, str):
-                yield from _shell_program_candidates(command)
+                yield from _shell_program_candidates(command, strict=strict)
 
 
 def project_config_program_paths(
@@ -114,7 +128,7 @@ def project_config_program_paths(
                 continue
             for command in commands:
                 if isinstance(command, str):
-                    candidates.extend(_shell_program_candidates(command))
+                    candidates.extend(_shell_program_candidates(command, strict=strict))
     return _resolve_program_paths(
         candidates,
         search_root=project_root,
@@ -123,14 +137,16 @@ def project_config_program_paths(
     )
 
 
-def _shell_program_candidates(command: str) -> tuple[str, ...]:
+def _shell_program_candidates(command: str, *, strict: bool) -> tuple[str, ...]:
     """Extract programs from a bounded shell grammar, never arbitrary operands."""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
-    except ValueError:
+    except ValueError as exc:
+        if strict:
+            raise ValueError(f"invalid executable command syntax: {command!r}") from exc
         return ()
     candidates: list[str] = []
     segment: list[str] = []
@@ -159,16 +175,54 @@ def _argv_program_candidates(command: list[str]) -> tuple[str, ...]:
     executable = PurePosixPath(command[0]).name.casefold()
     if executable in {"gmake", "make"}:
         return _makefile_candidates(command[1:])
-    if executable in _INTERPRETER_SAFE_FLAGS:
-        index = 1
-        while index < len(command) and command[index] in _INTERPRETER_SAFE_FLAGS[executable]:
-            index += 1
-        if index == len(command) or command[index].startswith("-"):
-            return ()
-        script = command[index]
-        return (script,) if _looks_like_program_path(PurePosixPath(script), script) else ()
+    if executable in _INTERPRETER_INLINE_OPTIONS:
+        return _interpreter_script_candidates(executable, command[1:])
     candidate = command[0]
     return (candidate,) if _looks_like_program_path(PurePosixPath(candidate), candidate) else ()
+
+
+def _interpreter_script_candidates(executable: str, arguments: list[str]) -> tuple[str, ...]:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            index += 1
+            break
+        if _matches_interpreter_option(argument, _INTERPRETER_INLINE_OPTIONS[executable]):
+            return ()
+        value_options = _INTERPRETER_VALUE_OPTIONS[executable]
+        if argument in value_options:
+            index += 2
+            continue
+        if _matches_attached_value_option(argument, value_options):
+            index += 1
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(arguments):
+        return ()
+    script = arguments[index]
+    return (script,) if _looks_like_program_path(PurePosixPath(script), script) else ()
+
+
+def _matches_interpreter_option(argument: str, options: tuple[str, ...]) -> bool:
+    return any(
+        argument == option
+        or argument.startswith(f"{option}=")
+        or (option.startswith("-") and not option.startswith("--") and argument.startswith(option))
+        for option in options
+    )
+
+
+def _matches_attached_value_option(argument: str, options: frozenset[str]) -> bool:
+    return any(
+        argument.startswith(f"{option}=")
+        or (option.startswith("-") and not option.startswith("--") and argument.startswith(option))
+        for option in options
+        if argument != option
+    )
 
 
 def _makefile_candidates(arguments: list[str]) -> tuple[str, ...]:

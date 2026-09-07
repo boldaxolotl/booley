@@ -87,6 +87,46 @@ def test_core_program_paths_include_interpreter_script(tmp_path: Path) -> None:
     ) == (script,)
 
 
+def test_core_program_paths_include_cmd_append_script(tmp_path: Path) -> None:
+    script = tmp_path / "hooks" / "prepare.py"
+    script.parent.mkdir()
+    script.write_text("print('prepare')\n", encoding="utf-8")
+    document = {
+        "scripts": {
+            "prepare": {
+                "cmd": ["python3"],
+                "cmd_append": ["hooks/prepare.py"],
+            }
+        }
+    }
+
+    assert core_program_paths(
+        document,
+        core_file=tmp_path / "toy.core",
+        project_root=tmp_path,
+        strict=True,
+    ) == (script,)
+
+
+def test_core_program_paths_reject_missing_cmd_append_script(tmp_path: Path) -> None:
+    document = {
+        "scripts": {
+            "prepare": {
+                "cmd": ["python3"],
+                "cmd_append": ["hooks/missing.py"],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match=r"referenced program is unavailable: hooks/missing\.py"):
+        core_program_paths(
+            document,
+            core_file=tmp_path / "toy.core",
+            project_root=tmp_path,
+            strict=True,
+        )
+
+
 def test_core_program_paths_include_generator_command(tmp_path: Path) -> None:
     generator = tmp_path / "generators" / "build.py"
     generator.parent.mkdir()
@@ -130,6 +170,35 @@ def test_project_config_program_paths_support_safe_interpreter_flags(tmp_path: P
     config = {"flows": {"sim": {"pre_run_commands": ["python3 -u hooks/build.py"]}}}
 
     assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
+
+
+@pytest.mark.parametrize("option", ["-X dev", "-Xdev"])
+def test_project_config_program_paths_support_interpreter_options_with_values(
+    tmp_path: Path, option: str
+) -> None:
+    script = tmp_path / "hooks" / "build.py"
+    script.parent.mkdir()
+    script.write_text("print('build')\n", encoding="utf-8")
+    config = {"flows": {"sim": {"pre_run_commands": [f"python3 {option} hooks/build.py"]}}}
+
+    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
+
+
+def test_project_config_program_paths_reject_malformed_command_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    config = {"flows": {"sim": {"pre_run_commands": ['python3 "hooks/build.py']}}}
+
+    with pytest.raises(ValueError, match="invalid executable command syntax"):
+        project_config_program_paths(config, project_root=tmp_path, strict=True)
+
+
+def test_project_config_program_paths_ignore_malformed_command_when_not_strict(
+    tmp_path: Path,
+) -> None:
+    config = {"flows": {"sim": {"pre_run_commands": ['python3 "hooks/build.py']}}}
+
+    assert project_config_program_paths(config, project_root=tmp_path) == ()
 
 
 @pytest.mark.parametrize(
