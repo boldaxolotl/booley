@@ -309,6 +309,8 @@ class McpTool(ABC):
     # Target-aware deterministic Flows override this so both argparse and the
     # generated MCP schema require an explicit selection.
     target_required: bool = False
+    # Source-scoped endpoints may opt out of Target selection entirely.
+    accepts_target: bool = True
     # F-14: on a human/standalone (no-state-file) run, ``report_text`` is only
     # surfaced on *failure* — the PASS verdict lives in ``display_lines``, which
     # the harness UI renders but a bare CLI run drops. For an endpoint whose success
@@ -392,11 +394,12 @@ class McpTool(ABC):
         )
         # Kept default="" (not argparse required) so each endpoint's validation can
         # produce specific guidance and discovery can represent no selection.
-        self._parser.add_argument(
-            "--target",
-            required=self.target_required,
-            help=self.target_help,
-        )
+        if self.accepts_target:
+            self._parser.add_argument(
+                "--target",
+                required=self.target_required,
+                help=self.target_help,
+            )
         self._parser.add_argument(
             "--diagnostic",
             action="store_true",
@@ -560,7 +563,7 @@ class McpTool(ABC):
             )
             return stamped
         source_detail = freshness.to_detail()
-        if is_review and stamped.get("review_detail_version") == 3:
+        if is_review and stamped.get("review_detail_version") == 4:
             from booley.review.receipt import finalize_review_detail
 
             return finalize_review_detail(stamped, source_detail)
@@ -1239,7 +1242,7 @@ class McpTool(ABC):
         endpoint_args: dict[str, Any] | None = None
         if self._args:
             _ta: dict[str, Any] = {}
-            for attr in ("category", "config", "reason"):
+            for attr in ("category", "config", "reason", "dry_run"):
                 val = getattr(self._args, attr, None)
                 if val:
                     _ta[attr] = val

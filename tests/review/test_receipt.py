@@ -1,170 +1,113 @@
-"""Atomic Reviewer receipt and non-source freshness tests."""
+"""Atomic Reviewer receipt and source-scoped freshness tests."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from booley.review.receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewContextError,
     ReviewInvocation,
-    ReviewTicketError,
     build_review_contract_detail,
     finalize_review_detail,
     review_receipt_drift,
 )
 
 
-def _contract(tmp_path: Path, monkeypatch) -> dict:
-    logs = tmp_path / "logs"
-    logs.mkdir(exist_ok=True)
-    (logs / "ticket.md").write_text("Current: implement UART registers.\n", encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-    return build_review_contract_detail(
+def _detail(tmp_path: Path, monkeypatch, *, spec_path: Path | None = None) -> dict:
+    (tmp_path / "rtl").mkdir(exist_ok=True)
+    (tmp_path / "rtl/uart.sv").write_text("module uart; endmodule\n", encoding="utf-8")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    contract = build_review_contract_detail(
         ReviewInvocation(
             work_dir=tmp_path,
             category="rtl",
             focus="bugs",
             scope=("rtl/uart.sv",),
             mode="clean",
-            targets=(),
-            target_kind="none",
+            spec_path=spec_path,
+            steering="prefer reset behavior",
         )
     )
+    return {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}
 
 
 def test_receipt_id_covers_contract_and_source(tmp_path: Path, monkeypatch) -> None:
-    contract = _contract(tmp_path, monkeypatch)
-    draft = {"review_detail_version": 3, "contract": contract}
+    detail = _detail(tmp_path, monkeypatch)
 
-    first = finalize_review_detail(draft, {"categories": ["rtl"], "fingerprint": {"a": 1}})
-    second = finalize_review_detail(draft, {"categories": ["rtl"], "fingerprint": {"a": 2}})
-    changed_contract = {**contract, "scope": ["rtl/other.sv"]}
+    first = finalize_review_detail(detail, {"categories": ["rtl"], "fingerprint": {"a": 1}})
+    second = finalize_review_detail(detail, {"categories": ["rtl"], "fingerprint": {"a": 2}})
+    changed_contract = {**detail["contract"], "steering_digest": "changed"}
     third = finalize_review_detail(
-        {**draft, "contract": changed_contract},
+        {**detail, "contract": changed_contract},
         {"categories": ["rtl"], "fingerprint": {"a": 1}},
     )
 
     assert len({first["receipt_id"], second["receipt_id"], third["receipt_id"]}) == 3
-    assert first["_source_fingerprint"]["fingerprint"] == {"a": 1}
 
 
-def test_ticket_and_target_edits_stale_receipt(tmp_path: Path, monkeypatch) -> None:
-    contract = _contract(tmp_path, monkeypatch)
-    detail = {"contract": contract}
-    logs = Path(os.environ["BOOLEY_LOGS_DIR"])
-
+def test_only_scoped_source_edits_stale_receipt(tmp_path: Path, monkeypatch) -> None:
+    detail = _detail(tmp_path, monkeypatch)
     assert review_receipt_drift(detail, tmp_path) == []
 
-    (logs / "ticket.md").write_text("Current: changed UART contract.\n", encoding="utf-8")
-    assert review_receipt_drift(detail, tmp_path) == ["ticket"]
+    (tmp_path / "rtl/unrelated.sv").write_text("module other; endmodule\n", encoding="utf-8")
+    assert review_receipt_drift(detail, tmp_path) == []
 
-    (tmp_path / "uart.core").write_text(
-        "CAPI=2:\nname: acme:uart:uart:1\ntargets:\n  lint: {flow: lint}\n",
-        encoding="utf-8",
-    )
-    assert review_receipt_drift(detail, tmp_path) == ["ticket", "target_surface"]
+    (tmp_path / "rtl/uart.sv").write_text("module uart; logic x; endmodule\n", encoding="utf-8")
+    assert review_receipt_drift(detail, tmp_path) == ["scope"]
 
 
-def test_explicit_ticket_source_is_reused_without_logs_environment(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    ticket = tmp_path / "interactive-ticket.md"
-    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    contract = build_review_contract_detail(
-        ReviewInvocation(
-            work_dir=tmp_path,
-            category="rtl",
-            focus="bugs",
-            scope=("rtl/uart.sv",),
-            mode="done",
-            targets=(),
-            target_kind="none",
-            ticket_path=ticket,
-        )
-    )
-
-    assert review_receipt_drift({"contract": contract}, tmp_path) == []
-    ticket.write_text("Implement changed UART registers.\n", encoding="utf-8")
-    assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
-
-
-def test_explicit_ticket_source_is_reused_with_empty_interactive_logs(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    logs = tmp_path / "interactive-logs"
+def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
     logs.mkdir()
-    ticket = tmp_path / "interactive-ticket.md"
-    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
+    (logs / "ticket.md").write_text("Implement UART registers.\n", encoding="utf-8")
+    (logs / "answered_questions.md").write_text("Use active-low reset.\n", encoding="utf-8")
+    explicit = tmp_path / "explicit.md"
+    explicit.write_text("This must not override Ticket Mode.\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-
     contract = build_review_contract_detail(
         ReviewInvocation(
             work_dir=tmp_path,
             category="rtl",
-            focus="bugs",
+            focus="spec",
             scope=("rtl/uart.sv",),
             mode="done",
-            targets=(),
-            target_kind="none",
-            ticket_path=ticket,
+            spec_path=explicit,
         )
     )
+    detail = {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}
 
-    assert contract["ticket_source"]["ticket"] == str(ticket.resolve())
-    assert contract["ticket_source"]["accepted_decisions"] == str(
-        (logs / "answered_questions.md").resolve()
-    )
-    assert review_receipt_drift({"contract": contract}, tmp_path) == []
-    ticket.write_text("Implement changed UART registers.\n", encoding="utf-8")
-    assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
-
-
-def test_interactive_receipt_needs_no_ticket_mode_snapshot(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    logs = tmp_path / "interactive-logs"
-    logs.mkdir()
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-
-    contract = build_review_contract_detail(
-        ReviewInvocation(
-            work_dir=tmp_path,
-            category="rtl",
-            focus="bugs",
-            scope=("rtl/uart.sv",),
-            mode="done",
-            targets=(),
-            target_kind="none",
-        )
-    )
-
-    assert contract["ticket_source"]["ticket"] == ""
-    assert review_receipt_drift({"contract": contract}, tmp_path) == []
+    assert contract["ticket_source"] == str((logs / "ticket.md").resolve())
+    assert contract["spec_source"] == ""
+    assert review_receipt_drift(detail, tmp_path) == []
+    (logs / "answered_questions.md").write_text("Use synchronous reset.\n", encoding="utf-8")
+    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
 
 
-def test_missing_binding_ticket_fails_loud(tmp_path: Path, monkeypatch) -> None:
-    ticket = tmp_path / "interactive-ticket.md"
-    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    contract = build_review_contract_detail(
-        ReviewInvocation(
-            work_dir=tmp_path,
-            category="rtl",
-            focus="bugs",
-            scope=("rtl/uart.sv",),
-            mode="done",
-            targets=(),
-            target_kind="none",
-            ticket_path=ticket,
-        )
-    )
-    ticket.unlink()
+def test_explicit_spec_is_tracked_in_standalone_mode(tmp_path: Path, monkeypatch) -> None:
+    spec = tmp_path / "spec.md"
+    spec.write_text("Latency is three cycles.\n", encoding="utf-8")
+    detail = _detail(tmp_path, monkeypatch, spec_path=spec)
 
-    with pytest.raises(ReviewTicketError, match="Ticket context"):
-        review_receipt_drift({"contract": contract}, tmp_path)
+    assert review_receipt_drift(detail, tmp_path) == []
+    spec.write_text("Latency is four cycles.\n", encoding="utf-8")
+    assert review_receipt_drift(detail, tmp_path) == ["spec"]
+
+
+def test_missing_persisted_spec_fails_loudly(tmp_path: Path, monkeypatch) -> None:
+    spec = tmp_path / "spec.md"
+    spec.write_text("Latency is three cycles.\n", encoding="utf-8")
+    detail = _detail(tmp_path, monkeypatch, spec_path=spec)
+    spec.unlink()
+
+    with pytest.raises(ReviewContextError, match="context"):
+        review_receipt_drift(detail, tmp_path)
+
+
+def test_v3_receipt_is_stale_once(tmp_path: Path, monkeypatch) -> None:
+    detail = _detail(tmp_path, monkeypatch)
+    detail["review_detail_version"] = 3
+
+    assert review_receipt_drift(detail, tmp_path) == ["contract_version"]

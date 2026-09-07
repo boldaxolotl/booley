@@ -35,7 +35,7 @@ from booley.dev_support.commit_git_io import (
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.dev_support.validate_commit_msg import ALLOWED_TYPES
-from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
@@ -139,6 +139,43 @@ class Specialist(McpTool):
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         """Hook for subclasses to add additional arguments."""
+
+    @staticmethod
+    def _add_scope_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+        """Register the shared, explicit source-scope interface."""
+        parser.add_argument("--scope", required=True, help=help_text)
+
+    @staticmethod
+    def _add_steer_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+        """Register repeatable caller context with one MCP array shape."""
+        parser.add_argument(
+            "--steer",
+            action="append",
+            default=None,
+            help=(
+                f"{help_text} Repeatable; over MCP pass an array of strings, "
+                "not a bare string."
+            ),
+        )
+
+    @staticmethod
+    def _add_dry_run_arg(parser: argparse.ArgumentParser) -> None:
+        """Register the common non-executing specialist preview mode."""
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Validate inputs and preview planned work without invoking agents or EDA tools",
+        )
+
+    def _dry_run_result(self, *, summary: str, detail: dict[str, Any]) -> McpToolResult:
+        """Build the common successful, non-acceptance dry-run result."""
+        payload = {"mode": "dry_run", **detail}
+        return McpToolResult(
+            exit_code=EXIT_SUCCESS,
+            report_text=summary,
+            display_lines=[summary],
+            detail=payload,
+        )
 
     def _resolve_model(self) -> str:
         """Resolve the model to run this specialist on.

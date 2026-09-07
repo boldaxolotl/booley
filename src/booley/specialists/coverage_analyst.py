@@ -40,6 +40,7 @@ from booley.config.project_config import lookup_target_section
 from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
 from booley.flows import edam as edam_layer
+from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
 from booley.flows.sim.trace_recipe import TraceMode
@@ -595,16 +596,11 @@ class CoverageAnalystSpecialist(Specialist):
         "for waivers and branch analysis"
     )
     code_modifying: bool = False
+    target_required: bool = True
     min_model: str = "standard"
     default_timeout: int = 1200
     min_timeout: int = 600
-    satisfies: ClassVar[list[str]] = [
-        "coverage_toggle",
-        "coverage_fsm",
-        "coverage_value",
-        "coverage_branch",
-        "coverage_expression",
-    ]
+    satisfies: ClassVar[list[str]] = ["coverage"]
     satisfies_args: ClassVar[dict[str, str]] = {}
     # Nested-MCP allowlist lives in booley.runtime.nested_mcp_capabilities.
 
@@ -621,56 +617,10 @@ class CoverageAnalystSpecialist(Specialist):
             return False
         return module is not None
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
-        """Reject missing args in Interactive Mode with a clear message.
-
-        The hierarchy discovery and sim invocation assume ``--tb-top`` is
-        populated; the sim wrapper requires ``--target``.
-
-        E3 (ADR 0034): for a Cocotb Target the testbench top *is* the
-        Target's ``toplevel`` (DUT-as-toplevel), so
-        ``--tb-top`` is not required — it defaults from the ``.core``.
-        """
-        if not getattr(self.args, "tb_top", None) and self._is_cocotb_target():
-            from booley.flows.flow_config import tb_top_for_target
-
-            try:
-                self.args.tb_top = tb_top_for_target(
-                    self.args.target,
-                    self.args.work_dir,
-                    resolved=None,
-                )
-            except Exception:  # fall through to the hard requirement
-                logger.debug("cocotb tb_top default failed", exc_info=True)
-        if not getattr(self.args, "tb_top", None):
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "coverage_analyst: --tb-top is required when running "
-                    "outside a ticket (testbench top module name, e.g. 'tb')."
-                ),
-            )
-        if not getattr(self.args, "target", "").strip():
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "coverage_analyst: --target is required. Pass --target "
-                    "<name>; it names a Target in the project's .core file "
-                    "(list them with `booley targets`)."
-                ),
-            )
-        return None
-
     def _add_agent_args(self, parser) -> None:
-        parser.add_argument(
-            "--tb-top",
-            default=None,
-            help="Testbench top module name. Defaults to the resolved sim Target's toplevel.",
-        )
-        parser.add_argument(
-            "--scope",
-            default=None,
-            help="Comma-separated RTL files; defaults from this Target's criteria",
+        self._add_scope_arg(
+            parser,
+            help_text="Comma-separated RTL files to analyze",
         )
         # --hierarchy-scope removed: auto-derived glob always used to prevent
         # developer from narrowing scope to trivially pass coverage.
@@ -686,6 +636,8 @@ class CoverageAnalystSpecialist(Specialist):
             default=False,
             help="Discard cached waivers from previous runs and re-evaluate all signals from scratch",
         )
+        self._add_steer_arg(parser, help_text="Developer Agent context for coverage analysis.")
+        self._add_dry_run_arg(parser)
 
     # _agent_lock initialized per-instance in _run() to avoid serializing concurrent runs
 
@@ -1187,9 +1139,13 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _get_active_criteria(self) -> set[str]:
         """Determine which coverage criteria are active for this run."""
-        active = {criterion.base_key for criterion in self._campaign_for_tests().criteria}
-        # If nothing in state, assume all are active
-        active = active if active else set(self.satisfies)
+        campaign = self._campaign_for_tests()
+        coverage_policy = campaign.params_for("coverage")
+        metrics = coverage_policy.get("metrics") if coverage_policy else None
+        if isinstance(metrics, dict):
+            active = {f"coverage_{name}" for name in metrics}
+        else:
+            active = {row[0] for row in _COVERAGE_CRITERIA_TABLE}
 
         # Intersect with --criteria CLI filter if provided
         cli_criteria = getattr(self.args, "criteria", None)
@@ -1333,8 +1289,12 @@ For each branch condition, decompose into atomic sub-expressions and test each.
             if (trace_file := self._find_trace_file(candidate)) is not None
         ]
         trace_paths = "\n".join(f"- `{path}`" for path in trace_files) or "- `<trace_file>`"
-        instruction = getattr(self.args, "instruction", "")
-        spec_section = f"\n## Spec / Context\n\n{instruction}\n" if instruction else ""
+        context = "\n".join(
+            part
+            for part in (getattr(self.args, "instruction", ""), self.steering_text())
+            if part
+        )
+        spec_section = f"\n## Spec / Context\n\n{context}\n" if context else ""
         tb_dirs = ", ".join(_configured_testbench_source_dirs(self.args.work_dir))
         signal_lines = [f"  - `{s.name}` (width: {s.width})" for s in signal_stats[:100]]
         if len(signal_stats) > 100:
@@ -1441,8 +1401,11 @@ For each branch condition, decompose into atomic sub-expressions and test each.
 
     def _build_fsm_prompt(self, rtl_context: str) -> str:
         """Build prompt for FSM identifier — RTL embedded, no agent capabilities needed."""
+        steer = self.steering_text()
+        context_section = f"\n## Caller Context\n{steer}\n" if steer else ""
         return f"""You are an FSM identification specialist. Analyze the RTL source below and
 identify all finite state machine (FSM) registers and their expected state values.
+{context_section}
 
 ## RTL Source
 {rtl_context}
@@ -1614,6 +1577,9 @@ Rules:
         if active_criteria:
             sections.append(f"Active criteria: {', '.join(sorted(active_criteria))}")
             sections.append("")
+        steer = self.steering_text()
+        if steer:
+            sections.extend(["## Caller Context", steer, ""])
         sections.append("""\
 Return ONLY valid JSON matching this schema:
 ```json
@@ -1728,9 +1694,12 @@ Signals:
         active_criteria: set[str] | None = None,
     ) -> str:
         """Build prompt for coverage reviewer — full context, no agent capabilities."""
-        spec_section = ""
-        if hasattr(self.args, "instruction") and self.args.instruction:
-            spec_section = f"\n## Spec\n{self.args.instruction}\n"
+        context = "\n".join(
+            part
+            for part in (getattr(self.args, "instruction", ""), self.steering_text())
+            if part
+        )
+        spec_section = f"\n## Spec / Caller Context\n{context}\n" if context else ""
 
         # Toggle failures section (skip if toggle not active)
         toggle_section = self._reviewer_toggle_section(toggle_failures, active_criteria)
@@ -1800,26 +1769,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     # --- Phase 5: Scoring ---
 
-    def _set_coverage_criterion(
-        self,
-        criterion: str,
-        passed: bool,
-        detail_key: str,
-        score: dict,
-        *,
-        error: str | None = None,
-    ) -> None:
-        """Record one Target-scoped coverage verdict in development state."""
-        detail = {detail_key: score, "target": self.args.target}
-        if error is not None:
-            detail["error"] = error
-        self.set_criterion(
-            self._target_criterion_key(criterion),
-            passed,
-            detail=detail,
-            source_target=self.args.target,
-        )
-
     def _emit_criterion_result(
         self,
         active: set[str],
@@ -1846,23 +1795,14 @@ abort path". Omit this field or leave empty if all criteria are already met.
         threshold = scored["min"][detail_key]
         errored_fail = scored["errored_fail"].get(detail_key, False)
         if score["pct"] is not None:
-            self._set_coverage_criterion(criterion, passed, detail_key, score)
             suffix = " (>50% errored)" if errored_fail else ""
             results_lines.append(
                 f"  {label}: {score['pct']:.0f}% (need {threshold}%) — "
                 f"{'PASS' if passed else 'FAIL'}{suffix}"
             )
         elif criterion in self._phase_errors:
-            self._set_coverage_criterion(
-                criterion,
-                False,
-                detail_key,
-                score,
-                error="phase_failed",
-            )
             results_lines.append(f"  {label}: ERROR (phase failed) — FAIL")
         else:
-            self._set_coverage_criterion(criterion, True, detail_key, score)
             results_lines.append(f"  {label}: N/A ({na_reason}) — PASS")
 
     def _score_coverage_criteria(self, report: CoverageReport, active: set[str]) -> dict:
@@ -1960,13 +1900,14 @@ abort path". Omit this field or leave empty if all criteria are already met.
         report_dict["tests"] = list(suite.display_names)
         report_dict["trace_dirs"] = [str(path) for path in getattr(self, "_trace_dirs", [])]
         scored = self._score_coverage_criteria(report, active)
+        report_dict["policy_results"] = scored
         scores = scored["scores"]
         all_pass = scored["all_pass"]
         toggle, fsm = scores["toggle"], scores["fsm"]
         value, branch, expression = scores["value"], scores["branch"], scores["expression"]
 
         results_lines: list[str] = []
-        # Set criteria independently with per-type detail (order fixed by the table)
+        # Render each active metric in the table's stable order.
         for row in _COVERAGE_CRITERIA_TABLE:
             self._emit_criterion_result(active, results_lines, row, scored)
 
@@ -1982,6 +1923,13 @@ abort path". Omit this field or leave empty if all criteria are already met.
         report_text = "\n".join(output_lines)
 
         self._write_report_artifact(report_dict)
+        criterion_key = self._target_criterion_key("coverage")
+        self.set_criterion(
+            criterion_key,
+            all_pass,
+            detail=report_dict,
+            source_target=self.args.target,
+        )
 
         display_parts = []
         for label, score in [
@@ -1994,12 +1942,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
             if score["pct"] is not None:
                 display_parts.append(f"{label}: {score['pct']:.0f}%")
 
-        active_keys = [self._target_criterion_key(k) for k in self.satisfies if k in active]
         return McpToolResult(
             exit_code=exit_code,
-            criterion_key=(
-                active_keys[0] if active_keys else self._target_criterion_key("coverage_toggle")
-            ),
+            criterion_key=criterion_key,
             criterion_met=all_pass,
             detail=report_dict,
             report_text=report_text,
@@ -2015,9 +1960,12 @@ abort path". Omit this field or leave empty if all criteria are already met.
         whole coverage run. ``as_int`` also rejects the bool trap
         (``int(True) == 1`` would otherwise sail through silently).
         """
-        params = self._campaign_for_tests().params_for(criterion_key)
-        if params:
-            state_val = params.get("min_pct")
+        params = self._campaign_for_tests().params_for("coverage")
+        metrics = params.get("metrics") if params else None
+        metric_name = criterion_key.removeprefix("coverage_")
+        metric_policy = metrics.get(metric_name) if isinstance(metrics, dict) else None
+        if isinstance(metric_policy, dict):
+            state_val = metric_policy.get("min_pct")
             if state_val is not None:
                 coerced = as_int(state_val)
                 if coerced is not None:
@@ -2532,13 +2480,34 @@ abort path". Omit this field or leave empty if all criteria are already met.
             [],
         )
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> McpToolResult:  # noqa: PLR0911 - one return per campaign phase failure
         """Five-phase coverage analysis."""
+        if campaign_error := self._apply_campaign_defaults():
+            return campaign_error
+        if input_error := self._prepare_run_inputs():
+            return input_error
+        if getattr(self.args, "dry_run", False):
+            campaign = self._target_campaign
+            active = sorted(self._get_active_criteria())
+            summary = (
+                f"coverage_analyst dry-run: target={self.args.target}; "
+                f"scope={len(campaign.scope)} file(s); top={self._tb_top}; "
+                f"criteria={','.join(active)}"
+            )
+            return self._dry_run_result(
+                summary=summary,
+                detail={
+                    "target": self.args.target,
+                    "scope": list(campaign.scope),
+                    "tb_top": self._tb_top,
+                    "tests": [unit.display_name for unit in campaign.execution_units()],
+                    "criteria": active,
+                    "steering_count": len(getattr(self.args, "steer", None) or []),
+                },
+            )
         err = self._check_prerequisites()
         if err:
             return err
-        if campaign_error := self._apply_campaign_defaults():
-            return campaign_error
 
         t0, work_dir, output_lines = self._init_run_state()
 
@@ -2601,6 +2570,55 @@ abort path". Omit this field or leave empty if all criteria are already met.
         # Phase 5: Scoring
         output_lines.append("[coverage] phase 5: scoring")
         return self._build_coverage_result(report, output_lines, active_criteria)
+
+    def _prepare_run_inputs(self) -> McpToolResult | None:
+        """Resolve metadata-only inputs before dry-run or execution."""
+        if target_error := self._validate_single_target():
+            return target_error
+        try:
+            self._tb_top = tb_top_for_target(self.args.target, self.args.work_dir, resolved=None)
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target))
+        except Exception as exc:  # noqa: BLE001 — Target adapters expose several typed errors
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"coverage_analyst: could not resolve Target metadata: {exc}",
+            )
+        if not self._tb_top:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="coverage_analyst: selected Target does not declare a toplevel",
+            )
+        scope = set(self._target_campaign.scope)
+        unknown = sorted(scope - set(inspection.rtl_files))
+        if unknown:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "coverage_analyst: --scope contains files outside the Target RTL "
+                    f"closure: {', '.join(unknown)}"
+                ),
+            )
+        valid = {"toggle", "fsm", "value", "branch", "expression"}
+        requested = {
+            item.strip() for item in (self.args.criteria or "").split(",") if item.strip()
+        }
+        invalid = sorted(requested - valid)
+        if invalid:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"coverage_analyst: unknown --criteria: {', '.join(invalid)}",
+            )
+        return None
+
+    def _validate_single_target(self) -> McpToolResult | None:
+        targets = [part.strip() for part in self.args.target.split(",") if part.strip()]
+        if len(targets) == 1:
+            return None
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text="coverage_analyst: --target must select exactly one Target",
+        )
 
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Resolve one consistent RTL scope from Target-specific criteria."""
@@ -3073,9 +3091,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
                 trace_scope,
                 trace_timeout,
             )
-        except (
-            Exception  # isolate arbitrary adapter/configure failures
-        ) as exc:  # isolate EDAM/configure failure and surface it as an error McpToolResult
+        except Exception as exc:  # noqa: BLE001 - adapter failures are not uniformly typed
             logger.debug("coverage EDAM/configure failed for %s", self.args.target, exc_info=True)
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -3135,7 +3151,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             Path(self.args.work_dir),
             "sim",
             target,
-            top_module=self.args.tb_top,
+            top_module=self._tb_top,
             test_name=resolved_test,
         )
 

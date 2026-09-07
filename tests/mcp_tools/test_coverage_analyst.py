@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
@@ -92,6 +92,7 @@ def _make_endpoint_with_args(**kwargs):
         "timeout": 1200,
     }
     defaults.update(kwargs)
+    endpoint._tb_top = defaults.pop("tb_top")
     endpoint._args = types.SimpleNamespace(**defaults)
     endpoint._state = DevelopmentState()
     return endpoint
@@ -100,6 +101,56 @@ def _make_endpoint_with_args(**kwargs):
 def _fake_bwave_stats_command() -> list[str]:
     """Return the stable fake command shared by B-Wave subprocess tests."""
     return ["/fake/bwave", "stats", "--format", "json"]
+
+
+def test_dry_run_stops_before_prerequisites_agents_and_eda(tmp_path: Path) -> None:
+    endpoint = CoverageAnalystSpecialist()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--target",
+            "sim",
+            "--scope",
+            "rtl/dut.sv",
+            "--dry-run",
+        ]
+    )
+    endpoint._tb_top = "tb_top"
+    endpoint._target_campaign = types.SimpleNamespace(
+        scope=("rtl/dut.sv",),
+        execution_units=lambda: (),
+        params_for=lambda _key: {},
+        criteria=(),
+    )
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=None),
+        patch.object(endpoint, "_check_prerequisites") as prerequisites,
+        patch.object(endpoint, "_run_phase1_measurement_for_suite") as phase_one,
+    ):
+        result = endpoint._run()
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.detail["mode"] == "dry_run"
+    prerequisites.assert_not_called()
+    phase_one.assert_not_called()
+
+
+def test_coverage_records_one_aggregate_target_criterion() -> None:
+    endpoint = _make_endpoint_with_args(report_dir=None)
+    endpoint._phase_errors = set()
+    endpoint._target_campaign = types.SimpleNamespace(
+        suite=types.SimpleNamespace(display_names=("smoke",)),
+        params_for=lambda _key: {},
+    )
+    report = CoverageReport(signal_stats=[_sig(transitions=2)])
+    with patch.object(endpoint, "set_criterion") as set_criterion:
+        result = endpoint._build_coverage_result(report, [], {"coverage_toggle"})
+
+    assert result.criterion_key == "coverage_default"
+    set_criterion.assert_called_once()
+    assert set_criterion.call_args.args[:2] == ("coverage_default", True)
 
 
 def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
@@ -1373,8 +1424,8 @@ class TestSanitizeFsmRegisters:
 class TestResolveThreshold:
     def _endpoint_with_params(self, params):
         endpoint = _make_endpoint_with_args()
-        entry = types.SimpleNamespace(params=params)
-        endpoint._state = types.SimpleNamespace(criteria={"coverage_toggle_default": entry})
+        entry = types.SimpleNamespace(params={"metrics": {"toggle": params}})
+        endpoint._state = types.SimpleNamespace(criteria={"coverage_default": entry})
         return endpoint
 
     def test_numeric_string_param_coerced(self):
@@ -2282,20 +2333,16 @@ class TestCriteriaFiltering:
         endpoint = _make_endpoint_with_args(criteria=criteria)
         if state_criteria is None:
             state_criteria = {
-                "coverage_toggle_default": True,
-                "coverage_fsm_default": True,
-                "coverage_value_default": True,
-                "coverage_branch_default": True,
-                "coverage_expression_default": True,
+                "coverage_default": types.SimpleNamespace(
+                    params={
+                        "metrics": {
+                            name: {"min_pct": 80}
+                            for name in ("toggle", "fsm", "value", "branch", "expression")
+                        }
+                    }
+                )
             }
         endpoint._state = types.SimpleNamespace(criteria=state_criteria)
-        endpoint.satisfies = [
-            "coverage_toggle",
-            "coverage_fsm",
-            "coverage_value",
-            "coverage_branch",
-            "coverage_expression",
-        ]
         return endpoint
 
     def test_no_filter_returns_all(self):
@@ -2341,8 +2388,14 @@ class TestCriteriaFiltering:
         endpoint = self._make_endpoint_with_criteria(
             criteria="toggle,branch",
             state_criteria={
-                "coverage_toggle_default": True,
-                "coverage_value_default": True,
+                "coverage_default": types.SimpleNamespace(
+                    params={
+                        "metrics": {
+                            "toggle": {"min_pct": 80},
+                            "value": {"min_pct": 80},
+                        }
+                    }
+                )
             },
         )
         active = endpoint._get_active_criteria()

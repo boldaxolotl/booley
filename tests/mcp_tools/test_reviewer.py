@@ -21,7 +21,6 @@ from booley.specialists.reviewer import (
     SEVERITY_MAJOR,
     SEVERITY_MINOR,
     TB_FOCUS_CATEGORIES,
-    ReviewDiff,
     ReviewerSpecialist,
     ReviewIssue,
     _finding_record,
@@ -71,35 +70,12 @@ def test_verify_statuses_compatibility_view() -> None:
     }
 
 
-def test_sealed_tb_review_defaults_target_before_binding_gate(
-    state_file: Path,
-) -> None:
-    root = state_file.parent
-    (root / "tb").mkdir()
-    (root / "tb" / "uart_tb.sv").write_text("module uart_tb; endmodule\n", encoding="utf-8")
-    (root / "uart.core").write_text(
-        "CAPI=2:\n"
-        "name: acme:ip:uart:1.0\n"
-        "filesets:\n"
-        "  tb:\n"
-        "    files:\n"
-        "      - tb/uart_tb.sv: {tags: [tb]}\n"
-        "targets:\n"
-        "  sim_uart:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n"
-        "    filesets: [tb]\n"
-        "    toplevel: uart_tb\n",
-        encoding="utf-8",
-    )
+def test_reviewer_criterion_binding_is_source_scoped(state_file: Path) -> None:
     state = DevelopmentState.load(state_file)
     state.init_criteria(
         {"review_tb_quality_clean": True},
         criterion_params={
-            "review_tb_quality_clean": {
-                "target": "acme:ip:uart:1.0#sim_uart",
-                "_target_selector": "uart#sim_uart",
-            }
+            "review_tb_quality_clean": {"scope": ["tb/uart_tb.sv"]}
         },
         strict=True,
     )
@@ -107,8 +83,6 @@ def test_sealed_tb_review_defaults_target_before_binding_gate(
     endpoint = ReviewerSpecialist()
     endpoint.parse_args(
         [
-            "--work-dir",
-            str(root),
             "--scope",
             "tb/uart_tb.sv",
             "--category",
@@ -119,39 +93,25 @@ def test_sealed_tb_review_defaults_target_before_binding_gate(
     )
     endpoint.read_state()
 
-    endpoint._default_target_args()
-
-    assert endpoint.args.target == "uart#sim_uart"
+    assert not hasattr(endpoint.args, "target")
     assert endpoint._criterion_binding_gate() is None
 
 
-def test_sealed_tb_review_rejects_different_explicit_target(state_file: Path) -> None:
-    state = DevelopmentState.load(state_file)
-    state.init_criteria(
-        {"review_tb_quality_clean": True},
-        criterion_params={"review_tb_quality_clean": {"target": "sim_uart"}},
-        strict=True,
-    )
-    state.save()
+def test_reviewer_rejects_removed_target_option(state_file: Path) -> None:
     endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--scope",
-            "tb/uart_tb.sv",
-            "--category",
-            "tb",
-            "--focus",
-            "quality",
-            "--target",
-            "sim_other",
-        ]
-    )
-    endpoint.read_state()
-
-    rejection = endpoint._criterion_binding_gate()
-
-    assert rejection is not None
-    assert rejection.detail["unbound_targets"] == ["sim_other"]
+    with pytest.raises(SystemExit):
+        endpoint.parse_args(
+            [
+                "--scope",
+                "tb/uart_tb.sv",
+                "--category",
+                "tb",
+                "--focus",
+                "quality",
+                "--target",
+                "sim_other",
+            ]
+        )
 
 
 @pytest.fixture()
@@ -198,6 +158,55 @@ def _make_issue_dict(
         "summary": summary,
         "fix_suggestion": "Fix it",
     }
+
+
+def _stamp_current_review_contract(endpoint: ReviewerSpecialist, state_file: Path) -> None:
+    """Upgrade fixture state so verification tests exercise v4 in-flight state."""
+    state = DevelopmentState.load(state_file)
+    entry = state.criteria[endpoint._criterion_key()]
+    entry.detail = {
+        **(entry.detail or {}),
+        "review_detail_version": 4,
+        "contract": endpoint._review_contract_detail(),
+    }
+    state.save()
+    endpoint.read_state()
+
+
+def test_dry_run_does_not_invoke_agent_or_update_receipts(
+    state_file: Path,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "rtl/mod_a.sv"
+    source.parent.mkdir()
+    source.write_text("module mod_a; endmodule\n", encoding="utf-8")
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--scope",
+            "rtl/mod_a.sv",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+            "--dry-run",
+        ]
+    )
+    endpoint.read_state()
+    before = state_file.read_text(encoding="utf-8")
+    with (
+        patch.object(endpoint, "_run_single_review") as review,
+        patch("booley.specialists.reviewer.refresh_verification_freshness") as refresh,
+    ):
+        result = endpoint._run()
+
+    assert result.exit_code == 0
+    assert result.detail["mode"] == "dry_run"
+    assert state_file.read_text(encoding="utf-8") == before
+    review.assert_not_called()
+    refresh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1732,23 +1741,21 @@ class TestPromptConstruction:
         assert "style guide — project overlay" not in system
         assert "u_` prefix" not in system
 
-    def test_diff_ref_injection(self, state_file: Path):
+    def test_diff_ref_is_rejected(self, state_file: Path):
         endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--diff-ref",
-                "abc1234",
-            ]
-        )
-        prompt = endpoint._build_prompt(focus_override="bugs")
-        assert "abc1234" in prompt
-        assert "changed code" in prompt.lower()
+        with pytest.raises(SystemExit):
+            endpoint.parse_args(
+                [
+                    "--scope",
+                    "rtl/mod_a.sv",
+                    "--category",
+                    "rtl",
+                    "--focus",
+                    "bugs",
+                    "--diff-ref",
+                    "abc1234",
+                ]
+            )
 
     def test_steer_injection(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -1876,7 +1883,7 @@ class TestFullRtlReview:
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_interactive_review_reuses_explicit_ticket(
+    def test_clean_interactive_review_tracks_explicit_spec(
         self,
         mock_agent,
         state_file: Path,
@@ -1886,8 +1893,8 @@ class TestFullRtlReview:
     ) -> None:
         logs = tmp_path / "interactive-logs"
         logs.mkdir()
-        ticket = tmp_path / "interactive-ticket.md"
-        ticket.write_text("Review this change.\n", encoding="utf-8")
+        spec = tmp_path / "interactive-spec.md"
+        spec.write_text("Review this change.\n", encoding="utf-8")
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
@@ -1901,8 +1908,8 @@ class TestFullRtlReview:
                 "bugs",
                 "--work-dir",
                 str(tmp_path),
-                "--ticket",
-                str(ticket),
+                "--spec",
+                str(spec),
             ]
         )
         endpoint.read_state()
@@ -1910,7 +1917,7 @@ class TestFullRtlReview:
         result = endpoint._run()
 
         assert result.exit_code == 0
-        assert result.detail["contract"]["ticket_source"]["ticket"] == str(ticket.resolve())
+        assert result.detail["contract"]["spec_source"] == str(spec.resolve())
         assert "RESULT: REVIEWED — NO FINDINGS" in capsys.readouterr().out
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -1943,7 +1950,7 @@ class TestFullRtlReview:
         result = endpoint._run()
 
         assert result.exit_code == 0
-        assert result.detail["contract"]["ticket_source"]["ticket"] == ""
+        assert result.detail["contract"]["ticket_source"] == ""
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_corrective_issues_keep_done_unmet(self, mock_agent, state_file: Path, capsys):
@@ -2136,36 +2143,6 @@ class TestFullTbReview:
 
 
 # ---------------------------------------------------------------------------
-# Diff-ref in full run
-# ---------------------------------------------------------------------------
-
-
-class TestDiffRefInRun:
-    @patch.object(ReviewerSpecialist, "_prepare_diff_boundary", return_value=None)
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_diff_ref_passed_to_prompt(self, mock_agent, _prepare, state_file: Path):
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--diff-ref",
-                "HEAD",
-            ]
-        )
-        endpoint.read_state()
-        endpoint._run()
-        call_kwargs = mock_agent.call_args
-        prompt = call_kwargs.args[0].prompt
-        assert "HEAD" in prompt
-
-
-# ---------------------------------------------------------------------------
 # Agent invocation failure
 # ---------------------------------------------------------------------------
 
@@ -2294,7 +2271,7 @@ class TestTbFocusValidation:
 
 @pytest.fixture()
 def ticket_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A ticket file with frontmatter + body, resolved via --ticket only."""
+    """A standalone specification document."""
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     ticket = tmp_path / "ticket.md"
     ticket.write_text(
@@ -2321,7 +2298,7 @@ class TestRtlSpecFocus:
             "spec",
         ]
         if ticket is not None:
-            argv += ["--ticket", str(ticket)]
+            argv += ["--spec", str(ticket)]
         endpoint.parse_args(argv)
         endpoint.read_state()
         return endpoint
@@ -2330,12 +2307,12 @@ class TestRtlSpecFocus:
         system = self._spec_endpoint(ticket_md)._build_system_prompt("spec")
         assert "Spec Compliance" in system
 
-    def test_prompt_inlines_spec_from_ticket_body(self, state_file: Path, ticket_md: Path):
+    def test_prompt_inlines_explicit_spec_verbatim(self, state_file: Path, ticket_md: Path):
         prompt = self._spec_endpoint(ticket_md)._build_prompt(focus_override="spec")
         assert "## Specification" in prompt
         assert "o_valid pulses exactly one cycle" in prompt
 
-    def test_spec_field_takes_priority_over_body(
+    def test_standalone_spec_does_not_follow_ticket_frontmatter(
         self,
         state_file: Path,
         ticket_md: Path,
@@ -2352,7 +2329,7 @@ class TestRtlSpecFocus:
         endpoint = self._spec_endpoint(ticket_md)
         endpoint.args.work_dir = str(tmp_path)
         prompt = endpoint._build_prompt(focus_override="spec")
-        assert "The real spec text." in prompt
+        assert "The real spec text." not in prompt
         assert "o_valid pulses exactly one cycle" in prompt
 
     def test_run_errors_without_spec(self, state_file: Path, monkeypatch: pytest.MonkeyPatch):
@@ -2466,12 +2443,14 @@ class TestOneShotGuard:
         assert "RESULT: REVIEWED — NO FINDINGS" in result.report_text
         assert result.criterion_met is True
         detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
-        assert detail["review_detail_version"] == 3
+        assert detail["review_detail_version"] == 4
         assert detail["receipt_id"]
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_one_shot_replays_prior_verdict_verbatim(self, mock_agent, state_file: Path):
         """The replayed report repeats the recorded findings, not just a refusal (F-49)."""
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
         st = DevelopmentState.load(state_file)
         st.set_criterion(
             "review_rtl_bugs_done",
@@ -2489,6 +2468,8 @@ class TestOneShotGuard:
                     }
                 ],
                 "gate_passed": True,
+                "review_detail_version": 4,
+                "contract": endpoint._review_contract_detail(),
                 SOURCE_FINGERPRINT_DETAIL_KEY: {
                     "categories": ["rtl"],
                     "fingerprint": compute_source_fingerprint(Path.cwd()),
@@ -2497,8 +2478,6 @@ class TestOneShotGuard:
         )
         st.save()
 
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
         endpoint.read_state()
         result = endpoint._run()
 
@@ -2632,19 +2611,6 @@ class TestCleanModeInitial:
         state_file: Path,
     ):
         """Already met _clean criterion => immediate exit, no agent call."""
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=True,
-            detail={
-                SOURCE_FINGERPRINT_DETAIL_KEY: {
-                    "categories": ["rtl"],
-                    "fingerprint": compute_source_fingerprint(Path.cwd()),
-                }
-            },
-        )
-        st.save()
-
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
             [
@@ -2656,6 +2622,25 @@ class TestCleanModeInitial:
                 "bugs",
             ]
         )
+        st = DevelopmentState.load(state_file)
+        st.set_criterion("review_rtl_bugs_clean", met=True)
+        st.save()
+        endpoint.read_state()
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=True,
+            detail={
+                "review_detail_version": 4,
+                "contract": endpoint._review_contract_detail(),
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(Path.cwd()),
+                }
+            },
+        )
+        st.save()
+
         endpoint.read_state()
         result = endpoint._run()
 
@@ -2673,23 +2658,9 @@ class TestCleanModeVerify:
         mock_agent,
         state_file: Path,
     ):
-        mock_agent.side_effect = [
-            MagicMock(
-                output=json.dumps(
-                    {
-                        "findings": [
-                            {
-                                "index": 1,
-                                "status": "FIXED",
-                                "evidence": "rtl/mod_a.sv:5 — original bug fixed",
-                            }
-                        ]
-                    }
-                ),
-                structured=None,
-            ),
-            _make_agent_result([_make_issue_dict("MINOR", summary="New final-state issue")]),
-        ]
+        mock_agent.return_value = _make_agent_result(
+            [_make_issue_dict("MINOR", summary="New final-state issue")]
+        )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
             "review_rtl_bugs_clean",
@@ -2710,78 +2681,10 @@ class TestCleanModeVerify:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert mock_agent.call_count == 2
+        assert mock_agent.call_count == 1
         assert result.exit_code == 1
         assert result.criterion_met is False
         assert result.detail["pending"][0]["summary"] == "New final-state issue"
-
-    def test_excluding_last_finding_still_rediscovers_changed_source(
-        self,
-        state_file: Path,
-    ):
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "pending": [_make_issue_dict("MAJOR", line=42)],
-                "resolved": [],
-                "review_source_digest": "prior-source-digest",
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        endpoint.read_state()
-        endpoint._review_diff = ReviewDiff(
-            patch="",
-            changed_ranges={"rtl/mod_a.sv": ((100, 100),)},
-        )
-        discovered = _make_issue_dict("MINOR", summary="New final-state issue")
-        with patch.object(
-            endpoint,
-            "_run_single_review",
-            return_value=([ReviewIssue.from_dict(discovered)], ["fresh discovery"]),
-        ) as run_review:
-            result = endpoint._run_clean_mode("review_rtl_bugs_clean")
-
-        run_review.assert_called_once_with()
-        assert result.exit_code == 1
-        assert result.criterion_met is False
-        assert result.detail["pending"][0]["summary"] == "New final-state issue"
-        assert result.detail["resolved"][0]["status"] == "excluded"
-
-    def test_failed_rediscovery_after_exclusion_keeps_clean_unmet(
-        self,
-        state_file: Path,
-    ):
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "pending": [_make_issue_dict("MAJOR", line=42)],
-                "resolved": [],
-                "review_source_digest": "prior-source-digest",
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        endpoint.read_state()
-        endpoint._review_diff = ReviewDiff(
-            patch="",
-            changed_ranges={"rtl/mod_a.sv": ((100, 100),)},
-        )
-        with patch.object(endpoint, "_run_single_review", return_value=(None, [])):
-            result = endpoint._run_clean_mode("review_rtl_bugs_clean")
-
-        assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_clean")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_justified_waiver_resolves_finding_and_is_persisted(
@@ -2820,6 +2723,7 @@ class TestCleanModeVerify:
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*_review_args(), "--steer", "Waive finding 1: required latency"])
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2891,6 +2795,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2959,6 +2864,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3043,6 +2949,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -3086,6 +2993,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3135,6 +3043,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3201,6 +3110,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # All three demoted to still_present → gate fails, met=False.
@@ -3261,6 +3171,7 @@ class TestCleanModeVerify:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is True
@@ -3321,6 +3232,7 @@ class TestCleanReviewImpasse:
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.exit_code == 1
@@ -3400,6 +3312,7 @@ class TestFindingIdentityByIndex:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is False
@@ -3463,6 +3376,7 @@ class TestFindingIdentityByIndex:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         assert result.criterion_met is True
@@ -3533,6 +3447,7 @@ class TestVerifyFixedPersistence:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # Bug A (prior status=fixed, unmentioned) → stays fixed → resolved
@@ -3602,6 +3517,7 @@ class TestVerifyFixedPersistence:
             ]
         )
         endpoint.read_state()
+        _stamp_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
         # Bug A regressed → pending; Bug B fixed → resolved.
@@ -3833,171 +3749,9 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
     return base, tb
 
 
-class TestDiffBoundary:
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_unchanged_baseline_findings_cannot_fail_gate(
-        self,
-        mock_agent,
-        _mock_tb_prefixes,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        base, _ = _make_pico_tb_repo(tmp_path)
-        mock_agent.return_value = _make_agent_result(
-            [
-                _make_issue_dict(
-                    "CRITICAL", "quality", "verif/testbench.v", 5, "$dumpfile is forbidden"
-                ),
-                _make_issue_dict(
-                    "CRITICAL", "quality", "verif/testbench.v", 6, "$dumpvars is forbidden"
-                ),
-                _make_issue_dict(
-                    "CRITICAL",
-                    "quality",
-                    "verif/testbench.v",
-                    8,
-                    "Missing [SIM_RESULT] pass sentinel",
-                ),
-                _make_issue_dict(
-                    "CRITICAL",
-                    "quality",
-                    "verif/testbench.v",
-                    10,
-                    "Nonstandard verdict sentinel",
-                ),
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                *_tb_args("verif/testbench.v"),
-                "--work-dir",
-                str(tmp_path),
-                "--diff-ref",
-                base,
-            ]
-        )
-        endpoint.read_state()
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 0
-        prompt = mock_agent.call_args.args[0].prompt
-        assert "## Enforced Diff Boundary" in prompt
-        assert "verif/testbench.v: 11" in prompt
-        assert "feature_mode = 1" in prompt
-        assert "## Project Simulation Contract" in prompt
-        assert "ALL TESTS PASSED." in prompt
-        assert "dump.vcd" in prompt
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_configured_tb_owned_trace_is_not_a_finding_on_changed_line(
-        self,
-        mock_agent,
-        _mock_tb_prefixes,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        base, tb = _make_pico_tb_repo(tmp_path)
-        tb.write_text(
-            tb.read_text(encoding="utf-8").replace(
-                '$dumpfile("dump.vcd");',
-                '$dumpfile("dump.vcd"); // project-owned trace',
-            ),
-            encoding="utf-8",
-        )
-        mock_agent.return_value = _make_agent_result(
-            [
-                _make_issue_dict(
-                    "CRITICAL",
-                    "quality",
-                    "verif/testbench.v",
-                    5,
-                    "User-authored $dumpfile is forbidden; remove all dump calls",
-                )
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                *_tb_args("verif/testbench.v"),
-                "--work-dir",
-                str(tmp_path),
-                "--diff-ref",
-                base,
-            ]
-        )
-        endpoint.read_state()
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 0
-        assert "project's configured sentinel/trace contract" in result.report_text
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_retry_resolves_legacy_baseline_findings_without_agent(
-        self,
-        mock_agent,
-        _mock_tb_prefixes,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        base, _ = _make_pico_tb_repo(tmp_path)
-        stale = [
-            _make_issue_dict(
-                "CRITICAL", "quality", "verif/testbench.v", line, "Baseline sentinel/VCD issue"
-            )
-            for line in (5, 6, 8, 10)
-        ]
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"review_tb_quality_clean": True})
-        state.set_criterion(
-            "review_tb_quality_clean",
-            False,
-            detail={
-                "issues": 4,
-                "pending": stale,
-                "resolved": [],
-                "CRITICAL": 4,
-                "MAJOR": 0,
-                "MINOR": 0,
-                "verify_attempts": 1,
-                "original_issues": 4,
-            },
-        )
-        state.save()
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                *_tb_args("verif/testbench.v"),
-                "--work-dir",
-                str(tmp_path),
-                "--diff-ref",
-                base,
-            ]
-        )
-        endpoint.read_state()
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.detail["pending"] == []
-        assert len(result.detail["resolved"]) == 4
-        mock_agent.assert_not_called()
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_invalid_diff_ref_is_endpoint_error(
-        self, mock_agent, _mock_tb_prefixes, state_file: Path, tmp_path: Path
-    ):
-        _make_pico_tb_repo(tmp_path)
-        endpoint = ReviewerSpecialist()
+def test_diff_ref_option_is_removed() -> None:
+    endpoint = ReviewerSpecialist()
+    with pytest.raises(SystemExit):
         endpoint.parse_args(
             [
                 "--scope",
@@ -4006,16 +3760,7 @@ class TestDiffBoundary:
                 "tb",
                 "--focus",
                 "quality",
-                "--work-dir",
-                str(tmp_path),
                 "--diff-ref",
-                "does-not-exist",
+                "HEAD",
             ]
         )
-        endpoint.read_state()
-
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-        assert "Diff boundary error" in result.report_text
-        mock_agent.assert_not_called()
