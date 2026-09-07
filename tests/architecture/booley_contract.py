@@ -40,9 +40,11 @@ _D9_REASON = (
 _D10_REASON = "an EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter"
 _D11_REASON = "leaf synthesis adapters do not orchestrate their Flow or one another"
 _D12_REASON = (
-    "Target domain values stay dependency-neutral and FuseSoC adapters do not depend "
-    "back on the Target catalog or its presentation facades"
+    "Target domain values and selector policy stay independent of FuseSoC, concrete "
+    "Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend "
+    "back on catalog orchestration or presentation"
 )
+_D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implementations"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -168,7 +170,12 @@ DIRECTION_RULES = (
             exact("booley.targets.domain"),
             exact("booley.targets.selection"),
         ),
-        (prefix("booley.fusesoc"),),
+        (
+            prefix("booley.fusesoc"),
+            *_FLOW_PREFIXES,
+            exact("booley.targets.catalog"),
+            exact("booley.targets.target_surface"),
+        ),
         _D12_REASON,
     ),
     DirectionRule(
@@ -182,6 +189,12 @@ DIRECTION_RULES = (
             )
         ),
         _D12_REASON,
+    ),
+    DirectionRule(
+        "D13",
+        (prefix("booley.fusesoc"),),
+        _FLOW_PREFIXES,
+        _D13_REASON,
     ),
 )
 

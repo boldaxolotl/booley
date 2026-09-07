@@ -3,8 +3,8 @@
 import pytest
 
 from booley.flows.source_fingerprint import compute_source_fingerprint
-from booley.fusesoc.fusesoc_registry import UnknownTargetError
 from booley.runtime.project_dir import reset_cache
+from booley.targets.domain import UnknownTargetError
 
 
 def _write_core(tmp_path, name: str, target: str, source: str) -> None:

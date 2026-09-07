@@ -15,11 +15,11 @@ from booley.flows.sim.flow import (
     parse_cycles,
 )
 from booley.flows.sim.flow import TestResult as SimTestResult
-from booley.fusesoc import fusesoc_registry
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import AmbiguousTargetError
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
@@ -327,7 +327,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
 
     def ambiguous_target(*_args, **_kwargs):
-        raise fusesoc_registry.AmbiguousTargetError("sim_core is ambiguous")
+        raise AmbiguousTargetError("sim_core is ambiguous")
 
     _patch_catalog_select(monkeypatch, ambiguous_target)
 

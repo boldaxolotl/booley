@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import pytest
+
 from booley.mcp.schema_extractor import extract_schema
+from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+from booley.specialists.mutation_tester import MutationTesterSpecialist
+from booley.specialists.reviewer import ReviewerSpecialist
 
 # --- Helpers ---
 
@@ -184,6 +189,33 @@ class TestRequired:
         p.add_argument("--count", type=int, default=42)
         schema = extract_schema(p)
         assert schema["properties"]["count"]["default"] == 42
+
+
+@pytest.mark.parametrize(
+    ("specialist", "required", "removed"),
+    [
+        (
+            ReviewerSpecialist,
+            {"scope", "category", "focus"},
+            {"target", "diff_ref", "ticket"},
+        ),
+        (
+            MutationTesterSpecialist,
+            {"target", "scope"},
+            {"tb_top", "dut_top", "dut_files"},
+        ),
+        (CoverageAnalystSpecialist, {"target", "scope"}, {"tb_top"}),
+    ],
+)
+def test_specialist_input_contracts_are_unified(specialist, required, removed) -> None:
+    schema = extract_schema(specialist()._parser)
+    properties = schema["properties"]
+
+    assert required <= set(schema["required"])
+    assert {"scope", "steer", "dry_run"} <= set(properties)
+    assert properties["steer"]["type"] == "array"
+    assert properties["dry_run"]["type"] == "boolean"
+    assert removed.isdisjoint(properties)
 
 
 # --- Description tests ---

@@ -1661,20 +1661,19 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     )
 
 
-def test_validate_one_flow_table_warns_on_set_but_ignored_knob():
-    """A knob honored elsewhere but not by this Flow is flagged, not failed (F4)."""
+def test_validate_one_flow_table_accepts_lint_timeout_ms():
+    """Lint reads the same persistent timeout policy as every other built-in Flow."""
     fails: list[str] = []
     warns: list[str] = []
 
-    # lint does not read timeout_ms (only simulate/asic_synthesize do): warn.
     ok = doctor._validate_one_flow_table(
         "lint",
         {"timeout_ms": 900000},
         warns.append,
         lambda msg, fix="": fails.append(msg),
     )
-    assert ok is True  # well-typed, just inert — a warning, never a failure
-    assert any("[flows.lint].timeout_ms" in m and "ignores it" in m for m in warns)
+    assert ok is True
+    assert warns == []
 
     # simulate DOES read timeout_ms → no set-but-ignored warning.
     warns.clear()
