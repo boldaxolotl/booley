@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -104,7 +105,7 @@ def main() -> int:
     parser.add_argument("--project-state", type=Path, required=True)
     parser.add_argument("--ticket-slug", required=True)
     parser.add_argument("--expected-version", required=True)
-    parser.add_argument("--python", type=Path, default=Path("/usr/local/bin/python3"))
+    parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--booley", type=Path, default=Path("/usr/local/bin/booley"))
     parser.add_argument("--candidate-sha", default=os.environ.get("GITHUB_SHA", "unknown"))
     parser.add_argument("--image-digest", required=True)
