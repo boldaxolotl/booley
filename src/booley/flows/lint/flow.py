@@ -665,7 +665,7 @@ class LintFlow(BuiltinFlow):
             result = LintConfigResult(target=target.selector)
             try:
                 command, resolved = self._prepare_lint_command(target)
-            except Exception as exc:  # noqa: BLE001 - normalize Target setup failures
+            except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
                 result.error_is_eda_tool_failure = True
                 logger.debug(
