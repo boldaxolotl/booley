@@ -311,8 +311,7 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
           root="${RUNNER_TEMP}/release-host-doctor"
-          mkdir -p "${root}/home" "${root}/evidence"
-          cp -a tests/fixtures/cocotb_counter "${root}/project"
+          mkdir -p "${root}/home" "${root}/evidence" "${root}/project"
           python -m venv "${root}/venv"
           "${root}/venv/bin/pip" install .
           docker pull "${IMAGE}"

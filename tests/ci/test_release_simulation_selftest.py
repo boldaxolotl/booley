@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import simulation_selftest
+
+from booley.ticket_board.constants import TICKET_DIRS
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="release container validation requires POSIX executables"
@@ -77,3 +80,30 @@ def test_simulation_selftest_rejects_false_passing_bad_overlay(
             candidate_sha="candidate-sha",
             image_digest="sha256:image",
         )
+
+
+def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (project / ".booley_project").mkdir()
+
+    simulation_selftest._prepare_clone_state(project)
+
+    configured = subprocess.run(
+        ["git", "config", "--local", "--get", "gc.worktreePruneExpire"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert configured.stdout.strip() == "never"
+    assert all(
+        (project / ".booley_project" / "tickets" / relative).is_dir() for relative in TICKET_DIRS
+    )

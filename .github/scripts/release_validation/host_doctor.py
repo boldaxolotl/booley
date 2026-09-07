@@ -99,9 +99,32 @@ def validate(
     checks = [{"id": "host.identity", "status": "pass"}]
     try:
         env = _environment(home, booley)
+        _run(["git", "init", "-b", "main"], project=project, env=env)
+        checks.append({"id": "project.repository", "status": "pass"})
         _run([str(booley), "bootstrap"], project=project, env=env)
         checks.append({"id": "host-bootstrap", "status": "pass"})
-        init = _run([str(booley), "init", "--skip-credentials"], project=project, env=env)
+        init = _run(
+            [
+                str(booley),
+                "init",
+                "--scaffold",
+                "release_host_doctor",
+                "--sim-eda-tool",
+                "verilator",
+                "--tb-style",
+                "sv",
+                "--lint-eda-tool",
+                "verilator",
+                "--no-asic",
+                "--provider",
+                "codex",
+                "--auth",
+                "subscription",
+                "--skip-credentials",
+            ],
+            project=project,
+            env=env,
+        )
         if "[!!]" in init or "[XX]" in init:
             raise RuntimeError("Project Initialization reported a warning or failure")
         checks.append({"id": "project-initialization.clean", "status": "pass"})

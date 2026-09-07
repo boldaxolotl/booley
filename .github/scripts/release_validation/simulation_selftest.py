@@ -9,6 +9,9 @@ import re
 import subprocess
 from pathlib import Path
 
+from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.ticket_board.constants import TICKET_DIRS
+
 _GOOD = re.compile(r"sim self-test good case .* passes")
 _BAD = re.compile(r"sim self-test bad case .* correctly graded a failure")
 
@@ -26,6 +29,23 @@ def _doctor(project: Path, booley: Path) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"deep Doctor failed ({result.returncode})\n{output}")
     return output
+
+
+def _prepare_clone_state(project: Path) -> None:
+    """Restore the local-only state that a fresh CI checkout cannot carry."""
+    result = subprocess.run(
+        ["git", "config", "--local", "gc.worktreePruneExpire", "never"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to configure checkout worktree guard\n{result.stderr}")
+    tickets = resolve_checkout_project_dir(project) / "tickets"
+    for relative in TICKET_DIRS:
+        (tickets / relative).mkdir(parents=True, exist_ok=True)
 
 
 def validate(
@@ -58,6 +78,7 @@ def main() -> int:
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--evidence", required=True, type=Path)
     args = parser.parse_args()
+    _prepare_clone_state(args.project.resolve())
     evidence = validate(
         project=args.project,
         booley=args.booley,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,9 +86,35 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert commands == [
         ["bootstrap"],
-        ["init", "--skip-credentials"],
+        [
+            "init",
+            "--scaffold",
+            "release_host_doctor",
+            "--sim-eda-tool",
+            "verilator",
+            "--tb-style",
+            "sv",
+            "--lint-eda-tool",
+            "verilator",
+            "--no-asic",
+            "--provider",
+            "codex",
+            "--auth",
+            "subscription",
+            "--skip-credentials",
+        ],
         ["doctor"],
     ]
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "true"
+    )
     assert evidence["schema"] == 1
     assert evidence["candidate"] == {
         "sha": "candidate-sha",

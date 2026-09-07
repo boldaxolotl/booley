@@ -535,7 +535,7 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     validate = _named_step(job, "Run isolated host validation")
 
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
-    assert 'cp -a tests/fixtures/cocotb_counter "${root}/project"' in prepare
+    assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
     assert '"${root}/venv/bin/pip" install .' in prepare
     assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
     assert "/usr/bin/booley" not in prepare + validate["run"]
