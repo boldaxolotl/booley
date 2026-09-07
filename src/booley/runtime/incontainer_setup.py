@@ -674,6 +674,7 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
         return _apply_codex_credential(token, home)
     return "none"
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

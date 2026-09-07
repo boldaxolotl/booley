@@ -1085,18 +1085,14 @@ def test_local_builder_reports_step_and_user_recipe_failures(
         lifecycle.BASE_IMAGE,
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match=r"Dockerfile.*missing"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
-            project_node, force=True
-        )
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
 
     project_node.recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(
         lifecycle.project_image, "build_project_image", lambda *_args, **_kwargs: False
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match="failed to rebuild"):
-        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(
-            project_node, force=True
-        )
+        harness_lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
 
 
 def test_failed_backup_creation_cleans_earlier_backup(tmp_path: Path) -> None:

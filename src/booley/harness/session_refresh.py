@@ -32,9 +32,7 @@ class _SessionImages:
             inspection=self._inspection,
         )
         if result.selected_id is None:
-            raise SessionError(
-                "image refresh did not return an immutable Session Image ID"
-            )
+            raise SessionError("image refresh did not return an immutable Session Image ID")
         return runtime_refresh.RefreshImage(
             result.selected_reference,
             result.selected_id,

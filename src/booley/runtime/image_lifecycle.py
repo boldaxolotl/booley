@@ -185,8 +185,7 @@ def _expected_version() -> str:
 
 def _expected_payload_fingerprint() -> str | None:
     return (
-        resolve_payload_fingerprint(docker_data_dir().parents[3])
-        or embedded_payload_fingerprint()
+        resolve_payload_fingerprint(docker_data_dir().parents[3]) or embedded_payload_fingerprint()
     )
 
 
