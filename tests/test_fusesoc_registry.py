@@ -12,11 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import selftest_overlay
+from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
-    TRACE_OVERLAY_MARKER,
     AmbiguousTargetError,
     CoreCollisionError,
     FuseSocError,
@@ -24,11 +25,16 @@ from booley.fusesoc.fusesoc_registry import (
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
-    TraceMode,
     UnknownTargetError,
     _enumerate_all,
+    _missing_target_sources,
+    _preflight_target_sources,
+    _resolve_target,
+    _sim_target_has_untagged_tb,
+    _target_referenced_files,
+    _target_source_files,
+    _try_resolve_target,
     all_referenced_files,
-    available_targets,
     core_schema_errors,
     core_setup_hazards,
     core_target_doctor_flows,
@@ -39,29 +45,56 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_names,
     core_target_uses_legacy_fusesoc_api,
     discover_cores,
-    doctor_target_seed,
-    doctor_target_selectors,
-    enumerate_targets,
-    missing_target_sources,
     parse_edam,
-    preflight_target_sources,
     read_core,
-    resolve_ref,
-    resolve_target,
-    resolve_target_selection,
-    selectable_core_closure,
-    sim_target_has_untagged_tb,
     state_cores_dir,
-    target_eda_tools,
-    target_referenced_files,
-    target_source_files,
     target_source_files_for_ref,
-    trace_overlay_vlnv,
-    try_resolve_target,
     vendored_files,
+)
+from booley.fusesoc.fusesoc_registry import (
+    _resolve_ref as resolve_ref,
+)
+from booley.fusesoc.fusesoc_registry import (
+    _resolve_target_selection as resolve_target_selection,
+)
+from booley.fusesoc.fusesoc_trace_overlay import (
+    _target_includes_dump_module,
+    trace_overlay_vlnv,
     write_trace_overlay,
 )
+from booley.targets.catalog import TargetCatalog
 from tests.conftest import require_symlinks, symlink_or_skip
+
+
+def enumerate_targets(project_root: Path | str):
+    return {name: refs[0] for name, refs in _enumerate_all(project_root).items()}
+
+
+def available_targets(project_root: Path | str) -> list[str]:
+    return sorted(handle.name for handle in TargetCatalog.build(project_root).list())
+
+
+def doctor_target_selectors(project_root: Path | str, flow_name: str) -> list[str]:
+    return [
+        handle.selector
+        for handle in TargetCatalog.build(project_root).list()
+        if flow_name in handle.doctor_flows
+    ]
+
+
+def doctor_target_seed(project_root: Path | str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            handle.selector
+            for handle in TargetCatalog.build(project_root).list()
+            if handle.doctor_flows
+        )
+    )
+
+
+def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
+    return {handle.name: handle.eda_tool for handle in TargetCatalog.build(project_root).list()}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures: a .core and a resolved EDAM matching the Phase-2 spike shape.
@@ -137,7 +170,7 @@ _EDAM_TEXT = textwrap.dedent(
 def _touch_declared_sources(core: Path) -> None:
     """Create empty files for every literal fileset path *core* declares.
 
-    ``resolve_target`` now preflights fileset-path existence before invoking
+    ``_resolve_target`` now preflights fileset-path existence before invoking
     fusesoc (MissingSourceError), so fixtures create the declared sources by
     default; the preflight's own tests write their cores without this helper.
     """
@@ -357,25 +390,25 @@ class TestStealthCores:
         assert set(refs) == {"sim"}
 
     def test_setup_command_adds_second_cores_root(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
         _write_core(state_cores_dir(tmp_path), stealth)
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--cores-root"]
         assert roots == [str(tmp_path), str(state_cores_dir(tmp_path))]
         # Global option: both must precede the 'run' subcommand.
         assert max(i for i, a in enumerate(cmd) if a == "--cores-root") < cmd.index("run")
 
     def test_setup_command_omits_stealth_root_when_absent(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         _write_core(tmp_path / "ip")
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         assert cmd.count("--cores-root") == 1
 
     def test_explicit_stealth_projects_core_into_repo_root(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
@@ -389,20 +422,20 @@ class TestStealthCores:
         for name in ("counter_pkg.sv", "counter.sv", "tb_counter.sv"):
             (tmp_path / name).touch()
 
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         projected = tmp_path / ".booley-projected-design.core"
 
         assert cmd.count("--cores-root") == 1
         assert projected.is_file()
         assert discover_cores(tmp_path) == [canonical]
-        sources = target_source_files(tmp_path, "sim")
+        sources = _target_source_files(tmp_path, "sim")
         assert sources.rtl_source_files == ("counter_pkg.sv", "counter.sv")
         assert sources.tb_files == ("tb_counter.sv",)
-        assert missing_target_sources(tmp_path, "sim") == []
+        assert _missing_target_sources(tmp_path, "sim") == []
 
     def test_native_core_ignore_uses_only_private_stealth_registry(self, tmp_path: Path):
         from booley.fusesoc.core_projection import isolated_registry_root
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
@@ -413,7 +446,7 @@ class TestStealthCores:
         canonical = _write_core(state_cores_dir(tmp_path), create_sources=False)
         (tmp_path / "native.core").write_text("CAPI=1\n", encoding="utf-8")
 
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
 
         roots = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--cores-root"]
         assert roots == [str(isolated_registry_root(tmp_path))]
@@ -421,7 +454,7 @@ class TestStealthCores:
 
     def test_setup_command_refuses_foreign_expected_projection(self, tmp_path: Path):
         from booley.fusesoc.core_projection import projected_core_path
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
@@ -435,7 +468,7 @@ class TestStealthCores:
         projected.write_text(foreign_content, encoding="utf-8")
 
         with pytest.raises(TargetResolutionError, match="refusing to overwrite non-Booley file"):
-            setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+            _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
 
         assert projected.read_text(encoding="utf-8") == foreign_content
 
@@ -954,7 +987,7 @@ class TestIncludePartition:
 
 
 # ---------------------------------------------------------------------------
-# resolve_target — CLI invocation (mocked) + command shape
+# _resolve_target — CLI invocation (mocked) + command shape
 # ---------------------------------------------------------------------------
 
 
@@ -974,7 +1007,7 @@ class TestResolveTargetMocked:
             (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        result = resolve_target(
+        result = _resolve_target(
             "sim",
             project_root=project,
             build_root=build_root,
@@ -1000,7 +1033,7 @@ class TestResolveTargetMocked:
             raise AssertionError("runner should not run for an unknown target")
 
         with pytest.raises(TargetResolutionError, match="Unknown target"):
-            resolve_target(
+            _resolve_target(
                 "nope",
                 project_root=project,
                 build_root=tmp_path / "build",
@@ -1015,7 +1048,7 @@ class TestResolveTargetMocked:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
 
         with pytest.raises(TargetResolutionError, match="boom"):
-            resolve_target(
+            _resolve_target(
                 "sim",
                 project_root=project,
                 build_root=tmp_path / "build",
@@ -1031,7 +1064,7 @@ class TestResolveTargetMocked:
             raise FileNotFoundError("fusesoc")
 
         with pytest.raises(TargetResolutionError, match="could not invoke"):
-            resolve_target(
+            _resolve_target(
                 "sim",
                 project_root=project,
                 build_root=tmp_path / "build",
@@ -1041,7 +1074,7 @@ class TestResolveTargetMocked:
 
 
 class TestMissingSourcePreflight:
-    """resolve_target fails fast when a Target's fileset paths don't exist."""
+    """_resolve_target fails fast when a Target's fileset paths don't exist."""
 
     # A core whose sim target references a baseline under worktrees/ (the
     # motivating incident: the user is expected to `git worktree add` it).
@@ -1075,7 +1108,7 @@ class TestMissingSourcePreflight:
             raise AssertionError("runner must not run when sources are missing")
 
         with pytest.raises(MissingSourceError) as exc_info:
-            resolve_target(
+            _resolve_target(
                 "sim_base",
                 project_root=tmp_path,
                 build_root=tmp_path / "build",
@@ -1120,20 +1153,20 @@ class TestMissingSourcePreflight:
         )
         _write_core(tmp_path, core, create_sources=False)
         with pytest.raises(MissingSourceError) as exc_info:
-            preflight_target_sources("sim_plain", tmp_path)
+            _preflight_target_sources("sim_plain", tmp_path)
         msg = str(exc_info.value)
         assert "  - rtl/gone.sv" in msg
         assert "git worktree add" not in msg
 
     def test_passes_when_all_sources_exist(self, tmp_path: Path):
         _write_core(tmp_path)  # default fixture creates the declared sources
-        preflight_target_sources("sim", tmp_path)  # must not raise
-        assert missing_target_sources(tmp_path, "sim") == []
+        _preflight_target_sources("sim", tmp_path)  # must not raise
+        assert _missing_target_sources(tmp_path, "sim") == []
 
     def test_paths_resolve_relative_to_core_dir_not_project_root(self, tmp_path: Path):
         # Core nested under ip/: its rtl/ lives beside the .core, not at root.
         _write_core(tmp_path / "ip")
-        assert missing_target_sources(tmp_path, "sim") == []
+        assert _missing_target_sources(tmp_path, "sim") == []
 
     def test_glob_and_conditional_entries_are_not_hard_failed(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1157,16 +1190,16 @@ class TestMissingSourcePreflight:
         (tmp_path / "rtl" / "real.sv").touch()
         # Only the literal path is checked; the glob and the conditional
         # fileset are left for FuseSoC itself to judge.
-        assert missing_target_sources(tmp_path, "sim_glob") == []
+        assert _missing_target_sources(tmp_path, "sim_glob") == []
 
     def test_unknown_target_is_not_this_preflights_error(self, tmp_path: Path):
         _write_core(tmp_path)
         # Unknown / unenumerable targets are someone else's diagnostic.
-        assert missing_target_sources(tmp_path, "nope") == []
+        assert _missing_target_sources(tmp_path, "nope") == []
 
     def test_empty_project_is_silent(self, tmp_path: Path):
-        assert missing_target_sources(tmp_path, "anything") == []
-        preflight_target_sources("anything", tmp_path)  # must not raise
+        assert _missing_target_sources(tmp_path, "anything") == []
+        _preflight_target_sources("anything", tmp_path)  # must not raise
 
 
 class TestTryResolveTarget:
@@ -1180,7 +1213,7 @@ class TestTryResolveTarget:
         def boom(*a, **k):  # pragma: no cover - must not run
             raise AssertionError("must not resolve when no .core declares the config")
 
-        assert try_resolve_target("sim", project_root=tmp_path / "proj", runner=boom) is None
+        assert _try_resolve_target("sim", project_root=tmp_path / "proj", runner=boom) is None
 
     def test_returns_resolved_when_core_and_setup_succeed(self, tmp_path: Path):
         project = tmp_path / "proj"
@@ -1192,7 +1225,7 @@ class TestTryResolveTarget:
             (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        resolved = try_resolve_target("sim", project_root=project, runner=fake_runner)
+        resolved = _try_resolve_target("sim", project_root=project, runner=fake_runner)
         assert resolved is not None
         assert resolved.toplevel == "tb_counter"
         assert resolved.vlnv == "::demo_core:0"
@@ -1204,7 +1237,7 @@ class TestTryResolveTarget:
         def failing(cmd, **kwargs):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
 
-        assert try_resolve_target("sim", project_root=project, runner=failing) is None
+        assert _try_resolve_target("sim", project_root=project, runner=failing) is None
 
     def test_none_when_fusesoc_missing(self, tmp_path: Path):
         project = tmp_path / "proj"
@@ -1213,7 +1246,7 @@ class TestTryResolveTarget:
         def missing(*a, **k):
             raise FileNotFoundError("fusesoc")
 
-        assert try_resolve_target("sim", project_root=project, runner=missing) is None
+        assert _try_resolve_target("sim", project_root=project, runner=missing) is None
 
 
 def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
@@ -1224,7 +1257,7 @@ def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
 
     with pytest.raises(TargetResolutionError, match="no diagnostic output"):
-        resolve_target(
+        _resolve_target(
             "sim",
             project_root=project,
             build_root=tmp_path / "build",
@@ -1233,7 +1266,7 @@ def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_target — real fusesoc end-to-end (gated on fusesoc being importable)
+# _resolve_target — real fusesoc end-to-end (gated on fusesoc being importable)
 # ---------------------------------------------------------------------------
 
 
@@ -1264,7 +1297,7 @@ class TestResolveTargetReal:
             else [sys.executable, "-c", "from fusesoc.main import main; main()"]
         )
 
-        resolved = resolve_target(
+        resolved = _resolve_target(
             "sim",
             project_root=project,
             build_root=project / "out",
@@ -1298,7 +1331,7 @@ class TestResolveTargetReal:
             else [sys.executable, "-c", "from fusesoc.main import main; main()"]
         )
 
-        resolved = resolve_target(
+        resolved = _resolve_target(
             "sim",
             project_root=project,
             build_root=project / "out",
@@ -1331,7 +1364,7 @@ class TestResolveTargetReal:
         else:
             cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
-        result = resolve_target(
+        result = _resolve_target(
             "sim",
             project_root=project,
             build_root=tmp_path / "build",
@@ -1345,14 +1378,14 @@ class TestResolveTargetReal:
 
 
 # ---------------------------------------------------------------------------
-# target_source_files — pre-resolve RTL/TB partition from the .core (dec 13)
+# _target_source_files — pre-resolve RTL/TB partition from the .core (dec 13)
 # ---------------------------------------------------------------------------
 
 
 class TestTargetSourceFiles:
     def test_partitions_sim_target_by_tb_tag(self, tmp_path: Path):
         _write_core(tmp_path)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert src.rtl_source_files == (
             "rtl/counter_pkg.sv",
             "rtl/counter.sv",
@@ -1376,14 +1409,14 @@ class TestTargetSourceFiles:
             """
         )
         _write_core(tmp_path, core)
-        src = target_source_files(tmp_path, "synth")
+        src = _target_source_files(tmp_path, "synth")
         assert src.tb_files == ()
         assert src.rtl_source_files == ("rtl/dut.sv",)
 
     def test_unknown_target_raises(self, tmp_path: Path):
         _write_core(tmp_path)
         with pytest.raises(UnknownTargetError):
-            target_source_files(tmp_path, "nope")
+            _target_source_files(tmp_path, "nope")
 
     def test_ref_partition_bypasses_selector_rescan(self, tmp_path: Path, monkeypatch):
         from booley.fusesoc import fusesoc_registry
@@ -1396,8 +1429,8 @@ class TestTargetSourceFiles:
         refs = _enumerate_all(tmp_path)["sim"]
 
         with pytest.raises(AmbiguousTargetError):
-            target_source_files(tmp_path, "sim")
-        qualified = target_source_files(tmp_path, "other_core#sim")
+            _target_source_files(tmp_path, "sim")
+        qualified = _target_source_files(tmp_path, "other_core#sim")
 
         monkeypatch.setattr(
             fusesoc_registry,
@@ -1458,12 +1491,12 @@ class TestTargetSourceFilesDependencyClosure:
     def test_root_only_read_misses_the_transitive_dut(self, tmp_path: Path):
         """The default stays root-only — this documents why that is not enough."""
         self._layered_repo(tmp_path)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert src.rtl_source_files == ("tb/harness.cpp",)
 
     def test_closure_read_finds_the_transitive_dut(self, tmp_path: Path):
         self._layered_repo(tmp_path)
-        src = target_source_files(tmp_path, "sim", include_dependencies=True)
+        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
         assert "vendor/core/rtl/dut.sv" in src.rtl_source_files
         assert "vendor/core/rtl/dut_pkg.sv" in src.rtl_source_files
         # The root core's own files are still first, and TB tagging survives.
@@ -1473,7 +1506,7 @@ class TestTargetSourceFilesDependencyClosure:
     def test_closure_read_does_not_duplicate_shared_dependencies(self, tmp_path: Path):
         """A file reachable twice must not be mutated or counted twice."""
         self._layered_repo(tmp_path)
-        src = target_source_files(tmp_path, "sim", include_dependencies=True)
+        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
         assert len(src.rtl_source_files) == len(set(src.rtl_source_files))
 
     def test_unresolvable_dependency_does_not_break_the_read(self, tmp_path: Path):
@@ -1493,7 +1526,7 @@ class TestTargetSourceFilesDependencyClosure:
             """
         )
         _write_core(tmp_path, core)
-        src = target_source_files(tmp_path, "sim", include_dependencies=True)
+        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
         assert src.rtl_source_files == ("rtl/top.sv",)
 
     def test_excludes_include_headers_from_rtl_sources(self, tmp_path: Path):
@@ -1517,7 +1550,7 @@ class TestTargetSourceFilesDependencyClosure:
             """
         )
         _write_core(tmp_path, core)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         # The include header is not a compiled source; the tb file is tb-tagged.
         assert src.rtl_source_files == ("rtl/dut.sv",)
         assert src.tb_files == ("tb/tb_dut.sv",)
@@ -1539,7 +1572,7 @@ class TestTargetSourceFilesDependencyClosure:
             """
         )
         _write_core(tmp_path, core)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert src.rtl_source_files == ("rtl/dut.sv",)
         assert src.tb_files == ("tb/tb_dut.sv",)
 
@@ -1547,7 +1580,7 @@ class TestTargetSourceFilesDependencyClosure:
 class TestSimTargetHasUntaggedTb:
     def test_false_when_tb_is_tagged(self, tmp_path: Path):
         _write_core(tmp_path)  # sim target's tb fileset carries tags: [tb]
-        assert sim_target_has_untagged_tb(tmp_path, "sim") is False
+        assert _sim_target_has_untagged_tb(tmp_path, "sim") is False
 
     def test_true_when_tb_fileset_untagged(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1569,10 +1602,10 @@ class TestSimTargetHasUntaggedTb:
         )
         _write_core(tmp_path, core)
         # tb fileset has no tags:[tb] → its file mis-classifies as RTL.
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert "tb/tb_dut.sv" in src.rtl_source_files
         assert src.tb_files == ()
-        assert sim_target_has_untagged_tb(tmp_path, "sim") is True
+        assert _sim_target_has_untagged_tb(tmp_path, "sim") is True
 
 
 # ---------------------------------------------------------------------------
@@ -1598,7 +1631,7 @@ class TestWriteTraceOverlay:
         base = _write_core(tmp_path / "ip")  # sim target: verilator, flow sim
         base_vlnv = read_core(base)["name"]
         expected_vlnv = trace_overlay_vlnv(base_vlnv)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # Co-located with the base .core so relative fileset paths still resolve.
             assert overlay.core_file.parent == base.parent
@@ -1620,7 +1653,7 @@ class TestWriteTraceOverlay:
 
     def test_overlay_is_skipped_by_discovery(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # The overlay .core exists on disk beside the base...
             assert overlay.core_file.exists()
@@ -1640,7 +1673,7 @@ class TestWriteTraceOverlay:
         )
         assert "verilator_options" in core  # guard: the replace actually matched
         _write_core(tmp_path / "ip", core)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "verilator_options"
@@ -1664,7 +1697,7 @@ class TestWriteTraceOverlay:
         )
         _write_core(tmp_path / "ip", core)
 
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "verilator_options"
@@ -1702,7 +1735,7 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
 
         with pytest.raises(FuseSocError, match=message):
-            write_trace_overlay("sim", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
 
     @pytest.mark.parametrize(
         ("options", "message"),
@@ -1738,11 +1771,11 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
 
         with pytest.raises(FuseSocError, match=message):
-            write_trace_overlay("sim", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
 
     def test_cleanup_is_idempotent(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         overlay.cleanup()
         assert not overlay.core_file.exists()
         overlay.cleanup()  # second call must not raise
@@ -1750,7 +1783,7 @@ class TestWriteTraceOverlay:
     def test_rejects_unknown_target(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         with pytest.raises(UnknownTargetError):
-            write_trace_overlay("nope", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("nope"))
 
     def test_rejects_non_verilator_sim_target(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1773,7 +1806,7 @@ class TestWriteTraceOverlay:
         _write_core(tmp_path / "ip", core)
         # lint flow has no testbench — the trace overlay is sim-only.
         with pytest.raises(FuseSocError):
-            write_trace_overlay("lint", project_root=tmp_path)
+            write_trace_overlay(TargetCatalog.build(tmp_path).select("lint"))
 
     # --- Icarus sim trace overlay (roots the dump module, no verilator_options) -
 
@@ -1805,7 +1838,7 @@ class TestWriteTraceOverlay:
 
     def test_icarus_overlay_roots_dump_module(self, tmp_path: Path):
         _write_core(tmp_path / "ip", self._ICARUS_CORE)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             sim = read_core(overlay.core_file)["targets"]["sim"]["flow_options"]
             # Icarus gets an explicit dump-module root (edalize's -s <top> prunes
@@ -1823,7 +1856,7 @@ class TestWriteTraceOverlay:
         )
         assert "iverilog_options" in core  # guard: the replace matched
         _write_core(tmp_path / "ip", core)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "iverilog_options"
@@ -1843,7 +1876,7 @@ class TestWriteTraceOverlay:
         )
         assert "booley_vcd_dump" not in core  # guard: the replace matched
         _write_core(tmp_path / "ip", core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             doc = read_core(overlay.core_file)
             sim = doc["targets"]["sim"]
@@ -1886,9 +1919,9 @@ class TestWriteTraceOverlay:
             "",
         )
         _write_core(cores, core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=project)
+        overlay = write_trace_overlay(TargetCatalog.build(project).select("sim"))
         try:
-            resolved = resolve_target(
+            resolved = _resolve_target(
                 "sim",
                 project_root=project,
                 build_root=project / "build",
@@ -1915,11 +1948,11 @@ class TestWriteTraceOverlay:
             "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
         )
         _write_core(project_dir / "cores", core, create_sources=False)
-        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
-            from booley.fusesoc.fusesoc_registry import setup_command
+            from booley.fusesoc.fusesoc_registry import _setup_command
 
-            setup_command(
+            _setup_command(
                 "sim",
                 project_root=tmp_path,
                 build_root=tmp_path / "build",
@@ -2272,8 +2305,8 @@ class TestSelectableCoreClosure:
     def test_none_without_seed(self, tmp_path: Path):
         # No seed Targets (ADR 0030) → None → caller audits every core.
         _write_core(tmp_path / "ip")
-        assert selectable_core_closure(tmp_path) is None
-        assert selectable_core_closure(tmp_path, []) is None
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.core_closure([]) is None
 
     def test_closure_reaches_transitive_depends(self, tmp_path: Path):
         # top --depend--> dep --depend--> deep; a fourth, unrelated core stays out.
@@ -2289,14 +2322,16 @@ class TestSelectableCoreClosure:
         _write_core(tmp_path / "island", self._leaf("island"))  # unreachable
 
         # Seed the project's declared Target (`sim`, declared only by top).
-        closure = selectable_core_closure(tmp_path, ["sim"])
+        catalog = TargetCatalog.build(tmp_path)
+        closure = catalog.core_closure([catalog.select("sim")])
         assert closure == frozenset({top, dep, deep})
 
     def test_version_independent_depend_match(self, tmp_path: Path):
         # A versioned/operator-qualified depend still reaches the dep core.
         top = _write_core(tmp_path / "top", self._root("top", "(>=acme:lib:dep:1.0)"))
         dep = _write_core(tmp_path / "dep", self._leaf("dep"))
-        assert selectable_core_closure(tmp_path, ["sim"]) == frozenset({top, dep})
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.core_closure([catalog.select("sim")]) == frozenset({top, dep})
 
     def test_unselectable_sibling_target_does_not_widen_closure(self, tmp_path: Path):
         # top's seeded `sim` depends on dep; its *unseeded* `alt` target depends on
@@ -2320,12 +2355,13 @@ class TestSelectableCoreClosure:
         dep = _write_core(tmp_path / "dep", self._leaf("dep"))
         _write_core(tmp_path / "rogue", self._leaf("rogue"))
         # Seed only `sim` (not `alt`), so rogue stays out of the closure.
-        closure = selectable_core_closure(tmp_path, ["sim"])
+        catalog = TargetCatalog.build(tmp_path)
+        closure = catalog.core_closure([catalog.select("sim")])
         assert closure == frozenset({top, dep})
 
 
 # ---------------------------------------------------------------------------
-# setup_command — tool_<x> use-flag injection for flow-API Targets
+# _setup_command — tool_<x> use-flag injection for flow-API Targets
 # ---------------------------------------------------------------------------
 
 
@@ -2333,14 +2369,14 @@ class TestSetupCommandEdaToolFlag:
     """Flow-API Targets don't set the upstream ``tool_<x>`` use-flag the legacy
     FuseSoC API
     sets, silently dropping `tool_verilator ? (...)` filesets (lowRISC gates
-    its C++ harness and lint waivers behind them). setup_command re-injects
+    its C++ harness and lint waivers behind them). _setup_command re-injects
     the flag for the declared EDA tool."""
 
     def test_flow_api_target_gets_upstream_tool_flag(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         _write_core(tmp_path / "ip")  # 'sim': flow: sim, flow_options.eda_tool: verilator
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         joined = " ".join(cmd)
         assert "--flag tool_verilator" in joined
         # run-subcommand option: must come after 'run', before the VLNV.
@@ -2348,13 +2384,13 @@ class TestSetupCommandEdaToolFlag:
         assert cmd.index("--flag") < cmd.index("::demo_core:0")
 
     def test_legacy_fusesoc_api_target_gets_no_flag(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import _setup_command
 
         legacy = _CORE_TEXT.replace("    flow: sim\n", "").replace(
             "    flow_options:\n      tool: verilator\n", ""
         )
         _write_core(tmp_path / "ip", legacy)
-        cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+        cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         assert "--flag" not in cmd  # legacy API sets tool_verilator natively
 
 
@@ -2393,7 +2429,7 @@ class TestFilesetsAppend:
     falsely failed it."""
 
     def test_target_source_files_walks_filesets_append(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import target_source_files
+        from booley.fusesoc.fusesoc_registry import _target_source_files
 
         text = textwrap.dedent(
             """\
@@ -2419,7 +2455,7 @@ class TestFilesetsAppend:
             """
         )
         _write_core(tmp_path, text)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert src.tb_files == ("sw/firmware.vmem",)
         assert src.rtl_source_files == ("rtl/counter.sv",)
 
@@ -2429,7 +2465,7 @@ class TestFilesetsAppend:
         so returned paths must be re-based project-relative — consumers join
         them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
         and used to silently read the wrong file, or none at all."""
-        from booley.fusesoc.fusesoc_registry import target_source_files
+        from booley.fusesoc.fusesoc_registry import _target_source_files
 
         state_cores = tmp_path / ".booley_project" / "cores"
         state_cores.mkdir(parents=True)
@@ -2454,7 +2490,7 @@ class TestFilesetsAppend:
             """
         )
         _write_core(state_cores, text)
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
         assert src.rtl_source_files == (".booley_project/cores/rtl/counter.sv",)
         assert src.tb_files == (".booley_project/cores/tb_directed.sv",)
 
@@ -2488,7 +2524,7 @@ class TestFilesetsAppend:
             ),
         )
 
-        src = target_source_files(tmp_path, "sim")
+        src = _target_source_files(tmp_path, "sim")
 
         assert src.rtl_source_files == ("rtl/counter.sv",)
         assert src.tb_files == ("tb/tb_counter.sv",)
@@ -2568,7 +2604,7 @@ class TestFilesetsAppend:
         (dependency / "images").mkdir()
         (dependency / "images" / "rom.hex").touch()
 
-        assert target_referenced_files(tmp_path, "sim") == (
+        assert _target_referenced_files(tmp_path, "sim") == (
             "tb/top.sv",
             "generated/boot.hex",
             "generated/test.hex",
@@ -2610,7 +2646,7 @@ class TestFilesetsAppend:
             create_sources=False,
         )
 
-        assert target_referenced_files(tmp_path, "sim") == ()
+        assert _target_referenced_files(tmp_path, "sim") == ()
 
     def test_missing_target_sources_walks_filesets_append(self, tmp_path: Path):
         """The source-existence preflight (`_literal_target_source_paths`) shares
@@ -2637,15 +2673,13 @@ class TestFilesetsAppend:
             """
         )
         _write_core(tmp_path, text, create_sources=False)  # nothing on disk
-        missing = missing_target_sources(tmp_path, "sim")
+        missing = _missing_target_sources(tmp_path, "sim")
         assert "sw/firmware.vmem" in missing  # the appended path is walked
 
     def test_dump_module_detection_walks_filesets_append(self, tmp_path: Path):
         """The trace-overlay readiness check shares the blind spot: a
         booley_vcd_dump.sv fileset added via append would false-warn 'no dump
         module' and provoke a duplicate overlay injection."""
-        from booley.fusesoc.fusesoc_trace_overlay import target_includes_dump_module
-
         text = textwrap.dedent(
             """\
             CAPI=2:
@@ -2666,8 +2700,8 @@ class TestFilesetsAppend:
                 toplevel: counter
             """
         )
-        _write_core(tmp_path, text)
-        assert target_includes_dump_module(tmp_path, "sim") is True
+        core = _write_core(tmp_path, text)
+        assert _target_includes_dump_module(read_core(core), "sim") is True
 
 
 # ---------------------------------------------------------------------------

@@ -513,3 +513,52 @@ def finish_basis_publication(project_root: Path, slug: str, operation_id: str) -
     if set(journal.published) != roles:
         raise BasisPublicationError("cannot retire an incompletely published basis journal")
     _journal_path(project_root, slug).unlink()
+
+
+def abandon_basis_publication(
+    project_root: Path,
+    slug: str,
+    operation_id: str,
+    repositories: dict[str, Path],
+) -> None:
+    """Delete only refs owned by an unpublished replacement-basis operation."""
+    journal = load_basis_publication(project_root, slug)
+    if journal is None:
+        return
+    if journal.operation_id != operation_id:
+        raise BasisPublicationError("basis abandonment operation identity changed")
+    roles = {item.role for item in journal.participants}
+    if not roles <= set(repositories):
+        raise BasisPublicationError("basis abandonment repositories do not match participants")
+    for participant in journal.participants:
+        prepared = journal.prepared.get(participant.role)
+        allowed = {participant.expected_old_sha, *([prepared] if prepared else [])}
+        _delete_owned_ref(repositories[participant.role], participant.ticket_ref, allowed)
+        if prepared:
+            _delete_owned_ref(
+                repositories[participant.role],
+                _temporary_ref(operation_id, participant.role),
+                {prepared},
+            )
+    if len(journal.prepared) == len(journal.participants):
+        basis = _basis(journal)
+        for participant in basis.participants:
+            _delete_owned_ref(
+                repositories[participant.role],
+                f"refs/booley/bases/{basis.basis_id}/{participant.role}",
+                {participant.authoring_sha},
+            )
+    _journal_path(project_root, slug).unlink()
+
+
+def _delete_owned_ref(repository: Path, ref: str, allowed: set[str]) -> None:
+    existing = _git(repository, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    if existing.returncode == 1:
+        return
+    if existing.returncode != 0:
+        detail = (existing.stderr or existing.stdout).strip() or "no diagnostic"
+        raise BasisPublicationError(f"could not inspect abandoned ref {ref}: {detail}")
+    current = existing.stdout.strip()
+    if current not in allowed:
+        raise BasisPublicationError(f"abandoned ref {ref} changed unexpectedly")
+    _require_git(repository, "update-ref", "-d", ref, current)

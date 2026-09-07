@@ -12,6 +12,9 @@ from booley.harness.models import (
     ExecutionContext,
     OnSuccess,
     StepResult,
+    TargetPlan,
+    TargetPlanError,
+    TargetPlanRole,
     TicketContext,
 )
 
@@ -69,7 +72,6 @@ class TestOnSuccess:
         assert os.merge is True
         assert os.cleanup is True
         assert os.triage_report is True
-        assert os.remove_targets == ()
 
     def test_from_dict_none(self):
         os = OnSuccess.from_dict(None)
@@ -90,22 +92,25 @@ class TestOnSuccess:
                 "merge": False,
                 "cleanup": True,
                 "triage_report": False,
-                "remove_targets": ["acme:lib:toy:1.0#baseline"],
             }
         )
         assert os.destination == "done"
         assert os.merge is False
         assert os.cleanup is True
         assert os.triage_report is False
-        assert os.remove_targets == ("acme:lib:toy:1.0#baseline",)
 
-    def test_from_dict_preserves_invalid_remove_targets_for_validation(self):
-        for remove_targets in ("baseline", [1]):
-            model = OnSuccess.from_dict({"remove_targets": remove_targets})
+    def test_remove_targets_has_a_hard_cutoff(self):
+        model = OnSuccess.from_dict({"remove_targets": []})
 
-            assert model.validate() == [
-                "on_success.remove_targets must contain unique non-empty strings"
-            ]
+        assert model.validate() == [
+            "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
+            "recreate the Ticket"
+        ]
+
+    def test_unknown_fields_are_rejected(self):
+        assert OnSuccess.from_dict({"mystery": True}).validate() == [
+            "on_success has unknown field(s): mystery"
+        ]
 
     def test_validate_ok(self):
         assert OnSuccess().validate() == []
@@ -120,21 +125,83 @@ class TestOnSuccess:
         errors = OnSuccess(triage_report="yes").validate()  # type: ignore[arg-type]
         assert errors == ["on_success.triage_report must be true or false"]
 
-    def test_remove_targets_requires_merge(self):
-        errors = OnSuccess(
-            merge=False,
-            cleanup=False,
-            remove_targets=("baseline",),
-        ).validate()
-        assert errors == ["on_success.remove_targets requires on_success.merge: true"]
-
     def test_cleanup_requires_merge(self):
         errors = OnSuccess(merge=False, cleanup=True).validate()
         assert errors == ["on_success.cleanup requires on_success.merge: true"]
 
-    def test_remove_targets_must_be_unique_non_empty_strings(self):
-        errors = OnSuccess(remove_targets=("baseline", "", "baseline")).validate()
-        assert errors == ["on_success.remove_targets must contain unique non-empty strings"]
+
+class TestTargetPlan:
+    def test_parses_and_canonicalizes_all_roles(self):
+        plan = TargetPlan.from_value(
+            [
+                {"target": "sim_new", "role": "replacement", "replaces": "sim_old"},
+                {"target": "lint_probe", "role": "ephemeral"},
+                {"target": "synth_area", "role": "persistent"},
+            ]
+        )
+
+        assert [entry.role for entry in plan.entries] == [
+            TargetPlanRole.EPHEMERAL,
+            TargetPlanRole.REPLACEMENT,
+            TargetPlanRole.PERSISTENT,
+        ]
+        assert plan.as_list()[1]["replaces"] == "sim_old"
+
+    @pytest.mark.parametrize(
+        "value, message",
+        [
+            ({}, "must be a list"),
+            ([], "non-empty"),
+            ([None], "must be a mapping"),
+            ([{"target": "", "role": "persistent"}], "non-empty string"),
+            ([{"target": "sim", "role": "unknown"}], "must be one of"),
+            (
+                [{"target": "sim", "role": "replacement", "replaces": 3}],
+                "non-empty string",
+            ),
+            (
+                [{"target": "sim", "role": "replacement", "replaces": ""}],
+                "non-empty string",
+            ),
+            ([{"target": "sim", "role": "persistent", "extra": True}], "unknown extra"),
+            ([{"target": "sim", "role": "replacement"}], "missing replaces"),
+            ([{"target": "sim", "role": "ephemeral", "replaces": "old"}], "unknown replaces"),
+            ([{"target": "sim", "role": "replacement", "replaces": "sim"}], "replace itself"),
+        ],
+    )
+    def test_rejects_invalid_shape(self, value, message):
+        with pytest.raises(TargetPlanError, match=message):
+            TargetPlan.from_value(value)
+
+    @pytest.mark.parametrize(
+        "value, message",
+        [
+            (
+                [
+                    {"target": "sim", "role": "persistent"},
+                    {"target": "sim", "role": "ephemeral"},
+                ],
+                "targets must be unique",
+            ),
+            (
+                [
+                    {"target": "sim_a", "role": "replacement", "replaces": "sim"},
+                    {"target": "sim_b", "role": "replacement", "replaces": "sim"},
+                ],
+                "baselines must be unique",
+            ),
+            (
+                [
+                    {"target": "sim_a", "role": "replacement", "replaces": "sim_b"},
+                    {"target": "sim_b", "role": "replacement", "replaces": "sim_a"},
+                ],
+                "must be acyclic",
+            ),
+        ],
+    )
+    def test_rejects_invalid_relationships(self, value, message):
+        with pytest.raises(TargetPlanError, match=message):
+            TargetPlan.from_value(value)
 
 
 class TestExecutionContext:

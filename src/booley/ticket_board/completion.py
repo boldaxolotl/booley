@@ -57,7 +57,6 @@ def _completion_inputs(
         raise CompletionError("journaled completion requires merge policy to be true")
     if not isinstance(getattr(effective_policy, "cleanup", None), bool):
         raise CompletionError("journaled completion requires cleanup policy to be boolean")
-    removal_targets = tuple(getattr(effective_policy, "remove_targets", ()))
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -75,10 +74,6 @@ def _completion_inputs(
         return None
     try:
         basis = tio.load_basis(slug)
-        if removal_targets != basis.removal_targets:
-            raise AcceptanceBasisError(
-                "on_success.remove_targets changed after Acceptance Basis publication"
-            )
         _destination_branch(entry, basis)
         _validate_completion_plan(basis, cleanup=effective_policy.cleanup)
     except (AcceptanceBasisError, CompletionError) as exc:

@@ -80,7 +80,7 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     return root, TicketIO(project / "tickets", project_root=root)
 
 
-def _ticket(tio: TicketIO, *, merge: bool = False) -> Path:
+def _ticket(tio: TicketIO, *, merge: bool = False, planned: bool = False) -> Path:
     path = tio.create_ticket_file(
         "change-target",
         TicketFileSpec(
@@ -88,7 +88,12 @@ def _ticket(tio: TicketIO, *, merge: bool = False) -> Path:
             ticket_type="refactor",
             branch="main",
             scope=["toy.core"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
+            criteria={
+                "mandatory": {"lint_clean": ["lint_toy_new"]}
+                if planned
+                else {"review_rtl_bugs": True}
+            },
+            target_plan=([{"target": "lint_toy_new", "role": "persistent"}] if planned else None),
             body="## Description\n\nExercise every Booley-owned control artifact.\n",
         ),
     )
@@ -190,10 +195,23 @@ def test_enqueue_records_tests_toml_update_in_acceptance_basis(
     tmp_path: Path, monkeypatch
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
-    _ticket(tio)
+    _ticket(tio, merge=True, planned=True)
     outer = root / ".booley_project" / "worktrees" / "change-target"
+    core = outer / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
     tests_toml = outer / ".booley_project" / "tests.toml"
-    tests_toml.write_text("[lint_toy]\ntests = ['smoke']\n", encoding="utf-8")
+    tests_toml.write_text(
+        tests_toml.read_text(encoding="utf-8") + "\n[lint_toy_new]\ntests = ['smoke']\n",
+        encoding="utf-8",
+    )
 
     assert tio.enqueue_ticket("change-target") is True
     queue = tio.tickets_dir / "board" / "queue" / "change-target.md"
@@ -244,18 +262,24 @@ def test_json_shaped_criterion_string_round_trips_as_a_string() -> None:
     assert parse_criteria_section(render_criteria_section(criteria)) == criteria
 
 
-def test_review_completion_ignores_its_board_rename_but_not_product_edits(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _review_completion_case(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "booley.ticket_board.operations._completion_acceptance_valid",
         lambda *_: SimpleNamespace(participant_heads=None),
     )
     root, tio = _project(tmp_path, monkeypatch)
-    draft = _ticket(tio, merge=True)
+    draft = _ticket(tio, merge=True, planned=True)
     worktree = root / ".booley_project" / "worktrees" / "change-target"
     core = worktree / "toy.core"
-    core.write_text(core.read_text(encoding="utf-8").replace(":1.0", ":2.0"), encoding="utf-8")
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
     assert tio.enqueue_ticket("change-target") is True
     queue = draft.parent.parent / "queue" / draft.name
     unrelated_ticket = queue.parent / "unrelated-ticket.md"
@@ -268,14 +292,19 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
         str(unrelated_ticket.relative_to(root)),
     )
     _commit_all(root, "queue ticket")
-
     review = queue.parent.parent / "review" / queue.name
     review.parent.mkdir(parents=True, exist_ok=True)
     queue.rename(review)
     monkeypatch.chdir(root)
-
     source = root / "rtl" / "toy.sv"
     original = source.read_text(encoding="utf-8")
+    return root, tio, unrelated_ticket, source, original
+
+
+def test_review_completion_ignores_its_board_rename_but_not_product_edits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, tio, unrelated_ticket, source, original = _review_completion_case(tmp_path, monkeypatch)
     source.write_text("module toy; wire unrelated_product_edit; endmodule\n", encoding="utf-8")
     assert op_complete(tio, "change-target") is False
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
@@ -289,4 +318,4 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     unrelated_ticket.write_text(unrelated_original, encoding="utf-8")
     assert op_complete(tio, "change-target") is True
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "done"
-    assert "acme:lib:toy:2.0" in (root / "toy.core").read_text(encoding="utf-8")
+    assert "lint_toy_new" in (root / "toy.core").read_text(encoding="utf-8")

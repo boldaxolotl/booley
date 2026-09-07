@@ -10,6 +10,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -210,6 +211,75 @@ def _write_progress(project_root: Path, slug: str, data: dict):
     (logs_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
 
 
+def test_explicit_waiting_intake_promotes_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+    from booley.ticket_board import operations
+
+    tickets = tmp_path / ".booley/project/tickets"
+    waiting = tickets / "board/waiting/ticket.md"
+    queued = tickets / "board/queue/ticket.md"
+    waiting.parent.mkdir(parents=True)
+    queued.parent.mkdir(parents=True)
+    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
+    monkeypatch.setattr(
+        intake.ticket_cli, "validate_ticket", lambda *_args, **_kwargs: {"valid": True}
+    )
+
+    def promote(_tio):
+        waiting.rename(queued)
+        return [{"slug": "ticket", "summary": "Ticket"}]
+
+    monkeypatch.setattr(operations, "op_promote_waiting", promote)
+
+    assert intake._promote_waiting_for_intake(tmp_path, waiting, "ticket") == queued
+
+
+@pytest.mark.asyncio
+async def test_automatic_intake_promotes_waiting_before_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+    from booley.ticket_board import operations
+
+    tickets = tmp_path / ".booley/project/tickets"
+    waiting = tickets / "board/waiting/ticket.md"
+    queued = tickets / "board/queue/ticket.md"
+    waiting.parent.mkdir(parents=True)
+    queued.parent.mkdir(parents=True)
+    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
+    calls = []
+
+    def promote(_tio):
+        calls.append("promote")
+        waiting.rename(queued)
+        return [{"slug": "ticket", "summary": "Ticket"}]
+
+    def select(_root):
+        calls.append("select")
+        assert queued.is_file()
+        return "ticket"
+
+    monkeypatch.setattr(operations, "op_promote_waiting", promote)
+    monkeypatch.setattr(intake, "_auto_select_ticket", select)
+    monkeypatch.setattr(intake, "_resolve_and_validate", lambda *_: (queued, "ticket"))
+    monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda _r, path, _s: path)
+    monkeypatch.setattr(intake.ticket_cli, "parse_ticket", lambda *_: {"fields": {}, "body": ""})
+    expected = TicketContext("ticket", queued, "bugfix", "main", "Ticket", tmp_path)
+    monkeypatch.setattr(intake, "_build_context", lambda *_: expected)
+    monkeypatch.setattr(intake, "_check_dependencies", lambda *_: None)
+    monkeypatch.setattr(intake, "_detect_and_apply_resume", lambda *_: "fresh")
+    monkeypatch.setattr(intake, "_verify_acceptance_basis", lambda *_: None)
+    monkeypatch.setattr(intake, "_validate_retired_criteria", lambda *_: None)
+    monkeypatch.setattr(intake, "_init_criteria_state", lambda *_: None)
+
+    assert await intake.run("", tmp_path) is expected
+    assert calls == ["promote", "select"]
+
+
 def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
     from booley.harness.setup.intake import _verify_acceptance_basis
 
@@ -352,11 +422,23 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         edam_path=tmp_path / "core.eda.yml",
         flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
     )
-    monkeypatch.setattr(fusesoc_registry, "resolve_ref", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         fusesoc_registry,
-        "resolve_target",
+        "resolve_target_handle",
         lambda *_args, **_kwargs: resolved,
+    )
+    monkeypatch.setattr(
+        "booley.targets.catalog.TargetCatalog.build",
+        classmethod(
+            lambda _cls, root: SimpleNamespace(
+                select=lambda target: SimpleNamespace(
+                    selector=target,
+                    name=target,
+                    vlnv="::core:0",
+                    project_root=Path(root),
+                )
+            )
+        ),
     )
     from booley.flows import baseline_worktree as baseline_module
 
@@ -561,6 +643,20 @@ class TestResumeBlocked:
 
         with pytest.raises(FatalError, match="not yet answered"):
             await run(str(sample_ticket), project_root)
+
+    @pytest.mark.asyncio
+    @patch("booley.harness.setup.intake.ticket_cli")
+    async def test_acceptance_input_change_requires_return_to_draft(
+        self, mock_cli, project_root, sample_ticket
+    ):
+        fields = {**_MINIMAL_FIELDS, "blocked_reason": "acceptance-input-change-required"}
+        _mock_cli_defaults(mock_cli, action="resume_blocked", fields=fields)
+        from booley.harness.setup.intake import run
+
+        with pytest.raises(FatalError, match="use return-to-draft"):
+            await run(str(sample_ticket), project_root)
+
+        mock_cli.activate.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")

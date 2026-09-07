@@ -22,6 +22,8 @@ from booley.flows.execution import flow_enabled
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.git import scope_matches_file
 from booley.runtime.project_prepare import prepare_project
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 from booley.ticket_board.acceptance_basis import AcceptanceBasisError, authored_ticket_record
 from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
@@ -36,6 +38,23 @@ __all__ = [
     "load_contract",
     "validate_demo",
 ]
+
+
+def _target_inputs(catalog: TargetCatalog, target: str) -> tuple[Any, ...]:
+    """Return condition-selected inputs through the demo checkout catalog."""
+    return catalog.inspect(catalog.select(target)).inputs
+
+
+def _resolve_catalog_target(
+    catalog: TargetCatalog,
+    target: str,
+    build_root: Path,
+) -> Any:
+    """Resolve one already-selected demo Target."""
+    return fusesoc_registry.resolve_target_handle(
+        catalog.select(target),
+        build_root=build_root,
+    )
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -110,20 +129,25 @@ def _validate_targets(
         for entry in fields.get("scope", [])
         if isinstance(entry, str) and entry.endswith(" [new]")
     }
+    catalog = TargetCatalog.build(root)
     with tempfile.TemporaryDirectory(prefix="booley-demo-targets-") as build_root:
         for index, target in enumerate(targets):
             try:
-                missing = fusesoc_registry.missing_target_sources(root, target)
+                missing = [
+                    item.path
+                    for item in _target_inputs(catalog, target)
+                    if not (root / item.path).exists()
+                ]
                 if missing and set(missing) <= future:
                     continue
-                resolved = fusesoc_registry.resolve_target(
+                resolved = _resolve_catalog_target(
+                    catalog,
                     target,
-                    project_root=root,
-                    build_root=Path(build_root) / f"target-{index}",
+                    Path(build_root) / f"target-{index}",
                 )
                 if not resolved.toplevel:
                     errors.append(f"required Target {target!r} resolves without a toplevel")
-            except (fusesoc_registry.FuseSocError, OSError) as exc:
+            except (FuseSocError, OSError) as exc:
                 errors.append(f"required Target {target!r}: {exc}")
     return errors
 
@@ -184,10 +208,11 @@ def _validate_generated_input(
         errors.append(f"generated input must be ignored: {path}")
     if not (root / producer).is_file():
         errors.append(f"generated input producer is missing for {path}: {producer}")
+    catalog = TargetCatalog.build(root)
     for target in targets:
         try:
-            referenced = fusesoc_registry.target_referenced_files(root, target)
-        except fusesoc_registry.FuseSocError as exc:
+            referenced = [item.path for item in _target_inputs(catalog, target)]
+        except FuseSocError as exc:
             errors.append(f"generated input {path} target {target!r}: {exc}")
             continue
         if path not in referenced:

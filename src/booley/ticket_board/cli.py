@@ -226,6 +226,11 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--priority", default="medium", choices=["low", "medium", "high"], help="Priority"
     )
+    _add_create_file_content_args(p)
+
+
+def _add_create_file_content_args(p: argparse.ArgumentParser) -> None:
+    """Register structured content inputs for create-file."""
     p.add_argument(
         "--criteria",
         default=None,
@@ -240,9 +245,18 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
         "--on-success",
         default=None,
         help=(
-            "JSON dict: {destination, merge, cleanup, triage_report, remove_targets} — "
-            "successful-run disposition"
+            "JSON dict: {destination, merge, cleanup, triage_report} — successful-run disposition"
         ),
+    )
+    p.add_argument(
+        "--target-plan",
+        default=None,
+        help="JSON list of persistent, replacement, and ephemeral Target entries",
+    )
+    p.add_argument(
+        "--target-plan-file",
+        default="",
+        help="Read Target Plan JSON from a file instead of --target-plan",
     )
     p.add_argument("--body", default="", help="Ticket body (markdown)")
     p.add_argument("--body-file", default="", help="Read ticket body from file instead of --body")

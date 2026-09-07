@@ -51,7 +51,7 @@ from booley.flows.target_campaign import (
 )
 from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_test_suite import NoRunnableTestsError
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -62,6 +62,7 @@ from booley.mcp.base import (
 from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
+from booley.targets.catalog import TargetCatalog
 
 from .coverage_verilog_utils import (
     _build_rtl_name_map,  # noqa: F401  # re-exported for backward compatibility
@@ -615,10 +616,10 @@ class CoverageAnalystSpecialist(Specialist):
         conventions do not apply.
         """
         try:
-            modules = fusesoc_registry.target_cocotb_modules(self.args.work_dir)
+            module = TargetCatalog.build(self.args.work_dir).select(self.args.target).cocotb_module
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return False
-        return modules.get(self.args.target) is not None
+        return module is not None
 
     def _validate_interactive_args(self) -> McpToolResult | None:
         """Reject missing args in Interactive Mode with a clear message.
@@ -1117,7 +1118,7 @@ class CoverageAnalystSpecialist(Specialist):
         # ADR 0022 decision 8: the run-half family comes from the Target's EDA tool
         # (read cheaply from the .core), not the boundary-named backend.
         eda_tool = sim_edam.normalize_eda_tool(
-            fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
+            TargetCatalog.build(work_dir).select(self.args.target).eda_tool
         )
 
         # Collect all design RTL files: scope file directories may contain
@@ -2842,16 +2843,13 @@ abort path". Omit this field or leave empty if all criteria are already met.
             self.args.target,
             variant="trace",
         )
-        overlay = fusesoc_registry.write_trace_overlay(
-            self.args.target,
-            project_root=work_dir,
-        )
+        handle = TargetCatalog.build(work_dir).select(self.args.target, for_flow="sim")
+        overlay = fusesoc_trace_overlay.write_trace_overlay(handle)
         try:
-            resolved = fusesoc_registry.resolve_target(
-                self.args.target,
-                project_root=work_dir,
+            resolved = fusesoc_registry.resolve_target_handle(
+                handle,
                 build_root=build_root,
-                vlnv=overlay.vlnv,
+                resolution_vlnv=overlay.vlnv,
             )
             return resolved, overlay.mode
         finally:
@@ -2932,10 +2930,11 @@ abort path". Omit this field or leave empty if all criteria are already met.
         context: _TraceRunContext,
     ) -> tuple[list[str], str]:
         """Select the traced run-half for the Target's simulator family."""
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(context.work_dir)
-        cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
+        cocotb_module = (
+            TargetCatalog.build(context.work_dir).select(self.args.target).cocotb_module
+        )
         if cocotb_module:
-            fusesoc_registry.validate_cocotb_trace_mode(
+            fusesoc_trace_overlay.validate_cocotb_trace_mode(
                 self.args.target,
                 context.trace_mode,
             )
@@ -2971,7 +2970,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> list[str]:
         """Resolve the Target and return its guarded build + traced-run command."""
         eda_tool = sim_edam.normalize_eda_tool(
-            fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
+            TargetCatalog.build(work_dir).select(self.args.target).eda_tool
         )
         resolved, trace_mode = self._resolve_trace_target(
             fusesoc_registry,

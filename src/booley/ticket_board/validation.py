@@ -482,6 +482,21 @@ def _validate_on_success(value: Any) -> list[str]:
     return OnSuccess.from_dict(value).validate()
 
 
+def _validate_target_plan(value: Any, on_success: Any) -> list[str]:
+    """Validate an optional Target Plan at the authored Ticket seam."""
+    if value is None:
+        return []
+    from booley.core.models import TargetPlan, TargetPlanError
+
+    try:
+        TargetPlan.from_value(value)
+    except TargetPlanError as exc:
+        return [str(exc)]
+    if not isinstance(on_success, dict) or on_success.get("merge", True) is not True:
+        return ["target_plan requires on_success.merge: true"]
+    return []
+
+
 def _validate_no_duplicated_source_roots(
     scope: list[str],
     project_root: str | Path | None,
@@ -739,17 +754,9 @@ def _validate_sim_entries(criteria: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _eligible_sim_target_selectors(declarations: dict[str, list[Any]]) -> list[str]:
+def _eligible_sim_target_selectors(handles: tuple[Any, ...]) -> list[str]:
     """Return copy-pasteable selectors for Targets the sim Booley Flow can drive."""
-    from booley.fusesoc import fusesoc_registry
-    from booley.targets.target import flow_can_drive
-
-    selectors: list[str] = []
-    for bucket in declarations.values():
-        for ref in bucket:
-            if flow_can_drive("sim", ref):
-                selectors.append(fusesoc_registry.minimal_selector(ref, bucket))
-    return sorted(selectors)
+    return sorted(handle.selector for handle in handles if "sim" in handle.drivable_by)
 
 
 _TARGET_CREATION_VERBS = re.compile(
@@ -816,18 +823,19 @@ def _validate_sim_targets(
 ) -> list[str]:
     """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
     from booley.criteria.templates import parse_sim_criterion
-    from booley.fusesoc import fusesoc_registry
-    from booley.targets.target import flow_can_drive, select_target
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import FuseSocError, UnknownTargetError
 
     root = Path(project_root)
     try:
-        declarations = fusesoc_registry.target_declarations(root)
-    except fusesoc_registry.FuseSocError as exc:
+        catalog = TargetCatalog.build(root)
+        handles = catalog.list()
+    except FuseSocError as exc:
         return [f"criteria: cannot inspect simulation Targets: {exc}"]
-    if not declarations:
+    if not handles:
         return []  # No authored .core surface yet; preserve pre-migration validation.
 
-    eligible = _eligible_sim_target_selectors(declarations)
+    eligible = _eligible_sim_target_selectors(handles)
     eligible_hint = ", ".join(eligible) if eligible else "none"
     errors: list[str] = []
     for section_name in ("mandatory", "optional"):
@@ -842,10 +850,10 @@ def _validate_sim_targets(
                 continue
             try:
                 target = parse_sim_criterion(item).target
-                ref = select_target(root, target)
+                handle = catalog.select(target)
             except ValueError:
                 continue  # _validate_sim_entries owns malformed-entry errors.
-            except fusesoc_registry.UnknownTargetError as exc:
+            except UnknownTargetError as exc:
                 if _ticket_declares_future_target(fields, body, target):
                     continue
                 errors.append(
@@ -853,16 +861,16 @@ def _validate_sim_targets(
                     f"eligible simulation Targets: {eligible_hint}"
                 )
                 continue
-            except fusesoc_registry.FuseSocError as exc:
+            except FuseSocError as exc:
                 errors.append(
                     f"criteria.{section_name}.sim_pass: target {target!r}: {exc}; "
                     f"eligible simulation Targets: {eligible_hint}"
                 )
                 continue
-            if not flow_can_drive("sim", ref):
+            if "sim" not in handle.drivable_by:
                 errors.append(
                     f"criteria.{section_name}.sim_pass: target {target!r} cannot satisfy "
-                    f"sim_pass (flow={ref.flow!r}, EDA tool={ref.eda_tool!r}); eligible simulation "
+                    f"sim_pass (flow={handle.flow!r}, EDA tool={handle.eda_tool!r}); eligible simulation "
                     f"Targets: {eligible_hint}"
                 )
     return errors
@@ -1219,6 +1227,7 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
+    errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
     errors.extend(_validate_acceptance_basis_field(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)

@@ -26,6 +26,7 @@ from booley.runtime import (
     runtime_context,
 )
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.targets.catalog import TargetCatalog
 
 
 def test_docker_permission_guidance_compatibility_facade(monkeypatch) -> None:
@@ -56,9 +57,10 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> 
         "    toplevel: selected\n",
         encoding="utf-8",
     )
-    refs = fusesoc_registry.enumerate_targets(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    refs = {handle.name: handle for handle in catalog.list()}
 
-    sources = doctor._CoreAuditInputs(tmp_path, refs).sources_for("sim")
+    sources = doctor._CoreAuditInputs(catalog, refs).sources_for("sim")
 
     assert sources.rtl_source_files == ("rtl/selected.sv",)
     assert sources.tb_files == ("tb/selected.sv",)
@@ -86,7 +88,8 @@ def test_doctor_reuses_one_target_source_inspector(
         f"{targets}",
         encoding="utf-8",
     )
-    refs = fusesoc_registry.enumerate_targets(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    refs = {handle.name: handle for handle in catalog.list()}
     managers: list[object] = []
     resolutions = 0
     real_manager = target_inspection.CoreManager
@@ -105,7 +108,7 @@ def test_doctor_reuses_one_target_source_inspector(
     monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
     monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
 
-    inputs = doctor._CoreAuditInputs(tmp_path, refs)
+    inputs = doctor._CoreAuditInputs(catalog, refs)
     for name in target_names:
         assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
 
@@ -833,8 +836,6 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
-    from booley.fusesoc import fusesoc_registry
-
     (tmp_path / ".booley_project").mkdir(exist_ok=True)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -843,7 +844,6 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
         configs_toml={"fast": {"defines": [], "tb_top": "tb", "tests": ["smoke"]}},
         first_target="fast",
     )
-    monkeypatch.setattr(fusesoc_registry, "enumerate_targets", lambda _root: {})
     monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
 
     calls: list[list[str]] = []
@@ -1069,8 +1069,8 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
     monkeypatch.setattr(
         doctor.fusesoc_registry,
-        "resolve_target",
-        lambda name, **kwargs: calls.append((name, kwargs.get("vlnv"))),
+        "resolve_target_handle",
+        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
     )
     rec = _Rec()
 
@@ -1162,7 +1162,7 @@ def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
         assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
         raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
 
-    monkeypatch.setattr(doctor.fusesoc_registry, "resolve_target", fail_resolution)
+    monkeypatch.setattr(doctor.fusesoc_registry, "_resolve_target", fail_resolution)
     rec = _Rec()
 
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
@@ -1180,13 +1180,6 @@ def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
     project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
     matrix = MagicMock(seed_targets=("removed_target",))
     monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
-    monkeypatch.setattr(
-        doctor.fusesoc_registry,
-        "resolve_ref",
-        lambda _root, _selector: (_ for _ in ()).throw(
-            fusesoc_registry.UnknownTargetError("Target disappeared")
-        ),
-    )
     rec = _Rec()
 
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
@@ -2839,15 +2832,15 @@ class TestCoreAudit:
             '$display("[SIM_RESULT] PASSED");\n',
             encoding="utf-8",
         )
-        original = doctor.TargetSourceInspector.inspect
+        original = doctor.TargetCatalog.inspect
         calls: list[str] = []
 
-        def inspect(self, ref: fusesoc_registry.TargetRef):
-            result = original(self, ref)
-            calls.append(ref.name)
+        def inspect(self, handle):
+            result = original(self, handle)
+            calls.append(handle.name)
             return result
 
-        monkeypatch.setattr(doctor.TargetSourceInspector, "inspect", inspect)
+        monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
         monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
@@ -3972,13 +3965,8 @@ targets:
 """
 
     def _refs(self, core, name, flow):
-        from booley.fusesoc import fusesoc_registry as fr
-
-        return {
-            name: fr.TargetRef(
-                name=name, vlnv="::demo:0", core_file=core, eda_tool="icarus", flow=flow
-            )
-        }
+        catalog = TargetCatalog.build(core.parent)
+        return {name: catalog.select(name)}
 
     def test_sim_target_missing_g2012_fails(self, tmp_path):
         core = _write_core(
@@ -4062,8 +4050,6 @@ targets:
         assert not c.failed and not c.warned
 
     def test_plain_verilog_and_non_icarus_targets_are_silent(self, tmp_path):
-        from booley.fusesoc import fusesoc_registry as fr
-
         core = _write_core(
             tmp_path,
             """\
@@ -4077,14 +4063,8 @@ targets:
   sim_ver: {flow: sim, flow_options: {tool: verilator}, filesets: [rtl_sv], toplevel: dut}
 """,
         )
-        refs = {
-            "sim_v": fr.TargetRef(
-                name="sim_v", vlnv="::demo:0", core_file=core, eda_tool="icarus", flow="sim"
-            ),
-            "sim_ver": fr.TargetRef(
-                name="sim_ver", vlnv="::demo:0", core_file=core, eda_tool="verilator", flow="sim"
-            ),
-        }
+        catalog = TargetCatalog.build(core.parent)
+        refs = {handle.name: handle for handle in catalog.list()}
         c = _Collector()
         doctor._check_icarus_sv_language_mode(tmp_path, refs, c._pass, c._warn, c._fail)
         # .v-only icarus target: the default generation is correct; verilator
@@ -4136,14 +4116,8 @@ targets:
 toplevel: {toplevel}}}
 """,
         )
-        from booley.fusesoc import fusesoc_registry as fr
-
-        refs = {
-            flow: fr.TargetRef(
-                name=flow, vlnv="::demo:0", core_file=core, eda_tool="verilator", flow=flow
-            )
-        }
-        return refs
+        catalog = TargetCatalog.build(core.parent)
+        return {flow: catalog.select(flow)}
 
     def test_interface_ports_on_lint_toplevel_warn(self, tmp_path: Path):
         refs = self._project(tmp_path, self._IFACE_DUT, "eth_mac")
@@ -6580,7 +6554,7 @@ targets:
     def _run(self, tmp_path: Path, text: str, booley_toml=None):
         (tmp_path / "i2c.v").write_text("module i2c; endmodule\n", encoding="utf-8")
         (tmp_path / "design.core").write_text(text, encoding="utf-8")
-        refs = doctor.fusesoc_registry.enumerate_targets(tmp_path)
+        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
         project = _schema_audit(tmp_path, booley_toml)
         passes, warns, notes = [], [], []
         doctor._check_legacy_core_targets(
@@ -6726,7 +6700,7 @@ targets:
         (tmp_path / "design.core").write_text(
             self._CORE.replace("{targets}", target_block), encoding="utf-8"
         )
-        refs = doctor.fusesoc_registry.enumerate_targets(tmp_path)
+        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
         project = _schema_audit(tmp_path, booley_toml)
         passes, warns = [], []
         doctor._check_target_naming(project, tmp_path, refs, passes.append, warns.append)

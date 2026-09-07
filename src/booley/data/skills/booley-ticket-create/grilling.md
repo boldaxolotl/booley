@@ -53,6 +53,7 @@ Scale depth to complexity; skip what the user already covered.
 | Scope completeness, edge cases, hidden breakage risks | Prevents scope creep; surfaces dependencies |
 | Verification strategy & coverage gaps | TB criteria and review focuses |
 | Dependencies & ordering risks | `dependencies` field |
+| New Target lifecycle: coexist, replace a runnable baseline, or remain evidence-only | `target_plan` persistent / replacement / ephemeral role and required baseline binding |
 
 ### Feature-Specific
 

@@ -121,7 +121,7 @@ class TestClassifiedSources:
 
     def test_include_header_lands_in_rtl(self, tmp_path: Path):
         # A non-TB ``is_include_file`` header still invalidates RTL builds, so
-        # classified_sources keeps it on the RTL side (unlike target_source_files).
+        # classified_sources keeps it on the RTL side (unlike _target_source_files).
         _write_core(
             tmp_path / "d.core",
             """\

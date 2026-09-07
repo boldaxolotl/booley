@@ -38,7 +38,7 @@ from booley.runtime.submodule_materialization import (
     materialize_ticket_submodules,
 )
 from booley.runtime.ticket_repositories import paired_project_repository
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 from .recipe_evidence import BASELINE_REF_PARAM
 

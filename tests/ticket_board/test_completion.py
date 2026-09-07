@@ -101,7 +101,6 @@ def _ticket_commit(repo: Path, branch: str, content: str) -> str:
 class _Policy:
     merge: bool = True
     cleanup: bool = False
-    remove_targets: tuple[str, ...] = ()
 
 
 class _TicketIO:
@@ -380,7 +379,7 @@ def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str])
     assert "cannot complete 'bad-basis'" in capsys.readouterr().err
 
 
-def test_complete_rejects_removal_policy_changed_after_basis_publication(
+def test_complete_ignores_noncanonical_policy_removals(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -402,11 +401,9 @@ def test_complete_rejects_removal_policy_changed_after_basis_publication(
     )
     tio = _TicketIO(root, basis)
 
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=("baseline",)))
-        is False
-    )
-    assert "changed after Acceptance Basis publication" in capsys.readouterr().err
+    policy = SimpleNamespace(merge=True, cleanup=False, remove_targets=("baseline",))
+    assert complete_review_ticket(tio, "change-target", policy)
+    assert capsys.readouterr().err == ""
 
 
 def test_complete_rejects_legacy_contract_schema(
@@ -1094,9 +1091,7 @@ def _single_target_removal_completion(
 def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path) -> None:
     root, tio, canonical = _single_target_removal_completion(tmp_path)
 
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
     merged_core = _git(root, "show", "main:toy.core")
     assert "  baseline:" not in merged_core
@@ -1110,11 +1105,9 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
 
 
 def test_finalization_retains_submodule_target_and_test_registration(tmp_path: Path) -> None:
-    root, tio, canonical = _single_target_removal_completion(tmp_path, retained_submodule=True)
+    root, tio, _canonical = _single_target_removal_completion(tmp_path, retained_submodule=True)
 
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
     retained = _git(root, "show", "main:.booley_project/tests.toml")
     assert '"acme:lib:retained:1.0#retained"' in retained
@@ -1177,9 +1170,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
     )
     tio = _TicketIO(root, basis)
 
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
     assert "  baseline:" not in _git(project, "show", "main:cores/toy.core")
     assert "  candidate:" in _git(project, "show", "main:cores/toy.core")
@@ -1314,13 +1305,13 @@ def test_schema_two_retry_is_rejected_after_hard_cutoff(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    root, _project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, _project, tio, _participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "interrupted after finalized journal write"
     )
-    policy = _Policy(remove_targets=(canonical,))
+    policy = _Policy()
     assert complete_review_ticket(tio, "change-target", policy) is False
     journal = _acceptance_journal(root)
     _downgrade_to_finalization_schema_two(root, journal)
@@ -1334,13 +1325,13 @@ def test_schema_two_retry_rejects_unrelated_staging_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "interrupted after finalized journal write"
     )
-    policy = _Policy(remove_targets=(canonical,))
+    policy = _Policy()
     assert complete_review_ticket(tio, "change-target", policy) is False
     journal = _acceptance_journal(root)
     project_candidate = journal["candidates"]["project"]
@@ -1374,15 +1365,13 @@ def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "interrupted after finalized journal write"
     )
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
 
     journal = _acceptance_journal(root)
     outer_staging = journal["candidates"]["outer"]["staging_ref"]
@@ -1405,9 +1394,7 @@ def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     )
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
 
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert acceptance_impl._ref_commit(root, outer_staging) == outer_prepared
     assert acceptance_impl._ref_commit(project, project_staging) == participants[1].destination_sha
     _assert_destinations_unchanged(root, project, participants)
@@ -1418,13 +1405,13 @@ def test_retry_rejects_tag_object_at_finalized_staging_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "interrupted after finalized journal write"
     )
-    policy = _Policy(remove_targets=(canonical,))
+    policy = _Policy()
     assert complete_review_ticket(tio, "change-target", policy) is False
 
     journal = _acceptance_journal(root)
@@ -1508,19 +1495,15 @@ def test_retry_converges_each_finalization_ref_update(
     role: str,
     timing: Literal["before", "after"],
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     cas_ref, interrupted = _interrupt_finalization_ref_update(monkeypatch, role, timing)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert interrupted == [True]
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", cas_ref)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
     _assert_retained_target_removal_completion(root, project, tio, participants)
 
 
@@ -1528,15 +1511,13 @@ def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, project, tio, _participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     update_finalized_refs = _interrupt_finalized_ref_updates(
         monkeypatch, "before finalization ref updates"
     )
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     journal = _acceptance_journal(root)
     project_candidate = journal["candidates"]["project"]
     _git(
@@ -1549,9 +1530,7 @@ def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     )
 
     monkeypatch.setattr(acceptance_impl, "_update_finalized_refs", update_finalized_refs)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
     assert (
         acceptance_impl._ref_commit(project, project_candidate["staging_ref"])
         == project_candidate["finalized_sha"]
@@ -1562,7 +1541,7 @@ def test_target_finalization_cleanup_removes_all_journal_owned_refs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
 
@@ -1570,7 +1549,7 @@ def test_target_finalization_cleanup_removes_all_journal_owned_refs(
         complete_review_ticket(
             tio,
             "change-target",
-            _Policy(cleanup=True, remove_targets=(canonical,)),
+            _Policy(cleanup=True),
         )
         is True
     )
@@ -1597,16 +1576,14 @@ def test_retry_converges_finalized_identity_journal_interruption(
     monkeypatch: pytest.MonkeyPatch,
     timing: Literal["before", "after"],
 ) -> None:
-    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, project, tio, _participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     faulting_store = FaultingAcceptanceStore(
         FileAcceptanceStore(), AcceptanceCheckpoint.CANDIDATES_FINALIZED, timing
     )
     _install_acceptance_runner(monkeypatch, store=faulting_store)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert faulting_store.triggered is True
 
     acceptance_worktrees = root / ".booley_project" / ".runtime" / "acceptance-worktrees"
@@ -1622,9 +1599,7 @@ def test_retry_converges_finalized_identity_journal_interruption(
             assert f"unreachable commit {finalized}" not in unreachable
 
     _install_acceptance_runner(monkeypatch)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
 
 @pytest.mark.parametrize(
@@ -1639,7 +1614,7 @@ def test_retry_converges_each_finalized_keepalive_update(
     role: str,
     timing: str,
 ) -> None:
-    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, project, tio, _participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     cas_ref = acceptance_impl._cas_ref
@@ -1662,9 +1637,7 @@ def test_retry_converges_each_finalized_keepalive_update(
         raise completion.CompletionError(f"after {role} finalized keepalive")
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", interrupt)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert interrupted is True
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
@@ -1674,9 +1647,7 @@ def test_retry_converges_each_finalized_keepalive_update(
         assert f"unreachable commit {finalized}" not in unreachable
 
     monkeypatch.setattr(acceptance_impl, "_cas_ref", cas_ref)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
 
 @pytest.mark.parametrize(
@@ -1687,7 +1658,7 @@ def test_retry_converges_finalization_worktree_removal(
     monkeypatch: pytest.MonkeyPatch,
     timing: str,
 ) -> None:
-    root, _project, tio, _participants, canonical = _paired_target_removal_completion(
+    root, _project, tio, _participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     remove_worktrees = acceptance_impl._remove_finalization_worktrees
@@ -1705,15 +1676,11 @@ def test_retry_converges_finalization_worktree_removal(
         raise completion.CompletionError("after finalization worktree removal")
 
     monkeypatch.setattr(acceptance_impl, "_remove_finalization_worktrees", interrupt)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert calls == 2
 
     monkeypatch.setattr(acceptance_impl, "_remove_finalization_worktrees", remove_worktrees)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
     acceptance_worktrees = root / ".booley_project" / ".runtime" / "acceptance-worktrees"
     assert not any(acceptance_worktrees.iterdir())
 
@@ -1752,13 +1719,11 @@ def test_staging_move_during_publication_leaves_its_destination_unmoved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, project, tio, participants, canonical = _paired_target_removal_completion(
+    root, project, tio, participants, _canonical = _paired_target_removal_completion(
         tmp_path, monkeypatch
     )
     moved = _move_outer_staging_during_publication(root, participants[0], monkeypatch)
-    assert (
-        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
-    )
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert moved == [True]
     assert tio.entry["status"] == "review"
 

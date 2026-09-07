@@ -87,7 +87,6 @@ class TestMaterializedAcceptanceBasis:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
-                "remove_targets": [],
             },
         }
         return ctx

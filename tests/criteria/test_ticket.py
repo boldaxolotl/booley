@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -400,8 +401,18 @@ class TestInitCriteriaState:
                 new_callable=PropertyMock,
                 return_value=logs_dir,
             ),
-            patch.object(fusesoc_registry, "resolve_ref"),
-            patch.object(fusesoc_registry, "resolve_target", return_value=resolved),
+            patch(
+                "booley.targets.catalog.TargetCatalog.build",
+                return_value=SimpleNamespace(
+                    select=lambda target: SimpleNamespace(
+                        selector=target,
+                        name=target,
+                        vlnv="::dut:0",
+                        project_root=tmp_path,
+                    )
+                ),
+            ),
+            patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
         ):
             _init_criteria_state(ctx)
 

@@ -13,7 +13,12 @@ on_success:
   merge: true                       # merge feature branch on completion
   cleanup: true                     # after merge, delete worktree/branch on completion
   triage_report: true               # prepare rich HTML explanation before review
-  remove_targets: []                # criterion-bound Targets deleted only from accepted merge
+# target_plan:                      # omit when this Ticket authors no Target definitions
+#   - target: <selector>            # role: persistent | ephemeral
+#     role: persistent
+#   - target: <replacement-selector>
+#     role: replacement
+#     replaces: <runnable-baseline-selector>
 dependencies: []
 priority: medium
 

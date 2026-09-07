@@ -12,9 +12,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_dir import resolve_project_dir, runtime_dir
+from booley.runtime.project_dir import (
+    checkout_project_dir_relative_to,
+    resolve_project_dir,
+    runtime_dir,
+)
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import (
     TicketRepository,
@@ -22,14 +25,15 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
     ticket_project_worktree,
 )
-from booley.ticket_board.acceptance_path_policy import is_static_acceptance_path
 
 from .acceptance_basis import (
+    BLOCK_REASON,
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
     authored_ticket_record,
     canonical_json,
+    materialize_basis_checkout,
     record_relative_path,
 )
 from .acceptance_targets import (
@@ -37,6 +41,7 @@ from .acceptance_targets import (
     canonical_acceptance_bindings,
     criterion_targets,
     resolve_commit,
+    scope_allows_new_path,
     validate_acceptance_targets,
     validate_criterion_targets,
 )
@@ -49,6 +54,19 @@ from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
 from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
+from .planned_dependencies import (
+    PlannedDependencyError,
+    ProviderMaterialization,
+    materialize_planned_dependencies,
+    validate_materialized_surfaces,
+    validate_planned_dependencies,
+)
+from .target_plan import (
+    TargetPlanAnalysis,
+    TargetPlanValidationError,
+    TargetSurfaceFile,
+    analyze_target_plan,
+)
 from .validation import validate_ticket_fields
 
 _GENERATION_PREFIX = "booley-generation"
@@ -87,6 +105,10 @@ class _BasisPreparation:
     outer_changes: list[str]
     project: Path | None
     project_changes: list[str]
+    outer_base_sha: str
+    project_base_sha: str
+    target_plan: TargetPlanAnalysis
+    providers: ProviderMaterialization
 
 
 @dataclass(frozen=True)
@@ -527,10 +549,21 @@ def ensure_ticket_workspace(
         raise AcceptanceBasisOperationError("ticket has no destination branch")
     generation = _draft_generation(root, slug)
     outer = resolve_project_dir(root) / "worktrees" / slug
-    return _open_generation(root, Path(ticket_path), slug, fields, generation, outer)
+    workspace = open_authoring_generation(root, Path(ticket_path), slug, fields, generation, outer)
+    try:
+        materialize_planned_dependencies(
+            root,
+            Path(ticket_path),
+            slug,
+            generation,
+            workspace.outer,
+        )
+    except PlannedDependencyError as exc:
+        raise AcceptanceBasisOperationError(str(exc)) from exc
+    return workspace
 
 
-def _open_generation(
+def open_authoring_generation(
     root: Path,
     ticket: Path,
     slug: str,
@@ -575,6 +608,175 @@ def _open_generation(
     project = project_attachment.worktree if project_attachment is not None else None
     project_base = project_plan.base_sha if project_plan is not None else ""
     return AuthoringWorkspace(outer, project, outer_base, project_base, generation)
+
+
+def relocate_refresh_workspace(
+    root: Path,
+    slug: str,
+    generation: str,
+    operation: Path,
+    workspace: AuthoringWorkspace,
+    *,
+    has_project: bool,
+) -> None:
+    """Move a prepared refresh workspace into its canonical authoring location."""
+    canonical = resolve_project_dir(root) / "worktrees" / slug
+    branch = _generation_branch(generation, slug)
+    project_source = resolve_inner_project_repo(root)
+    holding = operation / "new-project-moving"
+    canonical_is_new = canonical.is_dir() and _worktree_owns_branch(root, canonical, branch)
+    if not canonical_is_new:
+        _stage_refresh_project(workspace, project_source, holding)
+        if canonical.exists():
+            paired = paired_project_repository(canonical)
+            _remove_authoring_worktrees(root, canonical, paired, project_source)
+        if not workspace.outer.is_dir():
+            raise AcceptanceBasisOperationError(
+                "refreshed Ticket workspace disappeared during relocation"
+            )
+        _require_git(root, "worktree", "move", str(workspace.outer), str(canonical))
+    _restore_refresh_project(canonical, project_source, holding)
+    if has_project and paired_project_repository(canonical) is None:
+        raise AcceptanceBasisOperationError("refreshed paired project workspace is unavailable")
+    if not has_project and paired_project_repository(canonical) is not None:
+        raise AcceptanceBasisOperationError("Basis Refresh changed repository participation")
+
+
+def discard_refresh_workspace(
+    root: Path, slug: str, generation: str, operation: Path
+) -> dict[str, Path]:
+    """Remove worktrees and generation refs owned by an abandoned Basis Refresh."""
+    branch = _generation_branch(generation, slug)
+    project_source = resolve_inner_project_repo(root)
+    canonical = resolve_project_dir(root) / "worktrees" / slug
+    candidate = operation / "new-outer"
+    for outer in (canonical, candidate):
+        if not _worktree_owns_branch(root, outer, branch):
+            continue
+        paired = paired_project_repository(outer)
+        _remove_authoring_worktrees(root, outer, paired, project_source)
+    holding = operation / "new-project-moving"
+    if project_source is not None and _registered_worktree(project_source, holding):
+        _require_git(project_source, "worktree", "remove", "--force", str(holding))
+    repositories = {"outer": root}
+    if project_source is not None:
+        repositories["project"] = project_source
+    return repositories
+
+
+def discard_generation_refs(repositories: dict[str, Path], slug: str, generation: str) -> None:
+    """Delete an abandoned generation branch after all of its worktrees are gone."""
+    ref = f"refs/heads/{_generation_branch(generation, slug)}"
+    for repository in repositories.values():
+        current = _git(repository, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if current.returncode == 1:
+            continue
+        if current.returncode != 0:
+            detail = (current.stderr or current.stdout).strip()
+            raise AcceptanceBasisOperationError(f"could not inspect abandoned ref {ref}: {detail}")
+        _require_git(repository, "update-ref", "-d", ref, current.stdout.strip())
+
+
+def _stage_refresh_project(
+    workspace: AuthoringWorkspace,
+    project_source: Path | None,
+    holding: Path,
+) -> None:
+    paired = paired_project_repository(workspace.outer) if workspace.outer.is_dir() else None
+    if paired is None:
+        return
+    if project_source is None:
+        raise AcceptanceBasisOperationError("paired project repository is unavailable")
+    if not holding.exists():
+        _require_git(project_source, "worktree", "move", str(paired.worktree), str(holding))
+
+
+def _restore_refresh_project(canonical: Path, project_source: Path | None, holding: Path) -> None:
+    if not holding.exists():
+        return
+    if project_source is None:
+        raise AcceptanceBasisOperationError("paired project repository is unavailable")
+    _require_git(
+        project_source,
+        "worktree",
+        "move",
+        str(holding),
+        str(ticket_project_worktree(canonical)),
+    )
+
+
+def load_refresh_source_workspace(
+    root: Path,
+    basis: AcceptanceBasis,
+    slug: str,
+    operation: Path,
+) -> AuthoringWorkspace:
+    """Load the pristine old basis workspace, reconstructing it when necessary."""
+    canonical = resolve_project_dir(root) / "worktrees" / slug
+    if canonical.exists():
+        return _workspace_from_basis_checkout(root, canonical, basis)
+    _require_unexecuted_refresh_refs(root, basis, slug)
+    checkout = operation / "old-basis"
+    if checkout.exists():
+        try:
+            return _workspace_from_basis_checkout(root, checkout, basis)
+        except AcceptanceBasisOperationError:
+            safe_rmtree(checkout, protect_git_root=False)
+    try:
+        materialize_basis_checkout(root, basis, checkout)
+    except (AcceptanceBasisError, OSError) as exc:
+        raise AcceptanceBasisOperationError(str(exc)) from exc
+    return _workspace_from_basis_checkout(root, checkout, basis)
+
+
+def _require_unexecuted_refresh_refs(root: Path, basis: AcceptanceBasis, slug: str) -> None:
+    destination_ref = basis.participant("outer").destination_ref
+    destination_branch = destination_ref.removeprefix("refs/heads/")
+    errors = validate_basis_refs(
+        root,
+        basis,
+        slug=slug,
+        destination_branch=destination_branch,
+        exact_ticket_heads=True,
+    )
+    if errors:
+        raise AcceptanceBasisOperationError(f"{BLOCK_REASON}: {'; '.join(errors)}")
+
+
+def basis_changed_paths(
+    repository: Path, destination_sha: str, authoring_sha: str
+) -> tuple[str, ...]:
+    """Return paths authored between one basis participant's pinned commits."""
+    output = _require_git(repository, "diff", "--name-only", destination_sha, authoring_sha, "--")
+    return tuple(line for line in output.splitlines() if line)
+
+
+def _workspace_from_basis_checkout(
+    root: Path, outer: Path, basis: AcceptanceBasis
+) -> AuthoringWorkspace:
+    project = None
+    if any(row.role == "project" for row in basis.participants):
+        paired = paired_project_repository(outer)
+        project = (
+            paired.worktree
+            if paired is not None
+            else outer / checkout_project_dir_relative_to(root)
+        )
+    repositories = {"outer": outer, **({"project": project} if project else {})}
+    if set(repositories) != {row.role for row in basis.participants}:
+        raise AcceptanceBasisOperationError("waiting Ticket workspace participants changed")
+    for participant in basis.participants:
+        repository = repositories[participant.role]
+        if _require_git(repository, "rev-parse", "HEAD") != participant.authoring_sha:
+            raise AcceptanceBasisOperationError(
+                "waiting Ticket workspace was already executed or changed"
+            )
+        if _require_git(repository, "status", "--porcelain", "--untracked-files=all"):
+            raise AcceptanceBasisOperationError("waiting Ticket workspace is not pristine")
+    project_base = basis.participant("project").destination_sha if project else ""
+    return AuthoringWorkspace(
+        outer, project, basis.participant("outer").destination_sha, project_base
+    )
 
 
 def _project_open_attachment(
@@ -684,10 +886,29 @@ def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[s
     return {path for path in paths if path != project_path and not path.startswith(prefix)}
 
 
-def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:
-    if path in manifest:
-        return True
-    return not (repository / path).exists() and is_static_acceptance_path(path)
+def _is_authoring_path(
+    repository: Path,
+    path: str,
+    manifest: set[str],
+    scope: object,
+    *,
+    scope_path: str | None = None,
+) -> bool:
+    candidate = repository / path
+    if candidate.suffix.casefold() == ".core" or candidate.name == "tests.toml":
+        return path in manifest
+    if candidate.is_symlink() or not candidate.is_file():
+        return False
+    try:
+        candidate.resolve().relative_to(repository.resolve())
+    except ValueError:
+        return False
+    if candidate.stat().st_size != 0:
+        return False
+    if not scope_allows_new_path(scope, scope_path or path):
+        return False
+    tracked = _git(repository, "ls-files", "--error-unmatch", "--", path)
+    return tracked.returncode == 1
 
 
 def _validate_authoring_changes(
@@ -695,13 +916,22 @@ def _validate_authoring_changes(
     surface_root: Path,
     project_repository: bool,
     recovery_paths: set[str],
+    scope: object,
 ) -> list[str]:
     changed = _status_paths(repository)
     manifest = _local_manifest_paths(surface_root, project_repository)
+    paired = paired_project_repository(surface_root) if project_repository else None
     invalid = [
         path
         for path in changed
-        if path not in recovery_paths and not _is_authoring_path(repository, path, manifest)
+        if path not in recovery_paths
+        and not _is_authoring_path(
+            repository,
+            path,
+            manifest,
+            scope,
+            scope_path=(f"{paired.path_prefix.rstrip('/')}/{path}" if paired else path),
+        )
     ]
     if invalid:
         raise AcceptanceBasisOperationError(
@@ -710,9 +940,8 @@ def _validate_authoring_changes(
     return sorted(set(changed) | manifest)
 
 
-def _staged_tree(repository: Path, paths: list[str]) -> tuple[str, str]:
+def _staged_tree(repository: Path, paths: list[str], parent: str) -> str:
     """Build a tree in an isolated index, leaving the authoring index untouched."""
-    parent = _full_commit(repository, "HEAD")
     with tempfile.TemporaryDirectory(prefix="booley-basis-index-") as directory:
         environment = dict(os.environ)
         environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
@@ -727,7 +956,7 @@ def _staged_tree(repository: Path, paths: list[str]) -> tuple[str, str]:
                 environment=environment,
             )
         tree = _require_git(repository, "write-tree", environment=environment)
-    return parent, tree
+    return tree
 
 
 def _basis_validation(
@@ -735,6 +964,7 @@ def _basis_validation(
     body: str,
     worktree: Path,
     changed_targets: set[str],
+    provider_placeholders: frozenset[str],
 ) -> list[str]:
     errors = validate_ticket_fields(
         fields,
@@ -744,16 +974,14 @@ def _basis_validation(
         project_root=worktree,
         check_tb_files=False,
     )
-    errors.extend(validate_criterion_targets(fields, worktree))
-    from .target_finalization import validate_acceptance_removals
-
-    errors.extend(validate_acceptance_removals(fields, worktree))
+    target_fields = _with_provider_placeholders(fields, provider_placeholders)
+    errors.extend(validate_criterion_targets(target_fields, worktree))
     if errors:
         return errors
     with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
         errors.extend(
             validate_acceptance_targets(
-                fields,
+                target_fields,
                 worktree,
                 build_root,
                 changed_targets=sorted(changed_targets),
@@ -762,50 +990,94 @@ def _basis_validation(
     return errors
 
 
-def _changed_targets(
-    outer: Path,
-    outer_changes: list[str],
-    project: Path | None,
-    project_changes: list[str],
-) -> set[str]:
-    """Return qualified selectors declared by changed, still-present core files."""
-    selectors: set[str] = set()
-    for repository, changes in ((outer, outer_changes), (project, project_changes)):
-        if repository is None:
-            continue
-        for path in changes:
-            core_file = repository / path
-            if core_file.suffix.casefold() != ".core" or not core_file.is_file():
-                continue
-            try:
-                doc = fusesoc_registry.read_core(core_file)
-            except fusesoc_registry.FuseSocError as exc:
-                raise AcceptanceBasisOperationError(str(exc)) from exc
-            vlnv = doc.get("name")
-            if not isinstance(vlnv, str) or not vlnv:
-                raise AcceptanceBasisOperationError(
-                    f"changed .core has no valid name: {core_file}"
-                )
-            selectors.update(
-                f"{vlnv}#{target}"
-                for target in fusesoc_registry.core_target_names(doc)
-                if not fusesoc_registry.core_target_is_doctor_selftest(doc, target)
-            )
-    return selectors
+def _with_provider_placeholders(
+    fields: dict[str, object], paths: frozenset[str]
+) -> dict[str, object]:
+    if not paths:
+        return fields
+    effective = dict(fields)
+    scope = fields.get("scope")
+    current = list(scope) if isinstance(scope, list) else []
+    effective["scope"] = [*current, *(f"{path} [new]" for path in sorted(paths))]
+    return effective
 
 
 def _prepare_basis(
-    project_root: Path | str, ticket_path: Path | str, slug: str
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    *,
+    effective_fields: dict[str, object] | None = None,
+    workspace: Path | None = None,
+    generation: str | None = None,
+    provider_materialization: ProviderMaterialization | None = None,
 ) -> _BasisPreparation:
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    outer = resolve_project_dir(root) / "worktrees" / slug
+    if effective_fields is not None:
+        fields = dict(effective_fields)
+    outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
     if not outer.is_dir():
         raise AcceptanceBasisOperationError(f"Ticket Workspace is not open: {outer}")
+    project, outer_changes, project_changes, outer_base, project_base = _authoring_changes(
+        root, ticket, slug, outer, fields
+    )
+    repositories = [(outer, tuple(outer_changes), outer_base)]
+    if project is not None:
+        repositories.append((project, tuple(project_changes), project_base))
+    providers, target_plan = _analyze_basis_targets(
+        root,
+        ticket,
+        slug,
+        fields,
+        outer,
+        tuple(repositories),
+        generation,
+        provider_materialization,
+    )
+    _require_basis_validation(fields, body, outer, target_plan, providers)
+    return _BasisPreparation(
+        ticket,
+        fields,
+        outer,
+        outer_changes,
+        project,
+        project_changes,
+        outer_base,
+        project_base,
+        target_plan,
+        providers,
+    )
+
+
+def _require_basis_validation(
+    fields: dict[str, object],
+    body: str,
+    outer: Path,
+    target_plan: TargetPlanAnalysis,
+    providers: ProviderMaterialization,
+) -> None:
+    errors = _basis_validation(
+        fields,
+        body,
+        outer,
+        set(target_plan.authored_targets),
+        providers.placeholder_paths,
+    )
+    if errors:
+        raise AcceptanceBasisOperationError(
+            "Acceptance Basis validation failed: " + "; ".join(errors)
+        )
+
+
+def _authoring_changes(
+    root: Path, ticket: Path, slug: str, outer: Path, fields: dict[str, object]
+) -> tuple[Path | None, list[str], list[str], str, str]:
     _prepare_workspace_project(root, outer, ticket, slug)
     paired = paired_project_repository(outer)
     project = paired.worktree if paired is not None else None
+    outer_base, project_base = _pin_authoring_bases(root, outer, project, fields)
     record_path = (
         record_relative_path(outer, project_participant=project is not None) / f"{slug}.json"
     ).as_posix()
@@ -816,6 +1088,7 @@ def _prepare_basis(
         outer,
         project_repository=False,
         recovery_paths=outer_recovery,
+        scope=fields.get("scope"),
     )
     project_changes = (
         _validate_authoring_changes(
@@ -823,21 +1096,113 @@ def _prepare_basis(
             outer,
             True,
             recovery_paths=project_recovery,
+            scope=fields.get("scope"),
         )
         if project is not None
         else []
     )
-    errors = _basis_validation(
-        fields,
-        body,
-        outer,
-        _changed_targets(outer, outer_changes, project, project_changes),
-    )
-    if errors:
+    return project, outer_changes, project_changes, outer_base, project_base
+
+
+def _pin_authoring_bases(
+    root: Path,
+    outer: Path,
+    project: Path | None,
+    fields: dict[str, object],
+) -> tuple[str, str]:
+    destination = fields.get("branch")
+    if not isinstance(destination, str) or not destination:
+        raise AcceptanceBasisOperationError("ticket has no destination branch")
+    outer_base = _full_commit(root, destination)
+    if _full_commit(outer, "HEAD") != outer_base:
         raise AcceptanceBasisOperationError(
-            "Acceptance Basis validation failed: " + "; ".join(errors)
+            "Ticket Workspace contains commits beyond the destination baseline"
         )
-    return _BasisPreparation(ticket, fields, outer, outer_changes, project, project_changes)
+    if project is None:
+        return outer_base, ""
+    project_ref = fields.get("project_destination_ref")
+    if not isinstance(project_ref, str) or not project_ref.startswith("refs/heads/"):
+        raise AcceptanceBasisOperationError(
+            "paired Ticket has no canonical project_destination_ref"
+        )
+    project_base = _full_commit(project, project_ref)
+    if _full_commit(project, "HEAD") != project_base:
+        raise AcceptanceBasisOperationError(
+            "paired Ticket Workspace contains commits beyond the destination baseline"
+        )
+    return outer_base, project_base
+
+
+def _analyze_basis_targets(
+    root: Path,
+    ticket: Path,
+    slug: str,
+    fields: dict[str, object],
+    outer: Path,
+    repositories: tuple[tuple[Path, tuple[str, ...], str], ...],
+    generation: str | None,
+    provider_materialization: ProviderMaterialization | None,
+) -> tuple[ProviderMaterialization, TargetPlanAnalysis]:
+    try:
+        providers = provider_materialization
+        if providers is None:
+            providers = validate_planned_dependencies(
+                root,
+                slug,
+                generation or _draft_generation(root, slug),
+                ticket,
+            )
+        validate_materialized_surfaces(outer, providers)
+        target_plan = analyze_target_plan(
+            fields,
+            outer,
+            target_surface_files(repositories),
+            provider_targets=providers.materialized_targets,
+            exported_provider_targets=providers.exported_targets,
+            provider_test_tables=providers.test_tables,
+        )
+    except (PlannedDependencyError, TargetPlanValidationError) as exc:
+        raise AcceptanceBasisOperationError(f"Acceptance Basis validation failed: {exc}") from exc
+    return providers, target_plan
+
+
+def target_surface_files(
+    repositories: tuple[tuple[Path, tuple[str, ...], str], ...],
+) -> tuple[TargetSurfaceFile, ...]:
+    """Read Git-baseline and current bytes for Target Plan domain validation."""
+    return tuple(
+        TargetSurfaceFile(
+            path,
+            _baseline_surface_file(repository, baseline, path),
+            (repository / path).read_bytes() if (repository / path).is_file() else None,
+        )
+        for repository, paths, baseline in repositories
+        for path in paths
+    )
+
+
+def _baseline_surface_file(repository: Path, baseline: str, path: str) -> bytes | None:
+    listed = _git(repository, "ls-tree", "--name-only", baseline, "--", path)
+    if listed.returncode != 0:
+        detail = (listed.stderr or listed.stdout).strip()
+        raise AcceptanceBasisOperationError(
+            f"cannot inspect destination baseline for {path}: {detail}"
+        )
+    if not listed.stdout.strip():
+        return None
+    shown = subprocess.run(
+        ["git", "cat-file", "--filters", f"--path={path}", f"{baseline}:{path}"],
+        cwd=repository,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if shown.returncode != 0:
+        raise AcceptanceBasisOperationError(
+            f"cannot read destination baseline for {path}: "
+            f"{shown.stderr.decode(errors='replace').strip()}"
+        )
+    return shown.stdout
 
 
 def _participant_preparations(
@@ -849,47 +1214,51 @@ def _participant_preparations(
     destination = fields.get("branch")
     if not isinstance(destination, str) or not destination:
         raise AcceptanceBasisOperationError("ticket has no destination branch")
-    outer_parent, outer_tree = _staged_tree(prepared.outer, prepared.outer_changes)
+    outer_tree = _staged_tree(prepared.outer, prepared.outer_changes, prepared.outer_base_sha)
     participants = [
         ParticipantPreparation(
             role="outer",
             ticket_ref=f"refs/heads/{_current_branch(prepared.outer)}",
             destination_ref=f"refs/heads/{destination}",
-            destination_sha=_full_commit(prepared.outer, destination),
-            expected_old_sha=outer_parent,
+            destination_sha=prepared.outer_base_sha,
+            expected_old_sha=prepared.outer_base_sha,
             tree_sha=outer_tree,
             message=f"chore({slug}): publish Acceptance Basis",
         )
     ]
     if prepared.project is not None:
-        project_parent, project_tree = _staged_tree(prepared.project, prepared.project_changes)
-        project_destination = fields.get("project_destination_ref")
-        if not isinstance(project_destination, str) or not project_destination.startswith(
-            "refs/heads/"
-        ):
-            raise AcceptanceBasisOperationError(
-                "paired Ticket has no canonical project_destination_ref"
-            )
-        upstream = _require_git(
-            prepared.project, "rev-parse", "--symbolic-full-name", "@{upstream}"
-        )
-        if upstream != project_destination:
-            raise AcceptanceBasisOperationError(
-                "paired Ticket Workspace upstream changed after authoring; "
-                f"expected {project_destination}, found {upstream}"
-            )
-        participants.append(
-            ParticipantPreparation(
-                role="project",
-                ticket_ref=f"refs/heads/{_current_branch(prepared.project)}",
-                destination_ref=project_destination,
-                destination_sha=_full_commit(prepared.project, project_destination),
-                expected_old_sha=project_parent,
-                tree_sha=project_tree,
-                message=f"chore({slug}): publish project Acceptance Basis",
-            )
-        )
+        participants.append(_project_participant_preparation(slug, fields, prepared))
     return tuple(sorted(participants, key=lambda item: item.role))
+
+
+def _project_participant_preparation(
+    slug: str, fields: dict[str, object], prepared: _BasisPreparation
+) -> ParticipantPreparation:
+    if prepared.project is None:
+        raise AcceptanceBasisOperationError("paired Ticket Workspace is unavailable")
+    project_tree = _staged_tree(
+        prepared.project, prepared.project_changes, prepared.project_base_sha
+    )
+    destination = fields.get("project_destination_ref")
+    if not isinstance(destination, str) or not destination.startswith("refs/heads/"):
+        raise AcceptanceBasisOperationError(
+            "paired Ticket has no canonical project_destination_ref"
+        )
+    upstream = _require_git(prepared.project, "rev-parse", "--symbolic-full-name", "@{upstream}")
+    if upstream != destination:
+        raise AcceptanceBasisOperationError(
+            "paired Ticket Workspace upstream changed after authoring; "
+            f"expected {destination}, found {upstream}"
+        )
+    return ParticipantPreparation(
+        role="project",
+        ticket_ref=f"refs/heads/{_current_branch(prepared.project)}",
+        destination_ref=destination,
+        destination_sha=prepared.project_base_sha,
+        expected_old_sha=prepared.project_base_sha,
+        tree_sha=project_tree,
+        message=f"chore({slug}): publish project Acceptance Basis",
+    )
 
 
 def _record_path(prepared: _BasisPreparation, slug: str) -> tuple[Path, bool]:
@@ -910,7 +1279,16 @@ def _write_authored_record(
     binding_specs = criterion_targets(fields.get("criteria"))
     bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
     try:
-        payload = canonical_json(authored_ticket_record(fields, body, bindings))
+        payload = canonical_json(
+            authored_ticket_record(
+                fields,
+                body,
+                bindings,
+                target_plan=prepared.target_plan.plan,
+                removal_targets=prepared.target_plan.removal_targets,
+                providers=prepared.providers.bindings,
+            )
+        )
     except AcceptanceBasisError as exc:
         raise AcceptanceBasisOperationError(str(exc)) from exc
     path, project_owner = _record_path(prepared, slug)
@@ -954,7 +1332,12 @@ def prepare_acceptance_basis(
             effective_sha256,
             _authoring_repositories(root, slug),
         )
-    prepared = _prepare_basis(project_root, ticket_path, slug)
+    prepared = _prepare_basis(
+        project_root,
+        ticket_path,
+        slug,
+        effective_fields=fields,
+    )
     basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
     bindings, removals = basis_inputs
     participants = _participant_preparations(slug, fields, prepared)
@@ -971,15 +1354,81 @@ def prepare_acceptance_basis(
     )
 
 
+def prepare_replacement_acceptance_basis(
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    workspace: AuthoringWorkspace,
+    provider_bindings: tuple,
+    *,
+    operation_id: str,
+) -> tuple[AcceptanceBasis, str]:
+    """Publish a refreshed basis from a prepared, destination-current workspace."""
+    root = Path(project_root).resolve()
+    ticket = Path(ticket_path)
+    fields, body, source_sha256, effective_sha256 = _replacement_inputs(ticket)
+    repositories = _workspace_repositories(workspace)
+    existing = load_basis_publication(root, slug)
+    if existing is not None:
+        if existing.operation_id != operation_id:
+            raise AcceptanceBasisOperationError(
+                "Basis Refresh and basis publication operation IDs disagree"
+            )
+        return publish_basis_commits(
+            root,
+            slug,
+            source_sha256,
+            effective_sha256,
+            repositories,
+        )
+    providers = ProviderMaterialization(bindings=provider_bindings)
+    prepared = _prepare_basis(
+        root,
+        ticket,
+        slug,
+        effective_fields=fields,
+        workspace=workspace.outer,
+        generation=workspace.generation,
+        provider_materialization=providers,
+    )
+    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, body)
+    participants = _participant_preparations(slug, fields, prepared)
+    return publish_basis_commits(
+        root,
+        slug,
+        source_sha256,
+        effective_sha256,
+        repositories,
+        operation_id=operation_id,
+        participants=participants,
+        bindings=bindings,
+        removal_targets=removals,
+    )
+
+
+def _replacement_inputs(ticket: Path) -> tuple[dict, str, str, str]:
+    source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    fields = dict(fields)
+    fields.pop("acceptance_basis", None)
+    effective = canonical_json({"fields": fields, "body": body})
+    return fields, body, source_sha256, hashlib.sha256(effective).hexdigest()
+
+
+def _workspace_repositories(workspace: AuthoringWorkspace) -> dict[str, Path]:
+    repositories = {"outer": workspace.outer}
+    if workspace.project is not None:
+        repositories["project"] = workspace.project
+    return repositories
+
+
 def _prepare_basis_inputs(
     prepared: _BasisPreparation,
     slug: str,
     fields: dict[str, object],
     body: str,
 ) -> tuple[tuple, tuple[str, ...]]:
-    from .target_finalization import canonical_remove_targets
-
-    removals = tuple(canonical_remove_targets(fields, prepared.outer))
+    removals = prepared.target_plan.removal_targets
     bindings = tuple(_write_authored_record(prepared, slug, fields, body))
     return bindings, removals
 
