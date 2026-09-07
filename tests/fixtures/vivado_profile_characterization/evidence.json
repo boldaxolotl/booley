@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-09-07",
+  "tool": {
+    "name": "Vivado",
+    "version": "2025.2",
+    "build": "6299465",
+    "ip_build": "6300035",
+    "shared_data_build": "6298862",
+    "edalize_version": "0.6.8"
+  },
+  "fixture": {
+    "part": "xc7a35tcpg236-1",
+    "top": "top",
+    "clock_period_ns": 10.0,
+    "mode": "out_of_context",
+    "sha256": {
+      "top.sv": "cbd31508a5b0e7874680ec0c19dfe8767e082ab052b3b6504daae18a6a2aaf99",
+      "top.xdc": "e40b660c623a53d4bdcb584dc75e36c3a44f7d3a46b5cdfa164154edf04a9af6",
+      "characterize.tcl": "fff0ba1604dd1efd97ff291a63de2d0781952f07725c8575b484817586d0d4f6"
+    }
+  },
+  "supported_strategies": {
+    "synthesis": [
+      "Flow_AlternateRoutability",
+      "Flow_AreaMultThresholdDSP",
+      "Flow_AreaOptimized_high",
+      "Flow_AreaOptimized_medium",
+      "Flow_PerfOptimized_high",
+      "Flow_PerfThresholdCarry",
+      "Flow_RuntimeOptimized",
+      "Vivado Synthesis Defaults"
+    ],
+    "implementation": [
+      "Area_Explore",
+      "Area_ExploreSequential",
+      "Area_ExploreWithRemap",
+      "Congestion_SSI_SpreadLogic_high",
+      "Congestion_SSI_SpreadLogic_low",
+      "Congestion_SpreadLogic_high",
+      "Congestion_SpreadLogic_low",
+      "Congestion_SpreadLogic_medium",
+      "Flow_Quick",
+      "Flow_RunPhysOpt",
+      "Flow_RunPostRoutePhysOpt",
+      "Flow_RuntimeOptimized",
+      "Performance_Auto_1",
+      "Performance_Auto_2",
+      "Performance_Auto_3",
+      "Performance_BalanceSLLs",
+      "Performance_BalanceSLRs",
+      "Performance_EarlyBlockPlacement",
+      "Performance_Explore",
+      "Performance_ExplorePostRoutePhysOpt",
+      "Performance_ExploreWithRemap",
+      "Performance_ExtraTimingOpt",
+      "Performance_HighUtilSLRs",
+      "Performance_NetDelay_high",
+      "Performance_NetDelay_low",
+      "Performance_RefinePlacement",
+      "Performance_Retiming",
+      "Performance_SpreadSLLs",
+      "Performance_WLBlockPlacement",
+      "Performance_WLBlockPlacementFanoutOpt",
+      "Power_DefaultOpt",
+      "Power_ExploreArea",
+      "Vivado Implementation Defaults"
+    ]
+  },
+  "profiles": {
+    "balanced": {
+      "synthesis_strategy": "Vivado Synthesis Defaults",
+      "implementation_strategy": "Vivado Implementation Defaults",
+      "final_step": "route_design",
+      "final_status": "route_design Complete!",
+      "wns_ns": 7.462,
+      "whs_ns": 0.189,
+      "lut_count": 7,
+      "ff_count": 8,
+      "bram_count": 0,
+      "dsp_count": 0,
+      "effective_commands": [
+        "synth_design -top top -part xc7a35tcpg236-1 -mode out_of_context",
+        "opt_design",
+        "place_design",
+        "phys_opt_design",
+        "route_design"
+      ]
+    },
+    "compact": {
+      "synthesis_strategy": "Flow_AreaOptimized_high",
+      "implementation_strategy": "Area_Explore",
+      "final_step": "route_design",
+      "final_status": "route_design Complete!",
+      "wns_ns": 7.462,
+      "whs_ns": 0.189,
+      "lut_count": 7,
+      "ff_count": 8,
+      "bram_count": 0,
+      "dsp_count": 0,
+      "effective_commands": [
+        "synth_design -top top -part xc7a35tcpg236-1 -directive AreaOptimized_high -control_set_opt_threshold 1 -mode out_of_context",
+        "opt_design -directive ExploreArea",
+        "place_design",
+        "route_design"
+      ]
+    },
+    "max_frequency": {
+      "synthesis_strategy": "Flow_PerfOptimized_high",
+      "implementation_strategy": "Performance_ExplorePostRoutePhysOpt",
+      "final_step": "phys_opt_design (Post-Route)",
+      "final_status": "phys_opt_design (Post-Route) Complete!",
+      "wns_ns": 7.995,
+      "whs_ns": 0.19,
+      "lut_count": 10,
+      "ff_count": 8,
+      "bram_count": 0,
+      "dsp_count": 0,
+      "effective_commands": [
+        "synth_design -top top -part xc7a35tcpg236-1 -directive PerformanceOptimized -fsm_extraction one_hot -keep_equivalent_registers -resource_sharing off -no_lc -shreg_min_size 5 -mode out_of_context",
+        "opt_design -directive Explore",
+        "place_design -directive Explore",
+        "phys_opt_design -directive Explore",
+        "route_design -directive Explore -tns_cleanup",
+        "phys_opt_design -directive Explore"
+      ]
+    }
+  }
+}
