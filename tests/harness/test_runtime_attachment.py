@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import runtime_attachment
-from booley.runtime import execution_records, job_slots, project_dir
+from booley.runtime import execution_records, job_slots, project_dir, runtime_attachment
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"

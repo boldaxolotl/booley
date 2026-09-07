@@ -452,7 +452,7 @@ def test_release_build_dependency_is_pinned() -> None:
 
 def test_local_build_script_resolves_compatible_stable_base() -> None:
     build_script = (_DOCKER_DIR / "build.sh").read_text(encoding="utf-8")
-    contract_helper = Path("src/booley/harness/docker_base_contract.py").read_text(
+    contract_helper = Path("src/booley/runtime/docker_base_contract.py").read_text(
         encoding="utf-8"
     )
 

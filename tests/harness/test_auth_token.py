@@ -15,9 +15,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from booley.harness import auth_cmd, session_runtime
+from booley.harness import auth_cmd
 from booley.harness import booley as tlr
-from booley.runtime import auth_token
+from booley.runtime import auth_token, session_runtime
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -131,7 +131,7 @@ class TestCodex:
     def test_spec_seeds_codex_auth_onto_writable_volume(self, home):
         # The regression: a read-only bind at ~/.codex/auth.json makes Codex's
         # own refresh write FAIL, 401ing the session once the token expires.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(
             dc.APP_CODEX, auth_token_source="/home/u/.codex/auth.json"
