@@ -992,7 +992,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         "paths) come from the Target's `file_type: SDC` fileset in the .core, "
         "NOT booley.toml: add an SDC file with your create_clock / "
         "set_input_delay / set_output_delay / set_false_path to the Target. A "
-        "A physical Target with NO SDC is a hard configuration error; logical "
+        "physical Target with NO SDC is a hard configuration error; logical "
         "synthesis remains valid without timing constraints. "
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
         "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
