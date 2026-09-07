@@ -14,7 +14,9 @@ import pytest
 from booley.core.models import TargetPlan
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
+from booley.runtime import worktree_relocation
 from booley.runtime.project_dir import reset_cache
+from booley.runtime.submodule_materialization import materialize_submodules
 from booley.targets.catalog import TargetCatalog
 from booley.ticket_board import (
     acceptance_basis as acceptance_basis_module,
@@ -1849,3 +1851,198 @@ def test_return_to_draft_recovers_before_board_cutover(
     )
     assert (archived_outer / "unfinished.txt").read_text(encoding="utf-8") == "preserve me\n"
     assert (tio.logs_dir / "blocked-again/runs/001/human-logs/run.log").exists()
+
+
+def _materialize_recursive_submodule(root: Path, workspace: Path, tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    _git(dependency, "init", "-b", "main")
+    _git(dependency, "config", "user.name", "Test")
+    _git(dependency, "config", "user.email", "test@example.invalid")
+    nested = tmp_path / "nested-dependency"
+    nested.mkdir()
+    _git(nested, "init", "-b", "main")
+    _git(nested, "config", "user.name", "Test")
+    _git(nested, "config", "user.email", "test@example.invalid")
+    (nested / "nested.sv").write_text("module nested; endmodule\n", encoding="utf-8")
+    _git(nested, "add", "nested.sv")
+    _git(nested, "commit", "-m", "nested dependency")
+    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
+    _git(dependency, "add", "source.sv")
+    _git(dependency, "commit", "-m", "dependency")
+    _git(
+        dependency,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(nested),
+        "ip/nested",
+    )
+    _git(dependency, "commit", "-m", "add nested dependency")
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(
+        root / "vendor/dependency",
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+    )
+    _git(root, "commit", "-m", "add dependency")
+    _git(workspace, "merge", "main")
+    materialize_submodules(root, workspace)
+    assert (workspace / "vendor/dependency/.git").is_dir()
+    assert (workspace / "vendor/dependency/ip/nested/.git").is_dir()
+
+
+def _add_submodule_repository(repository: Path, tmp_path: Path, name: str) -> None:
+    dependency = tmp_path / name
+    dependency.mkdir()
+    _git(dependency, "init", "-b", "main")
+    _git(dependency, "config", "user.name", "Test")
+    _git(dependency, "config", "user.email", "test@example.invalid")
+    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
+    _git(dependency, "add", "source.sv")
+    _git(dependency, "commit", "-m", "dependency")
+    _git(
+        repository,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "dep",
+    )
+    _git(repository, "commit", "-m", "add dependency")
+
+
+def _block_ticket_for_return_to_draft(project_dir: Path, ticket_io: TicketIO, slug: str) -> Path:
+    assert ticket_io.enqueue_ticket(slug)
+    (ticket_io.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    return blocked
+
+
+def _create_submodule_transition_ticket(ticket_io: TicketIO, slug: str, summary: str) -> None:
+    ticket = ticket_io.create_ticket_file(
+        slug,
+        TicketFileSpec(
+            summary=summary,
+            ticket_type="bugfix",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+
+
+def test_return_to_draft_relocates_standalone_submodules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project_dir, tio = _prepared_ticket(tmp_path, "submodule-transition")
+    workspace = project_dir / "worktrees/submodule-transition"
+    _materialize_recursive_submodule(root, workspace, tmp_path)
+    assert tio.enqueue_ticket("submodule-transition")
+    (tio.logs_dir / "submodule-transition/.runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue/submodule-transition.md"
+    blocked = project_dir / "tickets/board/blocked/submodule-transition.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+
+    repair = worktree_relocation._repair_registration
+    interrupted = False
+
+    def interrupt_once(repository: Path, ref: str, destination: Path) -> None:
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise worktree_relocation.WorktreeRelocationError("after atomic rename")
+        repair(repository, ref, destination)
+
+    monkeypatch.setattr(worktree_relocation, "_repair_registration", interrupt_once)
+    with pytest.raises(draft_transition.DraftTransitionError, match="after atomic rename"):
+        tio.return_to_draft("submodule-transition")
+
+    reopened = tio.return_to_draft("submodule-transition")
+
+    published = Path(reopened["outer_worktree"])
+    assert (published / "vendor/dependency/.git").is_dir()
+    assert (published / "vendor/dependency/ip/nested/.git").is_dir()
+    assert _git(published / "vendor/dependency", "status", "--porcelain") == ""
+    assert _git(published / "vendor/dependency/ip/nested", "status", "--porcelain") == ""
+    assert not draft_transition.transition_pending(root, "submodule-transition")
+
+
+def test_native_submodule_recovery(tmp_path: Path) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    slug = "n"
+    _create_submodule_transition_ticket(tio, slug, "Reject unsafe native submodule relocation")
+    _add_submodule_repository(root, tmp_path, "n-dep")
+    workspace = project_dir / "worktrees" / slug
+    paired = workspace / ".booley_project"
+    _git(workspace, "merge", "main")
+    blocked = _block_ticket_for_return_to_draft(project_dir, tio, slug)
+    _git(workspace, "submodule", "deinit", "-f", "--all")
+    _git(
+        workspace,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "update",
+        "--init",
+    )
+    assert (workspace / "dep/.git").is_file()
+
+    with pytest.raises(
+        draft_transition.DraftTransitionError,
+        match="deinitialize native submodules",
+    ) as caught:
+        tio.return_to_draft(slug)
+
+    journal = draft_transition._load_journal(root, tio.logs_dir, slug)
+    assert journal is not None
+    operation = draft_transition._operation_dir(root, journal.operation_id)
+    assert "git submodule deinit -f --all" in str(caught.value)
+    assert "then retry" in str(caught.value)
+    assert "no worktrees were moved" in str(caught.value)
+    assert paired.is_dir()
+    assert not (operation / "old-project").exists()
+    assert blocked.exists()
+
+    _git(workspace, "submodule", "deinit", "-f", "--all")
+    reopened = tio.return_to_draft(slug)
+
+    assert Path(reopened["outer_worktree"]).is_dir()
+    assert not draft_transition.transition_pending(root, slug)
+
+
+def test_paired_submodule_move(tmp_path: Path) -> None:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    slug = "p"
+    _create_submodule_transition_ticket(tio, slug, "Relocate paired project submodule")
+    _add_submodule_repository(project_dir, tmp_path, "p-dep")
+    paired = project_dir / "worktrees" / slug / ".booley_project"
+    _git(paired, "merge", "main")
+    materialize_submodules(project_dir, paired)
+    assert (paired / "dep/.git").is_dir()
+    _block_ticket_for_return_to_draft(project_dir, tio, slug)
+
+    reopened = tio.return_to_draft(slug)
+
+    published = Path(reopened["project_worktree"])
+    assert (published / "dep/.git").is_dir()
+    assert _git(published / "dep", "status", "--porcelain") == ""
+    assert not draft_transition.transition_pending(root, slug)
