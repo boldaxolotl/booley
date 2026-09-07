@@ -98,3 +98,26 @@ def test_unknown_target_fails_instead_of_falling_back(tmp_path) -> None:
 
     with pytest.raises(UnknownTargetError):
         compute_source_fingerprint(tmp_path, target="missing")
+
+
+def test_workload_fingerprint_tracks_pre_run_program_not_its_arguments(tmp_path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    _write_core(tmp_path, "design", "sim", "rtl/dut.sv")
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    (project_dir / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["python3 hooks/build.py --output generated/report.py"]\n'
+    )
+    script = tmp_path / "hooks" / "build.py"
+    script.parent.mkdir()
+    script.write_text("print('build')\n")
+    output = tmp_path / "generated" / "report.py"
+    output.parent.mkdir()
+    output.write_text("generated\n")
+    reset_cache()
+
+    workload = compute_source_fingerprint(tmp_path, target="sim")["workload"]
+
+    assert workload["files"] == ["hooks/build.py", "rtl/dut.sv"]

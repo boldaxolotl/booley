@@ -27,7 +27,7 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import referenced_program_paths
+from booley.targets.declared_inputs import project_config_program_paths
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +132,8 @@ def _declared_program_files(root: Path) -> list[str]:
         return []
     with config_path.open("rb") as stream:
         config = tomllib.load(stream)
-    paths = referenced_program_paths(
+    paths = project_config_program_paths(
         config,
-        search_roots=(root, config_path.parent),
         project_root=root,
     )
     return [path.relative_to(root).as_posix() for path in paths]
