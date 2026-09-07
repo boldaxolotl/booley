@@ -102,6 +102,7 @@ class TestWriteScript:
     def test_clockless_sdc_is_runtime_input_error(self, tmp_path):
         text = self._write(tmp_path)
         assert "[llength [all_clocks]] == 0" in text
+        assert "foreach _clk [all_clocks]" in text
         assert "BOOLEY_INPUT_ERROR: synth Target 'synth_top'" in text
         assert "c.sdc" in text
         assert "add create_clock" in text
