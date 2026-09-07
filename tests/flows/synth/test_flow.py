@@ -2209,6 +2209,10 @@ class TestBaselineFlow:
         assert "baseline: abc1234" in result.report_text
         assert "delta" in result.report_text
         assert "PASS" in result.report_text
+        assert [(unit.role, unit.selector) for unit in flow._flow_plan.work_units] == [
+            ("baseline", "lite"),
+            ("candidate", "lite"),
+        ]
 
         # Two execute calls: baseline + current
         assert len(execute_calls) == 2
@@ -2390,7 +2394,9 @@ class TestBaselineFlow:
             flow._run()
 
         # Worktree cleanup ran and work_dir was restored despite the crash.
-        assert exited == [True]
+        # Aggregate planning validates the baseline in one disposable checkout;
+        # execution uses a fresh checkout. Both contexts must clean up.
+        assert exited == [True, True]
         assert Path(flow.args.work_dir) == tmp_path
 
 
