@@ -24,11 +24,7 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
 
-from .acceptance_targets import (
-    AcceptanceTargetBinding,
-    canonical_acceptance_bindings,
-    criterion_targets,
-)
+from .acceptance_targets import AcceptanceTargetBinding
 
 
 class TargetFinalizationError(ValueError):
@@ -166,31 +162,6 @@ def plan_target_removals(
     plan = TargetRemovalPlan(tuple(sorted(removals)))
     _validate_plan_spans(root, plan)
     return plan
-
-
-def canonical_remove_targets(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> tuple[str, ...]:
-    """Return the full-VLNV removal identities declared by ticket fields."""
-    on_success = fields.get("on_success")
-    if not isinstance(on_success, Mapping):
-        return ()
-    selectors = on_success.get("remove_targets", [])
-    if not isinstance(selectors, list) or not selectors:
-        return ()
-    bindings = canonical_acceptance_bindings(
-        project_root, criterion_targets(fields.get("criteria"))
-    )
-    return plan_target_removals(project_root, selectors, bindings).canonical_targets
-
-
-def validate_acceptance_removals(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
-    """Return enqueue-time diagnostics for acceptance-time Target removal."""
-    try:
-        canonical_remove_targets(fields, project_root)
-    except (TargetFinalizationError, FuseSocError) as exc:
-        return [str(exc)]
-    return []
 
 
 def _mapping_value(node: MappingNode, key: str) -> MappingNode | None:

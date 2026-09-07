@@ -351,9 +351,16 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
         _verify_providers(tmp_path, tmp_path, consumer)
 
 
-def test_build_and_publish_refresh_run_all_checkpoints(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _refresh_build_fixture(
+    tmp_path: Path,
+) -> tuple[
+    ProviderTargetBinding,
+    AcceptanceBasis,
+    basis_refresh.BasisRefreshJournal,
+    Path,
+    AuthoringWorkspace,
+    basis_refresh._RefreshBuild,
+]:
     provider = ProviderTargetBinding(
         "provider", "a" * 64, "acme:lib:toy:1.0#future", "persistent", "b" * 64
     )
@@ -366,6 +373,13 @@ def test_build_and_publish_refresh_run_all_checkpoints(
     old = AuthoringWorkspace(tmp_path / "old", None, "b" * 40, "")
     workspace = AuthoringWorkspace(tmp_path / "new", None, "b" * 40, "", journal.generation)
     refresh = basis_refresh._RefreshBuild(tmp_path, ticket, "ticket", {}, basis, old, journal)
+    return provider, basis, journal, ticket, workspace, refresh
+
+
+def test_build_refresh_runs_all_reapplication_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _basis, _journal, _ticket, workspace, refresh = _refresh_build_fixture(tmp_path)
     calls: list[str] = []
     monkeypatch.setattr(basis_refresh, "open_authoring_generation", lambda *_args: workspace)
     monkeypatch.setattr(basis_refresh, "_verify_providers", lambda *_args: (provider,))
@@ -380,6 +394,11 @@ def test_build_and_publish_refresh_run_all_checkpoints(
     assert basis_refresh._build_refresh_workspace(refresh) == (workspace, (provider,))
     assert calls == ["targets", "tables", "placeholders"]
 
+
+def test_publish_refresh_writes_receipt_and_resumes_prepared_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, basis, journal, ticket, workspace, _refresh = _refresh_build_fixture(tmp_path)
     receipts: list[str] = []
     journals: list[basis_refresh.BasisRefreshJournal] = []
     monkeypatch.setattr(
@@ -405,9 +424,9 @@ def test_build_and_publish_refresh_run_all_checkpoints(
     ) == (basis, prepared)
 
 
-def test_finish_discard_and_recover_refresh_lifecycle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _prepared_refresh_fixture(
+    tmp_path: Path,
+) -> tuple[AcceptanceBasis, basis_refresh.BasisRefreshJournal, Path, Path]:
     basis = AcceptanceBasis((_participant(),))
     journal = basis_refresh.BasisRefreshJournal(
         1, "0" * 32, "1" * 16, "ticket", basis.basis_id, "prepared", basis.as_dict()
@@ -416,11 +435,16 @@ def test_finish_discard_and_recover_refresh_lifecycle(
     operation = tmp_path / "operation"
     journal_path.write_text("pending\n", encoding="utf-8")
     operation.mkdir()
+    return basis, journal, journal_path, operation
+
+
+def test_finish_refresh_validates_identity_and_cleans_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _basis, journal, journal_path, operation = _prepared_refresh_fixture(tmp_path)
     calls: list[str] = []
     monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: None)
     basis_refresh.finish_basis_refresh(tmp_path, "ticket", journal.operation_id)
-    basis_refresh.discard_basis_refresh(tmp_path, "ticket")
-
     monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
     with pytest.raises(BasisRefreshError, match="completion identity changed"):
         basis_refresh.finish_basis_refresh(tmp_path, "ticket", "f" * 32)
@@ -437,7 +461,17 @@ def test_finish_discard_and_recover_refresh_lifecycle(
     basis_refresh.finish_basis_refresh(tmp_path, "ticket", journal.operation_id)
     assert calls == ["finish-publication", "rmtree"]
 
-    journal_path.write_text("pending\n", encoding="utf-8")
+
+def test_discard_refresh_abandons_publication_refs_and_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _basis, journal, journal_path, operation = _prepared_refresh_fixture(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: None)
+    basis_refresh.discard_basis_refresh(tmp_path, "ticket")
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
+    monkeypatch.setattr(basis_refresh, "_operation_path", lambda *_args: operation)
+    monkeypatch.setattr(basis_refresh, "_journal_path", lambda *_args: journal_path)
     repositories = {"outer": tmp_path}
     monkeypatch.setattr(basis_refresh, "discard_refresh_workspace", lambda *_args: repositories)
     monkeypatch.setattr(
@@ -448,10 +482,19 @@ def test_finish_discard_and_recover_refresh_lifecycle(
     monkeypatch.setattr(
         basis_refresh, "discard_generation_refs", lambda *_args: calls.append("discard-refs")
     )
+    monkeypatch.setattr(
+        basis_refresh, "safe_rmtree", lambda *_args, **_kwargs: calls.append("rmtree")
+    )
     basis_refresh.discard_basis_refresh(tmp_path, "ticket")
-    assert calls[-3:] == ["abandon-publication", "discard-refs", "rmtree"]
+    assert calls == ["abandon-publication", "discard-refs", "rmtree"]
 
+
+def test_recover_refresh_finishes_matching_ticket_and_rejects_disagreement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis, journal, _journal_path, _operation = _prepared_refresh_fixture(tmp_path)
     finished: list[tuple[str, str]] = []
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
     monkeypatch.setattr(
         basis_refresh,
         "finish_basis_refresh",

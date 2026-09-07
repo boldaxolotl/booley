@@ -17,6 +17,34 @@ from booley.ticket_board.target_finalization import (
     plan_target_removals,
 )
 
+_FORMATTED_TARGETS = (
+    "  # retained comment\n"
+    "  baseline:\n"
+    "    flow: generic\n"
+    "    flow_options: {tool: yosys, ppa_profile: compact}\n"
+    "    filesets: [rtl]\n"
+    "    toplevel: toy\n"
+    "  candidate:\n"
+    "    flow: generic\n"
+    "    flow_options: {tool: yosys, ppa_profile: fast}\n"
+    "    filesets: [rtl]\n"
+    "    toplevel: toy\n"
+)
+_FORMATTED_TESTS = (
+    "# registry header\n"
+    "[test_lists]\n"
+    'smoke = ["works"]\n\n'
+    '["acme:lib:toy:1.0#baseline"] # remove this table\n'
+    'tests = ["old"]\n\n'
+    '["acme:lib:toy:1.0#baseline".env]\n'
+    'FLAVOR = "compact"\n\n'
+    '[["acme:lib:toy:1.0#baseline".cases]]\n'
+    'name = "slow"\n\n'
+    "# candidate comment stays byte-for-byte\n"
+    "[candidate]\n"
+    'tests = ["new"]\n'
+)
+
 
 def _write_core(path: Path, *, vlnv: str, targets: str) -> None:
     path.write_text(
@@ -57,38 +85,12 @@ def test_removal_preserves_core_and_tests_toml_formatting(tmp_path: Path) -> Non
     _write_core(
         core,
         vlnv="acme:lib:toy:1.0",
-        targets=(
-            "  # retained comment\n"
-            "  baseline:\n"
-            "    flow: generic\n"
-            "    flow_options: {tool: yosys, ppa_profile: compact}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: toy\n"
-            "  candidate:\n"
-            "    flow: generic\n"
-            "    flow_options: {tool: yosys, ppa_profile: fast}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: toy\n"
-        ),
+        targets=_FORMATTED_TARGETS,
     )
     project = tmp_path / ".booley_project"
     project.mkdir()
     tests_toml = project / "tests.toml"
-    tests_toml.write_text(
-        "# registry header\n"
-        "[test_lists]\n"
-        'smoke = ["works"]\n\n'
-        '["acme:lib:toy:1.0#baseline"] # remove this table\n'
-        'tests = ["old"]\n\n'
-        '["acme:lib:toy:1.0#baseline".env]\n'
-        'FLAVOR = "compact"\n\n'
-        '[["acme:lib:toy:1.0#baseline".cases]]\n'
-        'name = "slow"\n\n'
-        "# candidate comment stays byte-for-byte\n"
-        "[candidate]\n"
-        'tests = ["new"]\n',
-        encoding="utf-8",
-    )
+    tests_toml.write_text(_FORMATTED_TESTS, encoding="utf-8")
     canonical = "acme:lib:toy:1.0#baseline"
 
     plan = plan_target_removals(tmp_path, (canonical,), _binding(canonical))
