@@ -385,7 +385,7 @@ class TestMcpToolTimeoutSeconds:
     def test_simulate_trace_timeout_gets_cleanup_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
-            {"timeout": 10_000, "trace": True},
+            {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 600},
         )
         assert timeout == 690
@@ -393,7 +393,7 @@ class TestMcpToolTimeoutSeconds:
     def test_simulate_non_trace_timeout_gets_small_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
-            {"timeout": 10_000, "trace": False},
+            {"timeout_ms": 10_000, "trace": False},
             {"default_timeout": 600},
         )
         assert timeout == 630
@@ -417,7 +417,7 @@ class TestMcpToolTimeoutSeconds:
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
-                {"target": "a,b", "timeout": 600_000, "trace": False},
+                {"target": "a,b", "timeout_ms": 600_000, "trace": False},
                 {"default_timeout": 1290},
             )
         assert timeout == 4 * 600 + 30
@@ -429,15 +429,15 @@ class TestMcpToolTimeoutSeconds:
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
-                {"target": "a,b,c", "timeout": 600_000, "trace": True},
+                {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
                 {"default_timeout": 1290},
             )
         assert timeout == 3 * 600 + 3 * 90
 
-    def test_non_simulate_uses_default(self):
+    def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(
             "lint",
-            {"timeout": 10_000, "trace": True},
+            {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 120},
         )
         assert timeout == 120
@@ -458,11 +458,11 @@ class TestMcpToolTimeoutSeconds:
         )
         assert timeout == 4000 + 60 + 120
 
-    def test_conflicting_timeout_spellings_are_rejected(self):
-        with pytest.raises(ValueError, match="conflicts"):
+    def test_legacy_timeout_is_rejected_for_mcp(self):
+        with pytest.raises(ValueError, match="CLI-only"):
             self._mcp_tool_timeout_seconds(
                 "lint",
-                {"target": "core", "timeout_ms": 1000, "timeout": 2000},
+                {"target": "core", "timeout": 2000},
                 {"default_timeout": 600},
             )
 
@@ -471,7 +471,7 @@ class TestMcpToolTimeoutSeconds:
             "synth",
             {
                 "target": ",".join(f"asic_{idx}" for idx in range(9)),
-                "timeout": 1_800_000,
+                "timeout_ms": 1_800_000,
             },
             {"default_timeout": 7200},
         )
@@ -482,7 +482,7 @@ class TestMcpToolTimeoutSeconds:
             "synth",
             {
                 "target": "asic_small,asic_full",
-                "timeout": 4_000_000,
+                "timeout_ms": 4_000_000,
                 "baseline": "main",
             },
             {"default_timeout": 600},
@@ -509,7 +509,7 @@ class TestMcpToolTimeoutSeconds:
 
         timeout = self._mcp_tool_timeout_seconds(
             "synth",
-            {"target": "core", "timeout": 4_000_000},
+            {"target": "core", "timeout_ms": 4_000_000},
             {"default_timeout": 600},
         )
 
@@ -535,7 +535,7 @@ class TestMcpToolTimeoutSeconds:
 
         timeout = self._mcp_tool_timeout_seconds(
             "fpga",
-            {"target": "core", "timeout": 4_000_000},
+            {"target": "core", "timeout_ms": 4_000_000},
             {"default_timeout": 7200},
         )
 
@@ -562,6 +562,28 @@ class TestMcpToolTimeoutSeconds:
         )
         # max(default 600, 1800000ms -> 1800s) + report-persistence margin.
         assert timeout == 1830
+
+    def test_lint_no_work_dir_honors_current_workspace_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.project_dir import reset_cache
+
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text(
+            "[flows.lint]\ntimeout_ms = 900000\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        reset_cache()
+
+        timeout = self._mcp_tool_timeout_seconds(
+            "lint",
+            {},
+            {"default_timeout": 600},
+        )
+
+        assert timeout == 930
 
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
         """No call override or config knob -> the wrapper default budget stands."""

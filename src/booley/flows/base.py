@@ -18,7 +18,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
+from booley.core.boundary import BoundaryError
 from booley.flows import execution
 from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
 from booley.mcp.base import McpTool
@@ -407,8 +409,7 @@ class BooleyFlow(McpTool):
 class BuiltinFlow(BooleyFlow):
     """Invocation seam shared only by Booley's four shipped Flows."""
 
-    flow_timeout_default_ms = 600_000
-    default_timeout = 600
+    default_timeout: ClassVar[int] = 600
 
     def _add_common_args(self) -> None:
         super()._add_common_args()
@@ -452,8 +453,17 @@ class BuiltinFlow(BooleyFlow):
             self.name,
             Path(self.args.work_dir),
             self.args.timeout_ms,
-            self.flow_timeout_default_ms,
         )
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        """Validate the shared invocation contract before dry-run can return."""
+        if (rejection := super()._pre_state_gate()) is not None:
+            return rejection
+        try:
+            self._timeout_ms()
+        except BoundaryError as exc:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"ERROR: {exc}")
+        return None
 
     def _get_timeout(self) -> int:
         """Return the active work-unit budget in whole seconds."""
@@ -464,6 +474,7 @@ class BuiltinFlow(BooleyFlow):
         from booley.mcp.schema_extractor import extract_schema
 
         schema = extract_schema(self._parser)
+        schema["additionalProperties"] = False
         properties = schema.get("properties")
         if isinstance(properties, dict):
             properties.pop("_legacy_timeout_ms", None)

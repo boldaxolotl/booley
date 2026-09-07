@@ -131,7 +131,7 @@ def _resolve_synth_timeout_ms(
     requested: Any = None,
 ) -> int:
     """Resolve the per-target synthesis budget for MCP and Flow callers."""
-    return resolve_timeout_ms("synth", work_dir, requested, 1_800_000)
+    return resolve_timeout_ms("synth", work_dir, requested)
 
 
 def _expected_latches(work_dir: Path) -> int:
@@ -987,8 +987,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
     code_modifying: bool = False
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
-    default_timeout: int = 7200
-    flow_timeout_default_ms = 1_800_000
+    default_timeout: ClassVar[int] = 7200
     satisfies: ClassVar[list[str]] = ["synthesis_ok"]
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,

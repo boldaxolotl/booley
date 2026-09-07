@@ -391,7 +391,6 @@ class LintFlow(BuiltinFlow):
         "resolved Target's flow_options.tool (Verilator or Verible)."
     )
     code_modifying: bool = False
-    flow_timeout_default_ms = 120_000
     satisfies: ClassVar[list[str]] = ["lint_clean"]
 
     # The built-in path is make-driven end-to-end in the Session Runtime.

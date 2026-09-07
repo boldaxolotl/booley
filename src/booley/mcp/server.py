@@ -3165,7 +3165,6 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
     """Whole-campaign sim watchdog derived from its sequential work units."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
     from booley.flows.sim.flow import (
-        _DEFAULT_TIMEOUT_MS,
         _TRACE_CLEANUP_MARGIN_S,
         _resolve_sim_campaign_work_units,
         _resolve_sim_timeout_ms,
@@ -3177,9 +3176,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
     if requested is None:
         timeout_ms = _resolve_sim_timeout_ms(work_dir)
     else:
-        timeout_ms = resolve_timeout_ms("sim", None, requested, _DEFAULT_TIMEOUT_MS)
-    sim_seconds = max(1, timeout_ms // 1000)
-
+        timeout_ms = resolve_timeout_ms("sim", None, requested)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
     try:
@@ -3192,19 +3189,16 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
 
-    campaign_budget_s = sim_seconds * work_units
     if _ticket_baseline_required("cycle_count_"):
-        campaign_budget_s *= 2
         work_units *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
     call_margin_s = 0 if arguments.get("trace") else 30
     return BudgetPlan(
         timeout_ms=timeout_ms,
         work_units=work_units,
-        execution_s=max(default, campaign_budget_s),
-        setup_grace_s=0,
+        setup_grace_per_unit_s=0,
         finalize_grace_s=trace_margin_s + call_margin_s,
-        minimum_s=0,
+        execution_floor_s=default,
     ).outer_timeout_s
 
 
@@ -3222,14 +3216,11 @@ def _implementation_budget_plan(
     """Plan the pre-spawn watchdog for synthesis or FPGA implementation."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
-    defaults = {"synth": 1_800_000, "fpga": 7_200_000}
     work_dir_raw = arguments.get("work_dir")
-    work_dir = Path(work_dir_raw) if work_dir_raw else None
     timeout_ms = resolve_timeout_ms(
         name,
-        work_dir,
+        Path(work_dir_raw) if work_dir_raw else None,
         requested_timeout_ms(arguments),
-        defaults[name],
     )
     criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
     has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(criterion_prefix)
@@ -3237,10 +3228,9 @@ def _implementation_budget_plan(
     return BudgetPlan(
         timeout_ms=timeout_ms,
         work_units=work_units,
-        execution_s=max(1, timeout_ms // 1000) * work_units,
-        setup_grace_s=60 * work_units,
+        setup_grace_per_unit_s=60,
         finalize_grace_s=120,
-        minimum_s=default,
+        outer_floor_s=default,
     )
 
 
@@ -3249,21 +3239,18 @@ def _lint_budget_plan(arguments: dict[str, Any], default: int) -> BudgetPlan:
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
     work_dir_raw = arguments.get("work_dir")
-    work_dir = Path(work_dir_raw) if work_dir_raw else None
     timeout_ms = resolve_timeout_ms(
         "lint",
-        work_dir,
+        Path(work_dir_raw) if work_dir_raw else None,
         requested_timeout_ms(arguments),
-        120_000,
     )
     work_units = _target_count(arguments)
     return BudgetPlan(
         timeout_ms=timeout_ms,
         work_units=work_units,
-        execution_s=max(1, timeout_ms // 1000) * work_units,
-        setup_grace_s=0,
+        setup_grace_per_unit_s=0,
         finalize_grace_s=30,
-        minimum_s=default,
+        outer_floor_s=default,
     )
 
 

@@ -57,7 +57,7 @@ from ..flow_config import (
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
-from ..invocation import resolve_timeout_ms
+from ..invocation import default_timeout_ms, resolve_timeout_ms
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -150,7 +150,7 @@ def _raise_if_missing_executable(text: str) -> None:
         raise MissingExecutableError(binary, context=text)
 
 
-_DEFAULT_TIMEOUT_MS = 600_000
+_DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 # Per-run disk budget for the sim run directory (SETUP-25) — on how much the dir
 # GROWS during one run, not on its total size (F-23: run_cwd is routinely shared
 # with the TB's staged input vectors, and charging those to the output budget
@@ -527,9 +527,9 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     a heavy core (e.g. a 400+MB ``vvp`` whose cold rebuild+run exceeds the 600s
     default under load) need not raise it on every call. Precedence lives in the
     caller: an explicit ``--timeout-ms`` arg wins over this knob, which wins over
-    :data:`_DEFAULT_TIMEOUT_MS`. Non-positive / unparseable values fall back.
+    :data:`_DEFAULT_TIMEOUT_MS`. Invalid configured values fail at the boundary.
     """
-    return resolve_timeout_ms("sim", work_dir, None, _DEFAULT_TIMEOUT_MS)
+    return resolve_timeout_ms("sim", work_dir, None)
 
 
 def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
@@ -1133,7 +1133,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
-    flow_timeout_default_ms = _DEFAULT_TIMEOUT_MS
 
     def _add_args(self, parser: Any) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its

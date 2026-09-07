@@ -180,7 +180,7 @@ def _load_flow_config(work_dir: Path) -> dict[str, Any]:
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
-    return resolve_timeout_ms("fpga", work_dir, requested, 7_200_000)
+    return resolve_timeout_ms("fpga", work_dir, requested)
 
 
 def _float_metric(data: dict[str, Any], key: str) -> float | None:
@@ -207,8 +207,7 @@ class FpgaImplFlow(BuiltinFlow):
         "Run FPGA implementation for one or more Targets with optional baseline comparison"
     )
     code_modifying: bool = False
-    default_timeout: int = 7200
-    flow_timeout_default_ms = 7_200_000
+    default_timeout: ClassVar[int] = 7200
     # F-14: a passing route otherwise prints nothing on the CLI (its verdict
     # lives in display_lines, which a bare CLI run drops). Surface the RESULT:
     # summary on stdout so PASS is never indistinguishable from a no-op.

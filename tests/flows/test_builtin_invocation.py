@@ -11,7 +11,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -31,8 +31,10 @@ def test_builtin_schema_exposes_one_canonical_timeout(
     _name: str,
     _default_ms: int,
 ) -> None:
-    properties = flow_type().mcp_schema()["properties"]
+    schema = flow_type().mcp_schema()
+    properties = schema["properties"]
 
+    assert schema["additionalProperties"] is False
     assert properties["timeout_ms"]["type"] == "integer"
     assert properties["timeout_ms"]["minimum"] == 1
     assert "timeout" not in properties
@@ -90,9 +92,15 @@ def test_timeout_precedence_is_call_then_config_then_default(
         lambda _work_dir: {"flows": {name: {"timeout_ms": configured}}},
     )
 
-    assert resolve_timeout_ms(name, tmp_path, default_ms + 2, default_ms) == default_ms + 2
-    assert resolve_timeout_ms(name, tmp_path, None, default_ms) == configured
-    assert resolve_timeout_ms(name, None, None, default_ms) == default_ms
+    assert resolve_timeout_ms(name, tmp_path, default_ms + 2) == default_ms + 2
+    assert resolve_timeout_ms(name, tmp_path, None) == configured
+    assert resolve_timeout_ms(name, None, None) == configured
+
+    monkeypatch.setattr(
+        "booley.runtime.shared_infra._load_rtl_config",
+        lambda _work_dir: {},
+    )
+    assert resolve_timeout_ms(name, None, None) == default_ms
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "1000", float("nan")])
@@ -107,7 +115,43 @@ def test_malformed_configured_timeout_is_a_boundary_error(
     )
 
     with pytest.raises(BoundaryError, match=r"\[flows\.lint\]\.timeout_ms"):
-        resolve_timeout_ms("lint", tmp_path, None, 120_000)
+        resolve_timeout_ms("lint", tmp_path, None)
+
+
+def test_budget_plan_derives_aggregate_execution_and_setup() -> None:
+    plan = BudgetPlan(
+        timeout_ms=4_000,
+        work_units=3,
+        setup_grace_per_unit_s=2,
+        finalize_grace_s=5,
+        outer_floor_s=10,
+    )
+
+    assert plan.execution_s == 12
+    assert plan.setup_grace_s == 6
+    assert plan.outer_timeout_s == 23
+
+
+def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "booley.runtime.shared_infra._load_rtl_config",
+        lambda _work_dir: {"flows": {"lint": {"timeout_ms": "invalid"}}},
+    )
+    monkeypatch.setattr(
+        "booley.flows.base.runtime_context.container_only_error",
+        lambda _command: None,
+    )
+    flow = LintFlow()
+    flow.parse_args(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
+
+    rejection = flow._pre_state_gate()
+
+    assert rejection is not None
+    assert rejection.exit_code == 2
+    assert "timeout_ms must be an integer" in rejection.report_text
 
 
 class _CustomTimeoutFlow(BooleyFlow):
