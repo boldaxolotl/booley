@@ -294,16 +294,16 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         patch.object(
             harness_refresh.init_cmd,
             "inspect_refreshable_session_image",
-            side_effect=lambda root, *, verbose: events.append(("inspect", root, verbose))
-            or inspection,
+            side_effect=lambda root, *, verbose: (
+                events.append(("inspect", root, verbose)) or inspection
+            ),
         ),
         patch.object(
             harness_refresh.init_cmd,
             "refresh_session_image",
-            side_effect=lambda root, *, verbose, inspection: events.append(
-                ("refresh", root, verbose, inspection)
-            )
-            or refreshed,
+            side_effect=lambda root, *, verbose, inspection: (
+                events.append(("refresh", root, verbose, inspection)) or refreshed
+            ),
         ),
         patch.object(
             harness_refresh.init_cmd,
