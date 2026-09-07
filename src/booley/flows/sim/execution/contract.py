@@ -140,9 +140,17 @@ class SimulationTargetOutcome:
 
 @dataclass(frozen=True)
 class SimulationPreview:
-    """Side-effect-free command descriptions in execution order."""
+    """Side-effect-free resolved recipe and commands in execution order."""
 
     commands: tuple[tuple[str, ...], ...]
+    groups: tuple[tuple[str, ...], ...]
+    target_identity: str
+    toplevel: str
+    eda_tool: str | None
+    sources: tuple[str, ...]
+    constraints: tuple[str, ...]
+    parameters: Mapping[str, object]
+    flow_options: Mapping[str, object]
 
 
 __all__ = [

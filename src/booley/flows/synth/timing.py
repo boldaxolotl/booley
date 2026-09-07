@@ -17,10 +17,6 @@ class StaTimingConfig(NamedTuple):
     """Resolved timing intent passed to the built-in synthesis adapters."""
 
     mode: SynthMode
-    clock: str | None
-    period_ps: float
-    input_delay_pct: float
-    output_delay_pct: float
     sdc: tuple[Path, ...] = ()
     utilization_pct: float = 40.0
     repair_timing: bool = True
@@ -31,17 +27,6 @@ class StaTimingConfig(NamedTuple):
     repair_tns_percent: float | None = None
 
 
-class SdcOwnership(NamedTuple):
-    """Constraint categories supplied by the Target's authored SDC."""
-
-    clock: bool
-    input_delay: bool
-    output_delay: bool
-
-
-DEFAULT_STA_PERIOD_PS = 4000.0
-DEFAULT_STA_INPUT_DELAY_PCT = 30.0
-DEFAULT_STA_OUTPUT_DELAY_PCT = 70.0
 DEFAULT_STA_UTILIZATION_PCT = 40.0
 
 _CLOCK_CANDIDATES = ("clk_i", "clk", "clock", "i_clk", "aclk")
@@ -50,10 +35,6 @@ _PERCLOCK_RE = re.compile(
     r"\s+wns_ns=(?P<wns>NA|[-+]?\d+(?:\.\d+)?)"
     r"\s+whs_ns=(?P<whs>NA|[-+]?\d+(?:\.\d+)?)"
 )
-_CREATE_CLOCK_NAME_RE = re.compile(r"(?m)^[^\n#]*?\bcreate_clock\b[^\n]*?-name\s+([^\s\]\}]+)")
-_SDC_CREATE_CLOCK_RE = re.compile(r"(?m)^[^\n#]*?\bcreate_clock\b")
-_SDC_INPUT_DELAY_RE = re.compile(r"(?m)^[^\n#]*?\bset_input_delay\b")
-_SDC_OUTPUT_DELAY_RE = re.compile(r"(?m)^[^\n#]*?\bset_output_delay\b")
 _CREATE_CLOCK_PERIOD_RE = re.compile(
     r"(?m)^[^\n#]*?\bcreate_clock\b[^\n]*?-period\s+"
     r"([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)"
@@ -79,27 +60,6 @@ def parse_perclock(text: str) -> dict[str, dict[str, float | None]]:
 def read_user_sdc_text(config: StaTimingConfig) -> str:
     """Concatenate the Target's authored SDC files in fileset order."""
     return "\n".join(path.read_text(encoding="utf-8") for path in config.sdc)
-
-
-def sdc_ownership(config: StaTimingConfig) -> SdcOwnership:
-    """Return which default constraint categories the authored SDC replaces."""
-    text = read_user_sdc_text(config)
-    return SdcOwnership(
-        clock=bool(_SDC_CREATE_CLOCK_RE.search(text)),
-        input_delay=bool(_SDC_INPUT_DELAY_RE.search(text)),
-        output_delay=bool(_SDC_OUTPUT_DELAY_RE.search(text)),
-    )
-
-
-def parse_sdc_clock_names(text: str) -> list[str]:
-    """Return authored ``create_clock -name`` values in source order."""
-    return _CREATE_CLOCK_NAME_RE.findall(text)
-
-
-def first_authored_clock(config: StaTimingConfig) -> str | None:
-    """Return the first authored clock name, if the Target declares one."""
-    names = parse_sdc_clock_names(read_user_sdc_text(config))
-    return names[0] if names else None
 
 
 def parse_sdc_clock_periods_ps(text: str) -> list[float]:

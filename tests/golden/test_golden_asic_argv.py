@@ -68,6 +68,9 @@ def _fake_synth_resolved(
         / "syn_demo_0"
         / "syn"
     )
+    sdc = build_root / "src" / "syn_demo_0" / "constraints" / "dut.sdc"
+    sdc.parent.mkdir(parents=True, exist_ok=True)
+    sdc.write_text("create_clock -period 4.0 [get_ports clk]\n", encoding="utf-8")
     files = (
         fusesoc_registry.ResolvedFile(
             name="src/syn_demo_0/rtl/include/defs.svh",

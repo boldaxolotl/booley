@@ -832,6 +832,7 @@ def _mcp_tool_def_from_class(
         "schema": schema,
         "default_timeout": getattr(cls, "default_timeout", 0),
         "is_specialist": issubclass(cls, Specialist),
+        "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
     }
     result.update(extra)
     return result
@@ -3154,7 +3155,10 @@ async def _dispatch_booley_mcp_tool(
     exit_code, stdout, stderr, timed_out = await _run_subprocess(cmd, timeout=mcp_tool_timeout)
     if timed_out:
         _write_synthetic_endpoint_end(name, mcp_tool_timeout)
-    report = _try_read_report()
+    skip_report = bool(arguments.get("dry_run")) and bool(
+        mcp_tool_def.get("non_persisting_dry_run")
+    )
+    report = None if skip_report else _try_read_report()
     content = [
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
