@@ -25,12 +25,6 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
     ticket_project_worktree,
 )
-from booley.runtime.worktree_relocation import (
-    WorktreeMove,
-    WorktreeRelocationError,
-    preflight_worktree_moves,
-    relocate_worktree,
-)
 
 from .acceptance_basis import (
     BLOCK_REASON,
@@ -628,15 +622,11 @@ def relocate_refresh_workspace(
     """Move a prepared refresh workspace into its canonical authoring location."""
     canonical = resolve_project_dir(root) / "worktrees" / slug
     branch = _generation_branch(generation, slug)
-    ref = f"refs/heads/{branch}"
     project_source = resolve_inner_project_repo(root)
     holding = operation / "new-project-moving"
-    _preflight_refresh_relocation(root, ref, canonical, workspace, project_source, holding)
-    if canonical.is_dir() and not workspace.outer.exists():
-        _relocate_workspace_worktree(root, ref, workspace.outer, canonical)
     canonical_is_new = canonical.is_dir() and _worktree_owns_branch(root, canonical, branch)
     if not canonical_is_new:
-        _stage_refresh_project(workspace, project_source, holding, ref)
+        _stage_refresh_project(workspace, project_source, holding)
         if canonical.exists():
             paired = paired_project_repository(canonical)
             _remove_authoring_worktrees(root, canonical, paired, project_source)
@@ -644,8 +634,8 @@ def relocate_refresh_workspace(
             raise AcceptanceBasisOperationError(
                 "refreshed Ticket workspace disappeared during relocation"
             )
-        _relocate_workspace_worktree(root, ref, workspace.outer, canonical)
-    _restore_refresh_project(canonical, project_source, holding, ref)
+        _require_git(root, "worktree", "move", str(workspace.outer), str(canonical))
+    _restore_refresh_project(canonical, project_source, holding)
     if has_project and paired_project_repository(canonical) is None:
         raise AcceptanceBasisOperationError("refreshed paired project workspace is unavailable")
     if not has_project and paired_project_repository(canonical) is not None:
@@ -687,57 +677,32 @@ def discard_generation_refs(repositories: dict[str, Path], slug: str, generation
         _require_git(repository, "update-ref", "-d", ref, current.stdout.strip())
 
 
-def _preflight_refresh_relocation(
-    root: Path,
-    ref: str,
-    canonical: Path,
-    workspace: AuthoringWorkspace,
-    project_source: Path | None,
-    holding: Path,
-) -> None:
-    moves = [WorktreeMove(root, ref, workspace.outer, canonical)]
-    if workspace.project is not None:
-        if project_source is None:
-            raise AcceptanceBasisOperationError("paired project repository is unavailable")
-        moves.append(WorktreeMove(project_source, ref, workspace.project, holding))
-    try:
-        preflight_worktree_moves(tuple(moves), occupied_destinations=frozenset({canonical}))
-    except WorktreeRelocationError as exc:
-        raise AcceptanceBasisOperationError(str(exc)) from exc
-
-
-def _relocate_workspace_worktree(
-    repository: Path, ref: str, source: Path, destination: Path
-) -> None:
-    try:
-        relocate_worktree(repository, ref, source, destination)
-    except WorktreeRelocationError as exc:
-        raise AcceptanceBasisOperationError(str(exc)) from exc
-
-
 def _stage_refresh_project(
     workspace: AuthoringWorkspace,
     project_source: Path | None,
     holding: Path,
-    ref: str,
 ) -> None:
-    source = workspace.project
-    if source is None:
+    paired = paired_project_repository(workspace.outer) if workspace.outer.is_dir() else None
+    if paired is None:
         return
     if project_source is None:
         raise AcceptanceBasisOperationError("paired project repository is unavailable")
-    _relocate_workspace_worktree(project_source, ref, source, holding)
+    if not holding.exists():
+        _require_git(project_source, "worktree", "move", str(paired.worktree), str(holding))
 
 
-def _restore_refresh_project(
-    canonical: Path, project_source: Path | None, holding: Path, ref: str
-) -> None:
-    destination = ticket_project_worktree(canonical)
-    if not holding.exists() and not destination.exists():
+def _restore_refresh_project(canonical: Path, project_source: Path | None, holding: Path) -> None:
+    if not holding.exists():
         return
     if project_source is None:
         raise AcceptanceBasisOperationError("paired project repository is unavailable")
-    _relocate_workspace_worktree(project_source, ref, holding, destination)
+    _require_git(
+        project_source,
+        "worktree",
+        "move",
+        str(holding),
+        str(ticket_project_worktree(canonical)),
+    )
 
 
 def load_refresh_source_workspace(

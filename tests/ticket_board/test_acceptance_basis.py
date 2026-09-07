@@ -1904,6 +1904,51 @@ def _materialize_recursive_submodule(root: Path, workspace: Path, tmp_path: Path
     assert (workspace / "vendor/dependency/ip/nested/.git").is_dir()
 
 
+def _add_submodule_repository(repository: Path, tmp_path: Path, name: str) -> None:
+    dependency = tmp_path / name
+    dependency.mkdir()
+    _git(dependency, "init", "-b", "main")
+    _git(dependency, "config", "user.name", "Test")
+    _git(dependency, "config", "user.email", "test@example.invalid")
+    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
+    _git(dependency, "add", "source.sv")
+    _git(dependency, "commit", "-m", "dependency")
+    _git(
+        repository,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(repository, "commit", "-m", "add dependency")
+
+
+def _block_ticket_for_return_to_draft(project_dir: Path, ticket_io: TicketIO, slug: str) -> Path:
+    assert ticket_io.enqueue_ticket(slug)
+    (ticket_io.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    return blocked
+
+
+def _create_submodule_transition_ticket(ticket_io: TicketIO, slug: str, summary: str) -> None:
+    ticket = ticket_io.create_ticket_file(
+        slug,
+        TicketFileSpec(
+            summary=summary,
+            ticket_type="bugfix",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+
+
 def test_return_to_draft_relocates_standalone_submodules(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1941,42 +1986,15 @@ def test_return_to_draft_relocates_standalone_submodules(
     assert not draft_transition.transition_pending(root, "submodule-transition")
 
 
-def test_return_to_draft_rejects_native_submodule_before_relocation(tmp_path: Path) -> None:
+def test_return_to_draft_rejects_native_submodule(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    slug = "native-submodule-transition"
-    ticket = tio.create_ticket_file(
-        slug,
-        TicketFileSpec(
-            summary="Reject unsafe native submodule relocation",
-            ticket_type="bugfix",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
-    assert ticket is not None
-    dependency = tmp_path / "native-dependency"
-    dependency.mkdir()
-    _git(dependency, "init", "-b", "main")
-    _git(dependency, "config", "user.name", "Test")
-    _git(dependency, "config", "user.email", "test@example.invalid")
-    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
-    _git(dependency, "add", "source.sv")
-    _git(dependency, "commit", "-m", "dependency")
-    _git(
-        root,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        str(dependency),
-        "vendor/dependency",
-    )
-    _git(root, "commit", "-m", "add native dependency")
+    slug = "native-submodule"
+    _create_submodule_transition_ticket(tio, slug, "Reject unsafe native submodule relocation")
+    _add_submodule_repository(root, tmp_path, "native-dependency")
     workspace = project_dir / "worktrees" / slug
     paired = workspace / ".booley_project"
     _git(workspace, "merge", "main")
-    assert tio.enqueue_ticket(slug)
+    blocked = _block_ticket_for_return_to_draft(project_dir, tio, slug)
     _git(workspace, "submodule", "deinit", "-f", "--all")
     _git(
         workspace,
@@ -1987,68 +2005,40 @@ def test_return_to_draft_rejects_native_submodule_before_relocation(tmp_path: Pa
         "--init",
     )
     assert (workspace / "vendor/dependency/.git").is_file()
-    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
-    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
-    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
-    blocked.parent.mkdir(parents=True)
-    queued.replace(blocked)
 
     with pytest.raises(
         draft_transition.DraftTransitionError,
-        match="no worktrees were moved",
-    ):
+        match="deinitialize native submodules",
+    ) as caught:
         tio.return_to_draft(slug)
 
     journal = draft_transition._load_journal(root, tio.logs_dir, slug)
     assert journal is not None
     operation = draft_transition._operation_dir(root, journal.operation_id)
+    assert "git submodule deinit -f --all" in str(caught.value)
+    assert "then retry" in str(caught.value)
+    assert "no worktrees were moved" in str(caught.value)
     assert paired.is_dir()
     assert not (operation / "old-project").exists()
     assert blocked.exists()
 
+    _git(workspace, "submodule", "deinit", "-f", "--all")
+    reopened = tio.return_to_draft(slug)
 
-def test_return_to_draft_relocates_paired_project_submodule(tmp_path: Path) -> None:
+    assert Path(reopened["outer_worktree"]).is_dir()
+    assert not draft_transition.transition_pending(root, slug)
+
+
+def test_return_to_draft_moves_paired_submodule(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
-    slug = "paired-submodule-transition"
-    ticket = tio.create_ticket_file(
-        slug,
-        TicketFileSpec(
-            summary="Relocate paired project submodule",
-            ticket_type="bugfix",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
-    assert ticket is not None
-    dependency = tmp_path / "paired-dependency"
-    dependency.mkdir()
-    _git(dependency, "init", "-b", "main")
-    _git(dependency, "config", "user.name", "Test")
-    _git(dependency, "config", "user.email", "test@example.invalid")
-    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
-    _git(dependency, "add", "source.sv")
-    _git(dependency, "commit", "-m", "dependency")
-    _git(
-        project_dir,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        str(dependency),
-        "vendor/dependency",
-    )
-    _git(project_dir, "commit", "-m", "add project dependency")
+    slug = "paired-submodule"
+    _create_submodule_transition_ticket(tio, slug, "Relocate paired project submodule")
+    _add_submodule_repository(project_dir, tmp_path, "paired-dependency")
     paired = project_dir / "worktrees" / slug / ".booley_project"
     _git(paired, "merge", "main")
     materialize_submodules(project_dir, paired)
     assert (paired / "vendor/dependency/.git").is_dir()
-    assert tio.enqueue_ticket(slug)
-    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
-    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
-    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
-    blocked.parent.mkdir(parents=True)
-    queued.replace(blocked)
+    _block_ticket_for_return_to_draft(project_dir, tio, slug)
 
     reopened = tio.return_to_draft(slug)
 

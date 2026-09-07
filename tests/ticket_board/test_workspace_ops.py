@@ -840,12 +840,6 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
-    monkeypatch.setattr(workspace_ops, "_preflight_refresh_relocation", lambda *_args: None)
-    monkeypatch.setattr(
-        workspace_ops,
-        "_relocate_workspace_worktree",
-        lambda *args: commands.append(args),
-    )
     monkeypatch.setattr(
         workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
@@ -854,7 +848,12 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
         root, "ticket", "0" * 16, operation, workspace, has_project=False
     )
 
-    assert commands[-1][-2:] == (outer, project_data / "worktrees/ticket")
+    assert commands[-1][-4:] == (
+        "worktree",
+        "move",
+        str(outer),
+        str(project_data / "worktrees/ticket"),
+    )
 
     project_source = tmp_path / "project-source"
     holding = operation / "new-project-moving"
@@ -875,70 +874,6 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
     assert commands[-1][-4:] == ("worktree", "remove", "--force", str(holding))
 
 
-def test_refresh_rejects_native_submodule_before_removing_canonical_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    dependency = tmp_path / "dependency"
-    dependency.mkdir()
-    _git(dependency, "init", "-b", "main")
-    _git(dependency, "config", "user.name", "Test")
-    _git(dependency, "config", "user.email", "test@example.invalid")
-    (dependency / "source.sv").write_text("module dependency; endmodule\n", encoding="utf-8")
-    _git(dependency, "add", "source.sv")
-    _git(dependency, "commit", "-m", "dependency")
-    (root / "README.md").write_text("root\n", encoding="utf-8")
-    _git(root, "add", "README.md")
-    _git(root, "commit", "-m", "root")
-    _git(
-        root,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        str(dependency),
-        "vendor/dependency",
-    )
-    _git(root, "commit", "-m", "add dependency")
-    generation = "0" * 16
-    branch = f"booley-generation/{generation}/ticket"
-    operation = tmp_path / "operation"
-    operation.mkdir()
-    candidate = operation / "new-outer"
-    _git(root, "worktree", "add", "-b", branch, str(candidate), "main")
-    _git(
-        candidate,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "update",
-        "--init",
-    )
-    assert (candidate / "vendor/dependency/.git").is_file()
-    project_data = tmp_path / "project-data"
-    canonical = project_data / "worktrees/ticket"
-    canonical.parent.mkdir(parents=True)
-    _git(root, "worktree", "add", "-b", "old-ticket", str(canonical), "main")
-    workspace = workspace_ops.AuthoringWorkspace(candidate, None, "a" * 40, "", generation)
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
-    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
-
-    with pytest.raises(
-        workspace_ops.AcceptanceBasisOperationError,
-        match="no worktrees were moved",
-    ):
-        workspace_ops.relocate_refresh_workspace(
-            root, "ticket", generation, operation, workspace, has_project=False
-        )
-
-    assert canonical.is_dir()
-    assert "refs/heads/old-ticket" in _git(root, "worktree", "list", "--porcelain")
-
-
 def test_refresh_project_staging_restoration_and_participation_checks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -951,23 +886,25 @@ def test_refresh_project_staging_restoration_and_participation_checks(
     commands: list[tuple[object, ...]] = []
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
     monkeypatch.setattr(
-        workspace_ops,
-        "_relocate_workspace_worktree",
-        lambda *args: commands.append(args),
+        workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
 
-    ref = "refs/heads/ticket"
-    workspace_ops._stage_refresh_project(workspace, project_source, holding, ref)
+    workspace_ops._stage_refresh_project(workspace, project_source, holding)
     holding.mkdir()
-    workspace_ops._restore_refresh_project(outer, project_source, holding, ref)
+    workspace_ops._restore_refresh_project(outer, project_source, holding)
 
-    assert commands[0][-2:] == (paired.worktree, holding)
-    assert commands[1][-2:] == (holding, workspace_ops.ticket_project_worktree(outer))
+    assert commands[0][-4:] == ("worktree", "move", str(paired.worktree), str(holding))
+    assert commands[1][-4:] == (
+        "worktree",
+        "move",
+        str(holding),
+        str(workspace_ops.ticket_project_worktree(outer)),
+    )
 
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
-        workspace_ops._stage_refresh_project(workspace, None, tmp_path / "other", ref)
+        workspace_ops._stage_refresh_project(workspace, None, tmp_path / "other")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unavailable"):
-        workspace_ops._restore_refresh_project(outer, None, holding, ref)
+        workspace_ops._restore_refresh_project(outer, None, holding)
 
 
 def test_refresh_relocation_rejects_participant_changes(
@@ -981,8 +918,6 @@ def test_refresh_relocation_rejects_participant_changes(
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: True)
-    monkeypatch.setattr(workspace_ops, "_preflight_refresh_relocation", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "_relocate_workspace_worktree", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
     monkeypatch.setattr(
         workspace_ops,

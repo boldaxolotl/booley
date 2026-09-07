@@ -153,7 +153,9 @@ def _validate_submodule_layout(repository: Path, worktree_root: Path) -> None:
             shown = submodule.relative_to(worktree_root).as_posix()
             raise WorktreeRelocationError(
                 f"worktree contains native Git submodule {shown!r}; "
-                "no worktrees were moved because its metadata is path-coupled"
+                f"deinitialize native submodules in {repository} with "
+                "`git submodule deinit -f --all`, then retry; no worktrees were moved "
+                "because native submodule metadata is path-coupled"
             )
         if not marker.is_dir():
             if any(submodule.iterdir()):
