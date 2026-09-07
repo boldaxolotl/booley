@@ -28,6 +28,7 @@ from booley.config.project_config import (
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.display import format_flow_display_label
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -794,6 +795,14 @@ def _build_display_lines(
     total_elapsed: float,
 ) -> list[str]:
     """Build rich display lines for the terminal Flow box."""
+    if len(results) == 1 and results[0].passed:
+        tests = results[0].tests
+        if len(tests) == 1:
+            return [f"✓ PASS  {_format_duration(total_elapsed)}"]
+        if tests:
+            tests_passed = sum(test.passed for test in tests)
+            return [f"{tests_passed}/{len(tests)} tests passed, {total_elapsed:.1f}s"]
+
     targets_passed = sum(1 for r in results if r.passed)
     lines: list[str] = [
         f"{targets_passed}/{len(results)} targets passed, {total_elapsed:.1f}s",
@@ -1150,6 +1159,25 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
+
+    def _resolve_display_label(self) -> str | None:
+        """Describe the requested Target/test scope without validating it."""
+        targets = self._requested_targets()
+        if self.args.mode.elaborates_only:
+            return format_flow_display_label(targets, mode="elaboration")
+        try:
+            test_names = _get_test_names(self.args.work_dir)
+            selected = [
+                test
+                for target in targets
+                for test in self._resolve_tests_to_run(target, test_names)
+            ]
+        except Exception:  # display metadata must not block a Flow run
+            logger.debug("could not resolve simulation display scope", exc_info=True)
+            return super()._resolve_display_label()
+        if any(test is None for test in selected):
+            return format_flow_display_label(targets, tests=None)
+        return format_flow_display_label(targets, tests=(str(test) for test in selected))
 
     def _add_args(self, parser: Any) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its

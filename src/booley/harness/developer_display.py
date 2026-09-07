@@ -140,7 +140,7 @@ class DisplayWatcher:
     def _handle_endpoint_start(self, event: dict) -> None:
         """Handle ``endpoint_start`` by opening the outermost endpoint box."""
         name = event.get("endpoint", "?")
-        target = event.get("target") or None
+        target = event.get("display_label") or event.get("target") or None
         self._nesting_depth += 1
         self._endpoint_active.set()
         if self._nesting_depth == 1:
@@ -196,7 +196,7 @@ class DisplayWatcher:
         if not is_outermost:
             return
         name = event.get("endpoint", "?")
-        target = event.get("target") or None
+        target = event.get("display_label") or event.get("target") or None
         exit_code = event.get("exit_code", 2)
         duration_s = event.get("duration_s", 0.0)
         cost_usd = event.get("cost_usd", 0.0)
