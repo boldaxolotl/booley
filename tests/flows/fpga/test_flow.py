@@ -36,7 +36,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import IncompatibleTargetError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -389,7 +389,7 @@ def test_run_rejects_non_fpga_axis_before_setup(
     flow = _flow(tmp_path, state_file, "--target", "synth_core", "--dry-run")
 
     with pytest.raises(
-        fusesoc_registry.IncompatibleTargetError,
+        IncompatibleTargetError,
         match=r"booley targets --for-flow fpga",
     ):
         flow._run()

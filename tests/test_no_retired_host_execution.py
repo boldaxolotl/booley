@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.templates import eligible_eda_tool_criterion_families
-from booley.fusesoc.fusesoc_registry import TargetRef
-from booley.targets.target_surface import flow_can_drive
+from booley.targets.domain import TargetRef, flow_can_drive
 
 _FORBIDDEN_MODULES = ("booley.host_mcp", "booley.mcp_tools", "booley.tools")
 _FORBIDDEN_SYMBOLS = (

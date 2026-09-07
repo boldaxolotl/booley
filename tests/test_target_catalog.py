@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from booley.flows.baseline_worktree import baseline_worktree
+from booley.flows.sim.trace_overlay import write_trace_overlay
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
-from booley.fusesoc.fusesoc_trace_overlay import write_trace_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
