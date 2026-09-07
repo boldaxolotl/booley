@@ -1,25 +1,9 @@
-"""fusesoc_trace_overlay.py — how to build a FuseSoC ``--trace`` overlay core (ADR 0022).
+"""Build generated, agent-immutable-safe trace overlays for Simulation.
 
-Extracted from :mod:`booley.fusesoc.fusesoc_registry` (principle 8 / SRP). That module's
-job is design-description *discovery and resolution* — list Target names from data
-you trust, resolve through the ``fusesoc`` program. This module carries a distinct,
-orthogonal responsibility: **synthesising a generated, agent-immutable-safe
-``--trace`` build overlay** for a sim Target. Its one reason to change is the
-mechanics of how a trace overlay ``.core`` is constructed (Verilator recipe resolution,
-per-simulator dump-root rooting, the overlay VLNV/marker convention, the on-disk
-``.core`` emission) — none of which touches how base cores are enumerated or
-resolved.
-
-The two sides communicate through a handful of resolution primitives
-(:func:`~booley.fusesoc.fusesoc_registry.enumerate_targets`, ``read_core``,
-``available_targets``, ``core_target_flow``/``core_target_eda_tool``, the
-``FuseSocError``/``UnknownTargetError`` types and the ``TRACE_OVERLAY_MARKER``
-constant), which stay in ``fusesoc_registry`` and are imported **lazily** here to
-avoid a module-load cycle with the backward-compat re-export ``fusesoc_registry``
-keeps for its own consumers.
-
-Consumers of the symbols moved here (via the ``fusesoc_registry`` re-export today):
-``booley.doctor``, ``booley.simulate``, ``booley.coverage_analyst`` and their tests.
+Simulation owns the trace recipe, simulator-specific Target rewriting, and the
+overlay lifecycle. Reusable CAPI2 parsing, Target-handle validation, and core
+projection remain in the lower-level FuseSoC implementation and are composed
+here through their existing interfaces.
 """
 
 from __future__ import annotations
@@ -45,7 +29,12 @@ from booley.fusesoc.core_projection import (
     projected_core_path,
     projection_enabled,
 )
-from booley.targets.domain import TargetHandle
+from booley.fusesoc.fusesoc_registry import (
+    read_core,
+    require_current_target_handle,
+    target_fileset_names,
+)
+from booley.targets.domain import FuseSocError, TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +85,6 @@ def _inject_dump_module(
     try:
         content = src.read_text(encoding="utf-8")
     except OSError as exc:
-        from booley.fusesoc.fusesoc_registry import FuseSocError
-
         raise FuseSocError(f"could not read packaged trace dump module {src}: {exc}") from exc
 
     injected: Path | None = None
@@ -107,8 +94,6 @@ def _inject_dump_module(
         try:
             injected.write_text(content, encoding="utf-8")
         except OSError as exc:
-            from booley.fusesoc.fusesoc_registry import FuseSocError
-
             raise FuseSocError(f"could not supply trace dump module {injected}: {exc}") from exc
         declared_path = injected.name
     filesets = overlay_doc.setdefault("filesets", {})
@@ -160,8 +145,6 @@ def _with_trace_options(
 
 def validate_cocotb_trace_mode(target: str, mode: TraceMode) -> None:
     """Raise a registry-shaped error when Cocotb cannot honor *mode*."""
-    from booley.fusesoc.fusesoc_registry import FuseSocError
-
     try:
         require_cocotb_trace_mode(target, mode)
     except TraceRecipeError as exc:
@@ -194,8 +177,6 @@ def _target_dump_module_entry(
     Target actually pulls in are considered. The returned path is as authored —
     relative to the declaring ``.core``'s directory.
     """
-    from booley.fusesoc.fusesoc_registry import target_fileset_names
-
     targets = core_doc.get("targets", {})
     target_def = targets.get(target, {}) if isinstance(targets, Mapping) else {}
     used = target_fileset_names(target_def)
@@ -252,7 +233,7 @@ def _inject_runtime_dump_trace(
     overlay_doc: dict,
     doc: dict,
     target: str,
-    ref: Any,
+    ref: TargetHandle,
     flow_options: dict,
     project_root: Path | str,
 ) -> Path | None:
@@ -286,8 +267,6 @@ def _inject_runtime_dump_trace(
 
 def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
     """Serialize *overlay_doc* to *overlay_path* as a CAPI2 ``.core`` file."""
-    from booley.fusesoc.fusesoc_registry import FuseSocError
-
     # A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; safe_load parses
     # that marker into a harmless ``CAPI=2`` key on read (read_core), so re-emit it
     # explicitly and drop the round-tripped key from the body.
@@ -342,12 +321,6 @@ def write_trace_overlay(
     :class:`FuseSocError` if the handle is stale or does not describe a
     Verilator/Icarus sim Target, or if the supplied dump module cannot be written.
     """
-    from booley.fusesoc.fusesoc_registry import (
-        FuseSocError,
-        read_core,
-        require_current_target_handle,
-    )
-
     project_root = require_current_target_handle(handle)
     target = handle.name
     flow = handle.flow

@@ -5036,7 +5036,7 @@ def _check_sim_traceable(
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
-    the design lacks it (:func:`booley.fusesoc.fusesoc_trace_overlay._inject_dump_module`),
+    the design lacks it (:func:`booley.flows.sim.trace_overlay._inject_dump_module`),
     so those EDA tools self-heal — a pre-flight check earns nothing there. The
     findings are aggregated into a single WARN: a project with many untraced unit
     TBs (each independently fixable) should not spray one WARN per Target and

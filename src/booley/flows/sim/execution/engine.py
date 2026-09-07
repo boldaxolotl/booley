@@ -17,6 +17,7 @@ from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import begin_run_log, write_run_log
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -47,7 +48,7 @@ from booley.flows.sim.config import (
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
-from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay, selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -105,6 +106,16 @@ class _AdapterResultStamps:
     partial: ArtifactStamp | None
 
 
+@dataclass(frozen=True)
+class _BuildPolicy:
+    variant: str
+    fresh_root_label: str | None
+
+
+class _BuildRootResetError(RuntimeError):
+    """A fresh Simulation build root could not be reset safely."""
+
+
 class SimulationArtifactPersistenceError(RuntimeError):
     """A completed attempt could not preserve its required run evidence."""
 
@@ -122,7 +133,7 @@ class SimulationExecution:
         self._invoke = invoke
         self._options = options
         self._artifact_root = artifact_root
-        self._reset_trace_roots: set[Path] = set()
+        self._reset_build_roots: set[Path] = set()
 
     def run(
         self,
@@ -131,6 +142,7 @@ class SimulationExecution:
     ) -> SimulationTargetOutcome:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
+        self._reset_build_roots.clear()
         try:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:
@@ -138,6 +150,13 @@ class SimulationExecution:
         groups = _work_groups(selection, _is_cocotb(inspection.flow_options))
         try:
             results = [self._run_group(handle, names) for names in groups]
+        except _BuildRootResetError as exc:
+            failure = SimulationInfrastructureFailure(
+                "build",
+                "Simulation build root could not be reset",
+                detail=str(exc),
+            )
+            return _setup_infrastructure_failure(handle, failure, started)
         except SimulationBuildPreparationError as exc:
             return _setup_failure(handle, str(exc), started)
         failure = next(
@@ -267,24 +286,24 @@ class SimulationExecution:
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
-        variant = "trace" if self._options.trace else ""
+        policy = _build_policy(self._options.trace)
         build_root = edam_layer.work_root_for(
             handle.project_root,
             "sim",
             handle.selector,
-            variant=variant,
+            variant=policy.variant,
         )
-        self._reset_trace_root(build_root)
+        self._reset_build_root(build_root, policy)
         overlay = _trace_overlay(handle) if self._options.trace else None
         try:
             prepared = prepare_simulation_build(
                 handle,
-                variant=variant,
+                variant=policy.variant,
                 resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=_target_environment(handle),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
-                fusesoc_trace_overlay.validate_cocotb_trace_mode(
+                trace_overlay.validate_cocotb_trace_mode(
                     handle.selector,
                     overlay.mode,
                 )
@@ -439,8 +458,13 @@ class SimulationExecution:
         cocotb: bool,
     ) -> tuple[str, ...]:
         root = handle.project_root
-        variant = "trace" if self._options.trace else ""
-        build_root = edam_layer.work_root_for(root, "sim", handle.selector, variant=variant)
+        policy = _build_policy(self._options.trace)
+        build_root = edam_layer.work_root_for(
+            root,
+            "sim",
+            handle.selector,
+            variant=policy.variant,
+        )
         setup = fusesoc_registry.setup_command_for_handle(
             handle,
             build_root=build_root,
@@ -459,25 +483,39 @@ class SimulationExecution:
     def _effective_timeout_ms(self, handle: TargetHandle) -> int:
         return self._options.timeout_ms or resolve_sim_timeout_ms(handle.project_root)
 
-    def _reset_trace_root(self, build_root: Path) -> None:
-        if not self._options.trace:
+    def _reset_build_root(self, build_root: Path, policy: _BuildPolicy) -> None:
+        if policy.fresh_root_label is None:
             return
         key = build_root.resolve()
-        if key in self._reset_trace_roots:
+        if key in self._reset_build_roots:
             return
         try:
             shutil.rmtree(build_root)
         except FileNotFoundError:
             pass
         except OSError as exc:
-            raise SimulationBuildPreparationError(
-                f"could not reset traced Simulation build root {build_root}: {exc}"
+            raise _BuildRootResetError(
+                f"could not reset {policy.fresh_root_label} Simulation build root "
+                f"{build_root}: {exc}"
             ) from exc
-        self._reset_trace_roots.add(key)
+        self._reset_build_roots.add(key)
+
+
+def _doctor_bad_requested() -> bool:
+    return os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
+
+
+def _build_policy(trace: bool) -> _BuildPolicy:
+    variants = ["trace"] if trace else []
+    doctor_bad = _doctor_bad_requested()
+    if doctor_bad:
+        variants.append("doctor-selftest-bad")
+    fresh_root_label = "traced" if trace else "Doctor bad" if doctor_bad else None
+    return _BuildPolicy("-".join(variants), fresh_root_label)
 
 
 def _trace_overlay(handle: TargetHandle) -> Any:
-    return fusesoc_trace_overlay.write_trace_overlay(handle)
+    return trace_overlay.write_trace_overlay(handle)
 
 
 def _is_cocotb(flow_options: Mapping[str, Any]) -> bool:
@@ -705,6 +743,24 @@ def _error_outcome(
         tests=(),
         builds=(build,) if build is not None else (),
         pre_runs=(pre_run,) if pre_run is not None else (),
+        infrastructure_failure=failure,
+    )
+
+
+def _setup_infrastructure_failure(
+    handle: TargetHandle,
+    failure: SimulationInfrastructureFailure,
+    started: float,
+) -> SimulationTargetOutcome:
+    return SimulationTargetOutcome(
+        target=handle.selector,
+        target_identity=handle.identity,
+        toplevel="",
+        eda_tool="",
+        passed=False,
+        verdict="error",
+        elapsed_s=time.monotonic() - started,
+        tests=(),
         infrastructure_failure=failure,
     )
 

@@ -22,7 +22,7 @@ from booley.flows.lint.flow import (
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import IncompatibleTargetError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -1915,7 +1915,7 @@ class TestLintObservability:
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
         flow.read_state()
-        with pytest.raises(fusesoc_registry.IncompatibleTargetError, match="cannot be driven"):
+        with pytest.raises(IncompatibleTargetError, match="cannot be driven"):
             flow._run()
         mock_cmd.assert_not_called()
         mock_exec.assert_not_called()
