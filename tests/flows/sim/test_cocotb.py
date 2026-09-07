@@ -499,12 +499,14 @@ class TestCocotbBatching:
             extra_args=["--dry-run", "--result-verbosity", "full"],
         )
         result = flow._run()
-        assert "--result-verbosity full" in result.detail["commands"][0][-1]
+        command = result.detail["work_units"][0]["commands"][0]["argv"]
+        assert "--result-verbosity full" in command[-1]
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
         result = flow._run()
-        assert "--expected-trace-scope counter" in result.detail["commands"][0][-1]
+        command = result.detail["work_units"][0]["commands"][0]["argv"]
+        assert "--expected-trace-scope counter" in command[-1]
 
     def test_substr_filter_prunes_the_selected_set(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "count"])
@@ -655,14 +657,15 @@ class TestCocotbDryRun:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        commands = result.detail["commands"]
+        commands = result.detail["work_units"][0]["commands"]
         assert len(commands) == 1  # batched: one command for three tests
-        script = commands[0][-1]
+        script = commands[0]["argv"][-1]
         assert "fusesoc" in script and "--setup" in script
         assert "booley.flows.sim.backends.cocotb" in script
         assert script.count("--test=") == 3
         assert "--eda-tool icarus" in script
         assert "--cocotb-module test_counter" in script
+        assert str(tmp_path) not in json.dumps(result.detail)
 
     def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
         """G6 guard: a non-cocotb Target's dry-run command carries no cocotb."""
@@ -670,7 +673,7 @@ class TestCocotbDryRun:
         with patch("booley.flows.sim.flow._get_test_names", return_value={}):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        script = result.detail["commands"][0][-1]
+        script = result.detail["work_units"][0]["commands"][0]["argv"][-1]
         assert "cocotb" not in script
         assert "booley.flows.sim.backends.verilator" in script
 
@@ -769,7 +772,8 @@ def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
         return_value=42.0,
     ):
         result = flow._run()
-    assert "--sim-time-grace 42.0" in result.detail["commands"][0][-1]
+    command = result.detail["work_units"][0]["commands"][0]["argv"]
+    assert "--sim-time-grace 42.0" in command[-1]
 
 
 def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):

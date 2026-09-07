@@ -932,12 +932,14 @@ class TestDryRun:
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert isinstance(commands, list)
-        assert len(commands) == 1
-        assert commands[0][:2] == ["sh", "-c"]
-        assert "--top alu_tb" in commands[0][2]
-        assert "BOOLEY_TARGET=lite" in commands[0][2]
+        plan = json.loads(captured.out)
+        assert plan["schema_version"] == 1
+        assert plan["flow"] == "sim"
+        assert len(plan["work_units"]) == 1
+        command = plan["work_units"][0]["commands"][0]["argv"]
+        assert command[:2] == ["sh", "-c"]
+        assert "--top alu_tb" in command[2]
+        assert "BOOLEY_TARGET=lite" in command[2]
 
     @patch(
         "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
@@ -947,8 +949,8 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert len(commands) == 3  # one per test
+        plan = json.loads(captured.out)
+        assert len(plan["work_units"]) == 3  # one per test
         assert [unit.test_or_module_scope for unit in flow._flow_plan.work_units] == [
             ("smoke",),
             ("stress",),
@@ -967,9 +969,10 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run", "--test", "smoke"])
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert len(commands) == 1
-        assert "BOOLEY_TEST_NAMES=smoke" in commands[0][2]
+        plan = json.loads(captured.out)
+        assert len(plan["work_units"]) == 1
+        command = plan["work_units"][0]["commands"][0]["argv"]
+        assert "BOOLEY_TEST_NAMES=smoke" in command[2]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -987,9 +990,9 @@ class TestDryRun:
         )
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
+        plan = json.loads(captured.out)
         # 2 configs x 1 test each
-        assert len(commands) == 2
+        assert len(plan["work_units"]) == 2
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -1016,9 +1019,10 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"], seed_core=False)
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        commands = json.loads(capsys.readouterr().out)
-        assert len(commands) == 2  # one per test
-        for cmd in commands:
+        plan = json.loads(capsys.readouterr().out)
+        assert len(plan["work_units"]) == 2  # one per test
+        for unit in plan["work_units"]:
+            cmd = unit["commands"][0]["argv"]
             assert cmd[:2] == ["sh", "-c"]
             script = cmd[2]
             assert "run --build-root" in script and "--setup" in script

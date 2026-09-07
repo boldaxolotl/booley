@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.flows.base import BooleyFlow, SubprocessResult
+from booley.criteria.state import DevelopmentState
+from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
+from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
+from booley.mcp.base import EXIT_ERROR
 from booley.runtime.endpoint_execution import EndpointOutcome
 
 BUILTINS = (
@@ -134,3 +139,134 @@ def test_custom_flow_keeps_its_own_timeout_and_dry_run_surface() -> None:
     assert args.timeout == "long"
     assert args.dry_run == "summary"
     assert not hasattr(args, "timeout_ms")
+
+
+def _plan(flow: str, *, errors: tuple[str, ...] = ()) -> FlowPlan:
+    return FlowPlan(
+        flow=flow,
+        mode="default",
+        work_units=(
+            WorkUnitPlan(
+                unit_id=f"{flow}-ordinary-demo",
+                role="ordinary",
+                revision=None,
+                selector="demo",
+                target_identity="vendor:library:demo:1.0#demo",
+                test_or_module_scope=("demo",),
+                eda_tool="tool",
+                timeout_ms=1_000,
+            ),
+        ),
+        aggregate_errors=errors,
+    )
+
+
+@pytest.mark.parametrize(("flow_type", "name", "_default_ms"), BUILTINS)
+def test_builtin_dry_run_renderer_has_one_common_shape(
+    flow_type: type[BuiltinFlow],
+    name: str,
+    _default_ms: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    flow = flow_type()
+    flow.parse_args(["--target", "demo", "--dry-run"])
+
+    result = flow._dry_run_result(_plan(name))
+
+    assert result.exit_code == 0
+    assert set(result.detail) == {
+        "schema_version",
+        "flow",
+        "mode",
+        "semantic_plan_fingerprint",
+        "work_units",
+        "aggregate_errors",
+        "planning_disclosures",
+    }
+    assert json.loads(capsys.readouterr().out) == result.detail
+
+
+def test_builtin_dry_run_aggregate_errors_exit_two(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "demo", "--dry-run"])
+
+    result = flow._dry_run_result(_plan("lint", errors=("demo: invalid",)))
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.detail["aggregate_errors"] == ["demo: invalid"]
+    assert json.loads(capsys.readouterr().out) == result.detail
+
+
+class _DryLifecycleFlow(BuiltinFlow):
+    """Minimal built-in proving the shared non-persisting lifecycle."""
+
+    name = "dry_contract"
+    JOB_CLASS = "heavy"
+
+    def _add_args(self, parser: argparse.ArgumentParser) -> None:
+        pass
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        return None
+
+    def _run(self) -> EndpointOutcome:
+        return self._dry_run_result(_plan(self.name))
+
+
+def test_builtin_dry_run_skips_admission_and_normal_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    state_before = state_file.read_bytes()
+    logs_dir = tmp_path / "logs"
+    report_dir = tmp_path / "reports"
+    logs_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs_dir))
+    flow = _DryLifecycleFlow()
+
+    with (
+        mock.patch.object(
+            flow,
+            "_acquire_job_slot",
+            side_effect=AssertionError("dry-run acquired a heavy slot"),
+        ),
+        mock.patch.object(
+            flow,
+            "_post_run",
+            side_effect=AssertionError("dry-run entered normal persistence"),
+        ),
+    ):
+        execution = flow.execute_cli(
+            [
+                "--target",
+                "demo",
+                "--dry-run",
+                "--work-dir",
+                str(tmp_path),
+                "--report-dir",
+                str(report_dir),
+            ]
+        )
+
+    assert execution.exit_code == 0
+    assert state_file.read_bytes() == state_before
+    assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
+        "dry_contract",
+        "dry_contract/flow_plan.json",
+    ]
+    plan = json.loads((report_dir / "dry_contract" / "flow_plan.json").read_text())
+    assert plan == execution.outcome.detail
+    events = [
+        json.loads(line)
+        for line in (logs_dir / ".runtime" / "display.jsonl").read_text().splitlines()
+    ]
+    lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
+    assert [event["type"] for event in lifecycle] == ["endpoint_start", "endpoint_end"]
+    assert all(event["dry_run"] is True for event in lifecycle)
+    assert not (report_dir / "dry_contract.json").exists()
+    assert not any(path.name == "report.json" for path in report_dir.rglob("*"))

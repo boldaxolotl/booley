@@ -2148,13 +2148,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         _atomic_write_json(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> McpToolResult:
-        commands = {target: self._elab_only_dry_command(target) for target in targets}
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} elab-only build command(s)",
-            detail={"mode": self.args.mode.value, "commands": commands},
-        )
+        del targets
+        return self._dry_run_result(self._flow_plan)
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
@@ -3100,22 +3095,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> McpToolResult:
-        """Render side-effect-free previews through the execution boundary."""
-        commands: list[list[str]] = []
-        for target in targets:
-            tests = self._resolve_tests_to_run(target, test_names_map)
-            preview = self._simulation_execution().preview(
-                self._target_handle(target),
-                self._execution_selection(tests),
-            )
-            commands.extend([list(command) for command in preview.commands])
-
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} command(s)",
-            detail={"mode": self.args.mode.value, "commands": commands},
-        )
+        """Render the normalized plan resolved by preflight."""
+        del targets, test_names_map
+        return self._dry_run_result(self._flow_plan)
 
     def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
         """Write one Target's verdict, build context, and artifact pointers."""

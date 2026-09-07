@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -21,7 +23,7 @@ from pathlib import Path
 
 from booley.flows import execution
 from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
-from booley.mcp.base import McpTool
+from booley.mcp.base import McpTool, McpToolResult
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -409,6 +411,46 @@ class BuiltinFlow(BooleyFlow):
 
     flow_timeout_default_ms = 600_000
     default_timeout = 600
+
+    def _uses_dry_run_lifecycle(self) -> bool:
+        """Built-ins bypass admission and acceptance persistence for dry-run."""
+        return bool(getattr(getattr(self, "_args", None), "dry_run", False))
+
+    def _dry_run_result(self, plan: object) -> McpToolResult:
+        """Render and optionally persist one normalized built-in Flow plan."""
+        from booley.flows.plan import FlowPlan
+
+        if not isinstance(plan, FlowPlan):
+            raise TypeError("built-in dry-run requires a FlowPlan")
+        payload = plan.as_dict()
+        report_dir = self.args.report_dir
+        if report_dir is not None:
+            report_path = Path(report_dir) / self.name / "flow_plan.json"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            serialized = json.dumps(payload, indent=2) + "\n"
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=report_path.parent,
+                    prefix=f".{report_path.name}.",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    temporary.write(serialized)
+                temporary_path.replace(report_path)
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+        print(json.dumps(payload, indent=2))
+        if plan.aggregate_errors:
+            summary = "Dry-run planning failed: " + "; ".join(plan.aggregate_errors)
+            exit_code = EXIT_ERROR
+        else:
+            summary = f"Dry run: {len(plan.work_units)} work unit(s)"
+            exit_code = 0
+        return McpToolResult(exit_code=exit_code, report_text=summary, detail=payload)
 
     def _add_common_args(self) -> None:
         super()._add_common_args()

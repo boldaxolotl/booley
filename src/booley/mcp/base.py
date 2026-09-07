@@ -993,7 +993,13 @@ class McpTool(ABC):
         self.read_state()
         self._default_target_args()
         display_target = self._resolve_display_config()
-        _write_display_event(_endpoint_start_event(self.name, display_target))
+        _write_display_event(
+            _endpoint_start_event(
+                self.name,
+                display_target,
+                dry_run=self._uses_dry_run_lifecycle(),
+            )
+        )
         return _PreparedMcpExecution(display_target)
 
     @contextmanager
@@ -1007,6 +1013,9 @@ class McpTool(ABC):
                 if rejection.report_text:
                     print(rejection.report_text, file=sys.stderr, flush=True)
                 raise EndpointRejectedError(rejection)
+            if self._uses_dry_run_lifecycle():
+                yield
+                return
             try:
                 slot_store, slot_token = self._acquire_job_slot()
             except job_slots.QueueFullError as exc:
@@ -1079,6 +1088,8 @@ class McpTool(ABC):
         outcome: EndpointOutcome,
     ) -> None:
         """Record immutable Ticket evidence before state/report persistence."""
+        if self._uses_dry_run_lifecycle():
+            return
         result = _as_mcp_tool_result(outcome)
         if self._state is not None and self._state._file_path is not None:
             self.state.work_dir = str(Path(self.args.work_dir).resolve())
@@ -1125,7 +1136,7 @@ class McpTool(ABC):
         """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
         duration = (time.monotonic() - started) if started is not None else 0.0
         try:
-            if acceptance_recorded:
+            if acceptance_recorded and not self._uses_dry_run_lifecycle():
                 self._post_run(result, duration)
         finally:
             self._pending_criteria_set = None
@@ -1146,6 +1157,10 @@ class McpTool(ABC):
     def _resolve_job_class(self) -> str | None:
         """The Job Class this call belongs to, or None for unclassed endpoints."""
         return self.JOB_CLASS
+
+    def _uses_dry_run_lifecycle(self) -> bool:
+        """Whether this endpoint opts into the non-persisting dry-run path."""
+        return False
 
     def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
         """Claim this run's admission slot, waiting in queue order if needed.

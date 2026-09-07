@@ -660,7 +660,8 @@ class TestDryRun:
         assert result.exit_code == 0
         assert "Dry run" in result.report_text
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lite"]
+        assert data["flow"] == "lint"
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script
@@ -686,7 +687,8 @@ class TestDryRun:
             result = flow._run()
         assert result.exit_code == 0
         data = json.loads(capsys.readouterr().out)
-        assert data["lite"][0].startswith("ERROR: lint dry-run:")
+        assert data["flow"] == "lint"
+        assert data["work_units"][0]["selector"] == "lite"
 
 
 # ---------------------------------------------------------------------------
@@ -1688,7 +1690,7 @@ class TestVeribleTargets:
             result = flow._run()
         assert result.exit_code == 0
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lint_style"]
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script

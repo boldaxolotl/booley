@@ -270,7 +270,7 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints commands without executing them; `booley flow <name> --help` shows the full contract.
+Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
 Key Flow-specific controls:
 
