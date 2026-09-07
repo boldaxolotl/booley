@@ -16,13 +16,13 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
-    UnknownTargetError,
     _enumerate_all,
     _resolve_target,
     discover_cores,
     read_core,
 )
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import UnknownTargetError
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import write_core as _write_core
 
