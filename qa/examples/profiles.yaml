@@ -1,0 +1,16 @@
+format_version: 1
+illustrative_only: true
+profiles:
+  - id: example-core
+    required_runs:
+      - scenario_id: example-wishbone
+        platform: Ubuntu 24.04 x86-64
+        provider: Codex
+        checks: [baseline, detect-fault, restore, cleanup]
+  - id: example-gui
+    required_runs:
+      - scenario_id: example-wishbone
+        platform: Ubuntu 24.04 x86-64
+        provider: Codex
+        checks: [baseline, detect-fault, restore, viewer, cleanup]
+        capabilities: [qualified_visual_observer]
