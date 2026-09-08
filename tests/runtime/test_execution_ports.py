@@ -175,6 +175,7 @@ def test_public_codex_call_writes_to_injected_destinations(tmp_path, monkeypatch
         {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}},
     ]
     output = "\n".join(json.dumps(event) for event in events)
+    monkeypatch.setattr(codex.shutil, "which", Mock(return_value=str(tmp_path / "codex")))
     monkeypatch.setattr(codex, "_codex_run_subprocess", AsyncMock(return_value=(output, "", 0)))
     paths = AgentArtifactPaths(
         tmp_path / "machine.json", tmp_path / "prompt.md", tmp_path / "transcript.md"
