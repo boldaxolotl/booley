@@ -8,7 +8,7 @@ the original project.
 
 The original material and every intermediate reduction remain private and
 local. Only the final synthetic capsule may be attached to a finding, and it is
-still shown byte-for-byte in `booley feedback preview` before submission.
+included in the sanitized export for inspection before the user sends it.
 
 ## The acceptance contract
 
@@ -27,7 +27,8 @@ A reproducer is ready only when all of these are true:
 5. **Minimal enough to inspect:** every relevant file fits in the capsule. No
    waveform, netlist, database, binary, vendor model, or full raw log is needed.
 6. **Reviewed for disclosure:** assume every byte in the capsule will become
-   public. The normal feedback redactor and user preview remain mandatory.
+   public. The normal feedback redactor and complete export inspection remain
+   mandatory.
 
 If any gate fails, there is no publishable reproducer. Keep the original finding
 local or file only non-project metadata that is independently actionable. Never
@@ -47,7 +48,7 @@ Before changing anything, record a compact fingerprint:
 Keep project names, paths, module/signal names, raw source, and arbitrary log text
 out of the fingerprint used upstream. The initially logged finding may retain
 project-specific text temporarily in its replaceable evidence fields while the
-reproducer is built; replace those fields before preview. Do not attach the
+reproducer is built; replace those fields before export. Do not attach the
 original log or source to the finding because `triage` cannot remove an
 attachment later.
 
@@ -140,8 +141,11 @@ and the original capsule yourself.
 
 ## 5. Attach only the verified capsule
 
-Update the finding so its `--repro`, `--observed`, and `--expected` describe the
-synthetic case, and add only the final capsule:
+Follow the parent skill’s audit of every outbound field, including titles and
+workaround notes. Create a clean replacement finding when an unsafe field or
+attachment cannot be replaced by `triage`; exclude the original from export.
+Update the safe finding so its `--repro`, `--observed`, and `--expected` describe
+the synthetic case, and add only the final capsule:
 
 ```console
 booley feedback triage F-N \
@@ -156,7 +160,9 @@ Use `--verified-against-source` only when source inspection actually established
 the matching Booley path. Do not attach the scratch tree, an original log, or a
 mapping between original and synthetic names.
 
-Finally run `booley feedback preview F-N`. Show the user its entire output
-verbatim as required by the parent skill. Call the result **synthetic, minimized,
-and sanitized**, never anonymous or guaranteed safe. Submission still requires
-the user's explicit approval for that exact preview.
+Return the safe finding ID to the parent skill for export with the rest of this
+interaction's reviewed batch. Inspect the entire exported capsule to verify that
+redaction and attachment limits have not removed necessary files or changed the
+reproducer's meaning. Call the result **synthetic, minimized, and sanitized**,
+never anonymous or guaranteed safe. The parent skill delivers the report and
+manual GitHub/email options; no submission occurs in the container.
