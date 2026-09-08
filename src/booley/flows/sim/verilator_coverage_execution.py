@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import cast
 
 from booley.flows import edam as edam_layer
-from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
@@ -339,22 +339,16 @@ def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> Si
     if attempt.error is not None or attempt.result is None:
         verdict: SimulationVerdict = "timeout" if process.timed_out else "inconclusive"
         return SimulationRunResult(verdict, f"{output}\n{attempt.error or ''}".strip())
-    return SimulationRunResult(_adapter_verdict(attempt.result, test_name, process), output)
+    return SimulationRunResult(_adapter_verdict(attempt.result, test_name), output)
 
 
 def _adapter_verdict(
     result: AdapterResult,
     test_name: str,
-    process: SubprocessResult,
 ) -> SimulationVerdict:
     test = next((item for item in result.test_results if item.name == test_name), None)
-    if test is not None:
-        return cast(SimulationVerdict, test.verdict)
-    if process.timed_out or result.failure_kind == "timeout":
-        return "timeout"
-    if result.passed:
-        return "pass"
-    return "inconclusive" if result.inconclusive else "fail"
+    assert test is not None, "authenticated coverage result must include the selected test"
+    return cast(SimulationVerdict, test.verdict)
 
 
 __all__ = [
