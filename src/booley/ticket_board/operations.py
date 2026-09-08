@@ -777,7 +777,7 @@ def _append_unblock_marker(tio, slug):
 def _approve_transition(
     tio: Any, slug: str, actor: str = "ticket-triage", detail: str = "user approved merge"
 ) -> bool:
-    """Apply only the final board transition after terminal validation."""
+    """Publish the final board transition and its advisory completion event."""
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -789,9 +789,12 @@ def _approve_transition(
             file=sys.stderr,
         )
         return False
-    return _op_move_and_log(
+    ok = _op_move_and_log(
         tio, slug, "done", {"step": "complete"}, ("review:summary", "done:complete", actor, detail)
     )
+    if ok and is_event_enabled("done"):
+        ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
+    return ok
 
 
 def op_approve(tio: Any, slug: str) -> bool:
