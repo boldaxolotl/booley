@@ -14,7 +14,6 @@ from typing import Any
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
-from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
 from booley.targets.domain import FuseSocError
 
@@ -212,7 +211,9 @@ def _cmd_validate_ticket(tio, args):
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
     if (project_root / ".git").exists() and fields.get("acceptance_basis") is None:
         try:
-            workspace = TicketWorkspace.ensure_authoring(project_root, path, path.stem)
+            from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+            workspace = ensure_ticket_workspace(project_root, path, path.stem)
         except (RuntimeError, ValueError, OSError) as exc:
             print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
             return 1

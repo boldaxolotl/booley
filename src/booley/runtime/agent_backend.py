@@ -47,7 +47,6 @@ class AgentBackend(Protocol):
 from ._claude_backend import (  # noqa: F401 — re-exported as public API of harness.agent_backend
     ClaudeSDKBackend,
     _handle_rate_limit_event,
-    _notify_rate_limit,
     _write_transcript_turn,
 )
 from ._codex_backend import (  # noqa: F401 — re-exported as public API of harness.agent_backend

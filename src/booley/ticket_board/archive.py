@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from booley.runtime.ticket_repositories import TicketWorkspace, WorkspaceDisposition
+from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 
 from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch

@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .prompt_artifacts import human_readable_sidecar_path
-
 
 def _claude_md_prompt_lines(entry: dict) -> list[str]:
     """Markdown for a ``prompt`` transcript entry (system + user prompts)."""
@@ -82,11 +80,15 @@ def _claude_md_usage_lines(usage: dict) -> list[str]:
     return [f"---\n*Tokens: {', '.join(parts)}*\n"]
 
 
-def _claude_write_markdown(transcript_path: Path | None) -> None:
+def _claude_write_markdown(
+    transcript_path: Path | None,
+    *,
+    markdown_path: Path | None = None,
+) -> None:
     """Read back JSONL and write human-readable Markdown to the human log tree."""
     if transcript_path is None or not transcript_path.exists():
         return
-    md_path = human_readable_sidecar_path(transcript_path, ".md")
+    md_path = markdown_path or transcript_path.with_suffix(".md")
     lines: list[str] = []
     turn_num = 0
 
