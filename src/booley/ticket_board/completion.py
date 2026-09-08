@@ -108,19 +108,9 @@ def _request(
 
 
 def _approve(tio: Any, slug: str) -> bool:
-    return tio.move_and_update(
-        slug,
-        "done",
-        {"step": "complete"},
-        transition=(
-            "review:summary",
-            "done:complete",
-            "op-complete",
-            "terminal actions",
-        ),
-        enforce_lifecycle=True,
-        expected_status="review",
-    )
+    from .operations import _approve_transition
+
+    return _approve_transition(tio, slug, actor="op-complete", detail="terminal actions")
 
 
 def _ticket_after_approval(tio: Any, slug: str) -> Mapping[str, Any]:
