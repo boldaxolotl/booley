@@ -32,21 +32,8 @@ def test_timeout_progress_preserves_pass_active_and_not_run_verdicts():
     ]
 
 
-# A results.xml shaped exactly like cocotb 2.0.1's writer (spike S4).
-_XML_MIXED = """\
-<testsuites name="results">
-  <testsuite name="all" package="all">
-    <property name="random_seed" value="1783871502" />
-    <testcase name="test_reset" classname="test_counter" file="/b/test_counter.py" lineno="19" time="0.0005" sim_time_ns="30.0" ratio_time="5.0" />
-    <testcase name="test_fail" classname="test_counter" file="/b/test_counter.py" lineno="36" time="0.0013" sim_time_ns="30.0" ratio_time="2.0">
-      <failure error_type="AssertionError" error_msg="deliberate failure: count should be 0" />
-    </testcase>
-    <testcase name="test_skipped" classname="test_counter" file="/b/test_counter.py" lineno="43" time="0" sim_time_ns="0" ratio_time="0">
-      <skipped />
-    </testcase>
-  </testsuite>
-</testsuites>
-"""
+# Captured from the pinned producer; provenance and reproduction live beside it.
+_RESULTS_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results.xml"
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -56,20 +43,23 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 
 class TestParseResultsXml:
-    def test_mixed_suite_parses_all_states(self, tmp_path: Path):
-        res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
+    def test_mixed_suite_parses_all_states(self):
+        res = cr.parse_results_xml(_RESULTS_XML)
         assert res.state == cr.STATE_OK
+        assert len(res.tests) == 3
         by_name = {t.name: t for t in res.tests}
         assert by_name["test_reset"].status == cr.VERDICT_PASS
-        assert by_name["test_reset"].module == "test_counter"
-        assert by_name["test_reset"].elapsed_s == 0.0005
+        assert by_name["test_reset"].module == "capture_cases"
+        assert by_name["test_reset"].elapsed_s == 0.0
         assert by_name["test_fail"].status == cr.VERDICT_FAIL
         assert by_name["test_skipped"].status == "skipped"
 
-    def test_failure_text_carries_type_and_message(self, tmp_path: Path):
-        res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
+    def test_failure_text_carries_type_and_message(self):
+        res = cr.parse_results_xml(_RESULTS_XML)
         fail = next(t for t in res.tests if t.name == "test_fail")
-        assert fail.failure_text == ("AssertionError: deliberate failure: count should be 0")
+        assert fail.failure_text == (
+            "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
+        )
 
     def test_missing_file_is_missing_never_pass(self, tmp_path: Path):
         res = cr.parse_results_xml(tmp_path / "nope.xml")
@@ -78,7 +68,9 @@ class TestParseResultsXml:
 
     def test_truncated_xml_is_unparseable(self, tmp_path: Path):
         # A SIGKILL mid-write leaves a torn file (S4).
-        res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED[: len(_XML_MIXED) // 2]))
+        res = cr.parse_results_xml(
+            _write(tmp_path, '<testsuites><testsuite><testcase name="interrupted"')
+        )
         assert res.state == cr.STATE_UNPARSEABLE
         assert "truncated or malformed" in res.detail
 
@@ -124,31 +116,34 @@ class TestParseResultsXml:
 
 
 class TestReconcile:
-    def _ok(self, tmp_path: Path) -> cr.CocotbResults:
-        return cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
+    def _ok(self) -> cr.CocotbResults:
+        return cr.parse_results_xml(_RESULTS_XML)
 
-    def test_pass_fail_map_directly(self, tmp_path: Path):
-        verdicts = {
-            n: v for n, v, _ in cr.reconcile(["test_reset", "test_fail"], self._ok(tmp_path))
-        }
-        assert verdicts == {
-            "test_reset": cr.VERDICT_PASS,
-            "test_fail": cr.VERDICT_FAIL,
-        }
+    def test_selected_producer_cases_reconcile_with_focused_details(self):
+        selected = ["test_reset", "test_fail", "test_skipped"]
+        verdicts = cr.reconcile(selected, self._ok())
+        assert [name for name, _, _ in verdicts] == selected
+        assert [verdict for _, verdict, _ in verdicts] == [
+            cr.VERDICT_PASS,
+            cr.VERDICT_FAIL,
+            cr.VERDICT_INCONCLUSIVE,
+        ]
+        assert verdicts[0][2] == ""
+        assert verdicts[1][2] == (
+            "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
+        )
+        assert "skipped" in verdicts[2][2]
 
-    def test_absent_expected_name_is_inconclusive_with_actionable_message(
-        self,
-        tmp_path: Path,
-    ):
+    def test_absent_expected_name_is_inconclusive_with_actionable_message(self):
         # decision 7: a tests.toml name with no matching @cocotb.test never
         # reaches the XML — reactive validation, actionable wording.
-        ((_name, verdict, detail),) = cr.reconcile(["test_typo"], self._ok(tmp_path))
+        ((_name, verdict, detail),) = cr.reconcile(["test_typo"], self._ok())
         assert verdict == cr.VERDICT_INCONCLUSIVE
         assert "no matching @cocotb.test" in detail
 
-    def test_selected_but_skipped_is_inconclusive(self, tmp_path: Path):
-        # The zero-match-filter shape (S4): file written, tests skipped, rc=0.
-        ((_, verdict, detail),) = cr.reconcile(["test_skipped"], self._ok(tmp_path))
+    def test_selected_but_skipped_is_inconclusive(self):
+        # An explicitly skipped test is inconclusive when selected by Booley.
+        ((_, verdict, detail),) = cr.reconcile(["test_skipped"], self._ok())
         assert verdict == cr.VERDICT_INCONCLUSIVE
         assert "skipped" in detail
 
@@ -158,8 +153,8 @@ class TestReconcile:
         assert all(v == cr.VERDICT_INCONCLUSIVE for _, v, _ in verdicts)
         assert all("results.xml not found" in d for _, _, d in verdicts)
 
-    def test_extra_xml_entries_are_not_verdict_bearing(self, tmp_path: Path):
-        res = self._ok(tmp_path)
+    def test_extra_xml_entries_are_not_verdict_bearing(self):
+        res = self._ok()
         verdicts = cr.reconcile(["test_reset"], res)
         assert len(verdicts) == 1
         # test_fail ran but was not selected → surfaced as an extra, and the
@@ -213,8 +208,8 @@ class TestFindImportFailure:
 
 
 class TestResultsLineRoundTrip:
-    def test_round_trip_preserves_everything(self, tmp_path: Path):
-        res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
+    def test_round_trip_preserves_everything(self):
+        res = cr.parse_results_xml(_RESULTS_XML)
         line = cr.format_results_line(res)
         assert line.startswith(cr.COCOTB_RESULTS_PREFIX)
         parsed = cr.parse_results_line(f"noise\n{line}\ntrailing")
@@ -263,8 +258,8 @@ class TestResultsLineRoundTrip:
     def test_invalid_result_fields_reject_the_transport(self, payload):
         assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
 
-    def test_last_line_wins(self, tmp_path: Path):
-        res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
+    def test_last_line_wins(self):
+        res = cr.parse_results_xml(_RESULTS_XML)
         older = cr.format_results_line(cr.CocotbResults(state=cr.STATE_EMPTY))
         newer = cr.format_results_line(res)
         assert cr.parse_results_line(f"{older}\n{newer}") == res
@@ -348,6 +343,7 @@ class TestFailureMessageDialects:
             )
         )
         assert res.tests[0].failure_text == "AssertionError: assert 1 == 0"
+        assert res.tests[0].elapsed_s == 0.012
 
     def test_error_msg_still_wins_when_present(self, tmp_path: Path):
         res = cr.parse_results_xml(
