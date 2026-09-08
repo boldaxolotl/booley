@@ -219,7 +219,8 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
 
 
 def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
-    from booley.harness import auto_doctor, session_runtime
+    from booley.harness import auto_doctor
+    from booley.runtime import session_runtime
 
     events: list[str] = []
     monkeypatch.setattr(

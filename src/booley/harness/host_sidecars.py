@@ -21,8 +21,8 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.harness import interactive_docker as legacy
-from booley.harness.image_lifecycle import Intent
+from booley.runtime import interactive_docker as legacy
+from booley.runtime.image_lifecycle import Intent
 from booley.runtime.platform_paths import host_path_from_docker_mount
 
 IMAGE_SCHEMA = "1"

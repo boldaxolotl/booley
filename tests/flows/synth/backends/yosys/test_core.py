@@ -312,26 +312,6 @@ class TestPhysicalStaHelpers:
         monkeypatch.setattr(openroad_reporting, "_STA_SLACK_RE", drifted)
         assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: n/a") is None
 
-    def test_write_sta_sdc_uses_config(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        cfg = syn_core.StaTimingConfig(
-            mode="physical",
-            clock="clk_i",
-            period_ps=2000.0,
-            input_delay_pct=25.0,
-            output_delay_pct=60.0,
-            sdc=(),
-        )
-        path = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path)
-        text = path.read_text(encoding="utf-8")
-        assert "create_clock -name clk_i -period 2.000000" in text
-        assert "set_input_delay -clock clk_i 0.500000" in text
-        assert "set_output_delay -clock clk_i 1.200000" in text
-        # Guard collection handling with an all-inputs fallback.
-        assert "catch { set input_ports [remove_from_collection" in text
-        assert "set input_ports [all_inputs] }" in text
-
     def test_reg2reg_tcl_is_register_scoped_and_guarded(self):
 
         tcl = openroad_reporting.reg2reg_timing_tcl()
@@ -401,21 +381,21 @@ class TestPhysicalStaHelpers:
 
 class TestEmitTimingMarkers:
     @staticmethod
-    def _config(period_ps=2000.0):
+    def _config():
         from booley.flows.synth.timing import StaTimingConfig
 
         return StaTimingConfig(
             mode="physical",
-            clock="clk_i",
-            period_ps=period_ps,
-            input_delay_pct=30.0,
-            output_delay_pct=70.0,
             sdc=(),
         )
 
     def test_overall_and_reg2reg_both_emitted(self, tmp_path, capsys):
 
-        stdout = "STA_WORST_SLACK_NS: -0.100000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
+        stdout = (
+            "STA_CLOCK_PERIOD_NS: 2.000000\n"
+            "STA_WORST_SLACK_NS: -0.100000\n"
+            "STA_REG2REG_SLACK_NS: 0.500000\n"
+        )
         assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
@@ -428,7 +408,7 @@ class TestEmitTimingMarkers:
         STA_WORST_SLACK_NS, but the internal reg->reg Fmax must still surface."""
 
         # No overall marker, and no overall.csv.rpt on disk — only reg->reg.
-        stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
+        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
         assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS" not in out
@@ -453,7 +433,12 @@ class TestEmitTimingMarkers:
             "startpt,endpt,-0.250000\n",
             encoding="utf-8",
         )
-        assert openroad_reporting.emit_timing_markers("", self._config(), tmp_path) is True
+        assert (
+            openroad_reporting.emit_timing_markers(
+                "STA_CLOCK_PERIOD_NS: 2.000000\n", self._config(), tmp_path
+            )
+            is True
+        )
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.250000" in out
 
@@ -464,7 +449,7 @@ class TestEmitTimingMarkers:
         salvage path never reaches it, so an unconditional pointer would send
         the reader to a file that isn't there."""
 
-        stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
+        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
         assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         assert "STA_REG2REG_REPORT:" not in capsys.readouterr().out
 
@@ -559,15 +544,6 @@ class TestPerClockMarkers:
         assert openroad_reporting.emit_perclock_markers("no markers here") is False
         assert capsys.readouterr().out == ""
 
-    def test_parse_sdc_clock_names_in_order(self):
-
-        text = (
-            "create_clock -name clk_core -period 2.0 [get_ports clk]\n"
-            "# create_clock -name commented_out -period 1.0\n"
-            "create_clock -name clk_io -period 5.0 [get_ports pclk]\n"
-        )
-        assert synth_timing.parse_sdc_clock_names(text) == ["clk_core", "clk_io"]
-
 
 # ---------------------------------------------------------------------------
 # synth_timing_config — TOML boundary validation (Principle 5)
@@ -586,30 +562,15 @@ class TestSynthTimingConfigTomlBoundary:
             lambda project_root=None: cfg,
         )
 
-    def test_absent_keys_use_defaults(self, monkeypatch):
+    def test_timing_model_has_no_generated_constraint_fields(self, monkeypatch):
         from booley.flows.synth.backends.yosys import core as syn_core
 
         self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config()
-        assert cfg.period_ps == syn_core.DEFAULT_STA_PERIOD_PS
-        assert cfg.input_delay_pct == syn_core.DEFAULT_STA_INPUT_DELAY_PCT
-        assert cfg.output_delay_pct == syn_core.DEFAULT_STA_OUTPUT_DELAY_PCT
-
-    def test_cli_scalars_used(self, monkeypatch):
-        # Design-constraint scalars (period / I-O delays) now arrive only via
-        # the trusted argparse-typed configure surface; there
-        # is no booley.toml source for them anymore (ADR 0029).
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {})
-        cfg = syn_core.synth_timing_config(
-            period_ps=2500.0,
-            input_delay_pct=25.0,
-            output_delay_pct=60.0,
-        )
-        assert cfg.period_ps == 2500.0
-        assert cfg.input_delay_pct == 25.0
-        assert cfg.output_delay_pct == 60.0
+        assert not hasattr(cfg, "clock")
+        assert not hasattr(cfg, "period_ps")
+        assert not hasattr(cfg, "input_delay_pct")
+        assert not hasattr(cfg, "output_delay_pct")
 
     @pytest.mark.parametrize(
         ("key", "value"),
@@ -657,8 +618,17 @@ class TestSynthTimingConfigTomlBoundary:
         second = tmp_path / "b.sdc"
         second.write_text("# b\n", encoding="utf-8")
         self._with_timing(monkeypatch, {})
-        cfg = syn_core.synth_timing_config(sdc=[str(first), str(second)])
+        cfg = syn_core.synth_timing_config(sdc=[str(first), str(second)], project_root=tmp_path)
         assert cfg.sdc == (first.resolve(), second.resolve())
+
+    def test_sdc_path_must_stay_inside_selected_checkout(self, monkeypatch, tmp_path):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        outside = tmp_path.parent / "outside.sdc"
+        outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        self._with_timing(monkeypatch, {})
+        with pytest.raises(SystemExit, match="escapes the selected checkout"):
+            syn_core.synth_timing_config(sdc=[str(outside)], project_root=tmp_path)
 
     def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch):
         from booley.flows.synth.backends.yosys import core as syn_core
@@ -668,6 +638,23 @@ class TestSynthTimingConfigTomlBoundary:
         with pytest.raises(SystemExit) as exc_info:
             syn_core.synth_timing_config(sdc=["/nope/does_not_exist.sdc"])
         assert "does_not_exist.sdc" in str(exc_info.value)
+
+    def test_unreadable_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        sdc_file = tmp_path / "dut.sdc"
+        sdc_file.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        original_read_bytes = Path.read_bytes
+
+        def fail_for_sdc(path):
+            if path == sdc_file:
+                raise OSError("permission denied")
+            return original_read_bytes(path)
+
+        self._with_timing(monkeypatch, {})
+        monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
+        with pytest.raises(SystemExit, match="is not readable"):
+            syn_core.synth_timing_config(sdc=[str(sdc_file)], project_root=tmp_path)
 
     def test_unknown_timing_key_warns(self, monkeypatch, capsys):
         from booley.flows.synth.backends.yosys import core as syn_core
@@ -820,7 +807,7 @@ class TestSlangReadCommandOptions:
 # ---------------------------------------------------------------------------
 
 
-def _sdc_config(tmp_path, *sdc_texts, period_ps=4000.0):
+def _sdc_config(tmp_path, *sdc_texts):
     """A StaTimingConfig whose SDC fileset is the given text(s), on disk."""
     from booley.flows.synth.backends.yosys import core as syn_core
 
@@ -831,10 +818,6 @@ def _sdc_config(tmp_path, *sdc_texts, period_ps=4000.0):
         paths.append(p)
     return syn_core.StaTimingConfig(
         mode="physical",
-        clock="clk_i",
-        period_ps=period_ps,
-        input_delay_pct=30.0,
-        output_delay_pct=70.0,
         sdc=tuple(paths),
     )
 
@@ -879,28 +862,21 @@ class TestSdcClockPeriodParsing:
 
 
 class TestEffectivePeriod:
-    def test_no_sdc_uses_config_period(self, tmp_path):
-        # Bit-identical to pre-0029: no authored clock → the config scalar.
+    def test_no_sdc_has_no_period_fallback(self, tmp_path):
         from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = syn_core.StaTimingConfig(
             mode="physical",
-            clock="clk_i",
-            period_ps=4000.0,
-            input_delay_pct=30.0,
-            output_delay_pct=70.0,
             sdc=(),
         )
-        assert openroad_reporting.effective_period_ps(cfg, "irrelevant stdout") == 4000.0
+        assert openroad_reporting.effective_period_ps(cfg, "irrelevant stdout") is None
 
     def test_sdc_owned_clock_wins(self, tmp_path):
 
         cfg = _sdc_config(
             tmp_path,
             "create_clock -period 25 [get_ports clk_i]",
-            period_ps=4000.0,
         )
-        # SDC declares 25 ns; the config scalar (4000 ps) must be ignored.
         assert openroad_reporting.effective_period_ps(cfg, "") == 25000.0
 
     def test_tightest_of_multiple_clocks(self, tmp_path):
@@ -928,63 +904,6 @@ class TestEffectivePeriod:
         text = synth_timing.read_user_sdc_text(cfg)
         assert "set_false_path" in text and "create_clock" in text
         assert openroad_reporting.effective_period_ps(cfg, "") == 12000.0
-
-
-class TestWriteStaSdcSuppression:
-    def test_no_sdc_emits_full_generated_block(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        cfg = syn_core.StaTimingConfig(
-            mode="physical",
-            clock="clk_i",
-            period_ps=2000.0,
-            input_delay_pct=25.0,
-            output_delay_pct=60.0,
-            sdc=(),
-        )
-        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
-        assert "create_clock -name clk_i" in text
-        assert "set_input_delay" in text
-        assert "set_output_delay" in text
-
-    def test_owned_clock_suppresses_generated_clock(self, tmp_path):
-
-        cfg = _sdc_config(tmp_path, "create_clock -period 25 [get_ports clk_i]\n")
-        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
-        # The authored clock is present; no generated -name default is added.
-        assert "create_clock -period 25" in text
-        assert "create_clock -name clk_i" not in text
-        # I/O delays are still generated (the SDC owns only the clock).
-        assert "set_input_delay" in text
-        assert "set_output_delay" in text
-
-    def test_owned_io_suppresses_generated_delays(self, tmp_path):
-
-        cfg = _sdc_config(
-            tmp_path,
-            "set_input_delay -clock clk_i 0.1 [all_inputs]\n"
-            "set_output_delay -clock clk_i 0.2 [all_outputs]\n",
-        )
-        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
-        # No generated delay lines beyond the authored ones; the $input_ports
-        # helper + set_driving_cell (which needs it) are suppressed too.
-        assert "$input_ports" not in text
-        assert "set_driving_cell" not in text
-        # The clock was not authored, so it is still generated.
-        assert "create_clock -name clk_i" in text
-
-    def test_fully_owned_suppresses_all_generated(self, tmp_path):
-
-        cfg = _sdc_config(
-            tmp_path,
-            "create_clock -period 25 [get_ports clk_i]\n"
-            "set_input_delay -clock clk_i 0 [all_inputs]\n"
-            "set_output_delay -clock clk_i 0 [all_outputs]\n",
-        )
-        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
-        assert "create_clock -name clk_i" not in text
-        assert "$input_ports" not in text
-        assert "set_driving_cell" not in text
 
 
 class TestFormalCellRemoval:

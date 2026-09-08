@@ -341,7 +341,7 @@ If you don't need `slang`, stay on the default `sv2v` frontend.
 
 cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning an old
 cocotb release does not guarantee compatibility with the image's current
-Verilator. The failure can be silent: cocotb 1.5.1 under Verilator 5.046 builds,
+Verilator. The failure can be silent: cocotb 1.5.1 under an older Verilator builds,
 imports, and registers its VPI callbacks, but the timed callbacks never fire,
 simulation time stays at `0.00 ns`, and the run consumes its timeout without
 producing `results.xml`.

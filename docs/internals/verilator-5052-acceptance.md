@@ -72,14 +72,14 @@ Cocotb needs no source patch. Runtime writer setup is visible in its installed
 
 ## Coverage feature boundary
 
-This migration qualifies the compiler and native collection interfaces. It does
-not introduce the planned native-to-campaign adapter or enable instrumentation
-for ordinary Booley simulations. The acceptance reader is a test-only native
-format probe, not a scoring implementation.
+These additional checks qualify the compiler and native collection interfaces.
+The Verilator pin and native collector landed separately in PR #233 before
+this acceptance work was integrated with current main. The acceptance reader
+is a test-only native format probe, not a second scoring implementation.
 
-The existing campaign schema tests validate unknown-record retention,
-incompatible-format handling, and partial-selection accounting; integration of
-those policies with a real native adapter remains coverage feature work.
+The existing campaign schema and native collector tests cover unknown-record
+retention, incompatible-format handling, and partial-selection accounting.
+Those production-adapter checks remain separate from this native writer probe.
 Covergroups share `--coverage-user`; an adapter must classify them as
 unsupported, along with experimental FSM and unknown records, rather than
 silently score them as properties. The fixture intentionally uses no covergroup
@@ -87,5 +87,5 @@ or FSM instrumentation.
 
 Native B-Wave parsing is validated. No GUI viewer compatibility or new coverage
 denominator equivalence with 5.046 is claimed. Keep tool version, full source
-identity, instrumentation flags, seed, and elaboration identity in future
+identity, instrumentation flags, seed, and elaboration identity when interpreting
 normalized artifacts.

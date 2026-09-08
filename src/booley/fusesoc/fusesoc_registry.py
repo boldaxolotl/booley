@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 from fusesoc.capi2.exprs import Exprs
 
+from booley.core.boundary import is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -57,19 +58,15 @@ from booley.fusesoc.core_projection import (
     reconcile_projected_cores,
 )
 from booley.targets.domain import (
-    AmbiguousTargetError,  # noqa: F401 - compatibility error re-export
     CoreCollisionError,
     CoreSources,
     ForeignTargetHandleError,
     FuseSocError,
-    IncompatibleTargetError,
     MissingSourceError,
     StaleTargetCatalogError,
     TargetHandle,
     TargetRef,
     TargetResolutionError,
-    UnknownTargetError,  # noqa: F401 - compatibility error re-export
-    flow_can_drive,
 )
 from booley.targets.selection import (
     resolve as _resolve_selector,
@@ -548,7 +545,7 @@ def _check_booley_target_metadata(
     if not isinstance(booley, Mapping):
         errors.append(f"{label} must be a mapping")
         return
-    for key in sorted(set(booley) - {"doctor", "doctor_selftest"}):
+    for key in sorted(set(booley) - {"coverage", "doctor", "doctor_selftest"}):
         errors.append(f"{label}.{key} is not a supported Booley Target key")
     if "doctor" in booley:
         doctor = booley["doctor"]
@@ -578,6 +575,34 @@ def _check_booley_target_metadata(
                 errors.append(f"{label}.doctor must not contain duplicates")
     if "doctor_selftest" in booley and not isinstance(booley["doctor_selftest"], bool):
         errors.append(f"{label}.doctor_selftest must be a boolean")
+    if "coverage" in booley:
+        _check_coverage_target_metadata(booley["coverage"], label, errors)
+
+
+def _check_coverage_target_metadata(value: Any, label: str, errors: list[str]) -> None:
+    """Validate the private Phase-3 coverage recipe on one Simulation Target."""
+    coverage_label = f"{label}.coverage"
+    if not isinstance(value, Mapping):
+        errors.append(f"{coverage_label} must be a mapping")
+        return
+    for key in sorted(set(value) - {"custom_main_hooks", "reset_included"}):
+        errors.append(f"{coverage_label}.{key} is not a supported coverage key")
+    if "reset_included" in value and not isinstance(value["reset_included"], bool):
+        errors.append(f"{coverage_label}.reset_included must be a boolean")
+    if "custom_main_hooks" not in value:
+        return
+    hooks = value["custom_main_hooks"]
+    if not isinstance(hooks, list):
+        errors.append(f"{coverage_label}.custom_main_hooks must be an array")
+        return
+    if not is_str_list(hooks):
+        errors.append(f"{coverage_label}.custom_main_hooks must contain only strings")
+        return
+    invalid = [hook for hook in hooks if hook not in {"start_hook", "write_hook"}]
+    if invalid:
+        errors.append(f"{coverage_label}.custom_main_hooks contains unknown hook(s) {invalid!r}")
+    if len({str(hook) for hook in hooks}) != len(hooks):
+        errors.append(f"{coverage_label}.custom_main_hooks must not contain duplicates")
 
 
 def core_schema_errors(core_file: Path | str) -> list[str]:
@@ -792,8 +817,9 @@ def _resolve_ref(project_root: Path | str, token: str) -> TargetRef:
     *token* is either a bare Target name — which must be declared by exactly one
     core — or a ``vlnv#name`` qualifier whose VLNV may be shortened to any
     unambiguous segment-suffix (``ibex_top#lint``). Raises
-    :class:`UnknownTargetError` when the name (or the qualified core) does not
-    exist, and :class:`AmbiguousTargetError` when a bare name — or a too-short
+    :class:`~booley.targets.domain.UnknownTargetError` when the name (or the
+    qualified core) does not exist, and
+    :class:`~booley.targets.domain.AmbiguousTargetError` when a bare name — or a too-short
     VLNV qualifier — matches more than one core, naming the candidates so the
     caller can qualify further. This low-level view includes Doctor self-tests.
     """
@@ -1182,7 +1208,8 @@ def _target_source_files(
     keeps the subprocess-free ordering guarantee that ``mutation_tester``'s
     in-place mux swap depends on.
 
-    Raises :class:`UnknownTargetError` / :class:`AmbiguousTargetError` when
+    Raises :class:`~booley.targets.domain.UnknownTargetError` /
+    :class:`~booley.targets.domain.AmbiguousTargetError` when
     *target* is not a single selectable Target (ADR 0030).
     """
     ref = _resolve_ref(project_root, target)
@@ -1247,7 +1274,7 @@ def target_source_files_for_ref(
 def target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
     """Fileset names a Target pulls in — ``filesets`` unioned with ``filesets_append``.
 
-    Public API: peer modules (fusesoc_trace_overlay, doctor) depend on this
+    Public interface: Simulation trace-overlay orchestration and Doctor depend on this
     name rather than reaching for a private helper (principle 9). Both keys it
     consumes are schema-audited as arrays (:data:`_CAPI2_TARGET_ARRAY_FIELDS`),
     so the splat below cannot silently explode a stray scalar into
@@ -1651,64 +1678,6 @@ def _sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
     """
     src = _target_source_files(project_root, target)
     return bool(src.rtl_source_files) and not src.tb_files
-
-
-def _selection_resolver() -> Callable[[Path | str, str], TargetRef]:
-    """Choose the public or Doctor-internal Target resolver."""
-    from booley.fusesoc import selftest_overlay
-
-    doctor_selftest = (
-        os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
-    )
-    return _resolve_ref if doctor_selftest else _resolve_public_ref
-
-
-def _resolve_selected_ref(project_root: Path | str, token: str) -> TargetRef:
-    """Resolve one Target at the public or Doctor-internal selection boundary."""
-    return _selection_resolver()(project_root, token)
-
-
-def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -> None:
-    """Reject a known Target that the requested Flow cannot drive."""
-    if for_flow is None:
-        return
-    if flow_can_drive(for_flow, ref):
-        return
-    from booley.targets.flow_names import canonical
-
-    flow = canonical(for_flow)
-    raise IncompatibleTargetError(
-        f"Target {token!r} cannot be driven by the {flow!r} Flow "
-        f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-        f"Choose a compatible Target with `booley targets --for-flow {flow}`."
-    )
-
-
-def _parse_target_tokens(target_arg: str | None) -> list[str]:
-    """Split a comma-separated ``--target`` argument into nonempty tokens."""
-    return [token.strip() for token in (target_arg or "").split(",") if token.strip()]
-
-
-def _resolve_target_selection(
-    target_arg: str | None,
-    project_root: Path | str,
-    *,
-    for_flow: str | None = None,
-) -> list[str]:
-    """Split and validate ``--target`` tokens, including Flow compatibility.
-
-    An empty selection returns ``[]`` rather than enumerating every Target.
-    Bare names must be unambiguous; ``vlnv#name`` qualifiers disambiguate.
-    Doctor's private self-test Targets remain hidden from public selection.
-    """
-    selected = _parse_target_tokens(target_arg)
-    if not selected:
-        return []
-
-    for token in selected:
-        ref = _resolve_selected_ref(project_root, token)
-        _require_flow_compatible(for_flow, token, ref)
-    return selected
 
 
 # ---------------------------------------------------------------------------

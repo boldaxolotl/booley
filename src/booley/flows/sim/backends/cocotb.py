@@ -938,9 +938,10 @@ def _execute_cocotb_run(
     sim_time_grace_s: float,
     transport: AdapterTransportIdentity | None,
 ):
+    from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
-    heartbeat = Heartbeat("cocotb sim", interval=60)
+    heartbeat = Heartbeat("cocotb sim", render=render_heartbeat, interval=60)
     heartbeat.start()
     try:
         publish = _partial_result_publisher(transport, run.tests, run.results_file)

@@ -22,7 +22,7 @@ from booley.flows.lint.flow import (
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -609,7 +609,7 @@ class TestLintFlowArgs:
         )
         assert args.scope == ""
         assert args.dry_run is False
-        assert args.timeout == 120000
+        assert args.timeout_ms is None
 
     def test_scope_arg(self, state_file: Path):
         flow = LintFlow()
@@ -630,6 +630,50 @@ class TestLintFlowArgs:
 
 
 class TestDryRun:
+    def test_plan_collects_target_setup_errors(self, tmp_path: Path, monkeypatch) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        monkeypatch.setattr(flow, "_lint_work_unit", MagicMock(side_effect=ValueError("bad plan")))
+
+        plan = flow._plan_lint((_target_handle("broken", project_root=tmp_path),))
+
+        assert plan.aggregate_errors == ("broken: bad plan",)
+
+    def test_plan_rejects_untyped_inspection_errors(self, tmp_path: Path) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        flow._target_catalog = MagicMock(
+            inspect=MagicMock(side_effect=fusesoc_registry.FuseSocError("inspection failed"))
+        )
+
+        with pytest.raises(fusesoc_registry.FuseSocError, match="inspection failed"):
+            flow._lint_plan_inspection(_target_handle("broken", project_root=tmp_path))
+
+    def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
+        target = _target_handle("broken", project_root=tmp_path)
+        target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        monkeypatch.setattr(flow, "_dry_run_command", lambda _target: ["ERROR: invalid target"])
+
+        with pytest.raises(ValueError, match="invalid target"):
+            flow._lint_plan_command(target)
+
+    def test_plan_tolerates_typed_missing_toplevel_without_message_matching(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "legacy", "--work-dir", str(tmp_path)])
+        flow._target_catalog = MagicMock(
+            inspect=MagicMock(side_effect=MissingTargetToplevelError("wording may change"))
+        )
+
+        plan = flow._plan_lint((_target_handle("legacy", project_root=tmp_path),))
+
+        assert not plan.aggregate_errors
+        assert plan.work_units[0].recipe["toplevel"] == ""
+
     def test_dry_run_shows_fusesoc_setup_without_resolving(
         self,
         tmp_path: Path,
@@ -660,7 +704,8 @@ class TestDryRun:
         assert result.exit_code == 0
         assert "Dry run" in result.report_text
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lite"]
+        assert data["flow"] == "lint"
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script
@@ -684,9 +729,11 @@ class TestDryRun:
             side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
         ):
             result = flow._run()
-        assert result.exit_code == 0
+        assert result.exit_code == EXIT_ERROR
         data = json.loads(capsys.readouterr().out)
-        assert data["lite"][0].startswith("ERROR: lint dry-run:")
+        assert data["flow"] == "lint"
+        assert data["work_units"] == []
+        assert data["aggregate_errors"] == ["lite: ERROR: lint dry-run: Unknown target 'lite'"]
 
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1123,29 @@ class TestErrorVsFailTaxonomy:
 
 
 class TestFullRun:
+    @patch.object(LintFlow, "_execute")
+    def test_late_preparation_error_prevents_every_linter_run(
+        self,
+        mock_exec,
+        state_file: Path,
+    ):
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite,full"])
+        flow.read_state()
+        with patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            side_effect=[
+                (["make", "-C", "lite"], _stub_resolved()),
+                RuntimeError("broken full Target"),
+            ],
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "full: lint setup failed: broken full Target" in result.report_text
+        mock_exec.assert_not_called()
+
     @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,
@@ -1665,7 +1735,7 @@ class TestVeribleTargets:
             result = flow._run()
         assert result.exit_code == 0
         data = json.loads(capsys.readouterr().out)
-        cmd = data["lint_style"]
+        cmd = data["work_units"][0]["commands"][0]["argv"]
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         assert "run --build-root" in script and "--setup" in script
@@ -1704,7 +1774,7 @@ class TestTimeout:
             [
                 "--target",
                 "lite",
-                "--timeout",
+                "--timeout-ms",
                 "60000",
             ]
         )
@@ -1915,7 +1985,7 @@ class TestLintObservability:
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
         flow.read_state()
-        with pytest.raises(fusesoc_registry.IncompatibleTargetError, match="cannot be driven"):
+        with pytest.raises(IncompatibleTargetError, match="cannot be driven"):
             flow._run()
         mock_cmd.assert_not_called()
         mock_exec.assert_not_called()

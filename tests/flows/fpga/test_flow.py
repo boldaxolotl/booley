@@ -36,7 +36,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import IncompatibleTargetError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -198,6 +198,60 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
     assert list(results) == ["fpga_after"]
 
 
+def test_baseline_plan_restores_candidate_execution_context(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    flow = _flow(tmp_path, state_file, "--baseline", "baseline-ref")
+    candidate_handles = {"default": _layer_target_handle(tmp_path, "default")}
+    candidate_refs = {
+        "default": TargetExecutionRef("::fpga_demo:0#default", "default", "::fpga_demo:0")
+    }
+    flow._target_handles = candidate_handles
+    flow._target_execution_refs = candidate_refs
+    baseline = SimpleNamespace(selector="baseline")
+    flow._target_pairs = (
+        SimpleNamespace(baseline=baseline),
+        SimpleNamespace(baseline=baseline),
+    )
+    baseline_handle = _layer_target_handle(tmp_path, "baseline")
+    baseline_ref = TargetExecutionRef(
+        baseline_handle.identity,
+        baseline_handle.selector,
+        baseline_handle.vlnv,
+    )
+    planned_unit = SimpleNamespace(role="baseline", selector="baseline")
+
+    @contextmanager
+    def fake_worktree(_project_root, _ref):
+        worktree = tmp_path / ".booley_project" / ".baseline-plan"
+        worktree.mkdir(parents=True)
+        yield worktree
+
+    with (
+        patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
+        patch("booley.flows.fpga.flow.git_full_sha", return_value="b" * 40),
+        patch(
+            "booley.flows.fpga.flow.baseline_execution_context",
+            return_value=(
+                {"baseline": baseline_handle},
+                {"baseline": baseline_ref},
+            ),
+        ),
+        patch.object(flow, "_resolve_fpga_recipe", return_value=object()) as resolve,
+        patch.object(flow, "_fpga_work_unit", return_value=planned_unit) as project_unit,
+    ):
+        units, errors = flow._plan_fpga_baselines("baseline-ref")
+
+    assert units == [planned_unit]
+    assert errors == []
+    resolve.assert_called_once_with("baseline")
+    project_unit.assert_called_once()
+    assert flow.args.work_dir == tmp_path
+    assert flow._target_handles is candidate_handles
+    assert flow._target_execution_refs is candidate_refs
+
+
 def test_changed_fpga_recipe_is_evidence_not_a_rejection(
     tmp_path: Path,
     state_file: Path,
@@ -346,8 +400,32 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "part=xc7a200tfbg484-1" in result.report_text
-    assert "xdc=" in result.report_text
+    unit = result.detail["work_units"][0]
+    assert unit["recipe"]["flow_options"]["part"] == "xc7a200tfbg484-1"
+    assert unit["constraints"]
+    assert len(flow._flow_plan.work_units) == 1
+    unit = flow._flow_plan.work_units[0]
+    assert (unit.role, unit.selector, unit.eda_tool) == (
+        "candidate",
+        "default",
+        "vivado",
+    )
+    assert unit.timeout_ms == 7_200_000
+    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
+
+
+def test_dry_and_real_preparation_have_same_semantic_fingerprint(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    dry_plan = flow._plan_fpga_implementation(["default"])
+    flow.args.dry_run = False
+    real_plan = flow._plan_fpga_implementation(["default"])
+
+    assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
 
 
 def test_dry_run_resolves_sources_from_work_dir(
@@ -362,7 +440,7 @@ def test_dry_run_resolves_sources_from_work_dir(
     result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "sv_files=1 v_files=1" in result.report_text
+    assert result.detail["work_units"][0]["sources"] == ["rtl/top.sv", "rtl/legacy.v"]
 
 
 def test_run_rejects_non_fpga_axis_before_setup(
@@ -389,7 +467,7 @@ def test_run_rejects_non_fpga_axis_before_setup(
     flow = _flow(tmp_path, state_file, "--target", "synth_core", "--dry-run")
 
     with pytest.raises(
-        fusesoc_registry.IncompatibleTargetError,
+        IncompatibleTargetError,
         match=r"booley targets --for-flow fpga",
     ):
         flow._run()
@@ -440,12 +518,13 @@ def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
             return_value=run_evidence.FlowSourceEvidence("unversioned", "source-digest"),
         ),
     ):
-        result = flow._dry_run(["good", "bad"])
+        result = flow._dry_run_result(flow._plan_fpga_implementation(["good", "bad"]))
 
     assert result.exit_code == EXIT_ERROR
     assert "setup rejected bad" in result.report_text
-    assert "target=good" not in result.report_text
-    assert "part=" not in result.report_text
+    assert [unit["selector"] for unit in result.detail["work_units"]] == ["good"]
+    assert result.detail["aggregate_errors"] == ["candidate bad: setup rejected bad"]
+    assert list(tmp_path.glob(".booley-fpga-plan-*")) == []
 
 
 def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
@@ -461,12 +540,13 @@ def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
         "capture_flow_source_evidence",
         side_effect=fusesoc_registry.FuseSocError("source inspection rejected"),
     ):
-        dry_run = flow._dry_run(["default"])
+        dry_run = flow._dry_run_result(flow._plan_fpga_implementation(["default"]))
         real_run = flow._run_single_target("default")
 
     assert dry_run.exit_code == EXIT_ERROR
     assert "source inspection rejected" in dry_run.report_text
-    assert "target=default" not in dry_run.report_text
+    assert dry_run.detail["work_units"] == []
+    assert dry_run.detail["aggregate_errors"] == ["candidate default: source inspection rejected"]
     assert real_run.returncode == EXIT_ERROR
     assert "source inspection rejected" in (real_run.infra_error or "")
 

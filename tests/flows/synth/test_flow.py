@@ -50,7 +50,12 @@ from booley.flows.synth.flow import (
     _worst_critical_path_ps,
     synth_target_report_slug,
 )
-from booley.flows.synth.recipe import BASELINE_REF_PARAM
+from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.recipe import (
+    BASELINE_REF_PARAM,
+    default_recipe_args,
+    synthesis_recipe_snapshot,
+)
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
@@ -97,6 +102,29 @@ def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
     assert (tmp_path / artifacts["log"]).read_text(encoding="utf-8") == "first log\n"
     copied_timing = tmp_path / artifacts["dirs"]["timing"] / "slack.rpt"
     assert copied_timing.read_text(encoding="utf-8") == "first timing\n"
+
+
+def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics(synth_mode=SynthMode.PHYSICAL)
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=True,
+    )
+    process = SubprocessResult(returncode=2, stdout="", stderr="", duration_s=0.1)
+
+    flow._apply_boundary_completion(
+        metrics,
+        outcome,
+        process,
+        "BOOLEY_INPUT_ERROR: synth Target 'lite' SDC files [constraints/a.sdc] created no clocks",
+    )
+
+    assert metrics.returncode == 2
+    assert metrics.termination == "infrastructure_error"
+    assert "created no clocks" in metrics.infra_error
 
 
 @pytest.fixture(autouse=True)
@@ -259,6 +287,12 @@ def _fake_synth_resolved(
         / "syn_demo_0"
         / "syn"
     )
+    staged_sdc = build_root / "src" / "syn_demo_0" / "constraints" / "dut.sdc"
+    staged_sdc.parent.mkdir(parents=True, exist_ok=True)
+    staged_sdc.write_text(
+        "create_clock -name clk -period 4.0 [get_ports clk]\n",
+        encoding="utf-8",
+    )
     files = (
         fusesoc_registry.ResolvedFile(
             name="src/syn_demo_0/rtl/include/defs.svh",
@@ -416,10 +450,6 @@ def _stub_plan(
         frontend="sv2v",
         timing=StaTimingConfig(
             mode=mode,
-            clock=None,
-            period_ps=4000.0,
-            input_delay_pct=30.0,
-            output_delay_pct=70.0,
         ),
     )
     return syn_make.SynthPlan(build_dir=build_dir, spec=spec)
@@ -1146,10 +1176,43 @@ class TestDryRun:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        assert "dry-run" in result.report_text
-        # Per-config label keeps the config name visible (explicit-source mode has no -c).
-        assert "(lite)" in result.report_text
-        assert "(full)" in result.report_text
+        assert "Dry run" in result.report_text
+        assert [unit["selector"] for unit in result.detail["work_units"]] == [
+            "lite",
+            "full",
+        ]
+        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
+
+    def test_dry_and_real_preparation_have_same_semantic_fingerprint(
+        self, state_file: Path, tmp_path: Path
+    ) -> None:
+        flow = _dry_run_flow(tmp_path)
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
+        ):
+            dry_plan = flow._plan_synth_implementation(["lite"])
+            flow.args.dry_run = False
+            real_plan = flow._plan_synth_implementation(["lite"])
+
+        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
+
+    def test_physical_dry_run_discloses_runtime_clock_validation(
+        self, state_file: Path, tmp_path: Path
+    ):
+        flow = _dry_run_flow(tmp_path)
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda *a, **k: _with_synth_mode(
+                _fake_synth_resolved(tmp_path), "physical"
+            ),
+        ):
+            result = flow._run()
+        assert result.exit_code == EXIT_SUCCESS
+        recipe = result.detail["work_units"][0]["recipe"]
+        assert "clock creation is validated by OpenROAD at runtime" in recipe["clock_validation"]
 
     def test_dry_run_with_flags(self, state_file: Path, tmp_path: Path):
         # Synthesis-recipe knobs live on the Flow config, not the CLI.
@@ -1176,10 +1239,11 @@ class TestDryRun:
             side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
         ):
             result = flow._run()
-        assert "--flatten" in result.report_text
+        command = result.detail["work_units"][0]["commands"][0]["argv"]
+        assert "--flatten" in command
         # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
-        assert "--sdc" not in result.report_text
-        assert "--synth-mode logical" in result.report_text
+        assert "--sdc" not in command
+        assert command[command.index("--synth-mode") + 1] == "logical"
 
     def test_dry_run_records_evidence_for_projected_stealth_core(
         self, state_file: Path, tmp_path: Path
@@ -1224,9 +1288,13 @@ class TestDryRun:
             ),
         ):
             result = flow._run()
+            dry_plan = flow._flow_plan
+            flow.args.dry_run = False
+            real_plan = flow._plan_synth_implementation(["syn"])
 
         assert result.exit_code == EXIT_SUCCESS
-        assert "dry-run (syn)" in result.report_text
+        assert result.detail["work_units"][0]["selector"] == "syn"
+        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
         run_evidence = flow._recipe_evidence["syn"][2]
         assert run_evidence["source_sha256"]
 
@@ -1259,6 +1327,16 @@ class TestNoConfigs:
 
 class TestSingleConfigRun:
     """Test the main _run flow with a single config, mocking _execute."""
+
+    def test_configure_render_error_is_infrastructure_error(self, flow_and_state):
+        flow, _ = flow_and_state
+
+        with patch.object(flow, "_configure_synth", side_effect=OSError("disk full")):
+            metrics, output = flow._run_single_config("lite")
+
+        assert metrics.returncode == 2
+        assert metrics.termination == "infrastructure_error"
+        assert "failed to render synthesis build dir: disk full" in output
 
     def test_pass_no_baseline(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
@@ -1331,7 +1409,7 @@ class TestSingleConfigRun:
             try:
                 preview = dry_run._run()
                 assert marker.read_text(encoding="utf-8") == "live\n"
-                assert "workspace busy" in preview.report_text
+                assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release.set()
             result = running.result(timeout=10.0)
@@ -1383,7 +1461,7 @@ class TestSingleConfigRun:
             try:
                 preview = dry_run._run()
                 assert build_root.is_dir()
-                assert "workspace busy" in preview.report_text
+                assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release_copy.set()
             result = running.result(timeout=10.0)
@@ -1396,7 +1474,7 @@ class TestSingleConfigRun:
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        flow.args.timeout = 1
+        flow.args.timeout_ms = 1
         build_root = work_root_for(tmp_path, "synth", "lite")
 
         with work_root_lease(build_root, timeout_s=1.0):
@@ -1619,8 +1697,8 @@ class TestSingleConfigRun:
 
         The area report (``stat_<design>.txt`` — where ``area_um2``/``cells``
         come from, with the per-cell-type breakdown), both netlists, the stage
-        logs, the rendered ``synth.ys`` and the SDC fed to STA are all siblings
-        in the build dir. Naming the dir means a flow that renames any of them
+        logs and the rendered ``synth.ys`` are all siblings in the build dir;
+        the Target-owned SDC stays with the staged Target inputs. Naming the dir means a flow that renames any of them
         cannot silently drop a pointer.
         """
         flow, _ = flow_and_state
@@ -1634,7 +1712,6 @@ class TestSingleConfigRun:
             "yosys.log",
             "sta.log",
             "synth.ys",
-            "sta_constraints.sdc",
         ]
 
         def _fake_make(*_args, **_kwargs):
@@ -2165,6 +2242,10 @@ class TestBaselineFlow:
         assert "baseline: abc1234" in result.report_text
         assert "delta" in result.report_text
         assert "PASS" in result.report_text
+        assert [(unit.role, unit.selector) for unit in flow._flow_plan.work_units] == [
+            ("baseline", "lite"),
+            ("candidate", "lite"),
+        ]
 
         # Two execute calls: baseline + current
         assert len(execute_calls) == 2
@@ -2346,7 +2427,9 @@ class TestBaselineFlow:
             flow._run()
 
         # Worktree cleanup ran and work_dir was restored despite the crash.
-        assert exited == [True]
+        # Aggregate planning validates the baseline in one disposable checkout;
+        # execution uses a fresh checkout. Both contexts must clean up.
+        assert exited == [True, True]
         assert Path(flow.args.work_dir) == tmp_path
 
 
@@ -2393,6 +2476,58 @@ class TestCriterionKey:
 
 
 class TestBuildSynthCmd:
+    @staticmethod
+    def _append_sdc_args(
+        flow: AsicSynthesizeFlow,
+        resolved: fusesoc_registry.ResolvedTarget,
+        tmp_path: Path,
+    ) -> None:
+        flow._append_sta_constraint_args([], resolved, "lite", tmp_path, SynthMode.PHYSICAL)
+
+    def test_sdc_must_stay_inside_selected_checkout(self, flow_and_state, tmp_path: Path):
+        flow, _ = flow_and_state
+        outside = tmp_path.parent / "outside.sdc"
+        outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        resolved = dataclasses.replace(
+            _fake_synth_resolved(tmp_path),
+            files=(fusesoc_registry.ResolvedFile(name=str(outside), file_type="SDC"),),
+        )
+
+        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sdc_must_exist(self, flow_and_state, tmp_path: Path):
+        flow, _ = flow_and_state
+        resolved = _fake_synth_resolved(tmp_path)
+        resolved.sdc_files[0].absolute(resolved.build_root).unlink()
+
+        with pytest.raises(BoundaryError, match="SDC file not found"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sdc_must_be_readable(self, flow_and_state, monkeypatch, tmp_path: Path):
+        flow, _ = flow_and_state
+        resolved = _fake_synth_resolved(tmp_path)
+        sdc_file = resolved.sdc_files[0].absolute(resolved.build_root)
+        original_read_bytes = Path.read_bytes
+
+        def fail_for_sdc(path):
+            if path == sdc_file:
+                raise OSError("permission denied")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
+        with pytest.raises(BoundaryError, match="SDC file is not readable"):
+            self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_recipe_schema_bumps_without_default_clock(self, tmp_path: Path):
+        snapshot = synthesis_recipe_snapshot(
+            _fake_synth_resolved(tmp_path),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == 2
+        assert "default_clock_ps" not in snapshot
+
     def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
         with patch.object(
@@ -2541,13 +2676,12 @@ class TestBuildSynthCmd:
         assert any(s.endswith("constraints/dut.sdc") for s in sta)
         assert not any(Path(s).is_absolute() for s in sta)
 
-    def test_no_sdc_no_default_clock_hard_errors(
+    def test_physical_target_without_sdc_hard_errors(
         self,
         flow_and_state,
         tmp_path: Path,
     ):
-        """ADR 0031: a Target with no SDC fileset and no --default-clock is a
-        hard error (BoundaryError), not a silent 250 MHz default."""
+        """A physical Target without SDC is a pre-execution configuration error."""
         flow, _ = flow_and_state
         no_sdc = _fake_synth_resolved(tmp_path)
         no_sdc = dataclasses.replace(
@@ -2565,35 +2699,12 @@ class TestBuildSynthCmd:
         ):
             flow._build_synth_cmd("lite")
 
-    def test_default_clock_opt_in_forwarded(self, state_file: Path, tmp_path: Path):
-        """--default-clock lets a no-SDC Target run against a named clock,
-        forwarded to run_yosys_syn (no hard error)."""
+    def test_default_clock_option_is_removed(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite",
-                "--work-dir",
-                str(tmp_path),
-                "--default-clock",
-                "5000",
-            ]
-        )
-        flow.read_state()
-        no_sdc = _fake_synth_resolved(tmp_path)
-        no_sdc = dataclasses.replace(
-            no_sdc,
-            files=tuple(f for f in no_sdc.files if f.file_type != "SDC"),
-        )
-        no_sdc = _with_synth_mode(no_sdc, "physical")
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: no_sdc,
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--default-clock") + 1] == "5000.0"
-        assert "--sta-sdc" not in cmd
+        with pytest.raises(SystemExit):
+            flow.parse_args(
+                ["--target", "lite", "--work-dir", str(tmp_path), "--default-clock", "5000"]
+            )
 
     def test_with_flags(self, state_file: Path, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
@@ -2792,27 +2903,33 @@ class TestBuildSynthCmd:
         import dataclasses
 
         flow, _ = flow_and_state
-        base = _fake_synth_resolved(tmp_path)
-        resolved = dataclasses.replace(
-            base,
-            files=(
-                *base.files,
-                fusesoc_registry.ResolvedFile(
-                    name="src/syn_demo_0/sdc/core.sdc",
-                    file_type="SDC",
+
+        def resolve_with_extra_sdc(*_args, **_kwargs):
+            base = _fake_synth_resolved(tmp_path)
+            core_sdc = base.build_root / "src" / "syn_demo_0" / "sdc" / "core.sdc"
+            core_sdc.parent.mkdir(parents=True, exist_ok=True)
+            core_sdc.write_text("set_false_path -from [get_ports rst_n]\n", encoding="utf-8")
+            resolved = dataclasses.replace(
+                base,
+                files=(
+                    *base.files,
+                    fusesoc_registry.ResolvedFile(
+                        name="src/syn_demo_0/sdc/core.sdc",
+                        file_type="SDC",
+                    ),
+                    fusesoc_registry.ResolvedFile(
+                        name="src/syn_demo_0/tb/tb.sdc",
+                        file_type="SDC",
+                        tags=("tb",),
+                    ),
                 ),
-                fusesoc_registry.ResolvedFile(
-                    name="src/syn_demo_0/tb/tb.sdc",
-                    file_type="SDC",
-                    tags=("tb",),
-                ),
-            ),
-        )
-        resolved = _with_synth_mode(resolved, "physical")
+            )
+            return _with_synth_mode(resolved, "physical")
+
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
-            side_effect=lambda *a, **k: resolved,
+            side_effect=resolve_with_extra_sdc,
         ):
             cmd = flow._build_synth_cmd("lite")
         sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
@@ -3024,10 +3141,11 @@ class TestFlowConfigBoundary:
     def test_dry_run_surfaces_config_error(self, state_file: Path, tmp_path: Path):
         """Dry-run exists to vet the command — a config error must fail it."""
         flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        result = flow._dry_run(["lite"])
+        result = flow._dry_run_result(flow._plan_synth_implementation(["lite"]))
         assert result.exit_code == EXIT_ERROR
-        assert "config error" in result.report_text
+        assert result.detail["work_units"] == []
         assert "synth_mode" in result.report_text
+        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
 
 
 # ===========================================================================

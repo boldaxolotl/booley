@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from booley.harness import lifecycle_lock
+from booley.runtime import lifecycle_lock
 from booley.runtime.file_lock import LockContentionError, LockTimeoutError
 
 

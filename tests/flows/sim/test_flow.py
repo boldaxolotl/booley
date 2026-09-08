@@ -13,6 +13,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.plan import FlowPlan
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -55,6 +56,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
+from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
@@ -111,6 +113,159 @@ def test_human_display_caps_targets_at_three():
     ]
 
 
+def test_human_display_does_not_repeat_single_passing_target_or_test():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=True,
+            elapsed_s=9.8,
+            tests=[SimTestResult(name="smoke", passed=True, elapsed_s=9.8)],
+        )
+    ]
+
+    assert _build_display_lines(results, total_elapsed=10.0) == ["✓ PASS  10.0s"]
+
+
+def test_human_display_keeps_target_detail_for_multiple_passing_tests():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=True,
+            tests=[
+                SimTestResult(name="smoke", passed=True),
+                SimTestResult(name="edge", passed=True),
+            ],
+        )
+    ]
+
+    assert _build_display_lines(results, total_elapsed=2.0) == [
+        "1/1 targets passed, 2.0s",
+        "✓ sim_mul (2/2 tests)  0ms",
+    ]
+
+
+def test_human_display_keeps_names_for_single_target_failure():
+    results = [
+        TargetResult(
+            target="sim_mul",
+            passed=False,
+            elapsed_s=1.0,
+            tests=[SimTestResult(name="edge", passed=False, error_tail="assertion failed")],
+        )
+    ]
+
+    lines = _build_display_lines(results, total_elapsed=1.0)
+
+    assert lines[1] == "✗ sim_mul  1.0s"
+    assert any("edge" in line for line in lines)
+
+
+def _display_flow(tmp_path: Path, target: str, *args: str) -> SimulateFlow:
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", target, *args])
+    return flow
+
+
+def test_display_label_names_one_requested_test(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
+
+    with patch("booley.flows.sim.flow._get_test_names", return_value={}):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · test smoke"
+
+
+def test_display_label_counts_distinct_matching_tests(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul", "--test", "mul")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_mul": ["mul_base", "mul_edge"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · 2 tests"
+
+
+def test_display_label_applies_skips_before_naming_test(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_mul", "--skip", "edge")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_mul": ["smoke", "edge"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · test smoke"
+
+
+def test_display_label_deduplicates_same_test_across_targets(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_a,sim_b", "--test", "smoke")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_a": ["smoke"], "sim_b": ["smoke"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "2 targets · test smoke"
+
+
+def test_display_label_uses_unknown_suite_when_any_target_is_undeclared(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_a,sim_b")
+
+    with (
+        patch(
+            "booley.flows.sim.flow._get_test_names",
+            return_value={"sim_a": ["smoke"]},
+        ),
+        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+    ):
+        label = flow._resolve_display_label()
+
+    assert label == "2 targets · tests"
+
+
+def test_display_label_uses_elaboration_mode_without_test_discovery(tmp_path: Path):
+    flow = _display_flow(tmp_path, "sim_core", "--mode", "elab-only-standalone")
+
+    with patch("booley.flows.sim.flow._get_test_names") as get_tests:
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_core · elaboration"
+    get_tests.assert_not_called()
+
+
+def test_display_label_failure_uses_neutral_tests_with_short_target(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul")
+
+    with patch("booley.flows.sim.flow._get_test_names", side_effect=RuntimeError("boom")):
+        label = flow._resolve_display_label()
+
+    assert label == "target sim_mul · tests"
+
+
+def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):
+    flow = _display_flow(tmp_path, "::demo:core:0#sim_mul", "--test", "smoke")
+
+    with (
+        patch("booley.flows.sim.flow._get_test_names", return_value={}),
+        patch("booley.targets.catalog.TargetCatalog.build") as build_catalog,
+    ):
+        flow._resolve_display_label()
+
+    build_catalog.assert_not_called()
+
+
 def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
         patch(
@@ -135,6 +290,21 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
         )
 
     assert units == 3  # two native processes plus one cocotb batch
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (SimulationMode.ELAB_ONLY, 2),
+        (SimulationMode.ELAB_ONLY_STANDALONE, 3),
+    ],
+)
+def test_campaign_work_units_count_elaboration_modes(
+    tmp_path: Path,
+    mode: SimulationMode,
+    expected: int,
+) -> None:
+    assert _resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
 def test_artifact_path_component_never_embeds_unsafe_test_names():
@@ -302,7 +472,7 @@ class _BoundaryHarness(SimulationExecution):
             artifact_root=flow.args.report_dir,
             options=SimulationOptions(
                 trace=flow.args.trace,
-                timeout_ms=int(flow.args.timeout) if flow.args.timeout else None,
+                timeout_ms=flow.args.timeout_ms,
                 result_verbosity=flow.args.result_verbosity,
             ),
         )
@@ -881,6 +1051,7 @@ class TestCriterionGating:
         flow.set_criterion = MagicMock()
         flow._record_sim_criterion(self._passed_target())
         flow.set_criterion.assert_called_once()
+        assert flow.set_criterion.call_args.kwargs["detail"]["mode"] == "simulate"
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1064,7 @@ class TestMultiConfig:
         flow = _make_flow(tmp_path, config="")
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
+        assert result.detail["mode"] == "simulate"
 
 
 class TestExecutionValidation:
@@ -909,6 +1081,28 @@ class TestExecutionValidation:
 
 
 class TestDryRun:
+    def test_plan_keeps_non_shell_commands_unchanged(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        command = ("make", "-C", ".booley_work/sim")
+
+        assert flow._redact_plan_environment("lite", command) == command
+
+    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        execution = MagicMock()
+        execution.preview.side_effect = ValueError("preview failed")
+        flow._simulation_execution_override = execution
+
+        units, errors = flow._plan_simulation_targets(
+            ["lite"],
+            {},
+            role="ordinary",
+            revision=None,
+        )
+
+        assert units == []
+        assert errors == ["lite: preview failed"]
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
@@ -916,12 +1110,14 @@ class TestDryRun:
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert isinstance(commands, list)
-        assert len(commands) == 1
-        assert commands[0][:2] == ["sh", "-c"]
-        assert "--top alu_tb" in commands[0][2]
-        assert "BOOLEY_TARGET=lite" in commands[0][2]
+        plan = json.loads(captured.out)
+        assert plan["schema_version"] == 1
+        assert plan["flow"] == "sim"
+        assert len(plan["work_units"]) == 1
+        command = plan["work_units"][0]["commands"][0]["argv"]
+        assert command[:2] == ["sh", "-c"]
+        assert "--top alu_tb" in command[2]
+        assert "BOOLEY_TARGET=lite" in command[2]
 
     @patch(
         "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
@@ -931,8 +1127,29 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert len(commands) == 3  # one per test
+        plan = json.loads(captured.out)
+        assert len(plan["work_units"]) == 3  # one per test
+        assert [unit.test_or_module_scope for unit in flow._flow_plan.work_units] == [
+            ("smoke",),
+            ("stress",),
+            ("boot",),
+        ]
+
+    @patch("booley.flows.sim.flow._get_test_names", return_value={})
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
+    def test_plan_fingerprint_changes_with_configured_environment(
+        self,
+        _mock_backend,
+        _mock_tests,
+        tmp_path: Path,
+    ) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
+            first = flow._plan_simulation(["lite"], {})
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
+            second = flow._plan_simulation(["lite"], {})
+
+        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -946,9 +1163,10 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run", "--test", "smoke"])
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
-        assert len(commands) == 1
-        assert "BOOLEY_TEST_NAMES=smoke" in commands[0][2]
+        plan = json.loads(captured.out)
+        assert len(plan["work_units"]) == 1
+        command = plan["work_units"][0]["commands"][0]["argv"]
+        assert "BOOLEY_TEST_NAMES=smoke" in command[2]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -966,9 +1184,9 @@ class TestDryRun:
         )
         flow._run()
         captured = capsys.readouterr()
-        commands = json.loads(captured.out)
+        plan = json.loads(captured.out)
         # 2 configs x 1 test each
-        assert len(commands) == 2
+        assert len(plan["work_units"]) == 2
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -995,9 +1213,10 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"], seed_core=False)
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        commands = json.loads(capsys.readouterr().out)
-        assert len(commands) == 2  # one per test
-        for cmd in commands:
+        plan = json.loads(capsys.readouterr().out)
+        assert len(plan["work_units"]) == 2  # one per test
+        for unit in plan["work_units"]:
+            cmd = unit["commands"][0]["argv"]
             assert cmd[:2] == ["sh", "-c"]
             script = cmd[2]
             assert "run --build-root" in script and "--setup" in script
@@ -1433,6 +1652,7 @@ class TestReportGeneration:
 
     def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite,full")
+        flow._flow_plan = FlowPlan("sim", "simulate", ())
         first = TargetResult(
             target="lite",
             tb_top="alu_tb",

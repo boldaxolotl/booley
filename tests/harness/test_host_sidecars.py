@@ -7,7 +7,7 @@ import pytest
 
 from booley.config.host_config import InteractiveHostPolicy
 from booley.harness import host_sidecars as sidecars
-from booley.harness.image_lifecycle import Intent
+from booley.runtime.image_lifecycle import Intent
 
 
 def _cp(

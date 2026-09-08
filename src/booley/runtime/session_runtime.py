@@ -30,9 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.harness import devcontainer as dc
-from booley.harness import interactive_docker as idk
-from booley.runtime import auth_token
+from booley.runtime import auth_token, project_image
+from booley.runtime import devcontainer as dc
+from booley.runtime import interactive_docker as idk
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
@@ -367,11 +367,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
     stale image is about to run. Advisory only: the spec is the user's to
     regenerate (`booley init --seed`), never rewritten behind their back.
     """
-    # Deferred import: init_cmd pulls in the whole host-side wizard stack,
-    # which this thin lifecycle module otherwise never needs.
-    from booley.harness.init_cmd import project_sandbox_image
-
-    expected = project_sandbox_image(workspace)
+    expected = project_image.project_sandbox_image(workspace)
     spec_image = spec.get("image")
     if not isinstance(spec_image, str) or not spec_image:
         return
@@ -394,7 +390,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
 
 def _warn_on_stale_booley_bake(workspace: Path) -> None:
     """Warn when the managed Session Image is stale by authoritative provenance."""
-    from booley.harness.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
+    from booley.runtime.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
 
     result = reconcile(ProjectImageScope(workspace), Intent.CHECK)
     if result.status is Status.STALE:
@@ -1008,7 +1004,7 @@ def _up_unlocked(
 
 
 def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
-    from booley.harness.session_refresh import RecoveryOutcome, recover_project_locked
+    from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
 
     recovered = recover_project_locked(workspace)
     if recovered.outcome is not RecoveryOutcome.NONE:
@@ -1025,7 +1021,7 @@ def up(
     expected_payload_fingerprint: str | None = None,
 ) -> str:
     """Create or start one Session while excluding other host mutations."""
-    from booley.harness.lifecycle_lock import host_lifecycle_lock
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
         _recover_before_lifecycle(workspace, "booley session up")
@@ -1041,7 +1037,7 @@ def up(
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
     from booley.eda.provisioning import runtime_spec
-    from booley.harness.session_refresh import has_pending_refresh
+    from booley.runtime.session_refresh import has_pending_refresh
 
     if has_pending_refresh(workspace):
         raise SessionError("Session refresh recovery is pending; run a lifecycle command")
@@ -1095,7 +1091,7 @@ def _prepare_unlocked(workspace: Path) -> str:
 
 def prepare(workspace: Path) -> str:
     """Prepare VS Code topology while excluding other host mutations."""
-    from booley.harness.lifecycle_lock import host_lifecycle_lock
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session prepare"):
         _recover_before_lifecycle(workspace, "booley session prepare")
@@ -2083,7 +2079,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
 
 def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
     """Run one command in this Project's validated Session Runtime."""
-    from booley.harness.lifecycle_lock import host_lifecycle_lock
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock(
         "session command",
@@ -2092,7 +2088,7 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
         _recover_before_lifecycle(workspace, None)
         name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
-    from booley.harness.runtime_attachment import run_command
+    from booley.runtime.runtime_attachment import run_command
 
     try:
         return run_command(
@@ -2168,7 +2164,7 @@ def _down_unlocked(workspace: Path, *, remove: bool = True) -> bool:
 
 def down(workspace: Path, *, remove: bool = True) -> bool:
     """Stop one Session while excluding other host mutations."""
-    from booley.harness.lifecycle_lock import host_lifecycle_lock
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session down"):
         _recover_before_lifecycle(workspace, "booley session down")
@@ -2177,7 +2173,7 @@ def down(workspace: Path, *, remove: bool = True) -> bool:
 
 def status(workspace: Path) -> str:
     """Return the Session Runtime state, including pending refresh recovery."""
-    from booley.harness.session_refresh import has_pending_refresh
+    from booley.runtime.session_refresh import has_pending_refresh
 
     if has_pending_refresh(workspace):
         return "recovery-pending"

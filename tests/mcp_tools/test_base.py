@@ -115,6 +115,79 @@ def test_finalize_failure_propagates_without_persisting_replacement_result() -> 
     assert endpoint.post_run_called is False
 
 
+def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    before = state_file.read_bytes()
+
+    class DryRunMcpTool(ConcreteMcpTool):
+        JOB_CLASS = "agent"
+        non_persisting_dry_run = True
+        post_run_called = False
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            self.post_run_called = True
+
+    endpoint = DryRunMcpTool()
+    env = _env_with_state(state_file)
+    with (
+        mock.patch.dict(os.environ, env),
+        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+    ):
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert endpoint.post_run_called is False
+    assert state_file.read_bytes() == before
+    acquire_slot.assert_not_called()
+
+
+def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
+    class ExistingDryRunMcpTool(ConcreteMcpTool):
+        JOB_CLASS = "agent"
+        post_run_called = False
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            self.post_run_called = True
+
+    endpoint = ExistingDryRunMcpTool()
+    with mock.patch.object(endpoint, "_acquire_job_slot", return_value=(None, None)) as acquire:
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert endpoint.post_run_called is True
+    acquire.assert_called_once_with()
+
+
+def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None:
+    class MutatingDryRunMcpTool(ConcreteMcpTool):
+        non_persisting_dry_run = True
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--dry-run", action="store_true")
+
+        def _run(self) -> McpToolResult:
+            self.args.dry_run = False
+            return McpToolResult(exit_code=EXIT_SUCCESS)
+
+    endpoint = MutatingDryRunMcpTool()
+    with (
+        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+        mock.patch.object(endpoint, "_post_run") as post_run,
+    ):
+        result = endpoint.execute_cli(["--dry-run"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    acquire_slot.assert_not_called()
+    post_run.assert_not_called()
+
+
 class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 
@@ -891,6 +964,51 @@ class TestMcpToolWriteReport:
 
 
 class TestMcpToolMain:
+    @pytest.mark.parametrize(
+        ("run_raises", "expected_exit"),
+        [(False, EXIT_SUCCESS), (True, EXIT_ERROR)],
+    )
+    def test_display_label_brackets_full_lifecycle(
+        self,
+        tmp_path: Path,
+        run_raises: bool,
+        expected_exit: int,
+    ) -> None:
+        state_file = tmp_path / "state.json"
+        DevelopmentState.load(state_file).save()
+
+        class LabelledMcpTool(ConcreteMcpTool):
+            def _run(self) -> McpToolResult:
+                if run_raises:
+                    raise RuntimeError("boom")
+                return McpToolResult(exit_code=EXIT_SUCCESS)
+
+        endpoint = LabelledMcpTool()
+        sentinel = "target demo · test smoke"
+        with (
+            mock.patch.dict(os.environ, _env_with_state(state_file)),
+            mock.patch.object(
+                endpoint,
+                "_resolve_display_label",
+                side_effect=[sentinel, "must not be resolved twice"],
+            ) as resolve_label,
+            mock.patch("booley.mcp.base._write_display_event") as write_event,
+        ):
+            exit_code = endpoint.main([])
+
+        lifecycle_events = [
+            call.args[0]
+            for call in write_event.call_args_list
+            if call.args[0]["type"] in {"endpoint_start", "endpoint_end"}
+        ]
+        assert exit_code == expected_exit
+        resolve_label.assert_called_once_with()
+        assert [event["type"] for event in lifecycle_events] == [
+            "endpoint_start",
+            "endpoint_end",
+        ]
+        assert [event["display_label"] for event in lifecycle_events] == [sentinel, sentinel]
+
     def test_success_flow(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         st = DevelopmentState.load(state_file)

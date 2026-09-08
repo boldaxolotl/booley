@@ -107,10 +107,23 @@ Run `python -m booley.ticket_board log-incident $SLUG --type <type> --step <step
 
 ## 5. Resolution Options
 
-Two distinct retry paths — do NOT conflate them:
+Three distinct recovery paths — do NOT conflate them:
 
 - **Unblock (default retry)**: `unblock` moves the ticket blocked→queue, **preserves** the worktree/branch/logs, and appends your feedback to `blocked.md` so the developer reads it on resume. This is the retry-with-feedback path — use it whenever you have diagnosis or answers to pass forward.
-- **Reset (clean slate)**: `reset` wipes logs, worktree, and branch and re-runs from the beginning. It takes **no feedback** (any feedback you compose is lost). Use only when the worktree is known-bad and a fresh start is required.
+- **Reset (clean execution retry)**: `reset` archives the current run artifacts,
+  recreates the worktree and branch from the same immutable Acceptance Basis,
+  and re-runs from the beginning. It takes **no feedback** (any feedback you
+  compose is lost). Use only when the worktree is known-bad and a fresh
+  execution against the original basis is required.
+- **Return to draft (new authoring generation)**: this is required when
+  `blocked_reason` is `acceptance-input-change-required`, or whenever the
+  Acceptance Basis inputs must change. It preserves the old Acceptance Basis
+  and worktrees for audit, archives the current run history under
+  `logs/<slug>/runs/<NNN>/`, and opens a new generation-qualified authoring
+  workspace from the committed destination refs. Correct the authoring inputs,
+  validate the draft, and enqueue it to publish a new immutable Acceptance
+  Basis. `unblock` and `reset` retain the original basis and are rejected for
+  this block reason.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
 
@@ -118,6 +131,10 @@ Notes:
 - `blocked.md` is an append-only chronological log — read it from top to bottom for escalation history (blocks, failures, crashes, human responses).
 - Feedback lives in `blocked.md`; `unblock --feedback` appends to it. A `reset`
   marks earlier entries as prior-run history.
+- `return-to-draft` archives `blocked.md`, human logs, and runtime evidence with
+  the previous run. It strips the prior `acceptance_basis`, `created`,
+  `feature_branch`, `steps_completed`, and `stage` fields from the editable
+  draft; it does not mutate the archived Ticket or old basis.
 
 ## 6. Collect Feedback
 
@@ -129,10 +146,28 @@ For an unblock retry:
 ## 7. Execute
 
 - **Unblock (retry with feedback)**: `python -m booley.ticket_board unblock $SLUG --feedback "..."` — then print: `Unblocked -> queued. Run ticket execution to resume.`
-- **Reset (clean slate)**: confirm the correction reason, then run
+- **Reset (clean execution retry)**: confirm the correction reason, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`
   (or `booley board reset $SLUG --reason "<correction reason>"`) — then print:
   `Reset -> queued. Run ticket execution from a clean state.`
+- **Return to draft (Acceptance-input correction)**: confirm the correction
+  with the user, then perform this sequence in order:
+
+  1. Run `python -m booley.ticket_board return-to-draft "$SLUG"`.
+  2. Correct the authoring filesets and any other Acceptance Basis inputs in
+     the returned `outer_worktree` and `project_worktree` (when present), and
+     update the draft Ticket when its authored fields must change.
+  3. Resolve the moved Ticket's absolute path under the Project's
+     `tickets/board/drafts/` directory, then run
+     `python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git`
+     and fix every error before continuing.
+  4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
+     Acceptance Basis, then print:
+     `Returned to draft -> corrected authoring generation published and enqueued.`
+
+  Do not use the main checkout for the authoring corrections: use the worktree
+  paths emitted as JSON by `return-to-draft`. This is a new authoring generation,
+  not an ordinary retry of the blocked execution.
 - **Archive**: Confirm first, then `python -m booley.ticket_board archive $SLUG --force` (or `booley board archive $SLUG --force`). `--force` is required because the ticket is not `done`; archive also removes the worktree and branch itself, so no manual `git branch -D` is needed.
 - **Skip**: leave as-is.
 
@@ -140,7 +175,7 @@ User can say "skip" to leave unchanged.
 
 ## 8. Route Confirmed Booley Bugs
 
-After the ticket is unblocked, reset, archived, or skipped, invoke
+After the ticket is unblocked, reset, returned to draft, archived, or skipped, invoke
 `/booley-feedback` for every confirmed Booley-side bug or docs contradiction
 found during this diagnosis. Pass it the reproduction, observed/expected
 behavior, component, source verification, and relevant report/log attachment.

@@ -14,8 +14,8 @@ import pytest
 
 from booley.eda.provisioning import authority, runtime_spec
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
-from booley.harness import devcontainer as dc
-from booley.harness import session_runtime
+from booley.runtime import devcontainer as dc
+from booley.runtime import session_runtime
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -95,6 +95,31 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
     runtime_spec.stamp_path(project).unlink()
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing or corrupt"):
         runtime_spec.validate(project, spec, path)
+
+
+def test_legacy_registrar_remains_valid_for_issued_specs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    legacy = "python -m booley.runtime.incontainer_register"
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=legacy,
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+
+    assert runtime_spec.validate(project, spec, path) == stamp
 
 
 def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
@@ -444,7 +469,7 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
         retained[target] = retained[source]
 
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
-    monkeypatch.setattr("booley.harness.interactive_docker.tag_image", tag)
+    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", tag)
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
     assert retained[stamp.keeper_image] == new_id
@@ -641,7 +666,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     runtime_spec.seal(project, spec)
 
     from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
-    from booley.harness.session_runtime import docker_run_argv
+    from booley.runtime.session_runtime import docker_run_argv
 
     expected_networks = {
         dc.EGRESS_NETWORK,
@@ -1215,7 +1240,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
 def test_image_contract_is_inspected_without_starting_candidate_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.harness import interactive_docker
+    from booley.runtime import interactive_docker
 
     calls: list[list[str]] = []
 

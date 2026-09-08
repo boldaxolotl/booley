@@ -78,8 +78,9 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
     && rm -rf /tmp/iverilog
 
 # Verilator is built from source so host installations do not affect results.
-# v5.052 contains the nested-shift correctness fix (upstream a6f4dd031f50).
-# Keep the system allocator: do not introduce jemalloc with this compiler upgrade.
+# v5.052 is the first stable release after the v5.050 nested-shift miscompile
+# fix (a6f4dd031f50387ae0169490c6d8843b91dd1c07). Keep the full immutable
+# release commit beside the human-readable tag.
 ARG VERILATOR_VERSION=v5.052
 ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
@@ -127,8 +128,8 @@ RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-cl
 RUN echo ">>> Installing minimal runtime dependencies and Python 3.13..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates ccache curl file g++ gcc git jq locales make \
-        ripgrep software-properties-common time unzip xz-utils zlib1g-dev liblz4-dev \
-        libbz2-1.0 libffi8 libgomp1 libpixman-1-0 libpython3.12 \
+        ripgrep software-properties-common time unzip xz-utils zlib1g-dev \
+        libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.12 \
         libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
         libgl1 libopengl0 libqt5charts5 libqt5core5a libqt5gui5 \
         libqt5widgets5 qt5-image-formats-plugins \

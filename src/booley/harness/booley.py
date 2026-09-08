@@ -1246,7 +1246,7 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
 def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     """Create or resume the headless Session Runtime."""
     from booley.harness import auto_doctor
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     _report_upgrade_before_session(project_root)
     vscode = sr.conflicting_vscode_session(project_root)
@@ -1298,7 +1298,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
@@ -1307,7 +1307,7 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     if sr.down(project_root):
         print(f"removed {sr.session_container_name(project_root)}")
@@ -1317,21 +1317,21 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _session_status(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     print(sr.status(project_root))
     return 0
 
 
 def _session_validate(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     print(sr.validate(project_root))
     return 0
 
 
 def _session_prepare(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     print(sr.prepare(project_root))
     return 0
@@ -1339,7 +1339,7 @@ def _session_prepare(_args: argparse.Namespace, project_root: Path) -> int:
 
 def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     """Drive the Session Runtime container headlessly (no VS Code, no UI)."""
-    from booley.harness import session_runtime as sr
+    from booley.runtime import session_runtime as sr
 
     handlers: dict[str, Callable[[argparse.Namespace, Path], int]] = {
         "up": _session_up,

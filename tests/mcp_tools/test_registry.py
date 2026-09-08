@@ -67,6 +67,14 @@ FLOW_SRC = """\
         description = "Run linter"
 """
 
+BUILTIN_FLOW_SRC = """\
+    from booley.flows.base import BuiltinFlow
+
+    class LintCheck(BuiltinFlow):
+        name = "lint_check"
+        description = "Run built-in linter"
+"""
+
 SPECIALIST_SRC = """\
     from booley.specialists.specialist import Specialist
 
@@ -223,6 +231,13 @@ class TestExtractMcpToolInfo:
         info = extract_mcp_tool_info(p, builtin=True)
         assert info is not None
         assert info.name == "lint_check"
+
+    def test_builtin_flow_endpoint(self, tmp_path):
+        p = _write_endpoint_file(tmp_path, "lint.py", BUILTIN_FLOW_SRC)
+        info = extract_mcp_tool_info(p, builtin=True)
+        assert info is not None
+        assert info.name == "lint_check"
+        assert info.kind == "flow"
 
     def test_specialist(self, tmp_path):
         p = _write_endpoint_file(tmp_path, "debug.py", SPECIALIST_SRC)
