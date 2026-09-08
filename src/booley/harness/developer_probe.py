@@ -25,6 +25,7 @@ from typing import Any
 
 from booley.core.boundary import as_positive_int
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.agent_execution import configure_agent_call
 
 try:
     import resource  # POSIX-only; no Windows equivalent for RUSAGE_CHILDREN
@@ -150,7 +151,7 @@ def measure_developer_rss(
     except Exception as exc:  # fail-soft by contract: environment issues become a doctor SKIP
         raise ProbeError(f"probe agent failed: {exc}") from exc
     try:
-        result = asyncio.run(agent_mod.call_agent(params))
+        result = asyncio.run(agent_mod.call_agent(configure_agent_call(params)))
     except Exception as exc:
         # The agent call itself died — auth failure, dead backend. This is not
         # a probe limitation: every ticket's developer launch would fail the

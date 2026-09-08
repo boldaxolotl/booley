@@ -870,10 +870,38 @@ your ticket scopes are drawn too narrowly, not that the agent is misbehaving.
 
 ## Push Notifications
 
-Configure an [ntfy.sh](https://ntfy.sh) topic in `booley.toml` to get a push
-notification when a ticket completes, blocks, or an automatic Doctor run finds
-an issue. No need to watch the terminal. Install the ntfy.sh app on your phone
-to receive them.
+Configure an [ntfy.sh](https://ntfy.sh) topic in your Project's `booley.toml`,
+then subscribe to that topic in the ntfy app:
+
+```toml
+[notifications]
+ntfy_topic = "your-private-topic"
+# Optional: omit events to enable all, or use [] to disable all.
+events = ["blocked", "review", "done", "doctor", "rate_limit"]
+```
+
+`blocked` asks for input, `review` announces work ready for review, and `done`
+announces the accepted transition to `done`, even if cleanup still needs recovery.
+`doctor` announces changed automatic
+Doctor issues; `rate_limit` announces Claude rate-limit waits.
+
+The Session Runtime's default network policy blocks ntfy.sh. To permit delivery,
+add `"ntfy.sh"` to `egress_allowlist` in the existing `[interactive]` table of
+[your host configuration](CONFIG.md#host-configuration-configtoml), preserving
+any other entries:
+
+```toml
+[interactive]
+egress_allowlist = ["ntfy.sh"]
+```
+
+After changing the policy, shut down active Session Runtimes for every Project,
+run `booley bootstrap` on the host to update the shared proxy, then restart the
+Sessions. Recreating a Session alone does not update the proxy. This permission
+applies to all Projects on the host. Delivery uses HTTPS and is best-effort:
+notifications do not change Ticket outcomes, wait for delivery, or retry failed
+requests. Each delivery attempt has a 5-second connection timeout and a
+15-second total timeout. Set `NTFY_DISABLE=1` to suppress delivery in tests.
 
 ## When Booley itself misbehaves
 
@@ -1017,10 +1045,21 @@ its own terminal. Each run claims a Developer Agent slot, capped by
 runs beyond the cap wait in FIFO order and the Console narrates the wait
 ("waiting for slot (position N)"). The same admission applies to the Jobs the
 tickets dispatch (sim/synth runs, Specialists; each Job Class has its own
-cap): interactive work has priority over ticket work, a running Job is never
-preempted, and a queued Job can be cancelled with the `booley_cancel` MCP tool
-(queued Jobs only). A submit is refused (`BLOCKED`) only when a class queue
+cap): interactive work has priority over ticket work, but the scheduler never
+preempts a running Job. A submit is refused (`BLOCKED`) only when a class queue
 itself is full (`queue_max`, default 8).
+
+Explicit cancellation is available for both queued and running Jobs through
+the `booley_cancel` MCP tool, using the `run_id` returned by submit or poll:
+
+- **Queued:** withdraw the Job before execution starts.
+- **Running:** request graceful termination with SIGTERM, then force termination
+  with SIGKILL after a bounded grace period if needed.
+- **Finished:** report that the Job already finished without changing its outcome.
+
+Polling a cancelled Job returns the distinct `CANCELLED` terminal outcome.
+If a queued Job starts before cancellation takes effect, it is cancelled as a
+running Job.
 
 > **Tip: scale out once Booley feels familiar.** The whole system is built to
 > be driven many-at-once: run several Claude Code tabs or parallel Codex CLI

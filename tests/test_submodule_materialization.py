@@ -9,8 +9,8 @@ import pytest
 
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
+    materialize_project_submodules,
     materialize_submodules,
-    materialize_ticket_submodules,
 )
 
 
@@ -185,7 +185,7 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     _git(project_destination, "checkout", "-q", "--detach", "HEAD")
     monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
 
-    materialize_ticket_submodules(source, destination)
+    materialize_project_submodules(source, destination)
 
     materialized = project_destination / "vendor/dependency"
     assert (materialized / "source.sv").read_text(encoding="utf-8") == ("paired dependency\n")
@@ -205,7 +205,7 @@ def test_composite_materialization_normalizes_invalid_paired_checkout(tmp_path: 
         SubmoduleMaterializationError,
         match="paired project repository is unavailable",
     ):
-        materialize_ticket_submodules(source, destination)
+        materialize_project_submodules(source, destination)
 
 
 def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> None:
@@ -592,3 +592,33 @@ def test_discovers_index_gitlinks_instead_of_stale_gitmodules(tmp_path: Path) ->
     materialize_submodules(source, destination)
 
     assert (destination / "vendor/indexed/source.sv").read_text() == "indexed\n"
+
+
+def test_inner_selection_failure_preserves_successful_outer_materialization(tmp_path):
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    commit = _commit_file(dependency, "available\n", "available")
+    source = tmp_path / "source"
+    _init_repo(source)
+    (source / ".gitignore").write_text("/.booley_project\n")
+    _add_submodule(source, dependency, "outer-dependency")
+    _git(source, "add", ".gitignore", ".gitmodules", "outer-dependency")
+    _git(source, "commit", "-qm", "outer")
+    project = source / ".booley_project"
+    _init_repo(project)
+    _add_submodule(project, dependency, "a/available")
+    _git(project, "add", ".gitmodules", "a/available")
+    _git(project, "update-index", "--add", "--cacheinfo", f"160000,{commit},z/missing")
+    _git(project, "commit", "-qm", "inner with missing dependency")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    inner = destination / ".booley_project"
+    _git(tmp_path, "clone", "-q", str(project), str(inner))
+
+    with pytest.raises(SubmoduleMaterializationError, match=r"z/missing.*initialize"):
+        materialize_project_submodules(source, destination)
+
+    assert (destination / "outer-dependency" / "source.sv").read_text() == "available\n"
+    assert not (inner / "a/available" / ".git").exists()
+    assert not (inner / "z/missing" / ".git").exists()
+    assert _git(source, "status", "--porcelain").stdout == ""

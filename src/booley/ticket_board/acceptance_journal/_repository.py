@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar
 
-from booley.runtime.ticket_repositories import resolve_inner_project_repo
+from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 _Result = TypeVar("_Result")
 

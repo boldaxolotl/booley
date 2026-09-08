@@ -12,19 +12,17 @@ from booley.harness.developer import _check_ticket_dirty_statuses, _commit_ticke
 from booley.harness.models import TicketContext
 from booley.harness.setup.project_worktree import ProjectWorktreeError, prepare_project_worktree
 from booley.runtime.project_dir import reset_cache
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.ticket_repositories import (
     TicketWorkspace,
     TicketWorkspaceError,
     TicketWorkspaceRequest,
     WorkspaceDisposition,
     WorkspaceMode,
+    cleanup_project_ticket_branch,
+    merge_project_ticket_branch,
     project_repository_scope,
     project_ticket_branch,
     resolve_inner_project_repo,
-)
-from booley.ticket_board.project_git_ops import (
-    cleanup_project_ticket_branch,
-    merge_project_ticket_branch,
 )
 
 

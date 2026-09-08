@@ -126,7 +126,7 @@ Code review is split into focus categories with severity-stratified issue tracki
 
 - **Correctness category** (functional, protocol, ifdef checking) runs once the RTL is ready and compiles, before any simulation: the equivalent of an RTL engineer's "quick look at the code I have just written," catching bugs before they cost time and tokens in simulation-fix loops.
 - **Quality category** (optional: security, optimization, coding standards) runs after the RTL is bug-free and targets issues beyond functional correctness.
-- Issues are classified as CRITICAL, MAJOR, or MINOR; the ticket cannot pass with unresolved CRITICAL issues.
+- Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes.
 - Testbench code gets its own separate review.
 
 The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves them. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
