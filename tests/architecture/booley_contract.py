@@ -86,6 +86,12 @@ DIRECTION_RULES = (
         "shared Runtime mechanics accept artifact locations and policy from execution callers",
     ),
     DirectionRule(
+        "D15",
+        (prefix("booley.flows"),),
+        (prefix("booley.mcp"),),
+        "Deterministic Flow execution and its shared services do not depend on MCP exposure.",
+    ),
+    DirectionRule(
         "D1",
         tuple(
             prefix(name)

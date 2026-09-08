@@ -19,7 +19,7 @@ from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.mode import SimulationMode
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _apply_basis_selectors
-from booley.mcp.base import EXIT_ERROR, McpToolResult
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
@@ -168,7 +168,7 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     )
     state = DevelopmentState()
     state.init_criteria(template.expand([]), criterion_params=template.expand_params([]))
-    flow = object.__new__(SimulateFlow)
+    flow = SimulateFlow()
     flow._state = state
     flow._args = MagicMock(
         state_file="state.json",
@@ -234,7 +234,7 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
     _apply_basis_selectors(context, template, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
-    flow = object.__new__(SimulateFlow)
+    flow = SimulateFlow()
     flow._state = state
     flow._args = MagicMock(state_file="state.json", test=None, work_dir=".")
     flow._target_handles = {
@@ -408,7 +408,7 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
 
     result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
-    assert isinstance(result, McpToolResult)
+    assert isinstance(result, EndpointOutcome)
     assert result.exit_code == EXIT_ERROR
     assert "resolves to 'other:library:core#sim_core'" in result.report_text
     flow._run_target.assert_not_called()
@@ -438,7 +438,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
 
     result = flow._run_cycle_count_baselines([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
 
-    assert isinstance(result, McpToolResult)
+    assert isinstance(result, EndpointOutcome)
     assert result.exit_code == EXIT_ERROR
     assert "sim_core is ambiguous" in result.report_text
     flow._run_target.assert_not_called()
