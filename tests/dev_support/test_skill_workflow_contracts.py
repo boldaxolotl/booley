@@ -66,6 +66,32 @@ def test_triage_leads_with_explicit_blockers_and_evidence_links():
     assert "Do not open with the passing checks" in blocked
 
 
+def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
+    blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
+    summary = _skill_text("booley-ticket-triage", "steps/04-summary.md")
+
+    ordered_steps = (
+        'python -m booley.ticket_board return-to-draft "$SLUG"',
+        "Correct the authoring filesets",
+        "Resolve the moved Ticket's absolute path",
+        'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
+        'python -m booley.ticket_board enqueue "$SLUG"',
+    )
+    positions = [blocked.index(step) for step in ordered_steps]
+
+    assert positions == sorted(positions)
+    assert "acceptance-input-change-required" in blocked
+    assert "logs/<slug>/runs/<NNN>/" in blocked
+    assert "retain the original basis" in blocked
+    assert "new authoring generation" in blocked
+    assert "`outer_worktree` and `project_worktree`" in blocked
+    assert "`booley board return-to-draft" not in blocked
+    assert "`booley board enqueue" not in blocked
+    assert "published and enqueued" in blocked
+    assert "published and queued" not in blocked
+    assert "| Returned to draft | <n> | ... |" in summary
+
+
 def test_triage_review_briefing_is_fixed_compact_and_html_linked():
     review = _skill_text("booley-ticket-triage", "steps/03-review.md")
     template = _skill_text("booley-ticket-triage", "review-template.md")
@@ -180,18 +206,33 @@ def test_ticket_create_hands_human_off_to_booley_run():
     assert "/booley-run-and-fix" not in skill
 
 
+def test_ticket_create_companions_cover_target_plan_decisions():
+    guidance = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
+    grilling = _skill_text("booley-ticket-create", "grilling.md")
+
+    assert "Criteria, Target Plan" in guidance
+    for required in (
+        "New Target lifecycle",
+        "coexist",
+        "replace a runnable baseline",
+        "evidence-only",
+        "persistent / replacement / ephemeral",
+    ):
+        assert required in grilling
+
+
 def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
     skill = _skill_text("booley-ticket-create")
     contract = " ".join(skill.split())
 
     for required in (
-        "Ticket creation authors only the Ticket, any new Target definitions",
+        "Ticket creation authors only the Ticket, Target definitions and unambiguously owned",
         "empty placeholder files for Scope paths marked `[new]`",
         "existing Targets remain unchanged",
         "The developer who runs the Ticket authors its implementation",
         "A placeholder is a zero-byte file",
         "do not put declarations, modules, packages, assertions, stimulus",
-        "author only the approved new Target definitions",
+        "approved planned Target definitions and owned test tables",
         "create only empty placeholders for `[new]` Scope paths",
         "do not implement any part of the Ticket",
         "report the blocker instead of",
@@ -221,15 +262,15 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
         "Detailed mode skips 2d and 2e",
         "single post-grill review artifact",
         "MANDATORY TICKET APPROVAL",
-        "New Targets",
-        "every Target that ticket creation will author",
-        "name, destination file, and complete proposed definition",
-        "New Targets: none",
-        "Create this ticket and these Targets? (yes / edit / cancel)",
-        "Author the new Targets exactly as approved",
+        "Target Plan",
+        "persistent and ephemeral entries",
+        "complete Target definition",
+        "Target Plan: none",
+        "Create this ticket and Target Plan? (yes / edit / cancel)",
+        "Author them exactly as approved",
         "requires changing an approved Target definition, return to 2f",
         "require no further user confirmation",
-        "Sealing remains an internal implementation detail",
+        "Basis publication remains an internal implementation detail",
     ):
         assert required in contract
     for retired in (
@@ -266,9 +307,7 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         '--on-success "$ON_SUCCESS_JSON"',
     ):
         assert required in contract
-    assert (
-        "Its authority is limited to the proposed Ticket's `criteria` and `on_success`" in contract
-    )
+    assert "optional `target_plan`, and `on_success`" in contract
     for retired in (
         "All five blocks must then be present",
         "An active file fully replaces",
@@ -276,23 +315,38 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "merge, add/remove, or inheritance syntax",
     ):
         assert retired not in contract
-    assert "all five on_success fields" in contract
-    assert "remove_targets" in contract
+    assert "all four on_success fields" in contract
+    assert "remove_targets" not in contract
 
 
-def test_ticket_create_fixes_target_removal_at_creation_time():
+def test_ticket_create_fixes_target_plan_at_creation_time():
     skill = _skill_text("booley-ticket-create")
     template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
     contract = " ".join(skill.split())
 
     for required in (
-        "Decide `on_success.remove_targets` during Ticket creation",
-        "Every selector must resolve uniquely",
-        "Target remains sealed",
-        "Do not use this field as general file cleanup",
+        "Decide the Target Plan during Ticket creation",
+        "Every selector resolves uniquely",
+        "`replacement` retains its candidate and removes its runnable baseline",
+        "Acceptance removes only the derived Target definitions",
     ):
         assert required in contract
-    assert "remove_targets: []" in template
+    assert "target_plan:" in template
+
+
+def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
+    skill = _skill_text("booley-ticket-create")
+    contract = " ".join(skill.split())
+
+    for required in (
+        "ordinary scope-overlap and interface-dependency inference",
+        "add that provider to `dependencies` in human mode",
+        "reject the request and name every missing provider dependency",
+        "After Criteria and the Target Plan are fully resolved, rerun §A",
+        "mandatory in both lightweight and detailed modes",
+        "After all inferred Criteria and Target Plan values are resolved, rerun §A",
+    ):
+        assert required in contract
 
 
 def test_ticket_creation_template_is_packaged_free_form_markdown():
@@ -350,6 +404,26 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "host: final plain `booley doctor`",
     ):
         assert required in skill
+    assert "A clean run is the final deep evidence" in skill
+    assert "instead of rerunning the whole deep matrix after each edit" in skill
+
+
+def test_setup_reserves_deep_doctor_for_one_final_gate():
+    skill = _skill_text("booley-setup")
+    project_config = _skill_text("booley-setup", "steps/2-project-config.md")
+    doctor = _skill_text("booley-setup", "steps/4-doctor.md")
+    greenfield = _skill_text("booley-setup", "steps/new-greenfield.md")
+    agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+
+    assert "`booley doctor --deep` both exit 0" in skill
+    assert "Reserve the full deep Doctor matrix" in project_config
+    assert "booley doctor --deep" not in project_config
+    assert "Re-validate with\n`booley doctor --deep`" not in project_config
+    assert doctor.count("Run `booley doctor --deep`") == 1
+    assert "a failed attempt does not count as the one successful final run" in doctor
+    assert "booley doctor --deep" not in greenfield
+    assert "does not schedule an additional run" in " ".join(greenfield.split())
+    assert "Reuse a successful setup/heal deep result" in agents
 
 
 def test_heal_preserves_scope_and_routes_exceptional_findings():

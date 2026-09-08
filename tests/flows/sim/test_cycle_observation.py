@@ -8,6 +8,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
+from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,
@@ -15,18 +16,114 @@ from booley.flows.sim.flow import (
     parse_cycles,
 )
 from booley.flows.sim.flow import TestResult as SimTestResult
-from booley.fusesoc import fusesoc_registry
+from booley.flows.sim.mode import SimulationMode
 from booley.harness.models import TicketContext
-from booley.harness.setup.intake import _apply_contract_selectors
+from booley.harness.setup.intake import _apply_basis_selectors
 from booley.mcp.base import EXIT_ERROR, McpToolResult
-from booley.ticket_board.target_contract import (
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import AmbiguousTargetError
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
+
+
+def _install_baseline_plan(
+    flow: SimulateFlow,
+    *,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str = "b" * 40,
+) -> None:
+    unit = _plan_unit("baseline", selector, identity, revision)
+    flow._flow_plan = FlowPlan("sim", "simulate", (unit,))
+
+
+def _plan_unit(
+    role: WorkUnitRole,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str | None = None,
+) -> WorkUnitPlan:
+    return WorkUnitPlan(
+        unit_id="sim-baseline-coremark",
+        role=role,
+        revision=revision,
+        selector=selector,
+        target_identity=identity,
+        test_or_module_scope=("coremark",),
+        eda_tool="verilator",
+        timeout_ms=1_000,
+    )
+
+
+def test_simulation_plan_includes_baseline_before_candidate() -> None:
+    flow, _key = _criterion_flow(relative=True)
+    baseline = _plan_unit("baseline", revision="b" * 40)
+    candidate = _plan_unit("candidate")
+    flow._plan_cycle_count_baseline_units = MagicMock(return_value=([baseline], []))
+    flow._plan_simulation_targets = MagicMock(return_value=([candidate], []))
+
+    plan = flow._plan_simulation([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
+
+    assert plan.work_units == (baseline, candidate)
+
+
+def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = tmp_path
+    baseline_ref = "b" * 40
+    baseline = _plan_unit("baseline", identity="drifted", revision=baseline_ref)
+    flow._cycle_baseline_selection = MagicMock(
+        return_value=(baseline_ref, [_TARGET_SELECTOR], None)
+    )
+    flow._plan_simulation_targets = MagicMock(return_value=([baseline], ["preview failed"]))
+    baseline_root = tmp_path / "baseline"
+
+    @contextmanager
+    def fake_baseline_worktree(project_root: Path, revision: str):
+        assert project_root == tmp_path
+        assert revision == baseline_ref
+        yield baseline_root
+
+    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
+
+    units, errors = flow._plan_cycle_count_baseline_units(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+    )
+
+    assert units == [baseline]
+    assert errors == [
+        "preview failed",
+        "sim_core: baseline resolves to 'drifted', expected 'sim_core'",
+    ]
+    assert flow.args.work_dir == tmp_path
+    flow._plan_simulation_targets.assert_called_once_with(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+        role="baseline",
+        revision=baseline_ref,
+    )
+
+
+def _patch_catalog_select(monkeypatch, resolver) -> None:
+    class Catalog:
+        def __init__(self, root):
+            self.root = root
+
+        def select(self, token, **kwargs):
+            return resolver(self.root, token, **kwargs)
+
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        classmethod(lambda _cls, root: Catalog(root)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -73,7 +170,12 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     state.init_criteria(template.expand([]), criterion_params=template.expand_params([]))
     flow = object.__new__(SimulateFlow)
     flow._state = state
-    flow._args = MagicMock(state_file="state.json", test=None, work_dir=".")
+    flow._args = MagicMock(
+        state_file="state.json",
+        test=None,
+        work_dir=".",
+        mode=SimulationMode.SIMULATE,
+    )
     flow._target_handles = {
         "sim_core": MagicMock(
             identity="sim_core",
@@ -85,16 +187,12 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def _sealed_contract() -> TargetContract:
-    return TargetContract(
-        outer_sha="a" * 40,
-        project_sha=None,
-        surface_digest="b" * 64,
-        targets=(_TARGET_IDENTITY,),
+def _acceptance_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
-                criterion="cycle_count",
+                criterion="criteria.mandatory.cycle_count",
                 baseline=_TARGET_IDENTITY,
                 candidate=_TARGET_IDENTITY,
                 baseline_selector=_TARGET_SELECTOR,
@@ -102,9 +200,9 @@ def _sealed_contract() -> TargetContract:
             ),
         ),
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
+                authoring_sha="a" * 40,
                 ticket_ref="refs/heads/ticket",
                 destination_ref="refs/heads/main",
                 destination_sha="c" * 40,
@@ -131,9 +229,9 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         branch="main",
         summary="Qualified Cycle Count Target",
         project_root=Path(),
-        target_contract=_sealed_contract(),
+        acceptance_basis=_acceptance_basis(),
     )
-    _apply_contract_selectors(context, template, expanded, params)
+    _apply_basis_selectors(context, template, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = object.__new__(SimulateFlow)
@@ -212,9 +310,10 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
         return_value=TargetResult(target="sim_core", passed=True, tests=[])
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow, identity="sim_core")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda root, *_args, **_kwargs: MagicMock(
             identity="sim_core",
             selector="sim_core",
@@ -232,7 +331,13 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
 
     assert result["sim_core"].passed is True
     assert flow.args.work_dir == current
-    flow._run_target.assert_called_once_with("sim_core", "tb_top", {"sim_core": ["coremark"]}, [])
+    flow._run_target.assert_called_once_with(
+        "sim_core",
+        "tb_top",
+        {"sim_core": ["coremark"]},
+        [],
+        plan_role="baseline",
+    )
 
 
 def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None:
@@ -252,9 +357,10 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
         )
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda *_args, **_kwargs: MagicMock(
             identity=identity,
             selector="sim_core",
@@ -283,9 +389,10 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.select_target",
+    _patch_catalog_select(
+        monkeypatch,
         lambda *_args, **_kwargs: MagicMock(
             identity="other:library:core#sim_core",
             selector="sim_core",
@@ -315,12 +422,13 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     flow._args.work_dir = current
     flow._target_handles[_TARGET_SELECTOR].project_root = current
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
 
     def ambiguous_target(*_args, **_kwargs):
-        raise fusesoc_registry.AmbiguousTargetError("sim_core is ambiguous")
+        raise AmbiguousTargetError("sim_core is ambiguous")
 
-    monkeypatch.setattr("booley.flows.sim.flow.select_target", ambiguous_target)
+    _patch_catalog_select(monkeypatch, ambiguous_target)
 
     @contextmanager
     def fake_worktree(_root, _ref):
@@ -352,6 +460,7 @@ def test_cycle_criterion_grades_named_test_independently_from_target() -> None:
     flow.set_criterion.assert_called_once()
     assert flow.set_criterion.call_args.args == (key, True)
     assert flow.set_criterion.call_args.kwargs["detail"]["cycles"] == 95
+    assert flow.set_criterion.call_args.kwargs["detail"]["mode"] == "simulate"
 
 
 def test_schema_four_cycle_criterion_grades_selector_evidence() -> None:

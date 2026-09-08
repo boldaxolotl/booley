@@ -10,6 +10,7 @@ from booley.ticket_board.acceptance_journal._model import (
     Candidate,
     JournalState,
     initial_journal,
+    validate_journal,
 )
 
 _SHA_A = "a" * 40
@@ -22,7 +23,7 @@ def _journal() -> AcceptanceJournal:
         [
             {
                 "role": "outer",
-                "sealed_sha": _SHA_A,
+                "authoring_sha": _SHA_A,
                 "ticket_ref": "refs/heads/change-target",
                 "destination_ref": "refs/heads/main",
                 "destination_sha": _SHA_B,
@@ -61,3 +62,23 @@ def test_record_collections_are_immutable() -> None:
 
     with pytest.raises(TypeError):
         journal.sources["outer"] = _SHA_B  # type: ignore[index]
+
+
+def test_schema_five_rejects_finalized_candidate_without_prepared_identity() -> None:
+    journal = _journal().with_sources({"outer": _SHA_A})
+    candidate = Candidate(
+        prepared_sha=_SHA_A,
+        finalized_sha=_SHA_B,
+        staging_ref=f"refs/booley/acceptance/{journal.transaction}/outer",
+        expected_destination_sha=_SHA_B,
+    )
+    value = journal.with_candidate("outer", candidate).mark_prepared().as_dict()
+    value["candidates"]["outer"]["prepared_sha"] = None
+
+    with pytest.raises(ValueError, match="without its prepared identity"):
+        validate_journal(
+            value,
+            journal.ticket,
+            [dict(item) for item in journal.participants],
+            cleanup=False,
+        )

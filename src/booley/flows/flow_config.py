@@ -10,10 +10,13 @@ here and the adapter dispatch died with its module.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 from booley.targets.flow_names import config_section
 
 _UNSET = object()
@@ -36,11 +39,7 @@ def tb_top_for_target(target: str, work_dir: Path | None = None, *, resolved: An
     if work_dir is None:
         return ""
     try:
-        ref = fusesoc_registry.resolve_ref(work_dir, target)
-        return fusesoc_registry.core_target_toplevel(
-            fusesoc_registry.read_core(ref.core_file),
-            ref.name,
-        )
+        return TargetCatalog.build(work_dir).select(target).declared_toplevel
     except (
         Exception  # noqa: BLE001 — best-effort .core read; degrades to an empty TB top
     ):
@@ -56,7 +55,19 @@ def _maybe_resolve(target: str, work_dir: Path | None) -> Any:
     """
     if work_dir is None:
         return None
-    return fusesoc_registry.try_resolve_target(target, project_root=work_dir)
+    try:
+        handle = TargetCatalog.build(work_dir).select(target)
+        build_root = (
+            work_dir / ".booley_project" / ".runtime" / "edalize" / "payload" / handle.name
+        )
+        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
+    except FuseSocError as exc:
+        logging.getLogger(__name__).debug(
+            "Target %s resolution failed: %s",
+            target,
+            exc,
+        )
+        return None
 
 
 def _load_flow_config(flow_name: str, work_dir: Path) -> dict[str, Any]:

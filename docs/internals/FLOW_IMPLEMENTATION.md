@@ -113,43 +113,74 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
-### Ticket Target contracts
+### Shared planning and dry-run lifecycle
+
+The four shipped Flows inherit `BuiltinFlow` and project their authoritative
+preparation into `FlowPlan` / `WorkUnitPlan` records. A work unit keeps the
+timeout-bearing execution identity together: Target and revision role, selected
+tests or modules, EDA tool, sources, constraints, parameters, concrete recipe,
+ordered argv, and expected artifacts. Simulation and Lint consume their planned
+recipes during real execution; ASIC and FPGA implementation do the same for
+candidate and optional baseline work units. All requested units are validated
+before the first real command is dispatched.
+
+`semantic_plan_fingerprint` hashes execution meaning while excluding dry-run
+status, cwd and scratch prefixes, report destinations, and invocation IDs. It is
+separate from adapter-owned recipe/cache fingerprints. This lets tests compare
+dry and real preparation without weakening the concrete evidence identity used
+for implementation reuse.
+
+Built-in dry-run takes a deliberately narrower lifecycle through the endpoint
+coordinator. Boundary and Target validation still run, but heavy Job admission,
+acceptance recording, `_post_run()` state/timeline/Criteria persistence, normal
+verdict reports, and cache population do not. Start and end display events carry
+`dry_run=true`. An explicit report destination may receive only the atomic,
+distinctly typed `<flow>/flow_plan.json` plan.
+
+Authoritative FuseSoC setup or declared generators may be necessary to produce
+EDAM. Dry planning confines that work to an invocation-owned temporary directory
+inside the selected checkout and removes it on normal exit or exceptions. The
+plan discloses that limited preparation side effect; EDA and project Pre-Run
+commands are never dispatched.
+
+### Ticket Acceptance Bases
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
-work. Ticket creation opens a Ticket Workspace before enqueue, so new or changed
+work. `create-file` opens a Ticket Workspace before enqueue, so new or changed
 Targets are authored on Ticket-owned branches without changing the Project's
-destination branches or making Doctor observe a half-configured Target. Schema
-4 records the exact outer and optional project-data participants, their durable
-Ticket and destination refs, the criterion Targets, a normalized surface
-control manifest, and a semantic SHA-256 digest; compatibility `base_sha`
-equals the outer sealed commit. It also seals each Criterion's directed Target Pair using
-canonical Target identities and exact callable selectors. Schema 3 remains
-readable with its historical binding and digest codec; recreate older Tickets
-before enqueueing them.
+destination branches or making Doctor observe a half-configured Target. Enqueue
+publishes schema 1 with the exact outer and optional project-data participants and
+their generation-qualified Ticket and destination refs. A canonical committed record
+pins the authored Ticket and each Criterion's directed Target Pair using canonical
+Target identities and exact callable selectors. Tickets from before Acceptance Basis
+publication are beyond the hard cutoff and must be recreated.
 
-The schema 4 digest covers FuseSoC-selected Target declarations, the test
-registry, Target-selecting Flow configuration, selected SDC/XDC, and referenced
-hooks. Equivalent CAPI2 spellings therefore produce the same digest. Paths are
-part of the identity; RTL and testbench existence and contents remain editable.
+The protected-path policy covers FuseSoC-selected Target declarations, the test
+registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
+discovery sentinels, Project routing, and the committed input record. Exact Git
+comparisons intentionally block formatting-only control changes. RTL and testbench
+contents remain editable when Scope permits them.
 
-Contract metadata is published only after every repository validates and
-commits. Worktrees can then be discarded and reconstructed from the sealed
+Basis metadata is published only after every repository validates and
+commits. Worktrees can then be discarded and reconstructed from the recorded
 refs. Execution starts from those commits, and intake, each Flow, the commit
 guard, review handoff, and final acceptance reject drift as
-`target-contract-change-required`.
+`acceptance-input-change-required`.
 For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
 both revisions. An explicit `{baseline, candidate}` Target Pair runs the
-baseline Target at `base_sha` and the candidate Target at the ticket head. The
-baseline must fully resolve at sealing; a distinct candidate may defer only
+baseline Target at the outer participant's authoring commit and the candidate Target at the ticket head. The
+baseline must fully resolve at enqueue; a distinct candidate may defer only
 missing RTL/TB sources declared Scope `[new]`. Both Targets remain immutable,
 and their measurement basis (technology/part, Flow methodology, top, and
 constraints) must match. A future non-relative Target may likewise omit only
 sources declared Scope `[new]`.
 
-Revision archives the old identity, clears execution evidence, and restarts
-from the destination baseline without transplanting implementation commits.
-Legacy running/review tickets may finish, but a new or reset execution requires
-a valid seal.
+`return-to-draft` preserves the old identity and evidence, then starts a new
+Authoring Generation from committed destination refs.
+Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
+Authoring Generation so enqueue can publish an Acceptance Basis before execution. The
+only automatic replacement is a Basis Refresh for an untouched waiting Ticket after its
+dependencies are accepted; drift still requires `return-to-draft`.
 
 ### Shared run logs and artifacts
 
@@ -240,7 +271,7 @@ owns the exact simulation keys and defaults, while its
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
-(debug-only; never a pass/fail source), `--timeout`, and `--dry-run` resolve
+(debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
 **Pre-Run Commands** (`[flows.sim].pre_run_commands`) are the one
@@ -313,7 +344,7 @@ Count Criterion even when another test in the same batch fails. With no
 
 Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
 and `_cycles` delta thresholds automatically run the same Target/test at the
-Ticket's immutable `base_sha` in an ephemeral worktree. A zero baseline cannot
+Ticket's immutable Acceptance Basis in an ephemeral worktree. A zero baseline cannot
 define a percentage and fails that check closed. Review reports call the result
 an **observed Cycle Count change** and disclose changes to known declared RTL,
 testbench, firmware, vectors, constraints, and other workload inputs. Such input
@@ -348,14 +379,14 @@ logs. A trace that fails to materialize downgrades a passing run to
 
 ## Simulation Elaboration Check
 
-`sim --elab-only` (alias `--build-only`) compiles, elaborates, and links the
+`sim --mode elab-only` compiles, elaborates, and links the
 ordinary untraced simulator image without running tests. It skips Pre-Run
 Commands, Cocotb Python import/execution, test selection, run guards, sentinels,
 and tracing. Because it uses the normal Simulation work root and build policy,
 a later full simulation can reuse the retained image.
 
-Only Simulation Targets are eligible. `--standalone` is an optional stronger
-module sweep and must be paired with `--elab-only`. The mode rejects run-only
+Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
+cumulative stronger module sweep. Both elaboration modes reject run-only
 arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
 `--no-kill`.
 
@@ -369,7 +400,8 @@ record before the run half begins. A later runtime failure, timeout, OOM, or
 signal cannot erase a successful elaboration result. Setup or Pre-Run Command
 failure before the build leaves the elaboration Criterion unchanged.
 
-Elab-only reports stay in the Simulation namespace with `mode: "elab_only"`.
+Elaboration reports stay in the Simulation namespace with canonical mode values
+`elab_only` or `elab_only_standalone`.
 Complete build logs are archived beneath the invocation report directory (or a
 unique log directory under the Simulation work root for a bare CLI run), while
 the shared build cache remains mutable and reusable.
@@ -409,8 +441,8 @@ edit lands in the diff like any other change, where ticket Scope and the
 Reviewer agent ([CONTEXT.md](../CONTEXT.md)) are the control.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
-*and* the Criteria counts with them), `--dry-run`, and `--timeout` (ms, default
-120000).
+*and* the Criteria counts with them), `--dry-run`, and `--timeout-ms` (positive
+integer milliseconds; `[flows.lint].timeout_ms` fallback; default 120000).
 
 ### Verdict semantics
 
@@ -512,15 +544,15 @@ SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
 [CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth).
 
-A physical Target with **no** SDC fileset **and** no explicit clock is a **hard
-error**, not a silent default: the run fails loudly, naming the Target and the
-fix, rather than fabricating a clock the author never chose. Logical mode does
-not run STA, so it neither requires nor consumes SDC. The only way to a canned
-clock in physical mode without SDC is the explicit per-run `--default-clock
-<ps>` opt-in.
-When the Target's SDC declares its own `create_clock` / `set_input_delay` /
-`set_output_delay`, that fully owns the timing intent and the Fmax readout
-recovers the effective period from the SDC's `create_clock`, not a config scalar.
+A physical Target with **no** SDC fileset is a **hard error**, not a silent
+default: the run fails before EDA execution, naming the Target and the fix,
+rather than fabricating a clock the author never chose. Logical mode does not
+run STA, so it neither requires nor consumes SDC. OpenROAD loads the Target's
+SDC files in deterministic fileset order without adding generated clocks, I/O
+delays, drive/load constraints, or other timing defaults. After loading them it
+requires at least one clock; a clockless SDC is classified as an input/config
+error. The Fmax readout recovers the effective period from the authored SDC or
+the clock OpenROAD reports after evaluating dynamic Tcl.
 
 **Constrain the clock near the design's realistic target.** Too aggressive a
 clock, say a 4 ns (250 MHz) constraint on a design whose real speed is tens of
@@ -624,10 +656,10 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
-#### Ticket baselines and sealed recipes
+#### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Target contracts](#ticket-target-contracts).
+[Ticket Acceptance Bases](#ticket-acceptance-bases).
 
 ### Reports and Criteria detail
 
@@ -701,8 +733,9 @@ Dry-run and real execution share one validated Target-recipe preflight. Both
 run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
 sources, and inspect those sources for provenance. Only the real path then
 materializes the Vivado project and creates execution evidence. Multi-Target
-dry-run output is all-or-nothing: a later setup failure suppresses the resolved
-metadata for earlier Targets.
+planning is execution-atomic: a later setup failure prevents every real unit,
+while dry-run retains valid earlier work units beside Target-attributed
+`aggregate_errors` for diagnosis.
 
 Plain Doctor includes the optional FPGA axis when a Target marks
 `booley: {doctor: [fpga]}` or `[flows.fpga]` is present and enabled. It uses the
@@ -846,10 +879,10 @@ clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
-#### Ticket baselines and sealed recipes
+#### Ticket baselines and recorded recipes
 
 Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket Target contracts](#ticket-target-contracts).
+[Ticket Acceptance Bases](#ticket-acceptance-bases).
 
 ### Reports and Criteria detail
 

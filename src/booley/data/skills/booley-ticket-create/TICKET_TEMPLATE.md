@@ -11,23 +11,16 @@ spec: ""                         # optional path to architecture spec
 on_success:
   destination: review               # review | done
   merge: true                       # merge feature branch on completion
-  cleanup: true                     # delete worktree/branch on completion
+  cleanup: true                     # after merge, delete worktree/branch on completion
   triage_report: true               # prepare rich HTML explanation before review
-  remove_targets: []                # criterion-bound Targets deleted only from accepted merge
+# target_plan:                      # omit when this Ticket authors no Target definitions
+#   - target: <selector>            # role: persistent | ephemeral
+#     role: persistent
+#   - target: <replacement-selector>
+#     role: replacement
+#     replaces: <runnable-baseline-selector>
 dependencies: []
 priority: medium
-
-# -- Seal fields (written only by contract-seal; never author these) --------
-target_contract:
-  schema: 4
-  outer_sha: <exact outer contract commit>
-  project_sha: <exact paired project-data commit or empty>
-  surface_digest: <normalized Target/control-plane SHA-256>
-  targets: [<every criterion Target>]
-  bindings: [<criterion Target identities plus exact callable selectors>]
-  participants: [<sealed outer and optional project repository routing>]
-  surface_entries: [<normalized Target/control-plane manifest>]
-base_sha: <identical to target_contract.outer_sha>
 
 # -- Acceptance criteria ------------------------------------------------
 # STRUCTURE only — `booley cheat --criteria` is the single source of truth for criterion names,
@@ -48,25 +41,23 @@ criteria:
       - target: sim_coremark
         test: coremark
         cycle_count_max: 100000              # absolute inclusive cap
-        cycle_count_reduce_at_least: 5%      # ≥5% reduction vs base_sha
-        cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs base_sha
+        cycle_count_reduce_at_least: 5%      # ≥5% reduction vs Acceptance Basis
+        cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs basis
     synthesis_ok:                            # -> synth Flow
       targets:                               # strings use one Target at both revisions
         - target1
         - {baseline: target2_before, candidate: target2_after}  # relative thresholds only
       cell_count_max: 500                    # absolute cap (optional)
-      cell_count_reduce_at_least: 10%        # require ≥10% reduction vs base_sha (optional)
+      cell_count_reduce_at_least: 10%        # require ≥10% reduction vs basis (optional)
     fpga_impl_ok:                            # -> fpga Flow
       targets: [target1, target2]            # paired mapping form is also supported
       lut_count_max: 100000                  # FPGA LUT budget (optional)
       ff_count_max: 100000                   # FPGA flip-flop budget (optional)
 
     # --- Review ------------------------------------------------------------
-    # Each review focus is a separate criterion. Bind TB review explicitly
-    # when more than one structured sim_pass Target is present.
+    # Each review focus is a separate source-scoped criterion.
     review_rtl_bugs: true              # -> corrective _clean review
-    review_tb_quality: true            # -> corrective _clean review; unique sim owner derived
-    # review_tb_quality: {target: target1}  # multi-Target ticket: bind explicitly
+    review_tb_quality: true            # -> corrective _clean review
 
   optional:
     # --- More review focuses (opt-in per ticket) ---------------------------
@@ -86,7 +77,7 @@ criteria:
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
 # feature_branch, created
-# integration_base is unsupported; schema-4 contracts seal destination refs.
+# integration_base is unsupported; Acceptance Basis participants name destination refs.
 # current_tool, tools_completed, last_update, blocked_reason, blocked_tool
 ---
 

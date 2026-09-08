@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +26,6 @@ from booley.agent_workspace.isolation import (
 )
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
-from booley.criteria.state import compute_source_fingerprint
-from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -36,12 +33,17 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
-from booley.review.receipt import ReviewInvocation, build_review_contract_detail
+from booley.review.receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewInvocation,
+    build_review_contract_detail,
+    review_invocation_changed,
+)
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
 from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
 
-from .review_contract import ReviewContractError, ReviewTargetContract, resolve_review_target
+from .review_contract import ReviewContractError, ReviewScopeContract, resolve_review_scope
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
@@ -77,8 +79,7 @@ SEVERITY_MINOR = "MINOR"
 ALL_SEVERITIES = frozenset({SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR})
 _SEVERITY_TAG = {SEVERITY_CRITICAL: "C", SEVERITY_MAJOR: "M", SEVERITY_MINOR: "m"}
 _TB_DUMP_CALL_RE = re.compile(r"\$(?:dumpfile|dumpvars)\b")
-_DIFF_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-_MAX_DIFF_PROMPT_CHARS = 60_000
+
 
 # Confidence levels
 CONFIDENCE_HIGH = "HIGH"
@@ -94,8 +95,6 @@ VERIFY_STATUS_STILL_PRESENT = "STILL_PRESENT"
 ALL_VERIFY_STATUSES = frozenset(
     {VERIFY_STATUS_FIXED, VERIFY_STATUS_WAIVED, VERIFY_STATUS_STILL_PRESENT}
 )
-REVIEW_DETAIL_VERSION = 3
-
 DISPOSITION_CURRENT = "current"
 DISPOSITION_ADVISORY = "advisory"
 DISPOSITION_DEFERRED = "deferred"
@@ -245,29 +244,6 @@ _TB_COVERAGE_EXPANSION_CHECKS = (
 
 
 @dataclass(frozen=True)
-class ReviewDiff:
-    """Scoped Git diff plus the exact new-file line ranges it authors."""
-
-    patch: str
-    changed_ranges: dict[str, tuple[tuple[int, int], ...]]
-
-    def contains(self, file: str, line: int, work_dir: Path) -> bool:
-        """Return whether ``file:line`` is an added or modified diff line."""
-        normalized = _normalize_repo_path(file, work_dir)
-        return any(start <= line <= end for start, end in self.changed_ranges.get(normalized, ()))
-
-    def ranges_text(self) -> str:
-        """Render a compact, deterministic changed-line allowlist."""
-        lines: list[str] = []
-        for path, ranges in sorted(self.changed_ranges.items()):
-            spans = ", ".join(
-                str(start) if start == end else f"{start}-{end}" for start, end in ranges
-            )
-            lines.append(f"- {path}: {spans}")
-        return "\n".join(lines) or "- (no changed lines in the requested scope)"
-
-
-@dataclass(frozen=True)
 class TbProjectPolicy:
     """Project-owned simulation contracts relevant to TB review."""
 
@@ -278,87 +254,6 @@ class TbProjectPolicy:
     @property
     def has_custom_sentinels(self) -> bool:
         return bool(self.pass_sentinels or self.fail_sentinels)
-
-
-def _normalize_repo_path(raw: str, work_dir: Path) -> str:
-    """Normalize a reviewer or Git path to a repository-relative POSIX path."""
-    path = Path(raw.strip().replace("\\", "/"))
-    if path.is_absolute():
-        try:
-            path = path.relative_to(work_dir.resolve())
-        except ValueError:
-            return path.as_posix()
-    text = path.as_posix()
-    return text[2:] if text.startswith("./") else text
-
-
-def _parse_unified_diff(patch: str) -> dict[str, tuple[tuple[int, int], ...]]:
-    """Extract exact new-file line ranges from a zero-context Git diff."""
-    current_file = ""
-    ranges: dict[str, list[tuple[int, int]]] = {}
-    for raw_line in patch.splitlines():
-        if raw_line.startswith("+++ "):
-            current_file = raw_line[4:].strip()
-            if current_file == "/dev/null":
-                current_file = ""
-            elif current_file.startswith("b/"):
-                current_file = current_file[2:]
-            continue
-        match = _DIFF_HUNK_RE.match(raw_line)
-        if not current_file or match is None:
-            continue
-        start = int(match.group(1))
-        count = int(match.group(2) or "1")
-        if count:
-            ranges.setdefault(current_file, []).append((start, start + count - 1))
-    return {path: tuple(spans) for path, spans in ranges.items()}
-
-
-def _load_review_diff(work_dir: Path, diff_ref: str, scope: list[str]) -> ReviewDiff:
-    """Resolve ``diff_ref`` and load a zero-context diff limited to ``scope``."""
-    try:
-        resolved = subprocess.run(
-            ["git", "rev-parse", "--verify", f"{diff_ref}^{{commit}}"],
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(f"could not resolve --diff-ref {diff_ref!r}: {exc}") from exc
-    if resolved.returncode != 0:
-        reason = resolved.stderr.strip() or "not a commit in this worktree"
-        raise ValueError(f"could not resolve --diff-ref {diff_ref!r}: {reason}")
-
-    command = [
-        "git",
-        "-c",
-        "core.quotePath=false",
-        "diff",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-renames",
-        "--unified=0",
-        resolved.stdout.strip(),
-        "--",
-        *scope,
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(f"could not read diff from {diff_ref!r}: {exc}") from exc
-    if result.returncode != 0:
-        reason = result.stderr.strip() or f"git diff exited {result.returncode}"
-        raise ValueError(f"could not read diff from {diff_ref!r}: {reason}")
-    return ReviewDiff(result.stdout, _parse_unified_diff(result.stdout))
 
 
 def _load_tb_project_policy(work_dir: Path) -> TbProjectPolicy:
@@ -396,19 +291,14 @@ _ASSUMPTIONS_MAX_SIZE = 8_000
 _ASSUMPTIONS_FILENAME = "answered_questions.md"
 
 
-def _load_ticket_text(ticket_arg: str | None) -> tuple[str, str]:
-    """Load ticket text from ``$BOOLEY_LOGS_DIR/ticket.md`` or the --ticket arg.
+def _load_ticket_text() -> tuple[str, str]:
+    """Load the sealed Ticket Mode snapshot, when present.
 
-    Returns (ticket_text, source_path); ("", "") when neither is available.
+    Returns (ticket_text, source_path); ("", "") outside Ticket Mode.
     """
     logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
     if logs_dir:
         ticket_path = Path(logs_dir) / "ticket.md"
-        if ticket_path.is_file():
-            return ticket_path.read_text(encoding="utf-8", errors="replace"), str(ticket_path)
-
-    if ticket_arg:
-        ticket_path = Path(ticket_arg)
         if ticket_path.is_file():
             return ticket_path.read_text(encoding="utf-8", errors="replace"), str(ticket_path)
 
@@ -425,24 +315,33 @@ def _truncate_spec(content: str, *, label: str = "") -> str:
 
 
 def resolve_spec_content(
-    ticket_arg: str | None,
+    spec_arg: str | None,
     work_dir: str | Path | None = None,
 ) -> tuple[str | None, str]:
     """Resolve the spec text the spec-focus review checks the RTL against.
 
     Priority:
-      1. ticket ``spec:`` frontmatter field (path to an external spec,
+      1. Ticket Mode's ``spec:`` frontmatter field (path to an external spec,
          relative to the project root / work_dir)
-      2. ticket description body (everything after the frontmatter)
+      2. Ticket Mode's ticket description body
+      3. standalone ``--spec`` content, read verbatim
 
     Returns (spec_text, source_description), or (None, "") when no ticket
     is available or it carries neither a spec file nor a body.
     """
     from booley.ticket_board.frontmatter import parse_frontmatter
 
-    ticket_text, ticket_source = _load_ticket_text(ticket_arg)
+    ticket_text, ticket_source = _load_ticket_text()
     if not ticket_text:
-        return None, ""
+        if not spec_arg:
+            return None, ""
+        spec_path = Path(spec_arg)
+        if not spec_path.is_absolute() and work_dir:
+            spec_path = Path(work_dir) / spec_path
+        if not spec_path.is_file():
+            raise OSError(f"Specification file not found: {spec_path}")
+        content = spec_path.read_text(encoding="utf-8", errors="replace")
+        return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
 
     fields, body = parse_frontmatter(ticket_text)
 
@@ -463,7 +362,7 @@ def resolve_spec_content(
     return None, ""
 
 
-def resolve_ticket_type(ticket_arg: str | None) -> str:
+def resolve_ticket_type() -> str:
     """Return the ticket's ``type:`` frontmatter field, lowercased.
 
     Returns "" when no ticket is reachable or it declares no type — callers
@@ -471,7 +370,7 @@ def resolve_ticket_type(ticket_arg: str | None) -> str:
     """
     from booley.ticket_board.frontmatter import parse_frontmatter
 
-    ticket_text, _ = _load_ticket_text(ticket_arg)
+    ticket_text, _ = _load_ticket_text()
     if not ticket_text:
         return ""
 
@@ -1110,6 +1009,8 @@ class ReviewerSpecialist(Specialist):
     description: str = "Single-focus code review: reports issues by severity"
     code_modifying: bool = False
     config_aware: bool = False
+    accepts_target: bool = False
+    non_persisting_dry_run: bool = True
     min_model: str = "standard"
     default_max_turns: int = 30
     default_timeout: int = 1800  # 30 min
@@ -1162,9 +1063,8 @@ class ReviewerSpecialist(Specialist):
 
     def __init__(self) -> None:
         super().__init__()
-        self._review_diff: ReviewDiff | None = None
         self._tb_project_policy: TbProjectPolicy | None = None
-        self._target_contract: ReviewTargetContract | None = None
+        self._scope_contract: ReviewScopeContract | None = None
         self._non_corrective_issues: list[ReviewIssue] = []
 
     def _workspace_isolation_category(self) -> str | None:
@@ -1194,11 +1094,7 @@ class ReviewerSpecialist(Specialist):
         return "pending" in prior or "issue_list" in prior
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--scope",
-            required=True,
-            help="Comma-separated file paths to review",
-        )
+        self._add_scope_arg(parser, help_text="Comma-separated file paths to review")
         parser.add_argument(
             "--category",
             required=True,
@@ -1214,31 +1110,19 @@ class ReviewerSpecialist(Specialist):
                 f"TB: {', '.join(sorted(TB_FOCUS_CATEGORIES))}."
             ),
         )
-        parser.add_argument(
-            "--diff-ref",
-            default=None,
-            help="Git ref to diff against (omit = review full files)",
+        self._add_steer_arg(
+            parser,
+            help_text="Developer Agent context and steering instructions.",
         )
         parser.add_argument(
-            "--steer",
-            default=None,
-            action="append",
-            help=(
-                "Developer Agent context / steering instructions. Repeatable — "
-                'over MCP this is an array of strings (pass ["..."], not a '
-                "bare string), each element appended as its own context line."
-            ),
-        )
-        parser.add_argument(
-            "--ticket",
+            "--spec",
             default=None,
             help=(
-                "Path to the spec / ticket .md file the review is checking "
-                "against. In Ticket Mode this is auto-resolved from "
-                "$BOOLEY_LOGS_DIR/ticket.md; in Interactive Mode the outer "
-                "agent passes it explicitly (e.g. --ticket /work/spec.md)."
+                "Path to the specification the review checks. Ticket Mode resolves "
+                "its sealed ticket and linked spec automatically."
             ),
         )
+        self._add_dry_run_arg(parser)
 
     # --- Validation ---
 
@@ -1297,38 +1181,21 @@ class ReviewerSpecialist(Specialist):
         focus = next(iter(self._parse_focus()), "")
         return f"review_{self.args.category}_{focus}"
 
-    def _default_target_args(self) -> None:
-        """Default a Target from the active sealed TB-review criterion."""
-        super()._default_target_args()
-        if self.args.target or self._state is None:
-            return
-        try:
-            entry = self.state.criteria.get(self._criterion_key())
-        except ValueError:
-            return
-        params = entry.params if entry is not None else {}
-        selector = params.get("_target_selector") or params.get("target")
-        if isinstance(selector, str) and selector:
-            self.args.target = selector
-
-    def _resolve_target_contract(self) -> str | None:
-        """Resolve Target-specific review behavior once per invocation."""
-        if self._target_contract is not None:
+    def _resolve_scope_contract(self) -> str | None:
+        """Resolve source-language-specific review behavior once per invocation."""
+        if self._scope_contract is not None:
             return None
         try:
-            self._target_contract = resolve_review_target(
-                Path(self.args.work_dir),
+            self._scope_contract = resolve_review_scope(
                 self._parse_scope(),
                 category=self.args.category,
-                target_hint=self.args.target,
             )
-        except (FuseSocError, ReviewContractError, OSError) as exc:
+        except ReviewContractError as exc:
             return str(exc)
         return None
 
     def _review_contract_detail(self) -> dict[str, Any]:
-        target = self._target_contract or ReviewTargetContract((), "none")
-        ticket_arg = getattr(self.args, "ticket", None)
+        spec_arg = getattr(self.args, "spec", None)
         return build_review_contract_detail(
             ReviewInvocation(
                 work_dir=Path(self.args.work_dir),
@@ -1336,28 +1203,36 @@ class ReviewerSpecialist(Specialist):
                 focus=next(iter(self._parse_focus()), ""),
                 scope=tuple(self._parse_scope()),
                 mode="clean" if self._is_clean_mode() else "done",
-                targets=target.selectors,
-                target_kind=target.kind,
-                ticket_path=Path(ticket_arg) if ticket_arg else None,
+                spec_path=Path(spec_arg) if spec_arg else None,
+                steering=self.steering_text(),
             )
         )
 
     def _invalidate_changed_invocation_contract(self, crit_key: str) -> None:
-        """Invalidate a met receipt when this invocation asks a new question."""
-        if not self.state or not self.state.is_met(crit_key):
+        """Restart any receipt when this invocation asks a new question."""
+        if not self.state:
             return
         entry = self.state.criteria.get(crit_key)
         if entry is None:
             return
+        if not entry.detail:
+            return
         previous = (entry.detail or {}).get("contract")
         current = self._review_contract_detail()
-        if not isinstance(previous, dict) or previous == current:
+        previous_version = (entry.detail or {}).get("review_detail_version")
+        if previous_version == REVIEW_DETAIL_VERSION and not review_invocation_changed(
+            previous, current
+        ):
             return
         entry.met = False
         entry.stale = True
-        entry.detail = dict(entry.detail or {})
-        entry.detail["stale_reason"] = "Reviewer scope or Target selection changed; re-running."
-        entry.detail["current_review_contract"] = current
+        entry.detail = {
+            "stale_reason": "Reviewer scope or context changed; restarting discovery.",
+            "current_review_contract": current,
+        }
+        self._clear_session_id(
+            f"reviewer-{self.args.category}-{next(iter(self._parse_focus()), '')}"
+        )
         self.state.save()
 
     # --- System prompt construction ---
@@ -1387,12 +1262,10 @@ class ReviewerSpecialist(Specialist):
         """Build focus-specific system prompt with methodology and inlined guide."""
         category = self.args.category
         gp = _guide_paths()
-        sections: list[str] = []
-
-        # --- Methodology preamble ---
         cat_label = "RTL" if category == "rtl" else "testbench"
-        sections.append(f"You are a {cat_label} code reviewer.\n")
-        sections.append("""\
+        sections = [
+            f"You are a {cat_label} code reviewer.\n",
+            """\
 ## Review methodology
 
 Work through every criterion in the review guide below. Read the files in scope \
@@ -1400,59 +1273,73 @@ first, then use Grep to trace signal drivers/consumers, package definitions, and
 state transitions. Report a finding only after confirming it in the code — drop \
 anything you cannot substantiate. Make each finding's severity and confidence \
 match the strength of the evidence.
-""")
+""",
+        ]
+        self._append_review_guides(sections, focus, category, gp)
+        if focus == "quality":
+            self._append_style_guides(sections, category, gp)
+        sections.append(self._output_instructions(focus, category))
+        return "\n".join(sections)
 
-        # --- Inlined focus guide ---
+    def _append_review_guides(
+        self,
+        sections: list[str],
+        focus: str,
+        category: str,
+        guide_paths: dict[str, str],
+    ) -> None:
+        """Append the source-kind-specific review checklists."""
         if category == "rtl":
             guide_name = "protocol-cdc" if focus == "protocol" else focus
-            guide_path = f"{gp['rtl_guide_dir']}/{guide_name}.md"
+            paths = [f"{guide_paths['rtl_guide_dir']}/{guide_name}.md"]
         else:
-            guide_name = (
-                "cocotb-tb-review.md"
-                if self._target_contract and self._target_contract.is_cocotb
-                else "tb-review.md"
-            )
-            guide_path = f"{gp['tb_guide_dir']}/{guide_name}"
+            if self._scope_contract is None:
+                self._resolve_scope_contract()
+            contract = self._scope_contract or ReviewScopeContract()
+            names = []
+            if contract.has_hdl:
+                names.append("tb-review.md")
+            if contract.has_cocotb:
+                names.append("cocotb-tb-review.md")
+            paths = [f"{guide_paths['tb_guide_dir']}/{name}" for name in names]
 
-        guide_content = self._read_guide(guide_path)
-        if guide_content:
-            sections.append(f"## Review guide — {focus}\n")
-            sections.append(guide_content)
-            sections.append("")
-
-        # --- Style guides (quality focus only) ---
-        if focus == "quality":
-            label = "RTL" if category == "rtl" else "Testbench"
-            key = "rtl_style_guide" if category == "rtl" else "tb_style_guide"
-            style_content = self._read_guide(gp[key])
-            if style_content:
-                sections.append(f"## {label} style guide\n")
-                sections.append(style_content)
+        for guide_path in paths:
+            guide_content = self._read_guide(guide_path)
+            if guide_content:
+                sections.append(f"## Review guide — {focus} ({Path(guide_path).stem})\n")
+                sections.append(guide_content)
                 sections.append("")
 
-            overlay = self._read_style_overlay(category)
-            if overlay:
-                sections.append(f"## {label} style guide — project overlay\n")
-                sections.append(
-                    "Rules below are authored by this project and take "
-                    "precedence over the generic guide above wherever the two "
-                    "conflict. Review against them with the same severity "
-                    "levels.\n"
-                )
-                sections.append(overlay)
-                sections.append("")
-
-        # --- Output format ---
-        # Guides may include human-oriented examples, but the parser contract
-        # below is always authoritative.
-        sections.append(self._output_instructions(focus, category))
-
-        return "\n".join(sections)
+    def _append_style_guides(
+        self,
+        sections: list[str],
+        category: str,
+        guide_paths: dict[str, str],
+    ) -> None:
+        """Append packaged and project-specific style guidance."""
+        label = "RTL" if category == "rtl" else "Testbench"
+        key = "rtl_style_guide" if category == "rtl" else "tb_style_guide"
+        style_content = self._read_guide(guide_paths[key])
+        if style_content:
+            sections.extend([f"## {label} style guide\n", style_content, ""])
+        overlay = self._read_style_overlay(category)
+        if not overlay:
+            return
+        sections.extend(
+            [
+                f"## {label} style guide — project overlay\n",
+                "Rules below are authored by this project and take precedence over the "
+                "generic guide above wherever the two conflict. Review against them with "
+                "the same severity levels.\n",
+                overlay,
+                "",
+            ]
+        )
 
     # --- Prompt construction ---
 
     def _build_prompt(self, *, focus_override: str | None = None) -> str:
-        """Build review task prompt (scope, focus, diff-ref, steering).
+        """Build review task prompt (scope, focus, spec, steering).
 
         The RTL and TB paths differ ONLY in how the ``## Focus:`` header is
         derived — RTL joins a sorted multi-category set, TB uses a single
@@ -1519,11 +1406,6 @@ match the strength of the evidence.
             if project_policy:
                 sections.append(project_policy)
 
-        # Diff-ref is a mechanically enforced finding boundary. The agent is
-        # read-only and cannot run Git, so inline both the allowlist and patch.
-        if self.args.diff_ref:
-            sections.append(self._build_diff_section())
-
         # Steering
         steer_text = self.steering_text()
         if steer_text:
@@ -1533,7 +1415,7 @@ match the strength of the evidence.
 
     def _build_ticket_scope_section(self) -> str:
         """Inline the complete staged Ticket for every review focus."""
-        ticket_text, source = _load_ticket_text(getattr(self.args, "ticket", None))
+        ticket_text, source = _load_ticket_text()
         if not ticket_text:
             return ""
         return (
@@ -1551,7 +1433,7 @@ match the strength of the evidence.
         Returns an empty string when no spec content is available.
         """
         spec_content, spec_source = resolve_spec_content(
-            getattr(self.args, "ticket", None),
+            getattr(self.args, "spec", None),
             getattr(self.args, "work_dir", None),
         )
         if not spec_content:
@@ -1582,7 +1464,7 @@ match the strength of the evidence.
         (``feature``, ``verification``, or an unknown/absent type), where the
         checklist applies at full strength.
         """
-        ticket_type = resolve_ticket_type(getattr(self.args, "ticket", None))
+        ticket_type = resolve_ticket_type()
         rationale = _TB_COVERAGE_POLICY.get(ticket_type)
         if not rationale:
             return ""
@@ -1629,46 +1511,11 @@ match the strength of the evidence.
             )
         return "\n".join(lines) + "\n"
 
-    def _build_diff_section(self) -> str:
-        """Render the resolved diff and its exact finding allowlist."""
-        if self._review_diff is None:
-            return (
-                f"## Diff Reference: {self.args.diff_ref}\n\n"
-                "The diff is resolved when the Specialist runs. Findings are limited to changed code.\n"
-            )
-        patch = self._review_diff.patch
-        if len(patch) > _MAX_DIFF_PROMPT_CHARS:
-            patch = patch[:_MAX_DIFF_PROMPT_CHARS] + "\n[DIFF TRUNCATED — use the allowlist]\n"
-        return (
-            f"## Enforced Diff Boundary: {self.args.diff_ref}\n\n"
-            "Only report a finding when its primary `file:line` is an added or modified "
-            "line in the allowlist below. Unchanged baseline code may be read as context, "
-            "but it is out of scope and cannot be a finding. In particular, do not report "
-            "unchanged sentinel or trace-dump blocks. The harness discards findings outside "
-            "this boundary.\n\n"
-            f"### Changed-line allowlist\n{self._review_diff.ranges_text()}\n\n"
-            f"### Scoped patch\n```diff\n{patch}\n```\n"
-        )
-
     def _tb_policy(self) -> TbProjectPolicy:
         """Return the cached TB policy for this worktree."""
         if self._tb_project_policy is None:
             self._tb_project_policy = _load_tb_project_policy(Path(self.args.work_dir))
         return self._tb_project_policy
-
-    def _prepare_diff_boundary(self) -> str | None:
-        """Load ``--diff-ref`` once; return an actionable error on failure."""
-        if not self.args.diff_ref:
-            return None
-        try:
-            self._review_diff = _load_review_diff(
-                Path(self.args.work_dir),
-                self.args.diff_ref,
-                self._parse_scope(),
-            )
-        except ValueError as exc:
-            return str(exc)
-        return None
 
     @staticmethod
     def _output_instructions(focus: str, category: str = "rtl") -> str:
@@ -1778,8 +1625,17 @@ object, even after calling the capability.
 
     # --- Main execution override ---
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911 — one early return per validation/mode branch of the review flow
+    def _run(self) -> McpToolResult:
         """Single-focus review with terminal _done or disposition-loop _clean mode."""
+        prepared = self._prepare_review_run()
+        if isinstance(prepared, McpToolResult):
+            return prepared
+        if getattr(self.args, "dry_run", False):
+            return self._dry_run_preview()
+        return self._execute_review(prepared)
+
+    def _prepare_review_run(self) -> str | McpToolResult:
+        """Validate source, criterion, and specification inputs."""
         errors = self._validate_args()
         if errors:
             return McpToolResult(
@@ -1806,13 +1662,67 @@ object, even after calling the capability.
                 ),
             )
 
-        target_error = self._resolve_target_contract()
-        if target_error:
+        contract_error = self._resolve_scope_contract()
+        if contract_error:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"Target review contract error: {target_error}",
+                report_text=f"Review scope contract error: {contract_error}",
             )
 
+        if spec_error := self._validate_review_spec():
+            return spec_error
+        return crit_key
+
+    def _validate_review_spec(self) -> McpToolResult | None:
+        """Require readable specification text for the spec focus."""
+        try:
+            spec_content, _ = resolve_spec_content(
+                getattr(self.args, "spec", None),
+                getattr(self.args, "work_dir", None),
+            )
+        except OSError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
+            return None
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=(
+                "Spec review needs a spec to check against, but none was found. "
+                "In Ticket Mode the ticket body (or its spec: field) is used "
+                "automatically; in Interactive Mode pass --spec <path>."
+            ),
+        )
+
+    def _dry_run_preview(self) -> McpToolResult:
+        """Describe the validated review without invoking its agent."""
+        contract = self._scope_contract or ReviewScopeContract()
+        focus = next(iter(self._parse_focus()))
+        if self.args.category == "rtl":
+            guides = [focus]
+        else:
+            guides = []
+            if contract.has_hdl:
+                guides.append("hdl-testbench")
+            if contract.has_cocotb:
+                guides.append("cocotb-testbench")
+        summary = (
+            f"reviewer dry-run: {self.args.category}/{focus}; "
+            f"{len(self._parse_scope())} file(s); guides={','.join(guides)}"
+        )
+        return self._dry_run_result(
+            summary=summary,
+            detail={
+                "category": self.args.category,
+                "focus": focus,
+                "scope": self._parse_scope(),
+                "guides": guides,
+                "spec": getattr(self.args, "spec", None) or "",
+                "steering_count": len(getattr(self.args, "steer", None) or []),
+            },
+        )
+
+    def _execute_review(self, crit_key: str) -> McpToolResult:
+        """Run one validated terminal or corrective review."""
         self._invalidate_changed_invocation_contract(crit_key)
 
         # Refresh before either mode's idempotency guard.  Report submission
@@ -1823,32 +1733,6 @@ object, even after calling the capability.
                 self.state,
                 work_dir=Path(self.args.work_dir),
             )
-
-        diff_error = self._prepare_diff_boundary()
-        if diff_error:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"Diff boundary error: {diff_error}",
-            )
-
-        # Spec-availability guard: a spec-compliance review without a spec is
-        # meaningless — fail fast instead of letting the agent report a clean
-        # pass against nothing (mirrors the scope-file guard above).
-        if SPEC_FOCUS in self._parse_focus():
-            spec_content, _ = resolve_spec_content(
-                getattr(self.args, "ticket", None),
-                getattr(self.args, "work_dir", None),
-            )
-            if spec_content is None:
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=(
-                        "Spec review needs a spec to check against, but none "
-                        "was found. In Ticket Mode the ticket body (or its "
-                        "spec: field) is used automatically; in Interactive "
-                        "Mode pass --ticket <path to spec/ticket .md>."
-                    ),
-                )
 
         self.emit_progress(f"reviewing {self.args.category}/{next(iter(self._parse_focus()))}")
 
@@ -1892,7 +1776,7 @@ object, even after calling the capability.
 
         prior_detail = self._get_prior_detail(crit_key)
         if prior_detail is not None:
-            prior_detail, resolved_count = self._resolve_out_of_diff_pending(
+            prior_detail, resolved_count = self._resolve_out_of_policy_pending(
                 crit_key,
                 prior_detail,
             )
@@ -1959,38 +1843,29 @@ object, even after calling the capability.
             crit_key=crit_key,
         )
 
-    def _resolve_out_of_diff_pending(
+    def _resolve_out_of_policy_pending(
         self,
         crit_key: str,
         prior_detail: dict[str, Any],
     ) -> tuple[dict[str, Any], int]:
-        """Resolve legacy pending findings outside diff/project policy."""
+        """Resolve legacy pending findings which conflict with project policy."""
         policy = self._tb_policy() if self.args.category == "tb" else TbProjectPolicy()
-        if (
-            self._review_diff is None
-            and not policy.has_custom_sentinels
-            and not policy.trace_files
-        ):
+        if not policy.has_custom_sentinels and not policy.trace_files:
             return prior_detail, 0
         source = list(prior_detail.get("pending") or prior_detail.get("issue_list", []))
         kept: list[dict[str, Any]] = []
         resolved_now: list[dict[str, Any]] = []
         for finding in source:
-            in_diff = self._review_diff is None or self._review_diff.contains(
-                str(finding.get("file", "")), int(finding.get("line", 0)), Path(self.args.work_dir)
-            )
             policy_conflict = (
                 bool(policy.trace_files) and _issue_rejects_tb_owned_trace(finding)
             ) or (policy.has_custom_sentinels and _issue_requires_builtin_sentinel(finding))
-            if in_diff and not policy_conflict:
+            if not policy_conflict:
                 kept.append(finding)
             else:
                 entry = dict(finding)
                 entry["status"] = "excluded"
                 entry["exclusion_reason"] = (
                     "conflicts with the configured project simulation contract"
-                    if policy_conflict
-                    else "outside the enforced diff scope"
                 )
                 entry["disposition_actor"] = "harness_policy"
                 resolved_now.append(entry)
@@ -2028,15 +1903,20 @@ object, even after calling the capability.
         )
 
     def _review_source_digest(self) -> str:
-        """Return the current digest for this review's RTL or TB category."""
+        """Return a digest of only the files declared in this review scope."""
         try:
-            fingerprint = compute_source_fingerprint(Path(self.args.work_dir))
+            root = Path(self.args.work_dir)
+            rows = [
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest(),
+                }
+                for path in sorted(self._parse_scope())
+            ]
         except OSError:
             logger.warning("Could not fingerprint sources for review freshness", exc_info=True)
             return ""
-        category = "rtl" if self.args.category == "rtl" else "tb"
-        value = fingerprint.get(category, {})
-        return str(value.get("digest", "")) if isinstance(value, dict) else ""
+        return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
     def _rediscover_after_source_change(
         self,
@@ -2726,16 +2606,15 @@ Schema enforcement (applied upstream by the harness):
         issues: list[ReviewIssue],
         output_lines: list[str],
     ) -> list[ReviewIssue]:
-        """Enforce diff and project-policy boundaries on agent findings."""
+        """Enforce source-scope and project-policy constraints on findings."""
         kept: list[ReviewIssue] = []
-        work_dir = Path(self.args.work_dir)
         policy = self._tb_policy() if self.args.category == "tb" else TbProjectPolicy()
-        ticket_text, _ = _load_ticket_text(getattr(self.args, "ticket", None))
+        ticket_text, _ = _load_ticket_text()
         decisions_text, _ = resolve_documented_assumptions()
         scope_text = "\n\n".join(part for part in (ticket_text, decisions_text) if part)
-        dropped = {"diff": 0, "policy": 0, "scope": 0}
+        dropped = {"policy": 0, "source_scope": 0, "ticket_scope": 0}
         for issue in issues:
-            action = self._review_issue_action(issue, work_dir, policy, scope_text)
+            action = self._review_issue_action(issue, policy, scope_text)
             if action in dropped:
                 dropped[action] += 1
             elif action == "observe":
@@ -2748,49 +2627,52 @@ Schema enforcement (applied upstream by the harness):
     def _review_issue_action(
         self,
         issue: ReviewIssue,
-        work_dir: Path,
         policy: TbProjectPolicy,
         scope_text: str,
     ) -> str:
+        if not self._issue_file_in_scope(issue.file):
+            return "source_scope"
         issue_dict = issue.to_dict()
-        if self._review_diff is not None and not self._review_diff.contains(
-            issue.file,
-            issue.line,
-            work_dir,
-        ):
-            return "diff"
         rejects_trace = policy.trace_files and _issue_rejects_tb_owned_trace(issue_dict)
+        contract = self._scope_contract or ReviewScopeContract()
         rejects_sentinel = _issue_requires_builtin_sentinel(issue_dict) and (
             policy.has_custom_sentinels
-            or (
-                self.args.category == "tb"
-                and self._target_contract is not None
-                and self._target_contract.is_cocotb
-            )
+            or (self.args.category == "tb" and contract.is_cocotb_file(issue.file))
         )
         if rejects_trace or rejects_sentinel:
             return "policy"
         action = _classify_issue_scope(issue, scope_text)
-        return "scope" if action == "drop" else action
+        return "ticket_scope" if action == "drop" else action
+
+    def _issue_file_in_scope(self, issue_file: str) -> bool:
+        """Match an agent-reported file against the explicit review scope."""
+        path = Path(issue_file)
+        if path.is_absolute():
+            try:
+                path = path.resolve().relative_to(Path(self.args.work_dir).resolve())
+            except ValueError:
+                return False
+        contract = self._scope_contract or ReviewScopeContract()
+        return contract.contains_file(str(path))
 
     def _append_filter_summary(
         self,
         output_lines: list[str],
         dropped: dict[str, int],
     ) -> None:
-        if dropped["diff"]:
-            output_lines.append(
-                f"INFO: ignored {dropped['diff']} finding(s) on unchanged baseline lines "
-                f"outside --diff-ref {self.args.diff_ref}"
-            )
         if dropped["policy"]:
             output_lines.append(
                 f"INFO: ignored {dropped['policy']} finding(s) that conflict with the "
                 "project's configured sentinel/trace contract"
             )
-        if dropped["scope"]:
+        if dropped["source_scope"]:
             output_lines.append(
-                f"INFO: ignored {dropped['scope']} finding(s) whose Ticket clause "
+                f"INFO: ignored {dropped['source_scope']} finding(s) outside the "
+                "explicit source scope"
+            )
+        if dropped["ticket_scope"]:
+            output_lines.append(
+                f"INFO: ignored {dropped['ticket_scope']} finding(s) whose Ticket clause "
                 "was not an exact staged requirement"
             )
         if self._non_corrective_issues:

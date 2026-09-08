@@ -34,10 +34,14 @@ Common controls:
 - `--report-dir <path>` persists the invocation report and Flow-specific reports
   under that directory.
 - `--diagnostic` runs without satisfying Ticket Criteria. A strict Ticket
-  requires it when the Flow/Target pair is outside the sealed contract.
-- `--dry-run` validates inputs and previews commands or resolved build inputs,
-  depending on the Flow, without running the EDA tool.
-- `--timeout <milliseconds>` bounds execution when the Flow exposes a timeout.
+  requires it when the Flow/Target pair is outside the Acceptance Basis.
+- `--dry-run` resolves and validates the requested work and prints the same
+  normalized plan shape for every built-in Flow. It does not run EDA or
+  Pre-Run Commands and does not update Booley-managed durable state.
+- `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
+  work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
+  workload-specific default. Queue time is not charged. The old `--timeout`
+  spelling remains a deprecated CLI-only alias for one compatibility window.
 - `booley flow <name> --help` is the authoritative argument list.
 
 ## Shared result contract
@@ -75,6 +79,29 @@ too large for the MCP result, `reports` is empty, `truncated` is `true`, and the
 result retains the Flow, Target, exit code, and artifact pointers needed to open
 the durable report.
 
+### Dry-run plan
+
+Every built-in dry-run returns a JSON `FlowPlan` with `schema_version`, `flow`,
+`mode`, `semantic_plan_fingerprint`, ordered `work_units`, `aggregate_errors`,
+and `planning_disclosures`. Each work unit identifies its Target and revision
+role, timeout, sources and constraints, resolved parameters and recipe, ordered
+command argv, and expected artifacts. Paths are relative to `work_dir` where
+possible; ambient environment values and secrets are excluded.
+
+Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
+selected Target or baseline cannot be planned, while retaining successfully
+planned work units for diagnosis. It never acquires a heavy execution slot,
+runs an EDA or Pre-Run command, changes timeline or Criteria state, records
+acceptance evidence, populates implementation caches, or writes a normal
+verdict report. FuseSoC setup and declared generators may run when authoritative
+resolution requires them, using disposable scratch; this possibility is named
+in `planning_disclosures` and the scratch is removed afterward.
+
+With an explicit `--report-dir`, dry-run atomically writes only the distinct
+`<report-dir>/<flow>/flow_plan.json` artifact. The
+`semantic_plan_fingerprint` excludes scratch and invocation-local paths so the
+same prepared dry and real execution have the same semantic identity.
+
 Ticket and agent-driven runs configure
 `.booley_project/.runtime/flow-reports/` automatically. A direct CLI run writes
 durable JSON only when `--report-dir` or the corresponding runtime environment
@@ -96,10 +123,13 @@ selects Verilator or Icarus and whether the testbench is HDL or cocotb.
 
 Useful controls:
 
-- `--elab-only` compiles, elaborates, and links the ordinary untraced simulator
-  image without running tests. `--build-only` is an equivalent alias.
-- `--standalone` adds the stronger reusable-module sweep and requires
-  `--elab-only`.
+- `--mode simulate` builds and runs selected tests (the default).
+- `--mode elab-only` compiles, elaborates, and links the ordinary untraced
+  simulator image without running tests.
+- `--mode elab-only-standalone` performs ordinary Target elaboration first,
+  then adds the stronger reusable-module sweep.
+- `--elab-only`, `--build-only`, and their combination with `--standalone`
+  remain deprecated CLI-only aliases for one compatibility window.
 - `--test <substring>` selects every registered test whose name contains the
   substring. For a Target with no registered test list, the value is passed
   through as the test name.
@@ -145,7 +175,7 @@ Structured output (`sim_<target>.json`):
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
 Elaboration Check structured output uses the same `sim_<target>.json` name and
-sets `mode` to `elab_only`:
+sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
 
 | Field | Contents |
 |---|---|
@@ -154,7 +184,7 @@ sets `mode` to `elab_only`:
 | `compile_command`, `fileset` | Generated build command and resolved `rtl`/`tb` source lists when setup succeeded. |
 | `log` | Complete archived build log. |
 
-When `--standalone` is requested, the invocation report also carries
+When `mode=elab_only_standalone` is requested, the invocation report also carries
 `detail.standalone` with `modules_checked`, `shared_files`, `frontend`,
 `failures`, optional `unparsed` modules, and the standalone log pointer.
 The sweep can satisfy `elaborate_standalone`; an unavailable or untrustworthy
@@ -188,21 +218,24 @@ Structured output (`lint_report.json`):
 
 `synth` produces a fast ASIC quality-of-results estimate for RTL iteration. It
 is not tape-out synthesis or sign-off. The Target supplies the top, frontend,
-recipe, and optional SDC constraints; the built-in backend supplies its
+recipe, and SDC constraints for physical mode; the built-in backend supplies its
 Nangate45 technology inputs.
 
 Useful controls:
 
-- `--baseline <git-ref>` compares the candidate with its sealed baseline Target
+- `--baseline <git-ref>` compares the candidate with its recorded baseline Target
   at another revision. Directed baseline/candidate Target pairs are supported.
-- `--default-clock <picoseconds>` supplies a clock only when the Target has no
-  SDC.
 - `--frontend <sv2v|slang>` overrides the Target's RTL frontend for diagnosis.
 - `--ppa-profile <compact|balanced|max_frequency>` selects a clean built-in PPA
   profile for this invocation.
 - `--flatten` / `--no-flatten` overrides the Target's hierarchy-flattening
   choice. Synthesis mode (`physical` or `logical`) remains Target-owned; there
   is no per-call `--synth-mode` option.
+
+Physical synthesis requires the selected Target to carry a `file_type: SDC`
+fileset that creates at least one clock. Booley loads those files in Target
+order and adds no generated timing constraints. Logical synthesis does not run
+STA and therefore does not require SDC.
 
 Expert Yosys controls:
 
@@ -267,10 +300,10 @@ Useful controls:
 
 - `--baseline <git-ref>` compares implementation metrics with another revision.
 - `--no-cache` forces fresh implementation instead of reusing a matching result.
-- `--dry-run` performs the same FuseSoC setup and Target source inspection as a
-  real run, then prints resolved part, top, XDC, and source inputs. If any
-  selected Target fails setup, it reports no resolved metadata for any Target.
-  It does not claim to preview a runnable Vivado command.
+- `--dry-run` performs the shared aggregate planning contract described above.
+  Its FPGA work units include resolved part, top, XDC, source inputs, recipe,
+  and the explicitly marked Vivado Make command template. A later Target error
+  blocks execution but does not hide valid earlier work units from the plan.
 
 The Flow normalizes utilization, routed timing/Fmax, fixed critical-condition
 counts (latches, combinational loops, and multi-driven nets), constraint/recipe

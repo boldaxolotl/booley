@@ -1,4 +1,4 @@
-"""Exercise Host Bootstrap, Project Initialization, and deep Doctor in isolation."""
+"""Exercise Host Bootstrap, Project Initialization, and plain Doctor in isolation."""
 
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ def _environment(home: Path, executable: Path) -> dict[str, str]:
             "HOME": str(home),
             "PATH": f"{executable.parent}{os.pathsep}{home / 'bin'}{os.pathsep}{env['PATH']}",
             "PYTHONUSERBASE": str(home / ".local"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
         }
     )
     return env
@@ -98,20 +99,39 @@ def validate(
     checks = [{"id": "host.identity", "status": "pass"}]
     try:
         env = _environment(home, booley)
+        _run(["git", "init", "-b", "main"], project=project, env=env)
+        checks.append({"id": "project.repository", "status": "pass"})
         _run([str(booley), "bootstrap"], project=project, env=env)
         checks.append({"id": "host-bootstrap", "status": "pass"})
-        init = _run([str(booley), "init", "--skip-credentials"], project=project, env=env)
-        if "[!!]" in init or "[XX]" in init:
-            raise RuntimeError("Project Initialization reported a warning or failure")
-        checks.append({"id": "project-initialization.clean", "status": "pass"})
-        doctor = _run(
-            [str(booley), "doctor", "--deep", "--skip-agent-checks"],
+        init = _run(
+            [
+                str(booley),
+                "init",
+                "--scaffold",
+                "release_host_doctor",
+                "--sim-eda-tool",
+                "verilator",
+                "--tb-style",
+                "sv",
+                "--lint-eda-tool",
+                "verilator",
+                "--no-asic",
+                "--provider",
+                "codex",
+                "--auth",
+                "subscription",
+                "--skip-credentials",
+            ],
             project=project,
             env=env,
         )
+        if "[!!]" in init or "[XX]" in init:
+            raise RuntimeError("Project Initialization reported a warning or failure")
+        checks.append({"id": "project-initialization.clean", "status": "pass"})
+        doctor = _run([str(booley), "doctor"], project=project, env=env)
         if "0 failed." not in doctor or _MCP_TOOLS.search(doctor) is None:
-            raise RuntimeError("deep Doctor did not prove the issued-image MCP seam")
-        checks.append({"id": "host-doctor.deep-issued-image", "status": "pass"})
+            raise RuntimeError("plain host Doctor did not prove the issued-image MCP seam")
+        checks.append({"id": "host-doctor.plain-issued-image", "status": "pass"})
     finally:
         probe.unlink(missing_ok=True)
         _editor_marker(home).unlink(missing_ok=True)

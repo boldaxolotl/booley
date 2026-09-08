@@ -23,6 +23,7 @@ import argparse
 import copy
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -33,18 +34,27 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.flows.plan import (
+    CommandPlan,
+    FlowPlan,
+    WorkUnitPlan,
+    WorkUnitRole,
+    normalize_plan_path,
+    stable_unit_id,
+)
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
+from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
-from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -73,6 +83,7 @@ from ..implementation_report import (
     ImplementationReport,
     build_implementation_aggregate,
 )
+from ..invocation import resolve_timeout_ms
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -178,15 +189,7 @@ def _load_flow_config(work_dir: Path) -> dict[str, Any]:
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
-    if requested is not None:
-        try:
-            return max(1, int(requested))
-        except (TypeError, ValueError):
-            return 7_200_000
-    if work_dir is None:
-        return 7_200_000
-    configured = as_int(_load_flow_config(work_dir).get("timeout_ms"), 7_200_000)
-    return max(1, configured if configured is not None else 7_200_000)
+    return resolve_timeout_ms("fpga", work_dir, requested)
 
 
 def _float_metric(data: dict[str, Any], key: str) -> float | None:
@@ -199,7 +202,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BooleyFlow):
+class FpgaImplFlow(BuiltinFlow):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -213,7 +216,7 @@ class FpgaImplFlow(BooleyFlow):
         "Run FPGA implementation for one or more Targets with optional baseline comparison"
     )
     code_modifying: bool = False
-    default_timeout: int = 7200
+    default_timeout: ClassVar[int] = 7200
     # F-14: a passing route otherwise prints nothing on the CLI (its verdict
     # lives in display_lines, which a bare CLI run drops). Surface the RESULT:
     # summary on stdout so PASS is never indistinguishable from a no-op.
@@ -227,20 +230,10 @@ class FpgaImplFlow(BooleyFlow):
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--baseline", default=None, help="Baseline git ref for comparison")
-        parser.add_argument("--dry-run", action="store_true", default=False)
         parser.add_argument(
             "--no-cache",
             action="store_true",
             help="Bypass reusable implementation results and run the recipe again",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=None,
-            help=(
-                "Per-config timeout in milliseconds. Falls back to "
-                "[flows.fpga].timeout_ms (both default to 7200000)."
-            ),
         )
 
     def _build_command(self) -> list[str]:
@@ -249,28 +242,16 @@ class FpgaImplFlow(BooleyFlow):
     def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
         return McpToolResult()
 
-    def _timeout_ms(self) -> int:
-        """Resolve the per-config timeout in ms.
-
-        Precedence: explicit ``--timeout`` CLI/MCP arg (trusted, argparse-typed)
-        > ``[flows.fpga].timeout_ms`` in booley.toml (validated) > a
-        7200000 (2h) default. FPGA impl runs are legitimately long, so the
-        default value is larger than asic synth's; only the resolution
-        *mechanism* is unified with asic (mirrors ``_timeout_ms`` there).
-        """
-        return _resolve_fpga_timeout_ms(self.args.work_dir, self.args.timeout)
-
-    def _get_timeout(self) -> int:
-        """Per-config timeout in whole seconds (see :meth:`_timeout_ms`)."""
-        return max(1, self._timeout_ms() // 1000)
-
-    def _run(self) -> McpToolResult:
+    def _run(self) -> McpToolResult:  # noqa: PLR0911 — linear aggregate orchestration
         # The initially selected worktree, captured before any baseline run
         # swaps ``self.args.work_dir`` to a throwaway worktree.  It distinguishes
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
         self._baseline_full_sha: str | None = None
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="fpga")
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="fpga",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:
@@ -290,9 +271,21 @@ class FpgaImplFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text="fpga is disabled ([flows.fpga].enabled = false).",
             )
+        plan = self._plan_fpga_implementation(targets)
+        self._flow_plan = plan
         if self.args.dry_run:
-            return self._dry_run(targets)
+            return self._dry_run_result(plan)
+        if plan.aggregate_errors:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "fpga: infrastructure error during planning: "
+                    + "; ".join(plan.aggregate_errors)
+                ),
+                detail={"plan": plan.as_dict()},
+            )
         self._eda_tool = "vivado"
+        self._execution_role = "candidate"
         self._implementation_reports: dict[str, ImplementationReport] = {}
         self.reserve_invocation_dir()
         self._write_progress_report(targets, {}, {}, phase="starting")
@@ -348,7 +341,7 @@ class FpgaImplFlow(BooleyFlow):
                 self.state.criteria,
                 "fpga_impl_ok_",
                 handles,
-                contract=getattr(self, "_target_contract", None),
+                basis=getattr(self, "_acceptance_basis", None),
                 flow="fpga",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -375,37 +368,176 @@ class FpgaImplFlow(BooleyFlow):
         self._baseline_full_sha = full_sha
         return error
 
-    def _dry_run(self, targets: list[str]) -> McpToolResult:
-        """Resolve every Target recipe before reporting an all-or-nothing preview."""
-        recipes: list[_ResolvedFpgaRecipe] = []
+    def _fpga_work_unit(
+        self,
+        target: str,
+        recipe: _ResolvedFpgaRecipe,
+        *,
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> WorkUnitPlan:
+        """Project one resolved FPGA recipe into the shared plan contract."""
+        root = Path(self.args.work_dir)
+        work_root = edam_layer.work_root_for(root, "fpga", target)
+        handle = self._target_handle(target)
+        return WorkUnitPlan(
+            unit_id=stable_unit_id(
+                "fpga",
+                target,
+                (target,),
+                role=role,
+                revision=revision,
+            ),
+            role=role,
+            revision=revision,
+            selector=target,
+            target_identity=handle.identity,
+            test_or_module_scope=(target,),
+            eda_tool="vivado",
+            timeout_ms=self._timeout_ms(),
+            sources=tuple(
+                self._fpga_plan_input_path(path, recipe, root)
+                for path in (*recipe.sv_files, *recipe.v_files)
+            ),
+            constraints=tuple(
+                self._fpga_plan_input_path(path, recipe, root) for path in recipe.xdc_files
+            ),
+            parameters=recipe.resolved.parameters,
+            recipe=recipe.recipe_snapshot,
+            commands=(
+                CommandPlan(
+                    ("make", "-C", normalize_plan_path(work_root, root)),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(normalize_plan_path(work_root / "run.log", root),),
+        )
+
+    @staticmethod
+    def _fpga_plan_input_path(
+        path: Path,
+        recipe: _ResolvedFpgaRecipe,
+        root: Path,
+    ) -> str:
+        """Render staged inputs by their stable Target-owned relative names."""
+        try:
+            return path.resolve().relative_to(recipe.resolved.build_root.resolve()).as_posix()
+        except ValueError:
+            return normalize_plan_path(path, root)
+
+    def _plan_fpga_implementation(self, targets: list[str]) -> FlowPlan:
+        """Resolve candidate and baseline recipes before either revision runs."""
+        candidate_units: list[WorkUnitPlan] = []
+        baseline_units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        candidate_revision = git_full_sha("HEAD", Path(self.args.work_dir))
+        candidate_recipes: dict[str, _ResolvedFpgaRecipe] = {}
         for target in targets:
             try:
-                recipes.append(self._resolve_fpga_recipe(target))
-            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
-                logger.debug("fpga dry-run setup failed for %s", target, exc_info=True)
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"fpga dry-run setup failed for {target}: {exc}",
+                if self.args.dry_run:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".booley-fpga-plan-",
+                        dir=self.args.work_dir,
+                    ) as scratch:
+                        recipe = self._resolve_fpga_recipe(
+                            target,
+                            build_root=Path(scratch) / target,
+                        )
+                else:
+                    recipe = self._resolve_fpga_recipe(target)
+                    candidate_recipes[target] = recipe
+                candidate_units.append(
+                    self._fpga_work_unit(
+                        target,
+                        recipe,
+                        role="candidate",
+                        revision=candidate_revision,
+                    )
                 )
-        lines = ["[fpga] dry-run mode (session-runtime)"]
-        for recipe in recipes:
-            lines.append(
-                f"  target={recipe.target} part={recipe.part} top={recipe.top} "
-                f"xdc={','.join(str(path) for path in recipe.xdc_files)}"
-            )
-            lines.append(f"  sv_files={len(recipe.sv_files)} v_files={len(recipe.v_files)}")
-        return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"candidate {target}: {exc}")
+        self._planned_candidate_fpga_recipes = candidate_recipes
 
-    def _resolve_fpga_recipe(self, target: str) -> _ResolvedFpgaRecipe:
+        baseline_ref = self.args.baseline
+        if baseline_ref:
+            baseline_units, baseline_errors = self._plan_fpga_baselines(baseline_ref)
+            errors.extend(baseline_errors)
+        return FlowPlan(
+            flow="fpga",
+            mode="implementation",
+            work_units=(*baseline_units, *candidate_units),
+            aggregate_errors=tuple(errors),
+            planning_disclosures=(
+                "FuseSoC setup may run in invocation-owned disposable scratch; "
+                "EDA commands are not executed.",
+            ),
+        )
+
+    def _plan_fpga_baselines(
+        self,
+        baseline_ref: str,
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Resolve each unique baseline Target in a disposable checkout."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        project_root = Path(self.args.work_dir)
+        revision = git_full_sha(baseline_ref, project_root) or baseline_ref
+        candidate_handles = self._target_handles
+        candidate_refs = self._target_execution_refs
+        try:
+            with baseline_worktree(project_root, baseline_ref) as worktree:
+                self.args.work_dir = worktree
+                self._target_handles, self._target_execution_refs = baseline_execution_context(
+                    self._target_pairs,
+                    worktree,
+                )
+                seen: set[str] = set()
+                for pair in self._target_pairs:
+                    target = pair.baseline.selector
+                    if target in seen:
+                        continue
+                    seen.add(target)
+                    try:
+                        recipe = self._resolve_fpga_recipe(target)
+                        units.append(
+                            self._fpga_work_unit(
+                                target,
+                                recipe,
+                                role="baseline",
+                                revision=revision,
+                            )
+                        )
+                    except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                        errors.append(f"baseline {target}: {exc}")
+        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
+            errors.append(f"baseline: {exc}")
+        finally:
+            self.args.work_dir = project_root
+            self._target_handles = candidate_handles
+            self._target_execution_refs = candidate_refs
+        return units, errors
+
+    def _resolve_fpga_recipe(
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
+    ) -> _ResolvedFpgaRecipe:
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
-        build_root = edam_layer.work_root_for(work_dir, self.name, target, variant="fusesoc")
+        selected_root = build_root or edam_layer.work_root_for(
+            work_dir,
+            self.name,
+            target,
+            variant="fusesoc",
+        )
         handle = self._target_handle(target)
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
-            resolved = resolve_target_execution_ref(handle, ref, build_root=build_root)
+            resolved = resolve_target_execution_ref(handle, ref, build_root=selected_root)
         else:
-            resolved = fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
+            resolved = fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
         validate_top_parameter_intent(resolved, flow="fpga")
         part = self._resolve_part(resolved.flow_options)
         xdc_files = tuple(self._resolve_xdc_files(resolved, target))
@@ -455,7 +587,7 @@ class FpgaImplFlow(BooleyFlow):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            sealed=getattr(self, "_target_contract", None) is not None,
+            basis_bound=getattr(self, "_acceptance_basis", None) is not None,
         )
 
     def _prepare_fpga_command(
@@ -486,7 +618,11 @@ class FpgaImplFlow(BooleyFlow):
         all three as infra errors).
         """
         work_dir = Path(self.args.work_dir)
-        recipe = self._resolve_fpga_recipe(target)
+        recipe = None
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            recipe = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
+        if recipe is None:
+            recipe = self._resolve_fpga_recipe(target)
         work_root = edam_layer.work_root_for(work_dir, "fpga", target)
         edam = fpga_edam.build_fpga_edam(
             name=f"fpga_{target}",
@@ -887,14 +1023,17 @@ class FpgaImplFlow(BooleyFlow):
                 self.args.work_dir = wt
                 current_handles = self._target_handles
                 current_refs = getattr(self, "_target_execution_refs", {})
+                current_role = getattr(self, "_execution_role", "candidate")
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     pairs, wt
                 )
+                self._execution_role = "baseline"
                 try:
                     baseline_results = self._execute_baseline_pairs(pairs, short_sha)
                 finally:
                     self._target_handles = current_handles
                     self._target_execution_refs = current_refs
+                    self._execution_role = current_role
                     self.args.work_dir = project_root
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
             return McpToolResult(

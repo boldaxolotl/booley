@@ -37,9 +37,9 @@ from booley.runtime.git import (
     scope_matches_file,
     strip_scope_new_tag,
 )
-from booley.ticket_board.contract_path_policy import (
-    is_static_contract_path,
-    normalize_contract_path,
+from booley.ticket_board.acceptance_path_policy import (
+    is_static_acceptance_path,
+    normalize_acceptance_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,9 +95,9 @@ _FORBIDDEN_EXACT: frozenset[str] = frozenset(
 
 def is_forbidden_path(path: str) -> bool:
     """True when *path* is Harness bookkeeping the agent must not modify."""
-    normalized = normalize_contract_path(path)
+    normalized = normalize_acceptance_path(path)
 
-    if is_static_contract_path(normalized):
+    if is_static_acceptance_path(normalized):
         return True
     if normalized in _FORBIDDEN_EXACT:
         return True

@@ -22,9 +22,10 @@ import pytest
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
-from booley.targets.target import select_target
+from booley.targets.catalog import TargetCatalog
 
 _BOOLEY_ENV_VARS = (
+    "BOOLEY_CONTROL_PROJECT_ROOT",
     "BOOLEY_SLUG",
     "BOOLEY_STATE_FILE",
     "BOOLEY_LOGS_DIR",
@@ -162,11 +163,12 @@ class TestNoTicketDryRun:
         result = tool._run()
         assert result.exit_code == EXIT_SUCCESS, result.report_text
 
-        commands = json.loads(capsys.readouterr().out)
-        assert len(commands) == 2  # one per test
-        for cmd in commands:
+        plan = json.loads(capsys.readouterr().out)
+        assert plan["flow"] == "sim"
+        assert len(plan["work_units"]) == 2  # one per test
+        for unit in plan["work_units"]:
             # The preview shows the fusesoc --setup command without executing it.
-            script = " ".join(cmd)
+            script = " ".join(unit["commands"][0]["argv"])
             assert "--setup" in script
             assert "--target lite" in script
             assert "sim_demo" in script  # the resolved vlnv from the .core
@@ -317,7 +319,7 @@ targets:
             return SynthMetrics(returncode=0), "baseline output"
 
         with patch.object(tool, "_run_single_config", side_effect=fake_single):
-            handle = select_target(repo, "synth_default", for_flow="synth")
+            handle = TargetCatalog.build(repo).select("synth_default", for_flow="synth")
             plans = target_pair_plans_for_handles({}, "synthesis_ok_", (handle,), flow="synth")
             results, short_sha = tool._run_baseline_configs(plans)
 

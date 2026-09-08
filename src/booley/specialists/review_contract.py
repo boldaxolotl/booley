@@ -1,48 +1,40 @@
-"""Resolve the Target-specific part of a Reviewer invocation.
-
-Reviewer operates on source paths, while simulation behavior belongs to a
-FuseSoC Target.  This module keeps the path-to-Target inference and guide choice
-out of prompt construction so every TB focus uses the same contract.
-"""
+"""Resolve the source-scoped part of a Reviewer invocation."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
-from booley.fusesoc import fusesoc_registry
-from booley.targets.target import (
-    TargetInspection,
-    flow_can_drive,
-    inspect_target,
-    select_target,
-    select_targets,
-)
+_HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 
 
 class ReviewContractError(ValueError):
-    """The requested review cannot be bound to one Target behavior."""
+    """The requested review scope cannot be classified safely."""
 
 
 @dataclass(frozen=True)
-class ReviewTargetContract:
-    """Target facts which affect review guidance and freshness."""
+class ReviewScopeContract:
+    """File-language facts which select review guidance and policy."""
 
-    selectors: tuple[str, ...]
-    kind: str
+    cocotb_files: frozenset[str] = frozenset()
+    hdl_files: frozenset[str] = frozenset()
 
     @property
-    def is_cocotb(self) -> bool:
-        return self.kind == "cocotb"
+    def has_cocotb(self) -> bool:
+        return bool(self.cocotb_files)
 
+    @property
+    def has_hdl(self) -> bool:
+        return bool(self.hdl_files)
 
-@dataclass(frozen=True)
-class _InspectionFailure:
-    """One candidate whose relevance could not be determined."""
+    def is_cocotb_file(self, path: str) -> bool:
+        """Return whether *path* is a Python testbench in this scope."""
+        return _normalize(path) in self.cocotb_files
 
-    identity: str
-    error: str
+    def contains_file(self, path: str) -> bool:
+        """Return whether *path* is one of the explicitly scoped sources."""
+        normalized = _normalize(path)
+        return normalized in self.cocotb_files or normalized in self.hdl_files
 
 
 def _normalize(path: str) -> str:
@@ -50,150 +42,25 @@ def _normalize(path: str) -> str:
     return str(PurePosixPath(value))
 
 
-def _matches_scope(
-    inspection: TargetInspection,
-    scope: set[str],
-    *,
-    category: str,
-) -> bool:
-    candidates = {
-        _normalize(item.path)
-        for item in inspection.inputs
-        if ("tb" in item.tags) == (category == "tb")
-    }
-    return scope.issubset(candidates)
-
-
-def _inspect_candidates(
-    project_root: Path,
-    declarations: Mapping[str, list[fusesoc_registry.TargetRef]],
-    *,
-    category: str,
-    target_hint: str | None,
-) -> tuple[list[tuple[str, TargetInspection]], list[_InspectionFailure]]:
-    if target_hint:
-        selected = select_targets(
-            project_root,
-            target_hint,
-            for_flow="sim" if category == "tb" else None,
-        )
-        if category == "tb" and len(selected) != 1:
-            raise ReviewContractError("TB review requires exactly one --target selector")
-        candidates = []
-        for handle in selected:
-            try:
-                candidates.append((handle.selector, inspect_target(project_root, handle)))
-            except (fusesoc_registry.FuseSocError, OSError) as exc:
-                raise ReviewContractError(
-                    f"Relevant Target {handle.identity!r} could not be inspected: {exc}"
-                ) from exc
-        return candidates, []
-
-    handles = {}
-    failures: list[_InspectionFailure] = []
-    for ref in (ref for bucket in declarations.values() for ref in bucket):
-        if ref.doctor_selftest or (category == "tb" and not flow_can_drive("sim", ref)):
-            continue
-        identity = f"{ref.vlnv}#{ref.name}"
-        try:
-            handle = select_target(project_root, identity)
-        except (fusesoc_registry.FuseSocError, OSError) as exc:
-            failures.append(_InspectionFailure(identity, str(exc)))
-            continue
-        handles[handle.identity] = handle
-
-    candidates = []
-    for handle in sorted(handles.values(), key=lambda item: item.identity):
-        try:
-            candidates.append((handle.selector, inspect_target(project_root, handle)))
-        except (fusesoc_registry.FuseSocError, OSError) as exc:
-            failures.append(_InspectionFailure(handle.identity, str(exc)))
-    return candidates, sorted(failures, key=lambda item: item.identity)
-
-
-def _raise_uncertain_failures(
-    failures: list[_InspectionFailure],
-    matches: list[tuple[str, TargetInspection]],
-) -> None:
-    """Fail closed when an uninspectable candidate might own the scope."""
-    if not failures:
-        return
-    matched = ", ".join(selector for selector, _ in matches)
-    context = f"; inspected matches: {matched}" if matched else ""
-    details = "; ".join(f"{item.identity}: {item.error}" for item in failures)
-    raise ReviewContractError(
-        "Cannot determine a unique review Target because potentially relevant "
-        f"candidate inspection failed{context}; failures: {details}"
-    )
-
-
-def _target_contract(
-    matches: list[tuple[str, TargetInspection]],
-    *,
-    category: str,
-) -> ReviewTargetContract:
-    kinds = {
-        "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
-        for _, inspection in matches
-    }
-    if category == "tb" and len(matches) > 1:
-        candidates = ", ".join(selector for selector, _ in matches)
-        kind_context = f" with conflicting kinds {sorted(kinds)}" if len(kinds) > 1 else ""
+def resolve_review_scope(scope: list[str], *, category: str) -> ReviewScopeContract:
+    """Classify the declared scope without consulting a build Target."""
+    if not scope:
+        raise ReviewContractError("Review scope must contain at least one source file")
+    cocotb: set[str] = set()
+    hdl: set[str] = set()
+    unsupported: list[str] = []
+    for raw_path in scope:
+        path = _normalize(raw_path)
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffix == ".py" and category == "tb":
+            cocotb.add(path)
+        elif suffix in _HDL_SUFFIXES:
+            hdl.add(path)
+        else:
+            unsupported.append(path)
+    if unsupported:
         raise ReviewContractError(
-            f"Review scope ambiguously matches multiple TB Targets ({candidates}){kind_context}; "
-            "pass --target <selector>"
+            f"Unsupported {category.upper()} source kind in --scope: "
+            + ", ".join(sorted(unsupported))
         )
-    selectors = tuple(sorted(selector for selector, _ in matches))
-    if len(kinds) == 1:
-        return ReviewTargetContract(selectors, next(iter(kinds)))
-    if category == "rtl":
-        return ReviewTargetContract(selectors, "none")
-    candidates = ", ".join(selector for selector, _ in matches)
-    raise ReviewContractError(
-        "Review scope matches Targets with conflicting TB verdict contracts "
-        f"({candidates}); pass --target <selector>"
-    )
-
-
-def resolve_review_target(
-    project_root: Path,
-    scope: list[str],
-    *,
-    category: str,
-    target_hint: str | None = None,
-) -> ReviewTargetContract:
-    """Resolve the Target kind shared by all Targets covering *scope*.
-
-    An explicit hint narrows the candidate set exactly.  Without one, every
-    live Target is considered.  Multiple aliases are safe only when they agree
-    whether Cocotb or HDL owns the testbench verdict contract.
-    """
-
-    normalized_scope = {_normalize(path) for path in scope}
-    declarations = fusesoc_registry.target_declarations(project_root)
-
-    refs, failures = _inspect_candidates(
-        project_root,
-        declarations,
-        category=category,
-        target_hint=target_hint,
-    )
-    matches = [
-        (selector, inspection)
-        for selector, inspection in refs
-        if _matches_scope(inspection, normalized_scope, category=category)
-    ]
-    _raise_uncertain_failures(failures, matches)
-    if target_hint and not matches:
-        raise ReviewContractError(
-            f"--target {target_hint!r} does not contain every {category.upper()} scope file"
-        )
-    if not matches:
-        if category == "tb" and declarations:
-            raise ReviewContractError(
-                "No selectable Target contains every TB scope file; register the files "
-                "with tags: [tb] or pass --target <selector>"
-            )
-        return ReviewTargetContract((), "none")
-
-    return _target_contract(matches, category=category)
+    return ReviewScopeContract(frozenset(cocotb), frozenset(hdl))

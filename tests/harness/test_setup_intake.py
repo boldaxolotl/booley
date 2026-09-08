@@ -10,18 +10,16 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
-from booley.ticket_board.target_contract import (
-    ContractParticipant,
-    ContractTargetBinding,
-    TargetContract,
-)
+from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,31 +34,45 @@ _MINIMAL_FIELDS = {
     "criteria": {},
 }
 
+_TEST_BASIS = AcceptanceBasis(
+    participants=(
+        BasisParticipant(
+            "outer",
+            "a" * 40,
+            "refs/heads/booley-generation/1234567890abcdef/test",
+            "refs/heads/master",
+            "c" * 40,
+        ),
+    )
+)
 
-def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
-    tmp_path: Path,
-) -> None:
-    from booley.criteria.actions import planned_invocation
-    from booley.criteria.state import CriterionEntry
-    from booley.harness.setup.intake import _apply_contract_selectors
 
-    contract = TargetContract(
-        outer_sha="a" * 40,
-        project_sha=None,
-        surface_digest="b" * 64,
-        targets=("acme:ip:uart:1.0#lint_uart", "acme:ip:uart:1.0#sim_uart"),
+@pytest.fixture(autouse=True)
+def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "booley.ticket_board.io.TicketIO.load_basis",
+        lambda *_args, **_kwargs: _TEST_BASIS,
+    )
+    monkeypatch.setattr(
+        "booley.ticket_board.workspace_ops.validate_basis_refs",
+        lambda *_args, **_kwargs: [],
+    )
+
+
+def _qualified_target_basis() -> AcceptanceBasis:
+    return AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="lint",
-                criterion="lint_clean",
+                criterion="criteria.mandatory.lint_clean",
                 baseline="acme:ip:uart:1.0#lint_uart",
                 candidate="acme:ip:uart:1.0#lint_uart",
                 baseline_selector="uart#lint_uart",
                 candidate_selector="uart#lint_uart",
             ),
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
-                criterion="review_tb_quality",
+                criterion="criteria.mandatory.review_tb_quality",
                 baseline="acme:ip:uart:1.0#sim_uart",
                 candidate="acme:ip:uart:1.0#sim_uart",
                 baseline_selector="uart#sim_uart",
@@ -68,15 +80,24 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
             ),
         ),
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
+                authoring_sha="a" * 40,
                 ticket_ref="refs/heads/ticket",
                 destination_ref="refs/heads/main",
                 destination_sha="c" * 40,
             ),
         ),
     )
+
+
+def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
+    tmp_path: Path,
+) -> None:
+    from booley.criteria.actions import planned_invocation
+    from booley.criteria.state import CriterionEntry
+    from booley.harness.setup.intake import _apply_basis_selectors
+
     ctx = TicketContext(
         slug="qualified-target",
         ticket_path=tmp_path / "ticket.md",
@@ -84,27 +105,18 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         branch="main",
         summary="Qualified target",
         project_root=tmp_path,
-        target_contract=contract,
+        acceptance_basis=_qualified_target_basis(),
     )
-    template = CriteriaTemplate.from_yaml(
-        {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
-    )
-    expanded = {
-        "lint_clean_acme:ip:uart:1.0#lint_uart": True,
-        **template.expand([]),
-    }
-    criterion_params: dict[str, dict[str, object]] = template.expand_params([])
+    template = CriteriaTemplate.from_yaml({"mandatory": {"lint_clean": ["lint_uart"]}})
+    expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
+    criterion_params: dict[str, dict[str, object]] = {}
 
-    _apply_contract_selectors(ctx, template, expanded, criterion_params)
+    _apply_basis_selectors(ctx, template, expanded, criterion_params)
 
     assert criterion_params == {
         "lint_clean_acme:ip:uart:1.0#lint_uart": {
             "target": "acme:ip:uart:1.0#lint_uart",
             "_target_selector": "uart#lint_uart",
-        },
-        "review_tb_quality_clean": {
-            "target": "acme:ip:uart:1.0#sim_uart",
-            "_target_selector": "uart#sim_uart",
         },
     }
     entry = CriterionEntry(
@@ -118,19 +130,15 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
     )
 
 
-def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _apply_contract_selectors
+def test_scalar_tb_review_does_not_derive_target_binding(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _apply_basis_selectors
 
     identity = "acme:ip:uart:1.0#sim_uart"
-    contract = TargetContract(
-        outer_sha="a" * 40,
-        project_sha=None,
-        surface_digest="b" * 64,
-        targets=(identity,),
+    basis = AcceptanceBasis(
         bindings=(
-            ContractTargetBinding(
+            AcceptanceTargetBinding(
                 flow="sim",
-                criterion="sim_pass",
+                criterion="criteria.mandatory.sim_pass",
                 baseline=identity,
                 candidate=identity,
                 baseline_selector="uart#sim_uart",
@@ -138,9 +146,9 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
             ),
         ),
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
+                authoring_sha="a" * 40,
                 ticket_ref="refs/heads/ticket",
                 destination_ref="refs/heads/main",
                 destination_sha="c" * 40,
@@ -154,7 +162,7 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
         branch="main",
         summary="Derived review target",
         project_root=tmp_path,
-        target_contract=contract,
+        acceptance_basis=basis,
     )
     template = CriteriaTemplate.from_yaml(
         {
@@ -167,19 +175,59 @@ def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) ->
     expanded = template.expand(["sim_uart"])
     params = template.expand_params(["sim_uart"])
 
-    _apply_contract_selectors(ctx, template, expanded, params)
+    _apply_basis_selectors(ctx, template, expanded, params)
 
-    assert params["review_tb_quality_clean"] == {
-        "target": identity,
-        "_target_selector": "uart#sim_uart",
+    assert "review_tb_quality_clean" not in params
+
+
+def test_reviewer_scopes_are_seeded_by_source_category(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.harness.setup.intake import _seed_reviewer_scopes
+
+    ctx = TicketContext(
+        slug="scoped-review",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="verification",
+        branch="main",
+        summary="Scoped review",
+        project_root=tmp_path,
+        scope_raw=["rtl/uart.sv", "tb/test_uart.py"],
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.classified_sources",
+        lambda _root: SimpleNamespace(
+            rtl_source_files=("rtl/uart.sv",),
+            tb_files=("tb/test_uart.py",),
+        ),
+    )
+    params: dict[str, dict[str, object]] = {}
+
+    _seed_reviewer_scopes(
+        ctx,
+        {
+            "review_rtl_bugs_clean": True,
+            "review_tb_quality_clean": True,
+            "coverage_sim": True,
+        },
+        params,
+    )
+
+    assert params == {
+        "review_rtl_bugs_clean": {"scope": ["rtl/uart.sv"]},
+        "review_tb_quality_clean": {"scope": ["tb/test_uart.py"]},
+        "coverage_sim": {"scope": ["rtl/uart.sv"]},
     }
 
 
 def _mock_cli_defaults(mock_cli, *, action="fresh", stage="", fields=None):
     """Set up mock_cli with common defaults."""
     mock_cli.validate_ticket.return_value = {"valid": True}
+    effective_fields = dict(_MINIMAL_FIELDS if fields is None else fields)
+    effective_fields.setdefault("acceptance_basis", _TEST_BASIS.as_dict())
     mock_cli.parse_ticket.return_value = {
-        "fields": fields if fields is not None else dict(_MINIMAL_FIELDS),
+        "fields": effective_fields,
         "body": "",
     }
     mock_cli.resume.return_value = {"action": action, "stage": stage}
@@ -192,11 +240,89 @@ def _write_progress(project_root: Path, slug: str, data: dict):
     (logs_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
-    from booley.harness.setup.intake import _verify_target_contract
+def test_explicit_waiting_intake_promotes_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+    from booley.ticket_board import operations
 
-    contract = MagicMock()
-    contract.as_dict.return_value = {"schema": 3}
+    tickets = tmp_path / ".booley/project/tickets"
+    waiting = tickets / "board/waiting/ticket.md"
+    queued = tickets / "board/queue/ticket.md"
+    waiting.parent.mkdir(parents=True)
+    queued.parent.mkdir(parents=True)
+    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
+    monkeypatch.setattr(
+        intake.ticket_cli, "validate_ticket", lambda *_args, **_kwargs: {"valid": True}
+    )
+
+    def promote(_tio):
+        waiting.rename(queued)
+        return [{"slug": "ticket", "summary": "Ticket"}]
+
+    monkeypatch.setattr(operations, "op_promote_waiting", promote)
+
+    assert intake._promote_waiting_for_intake(tmp_path, waiting, "ticket") == queued
+
+
+@pytest.mark.asyncio
+async def test_automatic_intake_promotes_waiting_before_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import intake
+    from booley.ticket_board import operations
+
+    tickets = tmp_path / ".booley/project/tickets"
+    waiting = tickets / "board/waiting/ticket.md"
+    queued = tickets / "board/queue/ticket.md"
+    waiting.parent.mkdir(parents=True)
+    queued.parent.mkdir(parents=True)
+    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
+    calls = []
+
+    def promote(_tio):
+        calls.append("promote")
+        waiting.rename(queued)
+        return [{"slug": "ticket", "summary": "Ticket"}]
+
+    def select(_root):
+        calls.append("select")
+        assert queued.is_file()
+        return "ticket"
+
+    monkeypatch.setattr(operations, "op_promote_waiting", promote)
+    monkeypatch.setattr(intake, "_auto_select_ticket", select)
+    monkeypatch.setattr(intake, "_resolve_and_validate", lambda *_: (queued, "ticket"))
+    monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda _r, path, _s: path)
+    monkeypatch.setattr(intake.ticket_cli, "parse_ticket", lambda *_: {"fields": {}, "body": ""})
+    expected = TicketContext("ticket", queued, "bugfix", "main", "Ticket", tmp_path)
+    monkeypatch.setattr(intake, "_build_context", lambda *_: expected)
+    monkeypatch.setattr(intake, "_check_dependencies", lambda *_: None)
+    monkeypatch.setattr(intake, "_detect_and_apply_resume", lambda *_: "fresh")
+    monkeypatch.setattr(intake, "_verify_acceptance_basis", lambda *_: None)
+    monkeypatch.setattr(intake, "_validate_retired_criteria", lambda *_: None)
+    monkeypatch.setattr(intake, "_init_criteria_state", lambda *_: None)
+
+    assert await intake.run("", tmp_path) is expected
+    assert calls == ["promote", "select"]
+
+
+def test_acceptance_basis_verifies_published_refs(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _verify_acceptance_basis
+
+    basis = AcceptanceBasis(
+        participants=(
+            BasisParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/booley-generation/1234567890abcdef/sealed-ticket",
+                "refs/heads/main",
+                "c" * 40,
+            ),
+        )
+    )
     ctx = TicketContext(
         slug="sealed-ticket",
         ticket_path=tmp_path / "ticket.md",
@@ -206,42 +332,39 @@ def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
         criteria={"mandatory": {}},
         project_root=tmp_path,
         base_sha="a" * 40,
-        target_contract=contract,
+        acceptance_basis=basis,
     )
 
     with (
         patch(
-            "booley.ticket_board.contract_ops.validate_sealed_refs",
+            "booley.ticket_board.workspace_ops.validate_basis_refs",
             return_value=[],
         ) as validate_refs,
-        patch(
-            "booley.ticket_board.target_contract.validate_contract_fields",
-            return_value=[],
-        ) as validate_fields,
     ):
-        _verify_target_contract(ctx, "fresh")
+        _verify_acceptance_basis(ctx, "fresh")
 
     validate_refs.assert_called_once_with(
         tmp_path,
-        contract,
+        basis,
         slug="sealed-ticket",
         destination_branch="main",
     )
-    validate_fields.assert_called_once_with(
-        {
-            "base_sha": "a" * 40,
-            "target_contract": {"schema": 3},
-            "criteria": {"mandatory": {}},
-            "scope": [],
-            "on_success": {
-                "destination": "review",
-                "merge": True,
-                "cleanup": True,
-                "triage_report": True,
-                "remove_targets": [],
-            },
-        }
+
+
+def test_filesystem_ticket_without_basis_is_not_executable(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _verify_acceptance_basis
+
+    ctx = TicketContext(
+        slug="basisless",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Basisless",
+        project_root=tmp_path,
     )
+
+    with pytest.raises(FatalError, match="acceptance_basis is required"):
+        _verify_acceptance_basis(ctx, "fresh")
 
 
 # ---------------------------------------------------------------------------
@@ -266,21 +389,17 @@ class TestReturnValue:
 
 @pytest.mark.asyncio
 @patch("booley.harness.setup.intake.ticket_cli")
-async def test_sealed_intake_defers_criteria_until_workspace_materialization(
+async def test_basis_intake_defers_criteria_until_workspace_materialization(
     mock_cli,
     project_root: Path,
     sample_ticket: Path,
 ) -> None:
-    contract = TargetContract(
-        outer_sha="a" * 40,
-        project_sha="",
-        surface_digest="b" * 64,
-        targets=(),
+    basis = AcceptanceBasis(
         participants=(
-            ContractParticipant(
+            BasisParticipant(
                 role="outer",
-                sealed_sha="a" * 40,
-                ticket_ref=f"refs/heads/{sample_ticket.stem}",
+                authoring_sha="a" * 40,
+                ticket_ref=(f"refs/heads/booley-generation/1234567890abcdef/{sample_ticket.stem}"),
                 destination_ref="refs/heads/master",
                 destination_sha="c" * 40,
             ),
@@ -288,14 +407,14 @@ async def test_sealed_intake_defers_criteria_until_workspace_materialization(
     )
     fields = {
         **_MINIMAL_FIELDS,
-        "base_sha": contract.outer_sha,
-        "target_contract": contract.as_dict(),
+        "acceptance_basis": basis.as_dict(),
     }
     _mock_cli_defaults(mock_cli, fields=fields)
     from booley.harness.setup.intake import run
 
     with (
-        patch("booley.harness.setup.intake._verify_target_contract"),
+        patch("booley.ticket_board.io.TicketIO.load_basis", return_value=basis),
+        patch("booley.harness.setup.intake._verify_acceptance_basis"),
         patch("booley.harness.setup.intake._init_criteria_state") as init_state,
     ):
         ctx = await run(str(sample_ticket), project_root)
@@ -332,11 +451,23 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         edam_path=tmp_path / "core.eda.yml",
         flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
     )
-    monkeypatch.setattr(fusesoc_registry, "resolve_ref", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         fusesoc_registry,
-        "resolve_target",
+        "resolve_target_handle",
         lambda *_args, **_kwargs: resolved,
+    )
+    monkeypatch.setattr(
+        "booley.targets.catalog.TargetCatalog.build",
+        classmethod(
+            lambda _cls, root: SimpleNamespace(
+                select=lambda target: SimpleNamespace(
+                    selector=target,
+                    name=target,
+                    vlnv="::core:0",
+                    project_root=Path(root),
+                )
+            )
+        ),
     )
     from booley.flows import baseline_worktree as baseline_module
 
@@ -541,6 +672,20 @@ class TestResumeBlocked:
 
         with pytest.raises(FatalError, match="not yet answered"):
             await run(str(sample_ticket), project_root)
+
+    @pytest.mark.asyncio
+    @patch("booley.harness.setup.intake.ticket_cli")
+    async def test_acceptance_input_change_requires_return_to_draft(
+        self, mock_cli, project_root, sample_ticket
+    ):
+        fields = {**_MINIMAL_FIELDS, "blocked_reason": "acceptance-input-change-required"}
+        _mock_cli_defaults(mock_cli, action="resume_blocked", fields=fields)
+        from booley.harness.setup.intake import run
+
+        with pytest.raises(FatalError, match="use return-to-draft"):
+            await run(str(sample_ticket), project_root)
+
+        mock_cli.activate.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")

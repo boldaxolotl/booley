@@ -13,6 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -36,27 +37,18 @@ from booley.specialists.mutation_tester import (
     generate_specs_markdown,
     parse_creator_output,
 )
+from booley.targets.catalog import TargetCatalog
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def test_dut_top_is_not_derived_by_parsing_hdl(tmp_path: Path, monkeypatch) -> None:
-    rtl = tmp_path / "rtl"
-    rtl.mkdir()
-    (rtl / "design.sv").write_text(
-        "// module stale_line;\n/* module stale_block; */\nmodule actual_dut; endmodule\n",
-        encoding="utf-8",
-    )
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        scope="rtl/design.sv",
-        dut_top_module="",
-    )
-
-    assert endpoint._dut_top_module() == ""
+@pytest.mark.parametrize("removed", ["--tb-top", "--dut-top", "--dut-files"])
+def test_removed_topology_options_are_rejected(removed: str) -> None:
+    endpoint = MutationTesterSpecialist()
+    with pytest.raises(SystemExit):
+        endpoint.parse_args(["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"])
 
 
 def _env_with_state(
@@ -127,17 +119,8 @@ def _make_endpoint(
         target,
         "--scope",
         scope,
-        "--tb-top",
-        tb_top,
-        "--dut-top",
-        dut_top_module,
         "--count",
         str(count),
-        # ADR 0022 dec 13: Ticket Mode now derives DUT files from the resolved
-        # sim Target's .core; these unit tests author no .core, so pass them as
-        # the explicit Interactive-Mode arg (which still wins in _dut_files).
-        "--dut-files",
-        *dut_files,
     ]
     if min_detected is not None:
         argv.extend(["--min-detected", str(min_detected)])
@@ -154,6 +137,15 @@ def _make_endpoint(
     endpoint = MutationTesterSpecialist()
     with patch.dict(os.environ, env):
         endpoint.parse_args(argv)
+    # Most focused unit tests do not author a FuseSoC catalog. Preserve their
+    # isolation while production code derives both values from --target.
+    endpoint._dut_files = lambda: list(dut_files)  # type: ignore[method-assign]
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.tb_top_for_target",
+            lambda *_args, **_kwargs: tb_top,
+        )
+    del dut_top_module
     endpoint.read_state()
     return endpoint
 
@@ -443,6 +435,38 @@ class TestArgparse:
         assert endpoint.args.regen_lock is True
 
 
+def test_dry_run_does_not_touch_agents_simulators_or_locks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scope = "rtl/mod_a.sv"
+    _prepare_scope_files(tmp_path, [scope])
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        scope=scope,
+        extra_args=["--dry-run"],
+    )
+    endpoint._target_campaign = SimpleNamespace(
+        execution_units=lambda: (),
+    )
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
+        patch.object(endpoint, "_validate_target_runner"),
+        patch.object(endpoint, "cocotb_target"),
+        patch.object(endpoint, "_target_test_suite"),
+        patch.object(endpoint, "_load_reusable_lock") as load_lock,
+        patch.object(endpoint, "_run_cold") as run_cold,
+    ):
+        result = endpoint._run()
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.detail["mode"] == "dry_run"
+    load_lock.assert_not_called()
+    run_cold.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Endpoint metadata
 # ---------------------------------------------------------------------------
@@ -536,7 +560,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
 
 
 def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
-    """Stub fusesoc_registry.resolve_target — no real FuseSoC (Unit A.3).
+    """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
     dir, so ``_run_elab`` derives the make/bin-dir from it and writes its
@@ -544,7 +568,17 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
     """
     import types
 
-    def _fake_resolve(target, *, project_root, build_root, **kwargs):
+    def _fake_select(work_dir, target, *, for_flow=None):
+        return types.SimpleNamespace(
+            selector=target,
+            name=target,
+            vlnv=f"::{target}:0",
+            project_root=Path(work_dir),
+            eda_tool=eda_tool,
+            cocotb_module=None,
+        )
+
+    def _fake_resolve(handle, *, build_root, **kwargs):
         return types.SimpleNamespace(
             build_root=Path(build_root),
             toplevel="tb",
@@ -552,7 +586,22 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         )
 
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.resolve_target",
+        TargetCatalog,
+        "build",
+        classmethod(
+            lambda _cls, work_dir: type(
+                "FakeCatalog",
+                (),
+                {
+                    "select": lambda _self, target, **kwargs: _fake_select(
+                        work_dir, target, **kwargs
+                    )
+                },
+            )()
+        ),
+    )
+    monkeypatch.setattr(
+        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
         _fake_resolve,
     )
 
@@ -561,7 +610,7 @@ def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
     """Stub the edalize build+run mutation_tester drives (Unit A.3).
 
     Behaviour:
-      * ``resolve_target`` → fake (no FuseSoC CLI).
+      * ``_resolve_target`` → fake (no FuseSoC CLI).
       * a ``make`` build returns rc=0.
       * a ``verilator_run`` per-mutant invocation returns the chosen rc, so
         baseline + pinned + sweep all "pass" by default.
@@ -792,6 +841,7 @@ class TestColdStart:
             scope_hashes={},
             work_dir=tmp_path,
             target="lite",
+            tb_top="design_top_tb",
             report_dir=endpoint.args.report_dir,
             min_detected=2,
             count=2,
@@ -1285,13 +1335,28 @@ class TestValidateScopeAgainstTarget:
 
 def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
+
+    def build(_cls, work_dir):
+        def select(_self, target, **_kwargs):
+            return type(
+                "FakeHandle",
+                (),
+                {
+                    "selector": target,
+                    "name": target,
+                    "vlnv": f"::{target}:0",
+                    "project_root": Path(work_dir),
+                    "cocotb_module": module,
+                    "eda_tool": eda_tool,
+                },
+            )()
+
+        return type("FakeCatalog", (), {"select": select})()
+
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
-        lambda work_dir: {"default": module},
-    )
-    monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools",
-        lambda work_dir: {"default": eda_tool},
+        TargetCatalog,
+        "build",
+        classmethod(build),
     )
 
 
@@ -1424,19 +1489,9 @@ class TestCocotbSimDispatch:
         assert "vcs" in result.report_text
         assert calls == []  # the creator agent was never invoked
 
-    def test_tb_top_not_required_for_cocotb_target(self, tmp_path: Path, monkeypatch):
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
+    def test_tb_top_is_not_an_input(self, tmp_path: Path, monkeypatch):
         endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
-        endpoint.args.tb_top = None
-        assert endpoint._validate_interactive_args() is None
-
-    def test_tb_top_still_required_for_classic_target(self, tmp_path: Path, monkeypatch):
-        _patch_cocotb_target(monkeypatch, module=None)
-        endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
-        endpoint.args.tb_top = None
-        result = endpoint._validate_interactive_args()
-        assert result is not None
-        assert "--tb-top is required" in result.report_text
+        assert not hasattr(endpoint.args, "tb_top")
 
 
 # ---------------------------------------------------------------------------

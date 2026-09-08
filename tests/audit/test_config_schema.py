@@ -261,9 +261,16 @@ def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
     )
     warnings = [item for item in audit.findings if item.check_id == "config.flow-knob-ignored"]
     assert {item.subject for item in warnings} == {
-        "lint.timeout_ms",
         "lint.pre_run_commands",
     }
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "120000"])
+def test_all_builtin_flow_timeouts_must_be_positive_integers(value: object) -> None:
+    for flow_name in ("sim", "lint", "synth", "fpga"):
+        audit = flow_schema.audit_flow_table(flow_name, {"timeout_ms": value})
+        assert not audit.is_valid
+        assert "timeout_ms must be a positive integer" in audit.findings[0].message
 
 
 def test_flow_collection_reports_required_sections_and_retired_aliases() -> None:
@@ -287,7 +294,7 @@ def test_flow_collection_reports_retired_elaboration_tables(retired: str) -> Non
 
     assert not audit.is_valid
     finding = next(item for item in audit.findings if f"[flows.{retired}]" in item.message)
-    assert "sim --elab-only" in finding.fix
+    assert "sim --mode elab-only" in finding.fix
     assert "[flows.sim].standalone_frontend" in finding.fix
 
 

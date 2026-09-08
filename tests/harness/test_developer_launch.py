@@ -117,6 +117,7 @@ def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
     assert env["BOOLEY_PRIMARY_PROVIDER"] == "claude"
     assert env["BOOLEY_PRIMARY_AUTH"] == "subscription"
     assert env["BOOLEY_PROJECT_DIR"] == str(tmp_path / ".booley_project")
+    assert env["BOOLEY_CONTROL_PROJECT_ROOT"] == str(tmp_path)
     # Nested markers must never leak onto the developer's server.
     assert "BOOLEY_NESTED_AGENT" not in env
 
@@ -173,6 +174,7 @@ def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_p
 
     with _env_guard():
         os.environ["BOOLEY_PROJECT_DIR"] = str(control_project_dir)
+        os.environ["BOOLEY_CONTROL_PROJECT_ROOT"] = str(tmp_path / "outer-project")
         asyncio.run(
             developer._launch_developer_agent(
                 "prompt",
@@ -186,8 +188,10 @@ def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_p
         )
 
         assert os.environ["BOOLEY_PROJECT_DIR"] == str(control_project_dir)
+        assert os.environ["BOOLEY_CONTROL_PROJECT_ROOT"] == str(tmp_path / "outer-project")
 
     assert cfg.active_backend.captured["env"]["BOOLEY_PROJECT_DIR"] == str(ticket_project_dir)
+    assert cfg.active_backend.captured["env"]["BOOLEY_CONTROL_PROJECT_ROOT"] == str(tmp_path)
 
 
 def test_launch_restores_every_overridden_environment_key(tmp_path, monkeypatch):
@@ -242,6 +246,7 @@ def test_developer_codex_home_config(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("BOOLEY_SLUG", "my-ticket")
+    monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", "/project/control-root")
     monkeypatch.setenv("BOOLEY_WORKSPACE_SLUG", "my-project")
     monkeypatch.setenv("BOOLEY_AGENT_ROLE", "ticket")
     monkeypatch.setenv("BOOLEY_STATE_FILE", "/x/booley_state.json")
@@ -258,6 +263,7 @@ def test_developer_codex_home_config(tmp_path, monkeypatch):
     assert 'web_search = "disabled"' in config
     assert 'BOOLEY_MCP_TOOLS = "lint,sim"' in config
     assert 'BOOLEY_SLUG = "my-ticket"' in config
+    assert 'BOOLEY_CONTROL_PROJECT_ROOT = "/project/control-root"' in config
     assert 'BOOLEY_WORKSPACE_SLUG = "my-project"' in config
     assert 'BOOLEY_AGENT_ROLE = "ticket"' in config
     assert 'BOOLEY_STATE_FILE = "/x/booley_state.json"' in config

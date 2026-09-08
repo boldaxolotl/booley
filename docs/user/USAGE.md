@@ -270,13 +270,13 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints commands without executing them; `booley flow <name> --help` shows the full contract.
+Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
 Key Flow-specific controls:
 
-- `sim`: `--elab-only` (`--build-only`) compiles, elaborates, and links without running tests; add `--standalone` for the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
-- `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
+- `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
 
 **Specialists**
@@ -291,7 +291,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB review may add `--target <sim-target>`.
+Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -301,9 +301,9 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB r
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
-| `tb` | `quality` | False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
+| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's sealed simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
+Controls: required `--scope <file,...>` selects files; repeatable `--steer` adds review context; `--dry-run` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while standalone mode uses `--spec <path>`.
 
 #### `mutation_tester`
 
@@ -317,9 +317,9 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 | Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |
 | Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
 
-Standalone `--dry-run` prints the source-size breakdown and proposed auto count without running mutations.
+`--dry-run` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` as a prompt hint, and `--tb-top` for classic simulator Targets.
+Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 Booley validates each proposal as one exact replacement, compiles it in
@@ -421,9 +421,10 @@ unstructured, and let the skill turn it into a precise contract:
    contract: they are what the harness gates on, and prose in the ticket body gates
    nothing. Ask to edit criteria, fields, plan, or scope in place; `scope` is what keeps
    the agent out of unrelated files.
-5. **Creation completes automatically.** After ticket approval, the skill authors and seals
-   any required Target recipe, then enqueues the ticket. Target-contract worktrees, diffs,
-   and seal metadata are internal mechanics rather than additional user approval gates.
+5. **Creation completes automatically.** After ticket approval, the skill authors any
+   approved Target Plan in the Ticket Workspace, then enqueues the ticket. Enqueue
+   publishes the immutable Acceptance Basis; its worktrees, commits, and receipt are
+   internal mechanics rather than additional user approval gates.
 
 #### Project Ticket Creation Guidance
 
@@ -445,8 +446,8 @@ for one Ticket win over Project guidance; ambiguous or unavailable requirements 
 surfaced rather than ignored or invented.
 
 Only `/booley-ticket-create` reads this file, and only while creating a Ticket. Its
-authority is limited to `criteria` and `on_success`; the resulting Ticket remains the
-structured artifact validated and sealed by Booley. Editing the guidance never changes an
+authority is limited to `criteria`, optional `target_plan`, and `on_success`; the resulting Ticket remains the
+structured artifact validated by Booley. Editing the guidance never changes an
 existing Ticket. Projects initialized with the former `ticket_defaults.md` filename keep
 working: the skill reads it as free-form guidance when `ticket_creation.md` is absent and
 disregards the former scaffold's strict-format instructions.
@@ -518,8 +519,9 @@ inspect state, and `booley cheat --board` for the compact transition reference.
 
 A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
 
-Ticket Mode seals that criterion set at intake. A Flow/Target call that cannot
-bind one of the sealed criteria is rejected before job admission and shows the
+Ticket Mode binds that criterion set when enqueue publishes the Acceptance Basis. A
+Flow/Target call that cannot bind one of the basis-bound criteria is rejected before
+job admission and shows the
 copyable pending invocation; use `--diagnostic` to run it deliberately without
 acceptance effects. Simulation acceptance compares the selected and passing
 test names with the Target registry instead of trusting an aggregate count,
@@ -533,21 +535,17 @@ stores the concrete immutable Criteria selected for that one run.
 
 The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
-A TB-quality review belongs to exactly one simulation Target. When structured
-`sim_pass` criteria establish one unique Target, Ticket Mode derives that
-binding. Otherwise author it explicitly as
-`review_tb_quality: {target: <sim-target>}`; the Target identity and callable
-selector are sealed with the ticket.
-This Reviewer-discovery binding does not change the condition-selected Target
-input behavior established by [#131](https://github.com/boldaxolotl/booley/issues/131).
+A TB-quality review is source-scoped and does not require a simulation Target.
+Ticket intake records the TB files from the Ticket scope directly on the
+review criterion so its suggested invocation is immediately callable.
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --elab-only` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --elab-only --standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --mode elab-only` | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --mode elab-only-standalone` | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review
@@ -565,7 +563,7 @@ input behavior established by [#131](https://github.com/boldaxolotl/booley/issue
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | TB review within one simulation Target: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
 
 #### Simulation
 
@@ -591,7 +589,7 @@ input behavior established by [#131](https://github.com/boldaxolotl/booley/issue
 #### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
-Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the ticket's `base_sha` baseline:
+Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the Ticket's Acceptance Basis:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -606,7 +604,7 @@ Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 5
 
 For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
 
-In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at `base_sha` and its candidate Target at the ticket head. Both Targets and their directed binding are sealed. Developer execution cannot change contract controls; a missing or incorrect Target blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
+In Ticket Mode, enqueue publishes an immutable Acceptance Basis. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -641,7 +639,7 @@ In Ticket Mode, ticket creation seals an immutable Target contract before enqueu
 
 **Per-test `cycle_count`**
 
-Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the ticket's pinned `base_sha`.
+Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the Ticket's Acceptance Basis.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -663,11 +661,12 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
-Ticket creation first opens an isolated Ticket Workspace. This is where the
-ticket-creation agent adds any Target the Ticket will require; the Project's
+`create-file` materializes an isolated Ticket Workspace. This is where the
+Ticket-creation agent adds any Target the Ticket will require; the Project's
 destination branch stays fully functional and Doctor-clean until acceptance.
-The Target Contract seals every participating repository ref, and final
-acceptance rechecks that composite control surface before publishing it.
+`enqueue` validates and commits that authoring state, writes a minimal Acceptance Basis,
+and moves the Ticket to queue or waiting. Final acceptance rechecks the protected input
+paths against that basis before publishing the result.
 
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
 metrics (`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) accept
@@ -694,19 +693,40 @@ on_success:
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
   triage_report: true     # add an LLM-generated HTML explanation to the review package
-  remove_targets: []      # criterion-bound Targets omitted from the accepted destination
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
-`remove_targets` handles Targets that must exist while the Ticket runs—for example, a
-frozen comparison baseline—but must not remain in the accepted Project. It is fixed and
-bound into the Target Contract during sealing, requires `merge: true`, and may name only
-uniquely resolved Targets bound by that Ticket's Criteria. The Targets remain available
-throughout development and review.
-Acceptance prepares the normal merge candidate first, then removes only the declared
-Target definitions and their unambiguously-owned `tests.toml` tables before publication;
-shared filesets, sources, parameters, constraints, generators, and hooks remain.
+Destructive completion cleanup requires `merge: true`, so the Acceptance Journal can
+pin the accepted source before removing its branch and worktree. To finish without
+merging, set both `merge: false` and `cleanup: false`; with CLI overrides, pair
+`--no-merge` with `--no-cleanup`. That override is unavailable for a Ticket with a
+Target Plan, because acceptance must publish its derived additions and removals.
+
+Most Tickets omit `target_plan` and use existing Targets. A Ticket that authors a new
+Target supplies a nonempty top-level plan and requires `merge: true`:
+
+```yaml
+target_plan:
+  - {target: lint_style, role: persistent}
+  - {target: sim_core_v2, role: replacement, replaces: sim_core}
+  - {target: ticket_probe, role: ephemeral}
+```
+
+Persistent Targets remain alongside the existing surface. Replacement candidates remain
+while their runnable baselines are removed. Ephemeral Targets exist only for Ticket
+evidence and are removed. Every planned selector and replacement baseline is Criteria-bound;
+enqueue compares definitions semantically against the exact destination, rejects edits or
+deletions of existing Targets, and records the canonical plan and derived removals in the
+committed Acceptance Basis record. Acceptance removes only those derived Target definitions
+and unambiguously owned `tests.toml` tables; shared filesets, sources, parameters,
+constraints, generators, and hooks remain.
+
+A waiting Ticket may consume a persistent or replacement Target from a basis-published
+dependency. Booley pins that future surface internally. After the dependency is accepted,
+a Basis Refresh verifies the surface, rebases the still-untouched consumer onto current
+destinations, republishes its basis, and promotes it atomically. Drift blocks and requires
+`return-to-draft`.
 
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views

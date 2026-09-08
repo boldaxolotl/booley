@@ -1,7 +1,7 @@
 """Preparation and classification for the Simulation build stage.
 
 This module is the single authority for the untraced simulator image shared by
-ordinary simulation and ``sim --elab-only``.  Process execution remains owned
+ordinary simulation and ``sim --mode elab-only``. Process execution remains owned
 by :class:`booley.flows.base.BooleyFlow`; the helpers here only prepare the
 command and turn one completed process into typed build evidence.
 """
@@ -18,11 +18,12 @@ from typing import Literal
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     validate_top_parameter_intent,
 )
-from booley.targets.target import TargetHandle, inspect_target
 
 from .. import edam as edam_layer
 from ..base import SubprocessResult
@@ -152,7 +153,7 @@ def _prepare_simulation_build(
         )
     _stage_doctor_overlay(root, resolved.build_root)
     try:
-        inspection = inspect_target(root, handle)
+        inspection = TargetCatalog.build(root).inspect(handle)
         fileset = {
             "rtl": tuple(inspection.rtl_files),
             "tb": tuple(inspection.tb_files),

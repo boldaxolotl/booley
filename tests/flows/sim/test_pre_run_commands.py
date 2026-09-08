@@ -9,7 +9,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 from booley.flows.sim.execution.pre_run import run_pre_run_commands
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 
 def _handle(root: Path) -> TargetHandle:

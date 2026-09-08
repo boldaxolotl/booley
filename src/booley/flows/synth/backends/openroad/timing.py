@@ -148,11 +148,14 @@ def write_openroad_script(
     design_name: str,
     liberty: Path,
     sta_netlist: Path,
-    sdc_path: Path,
+    sdc_paths: tuple[Path, ...],
     pdk: OpenRoadPdk,
     report_dir: Path,
     work_dir: Path,
     config: StaTimingConfig,
+    *,
+    target: str,
+    source_sdc_paths: tuple[Path, ...],
 ) -> Path:
     """Write the Tcl script driving OpenROAD placement + repair + timing report.
 
@@ -183,14 +186,21 @@ def write_openroad_script(
     pre_rpt = (report_dir / "pre_repair.rpt").as_posix()
     pre_csv = (report_dir / "pre_repair.csv.rpt").as_posix()
     pre_repair_block = _pre_repair_snapshot_tcl(config, pre_rpt, pre_csv)
+    read_sdc = "\n".join(f"read_sdc {{{path.as_posix()}}}" for path in sdc_paths)
+    source_names = ", ".join(path.as_posix() for path in source_sdc_paths)
+    error_message = _tcl_quoted(
+        f"BOOLEY_INPUT_ERROR: synth Target {target!r} SDC files "
+        f"[{source_names}] created no clocks; add create_clock to the Target-owned SDC"
+    )
     script = f"""
 read_lef {{{pdk.tech_lef.as_posix()}}}
 read_lef {{{pdk.stdcell_lef.as_posix()}}}
 read_liberty {{{liberty.as_posix()}}}
 read_verilog {{{sta_netlist.as_posix()}}}
 link_design {design_name}
-read_sdc {{{sdc_path.as_posix()}}}
-catch {{ foreach_in_collection _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }} }}
+{read_sdc}
+if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
+foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 -core_space 2.0 \\
   -site {_SITE}
@@ -233,6 +243,17 @@ close $csv_out
 {perclock_block}{reg2reg_block}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path
+
+
+def _tcl_quoted(value: str) -> str:
+    """Escape one value for a Tcl double-quoted word."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
 
 
 def parse_openroad_area(text: str) -> tuple[float | None, float | None]:

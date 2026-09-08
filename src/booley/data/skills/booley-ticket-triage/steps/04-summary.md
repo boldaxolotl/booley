@@ -12,6 +12,7 @@ Track actions taken during this triage session and present:
 | Approved | <n> | ... |
 | Rejected | <n> | ... |
 | Reset | <n> | ... |
+| Returned to draft | <n> | ... |
 | Skipped | <n> | ... |
 
 Queued tickets ready: <count>

@@ -214,11 +214,19 @@ class TestSimVerdictSetup:
     def test_fusesoc_error_returns_silently(self, tmp_path, monkeypatch):
         # Documenting CURRENT behavior: an enumeration failure emits nothing
         # from this probe (the structural core audit reports it separately).
-        def boom(_root, _selector):
+        def boom(_handle):
             raise fusesoc_registry.FuseSocError("core exploded")
 
         project = _mk_audit(tmp_path)
-        monkeypatch.setattr(doctor, "inspect_target", boom)
+        broken = SimpleNamespace(
+            select=lambda token: token,
+            inspect=boom,
+        )
+        monkeypatch.setattr(
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, _root: broken),
+        )
         rec = _Rec()
         doctor._check_sim_verdict_setup(
             project, tmp_path, "sim_fast", _sim_ref(tmp_path), rec.p, rec.w
@@ -245,10 +253,17 @@ class TestAuditTestsTomlTargets:
     def _refs(self, root: Path) -> dict[str, fusesoc_registry.TargetRef]:
         return {"sim_fast": _sim_ref(root)}
 
+    def _catalog(self, root: Path) -> SimpleNamespace:
+        ref = self._refs(root)["sim_fast"]
+        handle = SimpleNamespace(name=ref.name, identity=f"{ref.vlnv}#{ref.name}")
+        return SimpleNamespace(list=lambda: (handle,))
+
     def test_dead_section_key_fails(self, tmp_path, monkeypatch):
         project = _mk_audit(tmp_path)
         monkeypatch.setattr(
-            doctor.fusesoc_registry, "enumerate_targets", lambda _root: self._refs(tmp_path)
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, _root: self._catalog(tmp_path)),
         )
         rec = _Rec()
         doctor._audit_tests_toml_targets(project, {"sim_ghost": {}}, rec.f)
@@ -259,7 +274,9 @@ class TestAuditTestsTomlTargets:
     def test_bare_and_qualified_keys_resolve(self, tmp_path, monkeypatch):
         project = _mk_audit(tmp_path)
         monkeypatch.setattr(
-            doctor.fusesoc_registry, "enumerate_targets", lambda _root: self._refs(tmp_path)
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, _root: self._catalog(tmp_path)),
         )
         rec = _Rec()
         sections = {"sim_fast": {}, "::unit:0#sim_fast": {}}
@@ -273,7 +290,11 @@ class TestAuditTestsTomlTargets:
             raise fusesoc_registry.FuseSocError("no cores")
 
         project = _mk_audit(tmp_path)
-        monkeypatch.setattr(doctor.fusesoc_registry, "enumerate_targets", boom)
+        monkeypatch.setattr(
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, root: boom(root)),
+        )
         rec = _Rec()
         doctor._audit_tests_toml_targets(project, {"sim_ghost": {}}, rec.f)
         assert rec.events == []

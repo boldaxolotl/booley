@@ -78,11 +78,13 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
     && rm -rf /tmp/iverilog
 
 # Verilator is built from source so host installations do not affect results.
-# v5.048 currently trips an internal error elaborating some downstream designs (force + unpacked arrays).
-ARG VERILATOR_VERSION=v5.046
-ARG VERILATOR_REF=24b2ac24c721fdad89bba75a492e02c6aa63f32e
+# v5.052 is the first stable release after the v5.050 nested-shift miscompile
+# fix (a6f4dd031f50387ae0169490c6d8843b91dd1c07). Keep the full immutable
+# release commit beside the human-readable tag.
+ARG VERILATOR_VERSION=v5.052
+ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
-    && apt-get update && apt-get install -y --no-install-recommends help2man \
+    && apt-get update && apt-get install -y --no-install-recommends help2man liblz4-dev \
     && rm -rf /var/lib/apt/lists/* \
     && git init /tmp/verilator \
     && cd /tmp/verilator \
@@ -94,7 +96,11 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && make -j4 && make install \
     && find /usr/local/bin -maxdepth 1 -type f -name 'verilator*_bin*' \
         -exec strip --strip-unneeded {} + \
-    && verilator --version \
+    && verilator --version | grep -F 'Verilator 5.052' \
+    && printf '%s\n' \
+        "Verilator release: ${VERILATOR_VERSION}" \
+        "Verilator source revision: ${VERILATOR_REF}" \
+        > /usr/local/share/verilator/BOOLEY-SOURCE.txt \
     && rm -rf /tmp/verilator
 
 # Minimal Session Runtime. The immutable upstream development image remains the
@@ -123,7 +129,7 @@ RUN echo ">>> Installing minimal runtime dependencies and Python 3.13..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates ccache curl file g++ gcc git jq locales make \
         ripgrep software-properties-common time unzip xz-utils zlib1g-dev \
-        libbz2-1.0 libffi8 libgomp1 libpixman-1-0 libpython3.12 \
+        libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.12 \
         libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
         libgl1 libopengl0 libqt5charts5 libqt5core5a libqt5gui5 \
         libqt5widgets5 qt5-image-formats-plugins \
@@ -239,8 +245,8 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.259" \
-    && test "$(codex --version | awk '{print $2}')" = "0.153.1" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.263" \
+    && test "$(codex --version | awk '{print $2}')" = "0.153.4" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
@@ -314,7 +320,7 @@ RUN python -m pip install --break-system-packages --no-cache-dir \
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
 # (0.5.0 still uses the removed cocotb.clock.BaseClock).
 RUN python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
-    "cocotb==2.1.0" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
+    "cocotb==2.1.0" "numpy==2.5.3" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
 
 # Build-time sanity (D2): the image fails to build rather than failing at
 # first sim — cocotb-config resolves, the curated set imports, and the

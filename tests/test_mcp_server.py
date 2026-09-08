@@ -385,7 +385,7 @@ class TestMcpToolTimeoutSeconds:
     def test_simulate_trace_timeout_gets_cleanup_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
-            {"timeout": 10_000, "trace": True},
+            {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 600},
         )
         assert timeout == 690
@@ -393,7 +393,7 @@ class TestMcpToolTimeoutSeconds:
     def test_simulate_non_trace_timeout_gets_small_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
-            {"timeout": 10_000, "trace": False},
+            {"timeout_ms": 10_000, "trace": False},
             {"default_timeout": 600},
         )
         assert timeout == 630
@@ -417,7 +417,7 @@ class TestMcpToolTimeoutSeconds:
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
-                {"target": "a,b", "timeout": 600_000, "trace": False},
+                {"target": "a,b", "timeout_ms": 600_000, "trace": False},
                 {"default_timeout": 1290},
             )
         assert timeout == 4 * 600 + 30
@@ -429,25 +429,68 @@ class TestMcpToolTimeoutSeconds:
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
-                {"target": "a,b,c", "timeout": 600_000, "trace": True},
+                {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
                 {"default_timeout": 1290},
             )
         assert timeout == 3 * 600 + 3 * 90
 
-    def test_non_simulate_uses_default(self):
+    def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
+        from booley.flows.sim.mode import SimulationMode
+
+        with patch(
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            return_value=3,
+        ) as resolve_units:
+            timeout = self._mcp_tool_timeout_seconds(
+                "sim",
+                {
+                    "target": "a,b",
+                    "mode": "elab_only_standalone",
+                    "timeout_ms": 10_000,
+                },
+                {"default_timeout": 1},
+            )
+        assert timeout == 3 * 10 + 30
+        assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
+
+    def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(
             "lint",
-            {"timeout": 10_000, "trace": True},
+            {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 120},
         )
         assert timeout == 120
+
+    def test_lint_matrix_scales_after_default_floor(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "lint",
+            {"target": "a,b,c,d,e", "timeout_ms": 120_000},
+            {"default_timeout": 600},
+        )
+        assert timeout == 5 * 120 + 30
+
+    def test_canonical_timeout_wins_for_implementation(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "synth",
+            {"target": "core", "timeout_ms": 4_000_000},
+            {"default_timeout": 600},
+        )
+        assert timeout == 4000 + 60 + 120
+
+    def test_legacy_timeout_is_rejected_for_mcp(self):
+        with pytest.raises(ValueError, match="CLI-only"):
+            self._mcp_tool_timeout_seconds(
+                "lint",
+                {"target": "core", "timeout": 2000},
+                {"default_timeout": 600},
+            )
 
     def test_synth_matrix_budget_scales_per_target(self):
         timeout = self._mcp_tool_timeout_seconds(
             "synth",
             {
                 "target": ",".join(f"asic_{idx}" for idx in range(9)),
-                "timeout": 1_800_000,
+                "timeout_ms": 1_800_000,
             },
             {"default_timeout": 7200},
         )
@@ -458,7 +501,7 @@ class TestMcpToolTimeoutSeconds:
             "synth",
             {
                 "target": "asic_small,asic_full",
-                "timeout": 4_000_000,
+                "timeout_ms": 4_000_000,
                 "baseline": "main",
             },
             {"default_timeout": 600},
@@ -485,7 +528,7 @@ class TestMcpToolTimeoutSeconds:
 
         timeout = self._mcp_tool_timeout_seconds(
             "synth",
-            {"target": "core", "timeout": 4_000_000},
+            {"target": "core", "timeout_ms": 4_000_000},
             {"default_timeout": 600},
         )
 
@@ -511,14 +554,14 @@ class TestMcpToolTimeoutSeconds:
 
         timeout = self._mcp_tool_timeout_seconds(
             "fpga",
-            {"target": "core", "timeout": 4_000_000},
+            {"target": "core", "timeout_ms": 4_000_000},
             {"default_timeout": 7200},
         )
 
         assert timeout == 2 * 4000 + 2 * 60 + 120
 
     def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
-        """F4: with no --timeout arg the watchdog honors [flows.sim].timeout_ms.
+        """F4: without a call override, the watchdog honors [flows.sim].timeout_ms.
 
         Otherwise a config-only raise would be silently killed by the outer cap.
         """
@@ -539,8 +582,30 @@ class TestMcpToolTimeoutSeconds:
         # max(default 600, 1800000ms -> 1800s) + report-persistence margin.
         assert timeout == 1830
 
+    def test_lint_no_work_dir_honors_current_workspace_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.project_dir import reset_cache
+
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text(
+            "[flows.lint]\ntimeout_ms = 900000\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        reset_cache()
+
+        timeout = self._mcp_tool_timeout_seconds(
+            "lint",
+            {},
+            {"default_timeout": 600},
+        )
+
+        assert timeout == 930
+
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
-        """No --timeout and no config knob -> the wrapper default budget stands."""
+        """No call override or config knob -> the wrapper default budget stands."""
         from booley.runtime.project_dir import reset_cache
 
         reset_cache()
@@ -570,9 +635,10 @@ class TestTryReadReport:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _try_read_report
+            from booley.mcp import server as mcp_server
 
-            self._try_read_report = _try_read_report
+            self.mcp_server = mcp_server
+            self._try_read_report = mcp_server._try_read_report
 
     def test_no_env_var(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -599,6 +665,40 @@ class TestTryReadReport:
         step_dir.mkdir(parents=True)
         (step_dir / "report.json").write_text("NOT JSON", encoding="utf-8")
         assert self._try_read_report() is None
+
+    def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
+        async def fake_run(_cmd, timeout=600):
+            del timeout
+            return 0, '{"flow": "lint", "schema_version": 1}', "", False
+
+        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
+        monkeypatch.setattr(
+            self.mcp_server,
+            "_try_read_report",
+            lambda: pytest.fail("dry-run must not read a historical verdict"),
+        )
+        monkeypatch.setattr(
+            self.mcp_server,
+            "TextContent",
+            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
+        )
+
+        result = asyncio.run(
+            self.mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {"dry_run": True, "target": "lint_demo"},
+                {
+                    "module": "lint",
+                    "default_timeout": 600,
+                    "non_persisting_dry_run": True,
+                },
+                {},
+                MagicMock(),
+            )
+        )
+
+        assert isinstance(result, list)
+        assert '"flow": "lint"' in result[0].text
 
 
 # ---------------------------------------------------------------------------

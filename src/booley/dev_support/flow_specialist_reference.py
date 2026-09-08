@@ -51,16 +51,15 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
-        "`--elab-only` (`--build-only`) compiles, elaborates, and links without "
-        "running tests; add `--standalone` for the stronger module sweep. "
+        "`--mode elab-only` compiles, elaborates, and links without running tests; "
+        "`--mode elab-only-standalone` adds the stronger module sweep. "
         "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
     ),
     "synth": (
-        f"{_BASELINE_CONTROL}; `--default-clock <ps>` explicitly "
-        "supplies a clock only when the Target has no SDC"
+        f"{_BASELINE_CONTROL}; physical Targets must own an SDC fileset that creates a clock"
     ),
 }
 
@@ -94,7 +93,7 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "exposure, and unsafe failure behavior"
     ),
     "review_tb_quality": (
-        "False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, "
+        "False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, "
         "timing/sampling mistakes, and TB code quality"
     ),
 }
@@ -180,7 +179,7 @@ def render_flow_reference(
             [
                 "",
                 "Common controls: `--target <name,...>` selects Target(s); "
-                "`--dry-run` prints commands without executing them; "
+                "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
                 "Key Flow-specific controls:",
@@ -201,8 +200,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "`MINOR` findings. A terminal `_done` review reports findings without "
         "triggering fixes; `_clean` requires every finding to be verified fixed "
         "or explicitly waived with user-visible justification.",
-        "Call `reviewer --scope <file,...> --category <category> --focus <focus>`; "
-        "a TB review may add `--target <sim-target>`.",
+        "Call `reviewer --scope <file,...> --category <category> --focus <focus>`.",
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -218,12 +216,11 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     lines.extend(
         [
             "",
-            "Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` "
-            "reviews only the diff; repeatable `--steer` adds review context. "
-            "Ticket Mode defaults a TB review's sealed simulation Target; pass "
-            "`--target` to disambiguate an interactive review. "
-            "The `spec` focus needs the ticket/spec text: Ticket Mode resolves it "
-            "automatically, while Interactive Mode uses `--ticket <path>`.",
+            "Controls: required `--scope <file,...>` selects files; repeatable "
+            "`--steer` adds review context; `--dry-run` validates and previews "
+            "without invoking an agent. The `spec` focus needs specification text: "
+            "Ticket Mode resolves its mounted ticket or linked spec automatically, "
+            "while standalone mode uses `--spec <path>`.",
         ]
     )
     return lines
@@ -247,15 +244,27 @@ def _render_mutation_tester_reference() -> list[str]:
         "| Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |",
         "| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |",
         "",
-        "Standalone `--dry-run` prints the source-size breakdown and proposed "
-        "auto count without running mutations.",
+        "`--dry-run` validates Target metadata and prints the source-size breakdown "
+        "and proposed auto count without invoking an agent or simulator.",
         "",
         "Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; "
         "`--target <sim-target>` chooses the complete runnable Target suite; "
         "`--steer <context>` biases mutation selection. A valid lock "
         "is reused on later runs, so new steering takes effect only with "
-        "`--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` "
-        "as a prompt hint, and `--tb-top` for classic simulator Targets.",
+        "`--regen-lock`. The Target supplies the testbench top and complete RTL "
+        "closure; they are not separate caller inputs.",
+    ]
+
+
+def _render_coverage_analyst_reference() -> list[str]:
+    """Render the unified coverage campaign input contract."""
+    return [
+        "#### `coverage_analyst`",
+        "",
+        "Call `coverage_analyst --target <sim-target> --scope <rtl-file,...>`. "
+        "The Target supplies the testbench top and runnable tests. Repeatable "
+        "`--steer` adds analyst context; `--dry-run` validates and previews the "
+        "campaign without invoking agents, B-Wave, or the simulator.",
     ]
 
 
@@ -283,6 +292,9 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         )
     reviewer = next((t for t in specialists if t.name == "reviewer"), None)
     mutation_tester = next((t for t in specialists if t.name == "mutation_tester"), None)
+    coverage_analyst = next((t for t in specialists if t.name == "coverage_analyst"), None)
+    if coverage_analyst is not None:
+        lines.extend(["", *_render_coverage_analyst_reference()])
     if reviewer is not None:
         lines.extend(["", *_render_reviewer_reference(reviewer.satisfies_args)])
     if mutation_tester is not None:

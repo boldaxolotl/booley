@@ -9,6 +9,7 @@ from typing import Literal
 import pytest
 
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_basis import BasisParticipant
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -21,7 +22,6 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.target_contract import ContractParticipant
 from tests.ticket_board.test_completion import (
     _git,
     _paired_completion,
@@ -47,7 +47,7 @@ def _assert_finished(
     root: Path,
     project: Path,
     tio: _TicketIO,
-    participants: tuple[ContractParticipant, ...],
+    participants: tuple[BasisParticipant, ...],
     *,
     cleanup: bool,
 ) -> None:
@@ -65,14 +65,20 @@ def _assert_finished(
     "fault_checkpoint",
     [
         AcceptanceCheckpoint.NORMALIZED,
-        AcceptanceCheckpoint.SOURCES_PINNED,
-        AcceptanceCheckpoint.CANDIDATES_PREPARED,
-        AcceptanceCheckpoint.PREPARATION_COMPLETE,
-        AcceptanceCheckpoint.PROJECT_PUBLISHED,
-        AcceptanceCheckpoint.OUTER_PUBLISHED,
-        AcceptanceCheckpoint.ACCEPTED,
-        AcceptanceCheckpoint.PROJECT_CLEANED,
-        AcceptanceCheckpoint.OUTER_CLEANED,
+        pytest.param(AcceptanceCheckpoint.SOURCES_PINNED, marks=pytest.mark.exhaustive_recovery),
+        pytest.param(
+            AcceptanceCheckpoint.CANDIDATES_PREPARED, marks=pytest.mark.exhaustive_recovery
+        ),
+        pytest.param(
+            AcceptanceCheckpoint.PREPARATION_COMPLETE, marks=pytest.mark.exhaustive_recovery
+        ),
+        pytest.param(
+            AcceptanceCheckpoint.PROJECT_PUBLISHED, marks=pytest.mark.exhaustive_recovery
+        ),
+        pytest.param(AcceptanceCheckpoint.OUTER_PUBLISHED, marks=pytest.mark.exhaustive_recovery),
+        pytest.param(AcceptanceCheckpoint.ACCEPTED, marks=pytest.mark.exhaustive_recovery),
+        pytest.param(AcceptanceCheckpoint.PROJECT_CLEANED, marks=pytest.mark.exhaustive_recovery),
+        pytest.param(AcceptanceCheckpoint.OUTER_CLEANED, marks=pytest.mark.exhaustive_recovery),
         AcceptanceCheckpoint.DONE,
     ],
 )
@@ -98,8 +104,16 @@ def test_retry_survives_every_semantic_checkpoint(
     ("boundary", "cleanup"),
     [
         (RepositoryBoundary.PREPARATION, False),
-        (RepositoryBoundary.PUBLICATION, False),
-        (RepositoryBoundary.RETIREMENT, True),
+        pytest.param(
+            RepositoryBoundary.PUBLICATION,
+            False,
+            marks=pytest.mark.exhaustive_recovery,
+        ),
+        pytest.param(
+            RepositoryBoundary.RETIREMENT,
+            True,
+            marks=pytest.mark.exhaustive_recovery,
+        ),
     ],
 )
 @pytest.mark.parametrize("role", ["project", "outer"])

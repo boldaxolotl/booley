@@ -9,21 +9,125 @@ re-exports them for backward compatibility.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, is_str_list, require_list
+from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 
 
-def _remove_target_tuple(value: Any) -> tuple[str, ...] | Any:
-    """Normalize a valid external list while preserving invalid input for diagnostics."""
-    try:
-        items = require_list(value, field="on_success.remove_targets")
-    except BoundaryError:
-        return value
-    if not is_str_list(items):
-        return value
-    return tuple(items)
+class TargetPlanError(ValueError):
+    """A Ticket Target Plan is malformed."""
+
+
+class TargetPlanRole(StrEnum):
+    """The accepted-project disposition of one Ticket-authored Target."""
+
+    PERSISTENT = "persistent"
+    REPLACEMENT = "replacement"
+    EPHEMERAL = "ephemeral"
+
+
+@dataclass(frozen=True, order=True)
+class TargetPlanEntry:
+    """One strictly parsed Target transition authored by a Ticket."""
+
+    target: str
+    role: TargetPlanRole
+    replaces: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Any, *, index: int) -> TargetPlanEntry:
+        field_name = f"target_plan[{index}]"
+        try:
+            mapping = require_dict(value, field=field_name)
+            target = require_str(mapping, "target").strip()
+            raw_role = require_str(mapping, "role").strip()
+        except BoundaryError as exc:
+            raise TargetPlanError(str(exc)) from exc
+        if not target:
+            raise TargetPlanError(f"{field_name}.target must be a non-empty string")
+        try:
+            role = TargetPlanRole(raw_role)
+        except ValueError as exc:
+            choices = ", ".join(repr(item.value) for item in TargetPlanRole)
+            raise TargetPlanError(f"{field_name}.role must be one of {choices}") from exc
+        expected = (
+            {"target", "role", "replaces"}
+            if role is TargetPlanRole.REPLACEMENT
+            else {
+                "target",
+                "role",
+            }
+        )
+        if set(mapping) != expected:
+            missing = sorted(expected - set(mapping))
+            unknown = sorted(set(mapping) - expected)
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unknown:
+                details.append("unknown " + ", ".join(unknown))
+            raise TargetPlanError(f"{field_name} has invalid keys: {'; '.join(details)}")
+        replaces = ""
+        if role is TargetPlanRole.REPLACEMENT:
+            try:
+                replaces = require_str(mapping, "replaces").strip()
+            except BoundaryError as exc:
+                raise TargetPlanError(str(exc)) from exc
+            if not replaces:
+                raise TargetPlanError(f"{field_name}.replaces must be a non-empty string")
+            if replaces == target:
+                raise TargetPlanError(f"{field_name} cannot replace itself")
+        return cls(target=target, role=role, replaces=replaces)
+
+    def as_dict(self) -> dict[str, str]:
+        result = {"target": self.target, "role": self.role.value}
+        if self.role is TargetPlanRole.REPLACEMENT:
+            result["replaces"] = self.replaces
+        return result
+
+
+@dataclass(frozen=True)
+class TargetPlan:
+    """A non-empty, canonical collection of Ticket-authored Target transitions."""
+
+    entries: tuple[TargetPlanEntry, ...]
+
+    @classmethod
+    def from_value(cls, value: Any) -> TargetPlan:
+        try:
+            items = require_list(value, field="target_plan")
+        except BoundaryError as exc:
+            raise TargetPlanError(str(exc)) from exc
+        if not items:
+            raise TargetPlanError("target_plan must be a non-empty list when present")
+        entries = tuple(
+            TargetPlanEntry.from_mapping(item, index=index) for index, item in enumerate(items)
+        )
+        cls._validate_relationships(entries)
+        return cls(tuple(sorted(entries)))
+
+    @staticmethod
+    def _validate_relationships(entries: tuple[TargetPlanEntry, ...]) -> None:
+        targets = [entry.target for entry in entries]
+        if len(set(targets)) != len(targets):
+            raise TargetPlanError("target_plan targets must be unique")
+        baselines = [entry.replaces for entry in entries if entry.replaces]
+        if len(set(baselines)) != len(baselines):
+            raise TargetPlanError("target_plan replacement baselines must be unique")
+        edges = {entry.target: entry.replaces for entry in entries if entry.replaces}
+        for origin in edges:
+            seen = {origin}
+            cursor = edges.get(origin, "")
+            while cursor:
+                if cursor in seen:
+                    raise TargetPlanError("target_plan replacement graph must be acyclic")
+                seen.add(cursor)
+                cursor = edges.get(cursor, "")
+
+    def as_list(self) -> list[dict[str, str]]:
+        return [entry.as_dict() for entry in self.entries]
 
 
 @dataclass(frozen=True)
@@ -32,31 +136,39 @@ class OnSuccess:
 
     destination: when terminal actions fire — "done" skips review, "review" is default.
     merge: whether to merge the feature branch into the base branch.
-    cleanup: whether to delete the worktree and (if not merged) force-delete the branch.
+    cleanup: whether to delete the worktree and branch after a successful merge.
     triage_report: whether to prepare the rich HTML explanation before handoff.
-    remove_targets: sealed Targets to delete from the accepted merge candidate.
     """
 
     destination: str = "review"  # "review" | "done"
     merge: bool = True
     cleanup: bool = True
     triage_report: bool = True
-    remove_targets: tuple[str, ...] = ()
+    _unsupported_keys: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> OnSuccess:
         if not d:
             return cls()
+        allowed = {"destination", "merge", "cleanup", "triage_report"}
         return cls(
             destination=d.get("destination", "review"),
             merge=d.get("merge", True),
             cleanup=d.get("cleanup", True),
             triage_report=d.get("triage_report", True),
-            remove_targets=_remove_target_tuple(d.get("remove_targets", [])),
+            _unsupported_keys=tuple(sorted(set(d) - allowed)),
         )
 
     def validate(self) -> list[str]:
         errors = []
+        if "remove_targets" in self._unsupported_keys:
+            errors.append(
+                "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
+                "recreate the Ticket"
+            )
+        unknown = [key for key in self._unsupported_keys if key != "remove_targets"]
+        if unknown:
+            errors.append("on_success has unknown field(s): " + ", ".join(unknown))
         if self.destination not in ("review", "done"):
             errors.append(
                 f"on_success.destination must be 'review' or 'done', got '{self.destination}'"
@@ -67,15 +179,8 @@ class OnSuccess:
             errors.append("on_success.merge must be true or false")
         if not isinstance(self.cleanup, bool):
             errors.append("on_success.cleanup must be true or false")
-        if not (
-            isinstance(self.remove_targets, tuple)
-            and is_str_list(list(self.remove_targets))
-            and all(item.strip() for item in self.remove_targets)
-            and len(set(self.remove_targets)) == len(self.remove_targets)
-        ):
-            errors.append("on_success.remove_targets must contain unique non-empty strings")
-        elif self.remove_targets and self.merge is not True:
-            errors.append("on_success.remove_targets requires on_success.merge: true")
+        elif self.cleanup and self.merge is False:
+            errors.append("on_success.cleanup requires on_success.merge: true")
         return errors
 
 

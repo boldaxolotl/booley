@@ -17,27 +17,41 @@ from booley.fusesoc.core_projection import (
     projected_core_path,
     reconcile_projected_cores,
 )
-from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
-from booley.fusesoc.target_inspection import TargetSourceInspector
 from booley.targets import target_surface
-from booley.targets.target import (
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import (
+    AmbiguousTargetError,
+    IncompatibleTargetError,
     TargetHandle,
-    inspect_target,
-    select_target,
-    select_targets,
+    TargetRef,
+    UnknownTargetError,
 )
+from booley.targets.selection import minimal_selector
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
     detail_payload,
     filter_surface,
-    flow_can_drive,
     is_glob,
     render_detail,
     render_listing,
     surface_payload,
 )
 from tests.conftest import symlink_or_skip
+from tests.target_test_support import make_target_handle
+
+
+def select_target(project_root, token, *, for_flow=None):
+    return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
+
+
+def select_targets(project_root, target_arg, *, for_flow=None):
+    return TargetCatalog.build(project_root).select_many(target_arg, for_flow=for_flow)
+
+
+def inspect_target(project_root, handle):
+    return TargetCatalog.build(project_root).inspect(handle)
+
 
 # ---------------------------------------------------------------------------
 # Fixture project: two cores, one ambiguous target name, one legacy target,
@@ -131,7 +145,7 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surface.TargetEntry:
+def _entry(surface: target_surface.TargetSurface, selector: str) -> TargetHandle:
     return next(e for e in surface.entries() if e.selector == selector)
 
 
@@ -156,9 +170,9 @@ class TestTargetInterface:
             flow: expected for flow, (_authored, expected) in cases.items()
         }
         assert all(handle.project_root == project.resolve() for handle in selected.values())
-        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+        with pytest.raises(AmbiguousTargetError):
             select_target(project, "lint", for_flow="lint")
-        with pytest.raises(fusesoc_registry.IncompatibleTargetError):
+        with pytest.raises(IncompatibleTargetError):
             select_target(project, "sim", for_flow="lint")
 
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
@@ -195,12 +209,10 @@ class TestTargetInterface:
             encoding="utf-8",
         )
         inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
-        refs = fusesoc_registry.enumerate_targets(tmp_path)
-        sources = TargetSourceInspector(tmp_path).inspect(refs["synth"])
 
         assert inspection.handle.core_file == authored
         assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
-        assert sources.rtl_source_files == ("rtl/demo.sv",)
+        assert inspection.rtl_files == ("rtl/demo.sv",)
 
     def test_inspection_refreshes_owned_stale_projection(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
@@ -521,8 +533,8 @@ class TestTargetInterface:
             ),
             encoding="utf-8",
         )
-        refs = fusesoc_registry.enumerate_targets(tmp_path)
-        inspector = TargetSourceInspector(tmp_path)
+        catalog = TargetCatalog.build(tmp_path)
+        handles = {handle.name: handle for handle in catalog.list()}
         resolutions = 0
         real_get_depends = target_inspection.CoreManager.get_depends
 
@@ -538,8 +550,7 @@ class TestTargetInterface:
         )
 
         observed = [
-            inspector.inspect(refs[name]).rtl_source_files
-            for name in ("lint_a", "lint_b", "lint_a")
+            catalog.inspect(handles[name]).rtl_files for name in ("lint_a", "lint_b", "lint_a")
         ]
 
         assert observed == [("rtl/a.sv",), ("rtl/b.sv",), ("rtl/a.sv",)]
@@ -573,13 +584,14 @@ class TestTargetInterface:
             ),
             encoding="utf-8",
         )
-        refs = fusesoc_registry.enumerate_targets(tmp_path)
-        inspector = TargetSourceInspector(tmp_path)
+        catalog = TargetCatalog.build(tmp_path)
+        broken = catalog.select("lint_broken")
+        healthy = catalog.select("lint_healthy")
 
         with pytest.raises(fusesoc_registry.FuseSocError, match="lint_broken"):
-            inspector.inspect(refs["lint_broken"])
+            catalog.inspect(broken)
 
-        assert inspector.inspect(refs["lint_healthy"]).rtl_source_files == ("rtl/healthy.sv",)
+        assert catalog.inspect(healthy).rtl_files == ("rtl/healthy.sv",)
 
     def test_selection_keeps_identity_separate_from_callable_selector(self, project: Path):
         selected = select_target(project, "acme:ip:alpha:1.0#lint", for_flow="lint")
@@ -669,81 +681,6 @@ class TestTargetInterface:
 
 
 # ---------------------------------------------------------------------------
-# flow_can_drive
-# ---------------------------------------------------------------------------
-
-
-class TestFlowCanDrive:
-    def _ref(
-        self,
-        flow: str | None,
-        eda_tool: str | None,
-        *,
-        name: str = "t",
-    ) -> TargetRef:
-        return TargetRef(
-            name=name,
-            vlnv="a:b:c:1.0",
-            core_file=Path("x.core"),
-            eda_tool=eda_tool,
-            flow=flow,
-        )
-
-    def test_sim_flow_drives_sim_targets(self):
-        ref = self._ref("sim", "verilator")
-        assert flow_can_drive("sim", ref)
-        assert not flow_can_drive("lint", ref)
-        assert not flow_can_drive("synth", ref)
-        assert not flow_can_drive("fpga", ref)
-
-    def test_sim_flow_drives_canonical_icarus_target(self):
-        ref = self._ref("sim", "icarus")
-        assert flow_can_drive("sim", ref)
-
-    def test_lint_flow_drives_lint_only(self):
-        ref = self._ref("lint", "verible")
-        assert flow_can_drive("lint", ref)
-        assert not flow_can_drive("sim", ref)
-
-    def test_generic_flow_splits_on_eda_tool(self):
-        yosys = self._ref("generic", "yosys")
-        vivado = self._ref("generic", "vivado")
-        assert flow_can_drive("synth", yosys)
-        assert not flow_can_drive("fpga", yosys)
-        assert flow_can_drive("fpga", vivado)
-        assert not flow_can_drive("synth", vivado)
-
-    def test_fpga_axis_ignores_resolution_tool(self):
-        ref = self._ref("generic", "verilator", name="fpga_core_fast")
-        assert flow_can_drive("fpga", ref)
-
-    def test_non_fpga_axis_overrides_vivado_fallback(self):
-        ref = self._ref("generic", "vivado", name="synth_core_fast")
-        assert not flow_can_drive("fpga", ref)
-
-    def test_legacy_flowless_target_falls_back_to_eda_tool_family(self):
-        """A `tools:`-style Target (flow=None) must not vanish from --for."""
-        legacy_sim = self._ref(None, "iverilog")
-        assert flow_can_drive("sim", legacy_sim)
-        assert not flow_can_drive("lint", legacy_sim)
-
-    @pytest.mark.parametrize("eda_tool", ["xcelium", "vcs"])
-    def test_unsupported_commercial_simulators_are_not_drivable(self, eda_tool: str):
-        """Vendor .cores may enumerate them, but Booley must not advertise support."""
-        for declared_flow in ("sim", None):
-            ref = self._ref(declared_flow, eda_tool)
-            assert not flow_can_drive("sim", ref)
-
-    def test_specialist_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"mutation_tester.*not a target-aware"):
-            flow_can_drive("mutation_tester", self._ref("sim", "verilator"))
-
-    def test_retired_elab_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"elab.*not a target-aware"):
-            flow_can_drive("elab", self._ref("sim", "verilator"))
-
-
-# ---------------------------------------------------------------------------
 # minimal_selector (fusesoc_registry)
 # ---------------------------------------------------------------------------
 
@@ -778,17 +715,18 @@ class TestCollectSurface:
     def test_groups_by_core_sorted_by_vlnv(self, project: Path):
         surface = collect_surface(project)
         assert [g.vlnv for g in surface.groups] == ["acme:ip:alpha:1.0", "acme:ip:beta:1.0"]
-        assert [e.ref.name for e in surface.groups[0].entries] == ["lint", "sim", "synth"]
-        assert [e.ref.name for e in surface.groups[1].entries] == ["fpga", "lint", "smoke"]
+        assert [entry.name for entry in surface.groups[0].entries] == ["lint", "sim", "synth"]
+        assert [entry.name for entry in surface.groups[1].entries] == ["fpga", "lint", "smoke"]
 
     def test_doctor_selftest_is_hidden_from_every_public_surface(self, project: Path):
-        assert fusesoc_registry.resolve_ref(project, "lint_selftest_bad").doctor_selftest
-        assert all(e.ref.name != "lint_selftest_bad" for e in collect_surface(project).entries())
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        assert all(
+            entry.name != "lint_selftest_bad" for entry in collect_surface(project).entries()
+        )
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             detail_payload(project, "lint_selftest_bad", resolve=False)
 
     def test_doctor_can_select_its_private_selftest(self, project: Path, monkeypatch):
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             select_target(project, "lint_selftest_bad", for_flow="lint")
 
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
@@ -803,20 +741,14 @@ class TestCollectSurface:
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
             select_targets(project, "lint_selftest_bad")
 
-        resolve_selected_ref = fusesoc_registry.resolve_selected_ref
-
-        def resolve_once(root: Path | str, token: str) -> TargetRef:
-            ref = resolve_selected_ref(root, token)
-            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
-            return ref
-
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-        monkeypatch.setattr(fusesoc_registry, "resolve_selected_ref", resolve_once)
+        catalog = TargetCatalog.build(project)
+        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-        selected = select_targets(project, " lint_selftest_bad ", for_flow="lint")
+        selected = catalog.select_many(" lint_selftest_bad ", for_flow="lint")
 
         assert tuple(handle.identity for handle in selected) == (
             "acme:ip:beta:1.0#lint_selftest_bad",
@@ -834,12 +766,13 @@ class TestCollectSurface:
         """Every selector the listing prints must be a valid --target token."""
         surface = collect_surface(project)
         for entry in surface.entries():
-            assert fusesoc_registry.resolve_ref(project, entry.selector) == entry.ref
+            selected = TargetCatalog.build(project).select(entry.selector)
+            assert selected.identity == entry.identity
 
     def test_declared_toplevel_is_read(self, project: Path):
         surface = collect_surface(project)
-        assert _entry(surface, "sim").toplevel == "tb_alpha"
-        assert _entry(surface, "beta#lint").toplevel == ""  # undeclared
+        assert _entry(surface, "sim").declared_toplevel == "tb_alpha"
+        assert _entry(surface, "beta#lint").declared_toplevel == ""  # undeclared
 
     def test_doctor_membership_comes_from_target_metadata(self, project: Path):
         surface = collect_surface(project)
@@ -851,7 +784,7 @@ class TestCollectSurface:
         assert collect_surface(project).warnings == ()
 
     def test_cocotb_module_enumerated(self, project: Path):
-        assert _entry(collect_surface(project), "sim").ref.cocotb_module == "tb_alpha_tests"
+        assert _entry(collect_surface(project), "sim").cocotb_module == "tb_alpha_tests"
 
     def test_drivable_by(self, project: Path):
         surface = collect_surface(project)
@@ -869,7 +802,29 @@ class TestCollectSurface:
 class TestFilterSurface:
     def test_for_flow_keeps_only_drivable(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="sim")
-        assert sorted(e.ref.name for e in surface.entries()) == ["sim", "smoke"]
+        assert sorted(entry.name for entry in surface.entries()) == ["sim", "smoke"]
+
+    def test_for_flow_consumes_catalog_drivability_facts(self, project: Path):
+        handle = make_target_handle(
+            project,
+            "catalog_owned",
+            flow="lint",
+            eda_tool="verilator",
+            drivable_by=("sim",),
+        )
+        surface = target_surface.TargetSurface(
+            groups=(
+                target_surface.CoreGroup(
+                    vlnv=handle.vlnv,
+                    core_file=handle.core_file,
+                    entries=(handle,),
+                ),
+            ),
+            warnings=(),
+        )
+
+        assert tuple(filter_surface(surface, for_flow="sim").entries()) == (handle,)
+        assert not tuple(filter_surface(surface, for_flow="lint").entries())
 
     def test_for_flow_drops_empty_groups(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="synth")
@@ -877,8 +832,8 @@ class TestFilterSurface:
 
     def test_for_fpga_uses_axis_instead_of_resolution_tool(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="fpga")
-        assert [entry.ref.name for entry in surface.entries()] == ["fpga"]
-        assert _entry(surface, "fpga").ref.eda_tool == "verilator"
+        assert [entry.name for entry in surface.entries()] == ["fpga"]
+        assert _entry(surface, "fpga").eda_tool == "verilator"
 
     def test_for_flow_rejects_non_flow(self, project: Path):
         with pytest.raises(ValueError, match=", ".join(TARGET_AWARE_FLOWS)):
@@ -886,13 +841,13 @@ class TestFilterSurface:
 
     def test_glob_matches_bare_name(self, project: Path):
         surface = filter_surface(collect_surface(project), glob="s*")
-        assert sorted(e.ref.name for e in surface.entries()) == ["sim", "smoke", "synth"]
+        assert sorted(entry.name for entry in surface.entries()) == ["sim", "smoke", "synth"]
 
     def test_glob_matches_selector_and_qualified_form(self, project: Path):
         by_selector = filter_surface(collect_surface(project), glob="*#lint")
         assert sorted(e.selector for e in by_selector.entries()) == ["alpha#lint", "beta#lint"]
         qualified = filter_surface(collect_surface(project), glob="acme:ip:beta#*")
-        assert sorted(e.ref.name for e in qualified.entries()) == ["fpga", "lint", "smoke"]
+        assert sorted(entry.name for entry in qualified.entries()) == ["fpga", "lint", "smoke"]
 
     def test_filters_compose(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="lint", glob="alpha*")
@@ -949,17 +904,21 @@ class TestToplevelDisplay:
             encoding="utf-8",
         )
         surface = collect_surface(tmp_path)
-        assert _entry(surface, "sim").toplevel == "testbench"
+        assert _entry(surface, "sim").declared_toplevel == "testbench"
 
     def test_long_toplevel_is_capped_in_listing_only(self, project: Path):
         long_top = "tool_verilator? (picorv32_wrapper) !tool_verilator? (testbench)"
         entry = _entry(collect_surface(project), "sim")
-        patched = target_surface.TargetEntry(
-            ref=entry.ref,
-            selector=entry.selector,
-            toplevel=long_top,
+        patched = make_target_handle(
+            project,
+            entry.selector,
+            vlnv=entry.vlnv,
+            flow=entry.flow,
+            eda_tool=entry.eda_tool,
+            core_file=entry.core_file,
             doctor_flows=entry.doctor_flows,
-            drivable_by=entry.drivable_by,
+            cocotb_module=entry.cocotb_module,
+            declared_toplevel=long_top,
         )
         group = target_surface.CoreGroup(
             vlnv="acme:ip:alpha:1.0", core_file=project / "alpha/alpha.core", entries=(patched,)
@@ -1026,9 +985,9 @@ class TestDetail:
         assert "resolved" not in payload and "resolved_error" not in payload
 
     def test_unknown_and_ambiguous_tokens_raise(self, project: Path):
-        with pytest.raises(fusesoc_registry.UnknownTargetError):
+        with pytest.raises(UnknownTargetError):
             detail_payload(project, "ghost", resolve=False)
-        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+        with pytest.raises(AmbiguousTargetError):
             detail_payload(project, "lint", resolve=False)
 
     def test_resolution_failure_degrades_to_error_field(self, project: Path):

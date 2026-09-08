@@ -18,12 +18,17 @@ from booley.dev_support.demo_contract_codec import (
     RequiredBinding,
     load_contract,
 )
+from booley.flows.execution import flow_enabled
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.git import scope_matches_file
+from booley.runtime.project_prepare import prepare_project
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError, authored_ticket_record
+from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.target_contract import criterion_targets
 
 __all__ = [
     "DemoContract",
@@ -33,6 +38,23 @@ __all__ = [
     "load_contract",
     "validate_demo",
 ]
+
+
+def _target_inputs(catalog: TargetCatalog, target: str) -> tuple[Any, ...]:
+    """Return condition-selected inputs through the demo checkout catalog."""
+    return catalog.inspect(catalog.select(target)).inputs
+
+
+def _resolve_catalog_target(
+    catalog: TargetCatalog,
+    target: str,
+    build_root: Path,
+) -> Any:
+    """Resolve one already-selected demo Target."""
+    return fusesoc_registry.resolve_target_handle(
+        catalog.select(target),
+        build_root=build_root,
+    )
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -61,10 +83,6 @@ def _status(repository: Path) -> str:
     ).stdout.strip()
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _ticket_fields(project_dir: Path, slug: str) -> tuple[dict[str, Any], Path]:
     ticket, _status_name = find_ticket_file(project_dir / "tickets", slug)
     if ticket is None:
@@ -78,9 +96,27 @@ def _validate_ticket_fixture(contract_path: Path, fixture: str, ticket: Path) ->
     fixture_path = repository_root / fixture
     if not fixture_path.is_file():
         return [f"CI-owned ticket fixture is missing: {fixture}"]
-    if _digest(fixture_path) != _digest(ticket):
+    try:
+        fixture_fields, fixture_body = parse_frontmatter(fixture_path.read_text(encoding="utf-8"))
+        ticket_fields, ticket_body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+        fixture_record = authored_ticket_record(fixture_fields, fixture_body, ())
+        ticket_record = authored_ticket_record(ticket_fields, ticket_body, ())
+    except (AcceptanceBasisError, OSError, ValueError) as exc:
+        return [f"cannot compare CI-owned ticket fixture {fixture}: {exc}"]
+    if fixture_record["ticket"] != ticket_record["ticket"]:
         return [f"injected ticket does not match CI-owned fixture: {fixture}"]
     return []
+
+
+def _prepare_demo_project(root: Path, ticket: Path, slug: str) -> list[str]:
+    preparation = prepare_project(
+        root,
+        root,
+        slug=slug,
+        ticket_path=ticket,
+        sim_flow_enabled=flow_enabled("sim", root),
+    )
+    return [] if preparation.ok else [preparation.error]
 
 
 def _validate_targets(
@@ -93,20 +129,25 @@ def _validate_targets(
         for entry in fields.get("scope", [])
         if isinstance(entry, str) and entry.endswith(" [new]")
     }
+    catalog = TargetCatalog.build(root)
     with tempfile.TemporaryDirectory(prefix="booley-demo-targets-") as build_root:
         for index, target in enumerate(targets):
             try:
-                missing = fusesoc_registry.missing_target_sources(root, target)
+                missing = [
+                    item.path
+                    for item in _target_inputs(catalog, target)
+                    if not (root / item.path).exists()
+                ]
                 if missing and set(missing) <= future:
                     continue
-                resolved = fusesoc_registry.resolve_target(
+                resolved = _resolve_catalog_target(
+                    catalog,
                     target,
-                    project_root=root,
-                    build_root=Path(build_root) / f"target-{index}",
+                    Path(build_root) / f"target-{index}",
                 )
                 if not resolved.toplevel:
                     errors.append(f"required Target {target!r} resolves without a toplevel")
-            except (fusesoc_registry.FuseSocError, OSError) as exc:
+            except (FuseSocError, OSError) as exc:
                 errors.append(f"required Target {target!r}: {exc}")
     return errors
 
@@ -158,7 +199,7 @@ def _validate_generated_input(
     if not artifact.is_file():
         errors.append(f"generated input was not prepared: {path}")
     else:
-        digest = _digest(artifact)
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     if scope_matches_file(scope, path):
         errors.append(f"generated input must not be ticket Scope: {path}")
     if _git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0:
@@ -167,10 +208,11 @@ def _validate_generated_input(
         errors.append(f"generated input must be ignored: {path}")
     if not (root / producer).is_file():
         errors.append(f"generated input producer is missing for {path}: {producer}")
+    catalog = TargetCatalog.build(root)
     for target in targets:
         try:
-            referenced = fusesoc_registry.target_referenced_files(root, target)
-        except fusesoc_registry.FuseSocError as exc:
+            referenced = [item.path for item in _target_inputs(catalog, target)]
+        except FuseSocError as exc:
             errors.append(f"generated input {path} target {target!r}: {exc}")
             continue
         if path not in referenced:
@@ -202,6 +244,7 @@ def validate_demo(
     errors.extend(_validate_ticket_fixture(Path(contract_path), contract.ticket_fixture, ticket))
     first = check_ticket_ready(root, contract.ticket_slug)
     errors.extend(first.errors)
+    errors.extend(_prepare_demo_project(root, ticket, contract.ticket_slug))
     errors.extend(_validate_targets(root, fields, contract.required_targets))
     errors.extend(_validate_bindings(fields, contract.required_bindings))
     generated_errors, first_digests = _validate_generated_inputs(
@@ -211,6 +254,10 @@ def validate_demo(
 
     second = check_ticket_ready(root, contract.ticket_slug)
     errors.extend(f"second preparation: {error}" for error in second.errors)
+    errors.extend(
+        f"second preparation: {error}"
+        for error in _prepare_demo_project(root, ticket, contract.ticket_slug)
+    )
     generated_errors, second_digests = _validate_generated_inputs(
         root, fields, contract.generated_inputs
     )

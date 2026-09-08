@@ -35,7 +35,7 @@ def _vendor_scope_hook(hook_dir: Path) -> Path:
         "commit_msg_utils.py": package / "dev_support" / "commit_msg_utils.py",
         "checkout_role.py": package / "runtime" / "checkout_role.py",
         "boundary.py": package / "core" / "boundary.py",
-        "contract_path_policy.py": package / "ticket_board" / "contract_path_policy.py",
+        "acceptance_path_policy.py": package / "ticket_board" / "acceptance_path_policy.py",
     }
     for destination, source in sources.items():
         shutil.copy2(source, hook_dir / destination)
@@ -322,7 +322,7 @@ class TestMain:
     def test_manifest_selected_generator_is_rejected(self, tmp_path: Path):
         path = "scripts/build_recipe.py"
         scope_file = tmp_path / ".scope.json"
-        scope_file.write_text(json.dumps({"scope": [path], "contract_control": [path]}))
+        scope_file.write_text(json.dumps({"scope": [path], "acceptance_control": [path]}))
 
         with (
             patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),

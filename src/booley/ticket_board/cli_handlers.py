@@ -9,11 +9,14 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
-from booley.core.models import OnSuccess
+from booley.core.models import OnSuccess, TargetPlan, TargetPlanError
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.ticket_repositories import TicketWorkspace
 from booley.runtime.timefmt import parse_timestamp
+from booley.targets.domain import FuseSocError
 
 from .analytics import (
     attribute_tokens_to_steps,
@@ -125,7 +128,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("target_contract") is not None
+        if entry.get("acceptance_basis") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -204,14 +207,43 @@ def _cmd_validate_ticket(tio, args):
     with path.open(encoding="utf-8") as f:
         text = f.read()
     fields, body = parse_frontmatter(text)
+    project_root = detect_project_root()
+    validation_root = project_root
+    allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
+    if (project_root / ".git").exists() and fields.get("acceptance_basis") is None:
+        try:
+            workspace = TicketWorkspace.ensure_authoring(project_root, path, path.stem)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
+            return 1
+        validation_root = workspace.outer
+        from .acceptance_targets import acceptance_control_paths
+
+        try:
+            allowed_dirty_paths = tuple(
+                validation_root / item for item in acceptance_control_paths(validation_root)
+            )
+        except (FuseSocError, OSError, ValueError) as exc:
+            print(json.dumps({"errors": [f"Acceptance input discovery failed: {exc}"]}))
+            return 1
     results = validate_ticket_fields(
         fields,
         body,
         check_files=True,
-        check_git=args.check_git,
-        project_root=str(detect_project_root()),
-        allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        check_git=False if validation_root != project_root else args.check_git,
+        project_root=str(validation_root),
+        allowed_dirty_paths=allowed_dirty_paths,
     )
+    if args.check_git and validation_root != project_root:
+        root_results = validate_ticket_fields(
+            fields,
+            body,
+            check_files=False,
+            check_git=True,
+            project_root=str(project_root),
+            allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+        )
+        results = list(dict.fromkeys([*results, *root_results]))
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]
     for w in warnings:
@@ -481,7 +513,7 @@ def _cmd_reset_to_deprecated(tio, args):
 
 
 def _cmd_approve(tio, args):
-    ok = op_approve(tio, args.slug, actor=args.actor, detail=args.detail)
+    ok = op_approve(tio, args.slug)
     if ok:
         # Check if any waiting tickets are now executable
         promoted = op_promote_waiting(tio)
@@ -518,7 +550,7 @@ def _cmd_init(tio, args):
 
 
 _ON_SUCCESS_REQUIRED_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
-_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS | {"remove_targets"}
+_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS
 
 
 def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
@@ -532,6 +564,12 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         mapping = require_dict(parsed, field="--on-success")
     except BoundaryError as exc:
         return None, str(exc)
+    if "remove_targets" in mapping:
+        return (
+            None,
+            "on_success.remove_targets is unsupported after the Target Plan hard cutoff; "
+            "recreate the Ticket",
+        )
 
     missing = _ON_SUCCESS_REQUIRED_KEYS - mapping.keys()
     unknown = mapping.keys() - _ON_SUCCESS_KEYS
@@ -543,7 +581,6 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
     if key_errors:
         return None, "; ".join(key_errors)
 
-    mapping.setdefault("remove_targets", [])
     model = OnSuccess.from_dict(mapping)
     errors = model.validate()
     if errors:
@@ -553,81 +590,94 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         "merge": model.merge,
         "cleanup": model.cleanup,
         "triage_report": model.triage_report,
-        "remove_targets": list(model.remove_targets),
     }, None
 
 
-def _cmd_create_file(tio, args):
-    # Parse criteria: --criteria-file takes precedence over --criteria
-    criteria = None
-    if args.criteria_file:
-        try:
-            criteria = json.loads(Path(args.criteria_file).read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"Error: invalid --criteria-file: {e}", file=sys.stderr)
-            return 2
-    elif args.criteria:
-        try:
-            criteria = json.loads(args.criteria)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid --criteria JSON: {e}", file=sys.stderr)
-            return 2
+def _parse_target_plan_arg(value: str) -> tuple[list[dict[str, str]] | None, str | None]:
+    """Parse and canonicalize a Target Plan from the CLI boundary."""
+    try:
+        parsed = json.loads(value)
+        plan = TargetPlan.from_value(parsed)
+    except (json.JSONDecodeError, TargetPlanError) as exc:
+        return None, str(exc)
+    return plan.as_list(), None
 
+
+def _create_target_plan(args, on_success: dict[str, Any] | None):
+    source = args.target_plan
+    if args.target_plan_file:
+        try:
+            source = Path(args.target_plan_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            return None, f"invalid --target-plan-file: {exc}"
+    if source is None:
+        return None, None
+    plan, error = _parse_target_plan_arg(source)
+    if error:
+        return None, f"invalid Target Plan: {error}"
+    if on_success is not None and on_success["merge"] is not True:
+        return None, "invalid Target Plan: target_plan requires on_success.merge: true"
+    return plan, None
+
+
+def _cmd_create_file(tio, args):
+    criteria, error = _create_file_criteria(args)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     on_success = None
     if args.on_success is not None:
         on_success, error = _parse_on_success_arg(args.on_success)
         if error:
             print(f"Error: invalid --on-success: {error}", file=sys.stderr)
             return 2
-
-    # Read body from file if --body-file given
-    body = args.body
-    if args.body_file:
-        body = Path(args.body_file).read_text(encoding="utf-8")
-
+    target_plan, error = _create_target_plan(args, on_success)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
     result = tio.create_ticket_file(
         args.slug,
-        TicketFileSpec(
-            summary=args.summary,
-            ticket_type=args.ticket_type,
-            branch=args.branch,
-            scope=args.scope,
-            spec=args.spec,
-            dependencies=args.dependencies,
-            priority=args.priority,
-            criteria=criteria,
-            on_success=on_success,
-            body=body,
-        ),
+        _create_file_spec(args, criteria, target_plan, on_success),
     )
     return 0 if result else 2
 
 
-def _cmd_contract_open(tio, args):
+def _create_file_criteria(args) -> tuple[Any, str | None]:
+    """Parse create-file criteria with file input taking precedence."""
+    if args.criteria_file:
+        try:
+            return json.loads(Path(args.criteria_file).read_text(encoding="utf-8")), None
+        except (json.JSONDecodeError, OSError) as e:
+            return None, f"invalid --criteria-file: {e}"
+    if args.criteria:
+        try:
+            return json.loads(args.criteria), None
+        except json.JSONDecodeError as e:
+            return None, f"invalid --criteria JSON: {e}"
+    return None, None
+
+
+def _create_file_spec(args, criteria, target_plan, on_success) -> TicketFileSpec:
+    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else args.body
+    return TicketFileSpec(
+        summary=args.summary,
+        ticket_type=args.ticket_type,
+        branch=args.branch,
+        project_destination_ref=args.project_destination_ref,
+        scope=args.scope,
+        spec=args.spec,
+        dependencies=args.dependencies,
+        priority=args.priority,
+        criteria=criteria,
+        target_plan=target_plan,
+        on_success=on_success,
+        body=body,
+    )
+
+
+def _cmd_return_to_draft(tio, args):
     try:
-        result = tio.contract_open(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_contract_seal(tio, args):
-    try:
-        result = tio.contract_seal(args.slug)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
-    json.dump(result, sys.stdout, indent=2)
-    print()
-    return 0
-
-
-def _cmd_revise_contract(tio, args):
-    try:
-        result = tio.contract_revise(args.slug)
+        result = tio.return_to_draft(args.slug)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -642,14 +692,12 @@ def _cmd_enqueue(tio, args):
     merge = getattr(args, "merge", None)
     cleanup = getattr(args, "cleanup", None)
     triage_report = getattr(args, "triage_report", None)
-    remove_targets = getattr(args, "remove_targets", None)
-    if any(value is not None for value in (dest, merge, cleanup, triage_report, remove_targets)):
+    if any(value is not None for value in (dest, merge, cleanup, triage_report)):
         on_success = {
             "destination": dest or "review",
             "merge": merge if merge is not None else True,
             "cleanup": cleanup if cleanup is not None else True,
             "triage_report": triage_report if triage_report is not None else True,
-            "remove_targets": remove_targets or [],
         }
     success = tio.enqueue_ticket(
         args.slug,

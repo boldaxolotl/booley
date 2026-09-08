@@ -5,11 +5,22 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 SCANNER = Path(__file__).parents[2] / ".github/scripts/confidential_content_guard.py"
 SAFE_IDENT = "Safe User <safe@example.test>"
 SENTINEL = "quokka-sentinel-987"
+SUBPROCESS_TIMEOUT_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class _DestinationScenario:
+    repo: Path
+    origin: Path
+    remote_topic: str
+    destination_main: str
+    head: str
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -19,6 +30,7 @@ def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
         check=True,
         env=env,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -59,6 +71,35 @@ def _bare_remote(tmp_path: Path) -> Path:
     origin.mkdir()
     _git(origin, "init", "--bare")
     return origin
+
+
+def _existing_topic_with_destination_main(
+    tmp_path: Path,
+) -> _DestinationScenario:
+    repo, initial = _repository(tmp_path)
+    origin = _bare_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "origin", f"{initial}:refs/heads/main")
+
+    _git(repo, "checkout", "-b", "topic")
+    (repo / "topic.txt").write_text("topic\n", encoding="utf-8")
+    remote_topic = _commit(repo, "add topic")
+    _git(repo, "push", "origin", f"{remote_topic}:refs/heads/topic")
+
+    _git(repo, "checkout", "main")
+    (repo / "upstream.txt").write_text("destination history\n", encoding="utf-8")
+    destination_main = _commit(
+        repo,
+        "add upstream change",
+        name="Destination User",
+        email="destination@example.test",
+    )
+    _git(repo, "push", "origin", f"{destination_main}:refs/heads/main")
+
+    _git(repo, "checkout", "topic")
+    _git(repo, "merge", "--no-ff", "main", "-m", "merge main", env=_identity_env())
+    head = _git(repo, "rev-parse", "HEAD")
+    return _DestinationScenario(repo, origin, remote_topic, destination_main, head)
 
 
 def _encoded_config() -> str:
@@ -103,6 +144,7 @@ def _scan_records(
         check=False,
         env=env,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -124,6 +166,7 @@ def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[s
         check=False,
         env=env,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -158,6 +201,112 @@ def test_new_ref_does_not_rescan_history_already_on_destination(tmp_path: Path) 
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_existing_ref_does_not_rescan_other_destination_ref(tmp_path: Path) -> None:
+    scenario = _existing_topic_with_destination_main(tmp_path)
+    records = f"refs/heads/topic {scenario.head} refs/heads/topic {scenario.remote_topic}\n"
+
+    result = _scan_records(
+        scenario.repo,
+        records,
+        config=_encoded_config(),
+        destination=("origin", scenario.origin),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_existing_ref_still_scans_commit_absent_from_destination(tmp_path: Path) -> None:
+    scenario = _existing_topic_with_destination_main(tmp_path)
+    (scenario.repo / "local-only.txt").write_text("not on destination\n", encoding="utf-8")
+    local_only = _commit(
+        scenario.repo,
+        "add local-only change",
+        name="Local User",
+        email="local@example.test",
+    )
+    records = f"refs/heads/topic {local_only} refs/heads/topic {scenario.remote_topic}\n"
+
+    result = _scan_records(
+        scenario.repo,
+        records,
+        config=_encoded_config(),
+        destination=("origin", scenario.origin),
+    )
+
+    assert result.returncode == 1
+    assert f"commit {local_only[:12]} author identity" in result.stderr
+    assert scenario.destination_main[:12] not in result.stderr
+
+
+def test_mixed_new_and_existing_updates_apply_destination_exclusions_to_both(
+    tmp_path: Path,
+) -> None:
+    scenario = _existing_topic_with_destination_main(tmp_path)
+    zero = "0" * 40
+    records = (
+        f"refs/heads/topic {scenario.head} refs/heads/topic {scenario.remote_topic}\n"
+        f"refs/heads/review {scenario.head} refs/heads/review {zero}\n"
+    )
+
+    result = _scan_records(
+        scenario.repo,
+        records,
+        config=_encoded_config(),
+        destination=("origin", scenario.origin),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_existing_ref_destination_lookup_failure_uses_remote_sha_fallback(
+    tmp_path: Path,
+) -> None:
+    repo, _initial = _repository(tmp_path)
+    (repo / "destination.txt").write_text("destination history\n", encoding="utf-8")
+    remote_topic = _commit(
+        repo,
+        "add destination change",
+        name="Destination User",
+        email="destination@example.test",
+    )
+    (repo / "README.md").write_text("safe child\n", encoding="utf-8")
+    head = _commit(repo, "update documentation")
+    records = f"refs/heads/topic {head} refs/heads/topic {remote_topic}\n"
+
+    result = _scan_records(
+        repo,
+        records,
+        config=_encoded_config(),
+        destination=("origin", tmp_path / "missing.git"),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_new_ref_destination_lookup_failure_scans_full_ancestry(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / "historical.txt").write_text("not on destination\n", encoding="utf-8")
+    bad_ancestor = _commit(
+        repo,
+        "add local-only ancestor",
+        name="Local User",
+        email="local@example.test",
+    )
+    (repo / "README.md").write_text("safe tip\n", encoding="utf-8")
+    head = _commit(repo, "update documentation")
+
+    result = _scan(
+        repo,
+        "0" * 40,
+        head,
+        config=_encoded_config(),
+        destination=("origin", tmp_path / "missing.git"),
+    )
+
+    assert result.returncode == 1
+    assert f"commit {bad_ancestor[:12]} author identity" in result.stderr
 
 
 def test_docs_commit_does_not_rescan_unchanged_baseline_blob(tmp_path: Path) -> None:

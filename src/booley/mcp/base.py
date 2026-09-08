@@ -25,7 +25,9 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -39,6 +41,15 @@ from booley.flows import execution
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,  # noqa: F401 - documented compatibility export for Project-local endpoints
+    EXIT_SUCCESS,
+    EndpointOutcome,
+    EndpointRejectedError,
+    ExecutionResult,
+    execute_endpoint,
+)
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.paths import ticket_runtime_dir
@@ -65,9 +76,33 @@ from .run_lock import (
 
 logger = logging.getLogger(__name__)
 
-EXIT_SUCCESS = 0
-EXIT_FAILURE = 1
-EXIT_ERROR = 2
+
+@dataclass
+class McpToolResult(EndpointOutcome):
+    """Source-compatible result name for Project-local endpoint extensions."""
+
+
+def _as_mcp_tool_result(outcome: EndpointOutcome) -> McpToolResult:
+    """Promote a neutral outcome before invoking compatibility hooks."""
+    if isinstance(outcome, McpToolResult):
+        return outcome
+    return McpToolResult(
+        exit_code=outcome.exit_code,
+        criterion_key=outcome.criterion_key,
+        criterion_met=outcome.criterion_met,
+        detail=outcome.detail,
+        report_text=outcome.report_text,
+        input_tokens=outcome.input_tokens,
+        output_tokens=outcome.output_tokens,
+        cached_tokens=outcome.cached_tokens,
+        cache_create_tokens=outcome.cache_create_tokens,
+        cost_usd=outcome.cost_usd,
+        lines_added=outcome.lines_added,
+        lines_removed=outcome.lines_removed,
+        display_lines=outcome.display_lines,
+        summary=outcome.summary,
+    )
+
 
 # A leading `C:`-style component. On Windows pathlib parses this as the drive of
 # an ABSOLUTE path; on POSIX it is just an ordinary relative directory name.
@@ -246,28 +281,14 @@ class _StdoutWitness:
         return False
 
 
-@dataclass
-class McpToolResult:
-    """Structured result from an MCP tool invocation."""
+@dataclass(frozen=True)
+class _PreparedMcpExecution:
+    """Adapter-owned state carried through the neutral execution sequence."""
 
-    exit_code: int = EXIT_SUCCESS
-    criterion_key: str = ""
-    criterion_met: bool = False
-    detail: dict[str, Any] = field(default_factory=dict)
-    report_text: str = ""
-    # Agent token/cost tracking (populated by Specialists, zero for Flows)
-    input_tokens: int = 0  # inclusive prompt total (uncached + cache reads + writes)
-    output_tokens: int = 0
-    cached_tokens: int = 0  # cache reads
-    cache_create_tokens: int = 0  # cache writes
-    cost_usd: float = 0.0
-    # Git diff stats (populated by _finalize_result for code-modifying endpoints)
-    lines_added: int = 0
-    lines_removed: int = 0
-    # One-line summaries displayed in the host terminal endpoint box
-    display_lines: list[str] = field(default_factory=list)
-    # One-line structured summary for Console history strip
-    summary: str = ""
+    display_target: str | None
+    display_label: str | None
+    dry_run: bool
+    non_persisting_dry_run: bool
 
 
 class McpTool(ABC):
@@ -291,6 +312,10 @@ class McpTool(ABC):
     # Target-aware deterministic Flows override this so both argparse and the
     # generated MCP schema require an explicit selection.
     target_required: bool = False
+    # Source-scoped endpoints may opt out of Target selection entirely.
+    accepts_target: bool = True
+    # Preview-only dry runs opt in to bypassing admission and persistence.
+    non_persisting_dry_run: bool = False
     # F-14: on a human/standalone (no-state-file) run, ``report_text`` is only
     # surfaced on *failure* — the PASS verdict lives in ``display_lines``, which
     # the harness UI renders but a bare CLI run drops. For an endpoint whose success
@@ -345,6 +370,7 @@ class McpTool(ABC):
         # Set for the duration of _run(); read by _post_run to avoid echoing a
         # verdict block the endpoint already printed itself (F-28).
         self._stdout_witness: _StdoutWitness | None = None
+        self._pending_criteria_set: tuple[str, ...] | None = None
         # The underlying EDA tool that actually ran (e.g. "verilator",
         # "verible", "yosys", "vivado"). Endpoints set this at target-resolution
         # time; write_report() emits it as ``eda_tool`` so reports say which
@@ -373,17 +399,18 @@ class McpTool(ABC):
         )
         # Kept default="" (not argparse required) so each endpoint's validation can
         # produce specific guidance and discovery can represent no selection.
-        self._parser.add_argument(
-            "--target",
-            required=self.target_required,
-            help=self.target_help,
-        )
+        if self.accepts_target:
+            self._parser.add_argument(
+                "--target",
+                required=self.target_required,
+                help=self.target_help,
+            )
         self._parser.add_argument(
             "--diagnostic",
             action="store_true",
             help=(
                 "Run without satisfying Ticket criteria. In Ticket Mode this "
-                "is required for a Flow/Target combination outside the sealed contract."
+                "is required for a Flow/Target combination outside the Acceptance Basis."
             ),
         )
 
@@ -475,14 +502,15 @@ class McpTool(ABC):
         raw_logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
         if not raw_logs_dir:
             return
-        target_contract: dict[str, Any] = {}
+        acceptance_basis: dict[str, Any] = {}
         raw_ticket_file = os.environ.get("BOOLEY_TICKET_FILE")
         if raw_ticket_file and Path(raw_ticket_file).is_file():
-            from booley.ticket_board.target_contract import load_ticket_contract
+            from booley.ticket_board.frontmatter import parse_frontmatter
 
-            contract = load_ticket_contract(raw_ticket_file)
-            if contract is not None:
-                target_contract = contract.as_dict()
+            fields, _body = parse_frontmatter(Path(raw_ticket_file).read_text(encoding="utf-8"))
+            raw_basis = fields.get("acceptance_basis")
+            if isinstance(raw_basis, dict):
+                acceptance_basis = raw_basis
         from booley.ticket_board.acceptance_ledger import record_changes
 
         record_changes(
@@ -492,7 +520,7 @@ class McpTool(ABC):
             invocation_id=os.environ.get("BOOLEY_RUN_ID") or self._invocation_id,
             producer=self.name,
             execution_id=os.environ.get("BOOLEY_EXECUTION_ID", ""),
-            target_contract=target_contract,
+            acceptance_basis=acceptance_basis,
         )
 
     def _criterion_key_for_source(self, key: str, source_target: str | None) -> str:
@@ -500,9 +528,9 @@ class McpTool(ABC):
         if not source_target or not key.endswith(source_target):
             return key
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            name = select_target(Path(self.args.work_dir), source_target).name
+            name = TargetCatalog.build(Path(self.args.work_dir)).select(source_target).name
         except FuseSocError:
             return key
         return key[: -len(source_target)] + name
@@ -540,7 +568,7 @@ class McpTool(ABC):
             )
             return stamped
         source_detail = freshness.to_detail()
-        if is_review and stamped.get("review_detail_version") == 3:
+        if is_review and stamped.get("review_detail_version") == 4:
             from booley.review.receipt import finalize_review_detail
 
             return finalize_review_detail(stamped, source_detail)
@@ -778,13 +806,13 @@ class McpTool(ABC):
         return targets
 
     def _bound_criterion_keys(self, target: str) -> list[str]:
-        """Return sealed criteria this endpoint/Target invocation can update."""
+        """Return basis-bound criteria this endpoint/Target invocation can update."""
         criterion_target = target
         target_identity: str | None = None
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            selected = select_target(Path(self.args.work_dir), target)
+            selected = TargetCatalog.build(Path(self.args.work_dir)).select(target)
             criterion_target = selected.name
             target_identity = selected.identity
         except FuseSocError:
@@ -826,7 +854,7 @@ class McpTool(ABC):
         invoked_identity: str | None,
     ) -> bool:
         """Compare criterion and invocation Targets by identity when resolvable."""
-        from booley.targets.target import (
+        from booley.targets.domain import (
             TARGET_IDENTITY_PARAM,
             TARGET_SELECTOR_PARAM,
             criterion_matches_target,
@@ -846,9 +874,12 @@ class McpTool(ABC):
         if invoked_identity is None:
             return False
         try:
-            from booley.targets.target import select_target
+            from booley.targets.catalog import TargetCatalog
 
-            return select_target(Path(self.args.work_dir), authored).identity == invoked_identity
+            return (
+                TargetCatalog.build(Path(self.args.work_dir)).select(authored).identity
+                == invoked_identity
+            )
         except FuseSocError:
             return False
 
@@ -885,20 +916,11 @@ class McpTool(ABC):
                 "unbound_targets": missing,
             },
             report_text=(
-                f"{self.name}: Target(s) {', '.join(missing)} do not bind a sealed "
-                f"Ticket criterion.\nPending compatible criteria:\n{pending_text}\n"
+                f"{self.name}: Target(s) {', '.join(missing)} do not bind an Acceptance "
+                f"Basis criterion.\nPending compatible criteria:\n{pending_text}\n"
                 "Use --diagnostic only when this is intentionally a non-acceptance run."
             ),
         )
-
-    def _apply_criterion_binding_gate(self, display_target: str | None) -> int | None:
-        """Render and persist a binding rejection before job admission."""
-        rejection = self._criterion_binding_gate()
-        if rejection is None:
-            return None
-        if rejection.report_text:
-            print(rejection.report_text, file=sys.stderr, flush=True)
-        return self._finish_main(rejection, display_target, started=None)
 
     def steering_text(self) -> str:
         """Return steering text from repeated ``--steer`` values."""
@@ -909,10 +931,14 @@ class McpTool(ABC):
         values = [str(v) for v in values]
         return "\n".join(v for v in values if v)
 
+    def _is_non_persisting_dry_run(self) -> bool:
+        """Return whether this invocation is an opted-in preview-only run."""
+        return self.non_persisting_dry_run and bool(getattr(self.args, "dry_run", False))
+
     # --- Main execution ---
 
     @abstractmethod
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         """Execute the endpoint's core logic. Implemented by subclasses."""
 
     def _finalize_result(self, result: McpToolResult) -> None:
@@ -955,98 +981,201 @@ class McpTool(ABC):
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
-    def _pre_state_gate(self) -> McpToolResult | None:
+    def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject before loading mutable ticket state; subclasses may override."""
         return None
 
-    def _apply_pre_state_gate(self) -> int | None:
+    def _apply_pre_state_gate(self) -> EndpointOutcome | None:
         """Render an early gate rejection without reading or writing ticket state."""
         result = self._pre_state_gate()
         if result is None:
             return None
         if result.report_text:
             print(result.report_text, file=sys.stderr, flush=True)
-        return result.exit_code
+        return result
 
-    def main(self, argv: list[str] | None = None) -> int:
-        """Full CLI entry point: parse args, load state, run, report, exit."""
+    def _prepare_cli_execution(
+        self,
+        argv: list[str] | None,
+    ) -> _PreparedMcpExecution | EndpointOutcome:
+        """Adapt CLI arguments into one prepared execution request."""
         self.parse_args(argv)
-        if (early_exit := self._apply_pre_state_gate()) is not None:
-            return early_exit
+        if (early_outcome := self._apply_pre_state_gate()) is not None:
+            return early_outcome
         self.read_state()
         self._default_target_args()
         display_target = self._resolve_display_config()
+        display_label = self._resolve_display_label()
+        dry_run = bool(getattr(self.args, "dry_run", False))
+        non_persisting_dry_run = self._is_non_persisting_dry_run()
+        _write_display_event(
+            _endpoint_start_event(
+                self.name,
+                display_target,
+                display_label=display_label,
+                dry_run=dry_run,
+            )
+        )
+        return _PreparedMcpExecution(
+            display_target=display_target,
+            display_label=display_label,
+            dry_run=dry_run,
+            non_persisting_dry_run=non_persisting_dry_run,
+        )
 
-        _write_display_event(_endpoint_start_event(self.name, display_target))
-        if (binding_exit := self._apply_criterion_binding_gate(display_target)) is not None:
-            return binding_exit
+    @contextmanager
+    def admission(self, prepared: _PreparedMcpExecution) -> Iterator[None]:
+        """Validate the Target, then hold admission through final reporting."""
         slot_store: job_slots.SlotStore | None = None
         slot_token = None
-        result = McpToolResult(exit_code=EXIT_ERROR)
         try:
-            # Job admission (ADR 0028): claim a slot for this workload class,
-            # or wait in queue order. Queue narration rides endpoint_progress
-            # events so the Console/plain log render it with no new plumbing.
+            rejection = self._criterion_binding_gate()
+            if rejection is not None:
+                if rejection.report_text:
+                    print(rejection.report_text, file=sys.stderr, flush=True)
+                raise EndpointRejectedError(rejection)
+            if prepared.non_persisting_dry_run:
+                yield
+                return
             try:
                 slot_store, slot_token = self._acquire_job_slot()
             except job_slots.QueueFullError as exc:
                 logger.error("Job admission refused: %s", exc)
-                result = McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
-                )
-                return self._finish_main(result, display_target, started=None)
-            except job_slots.ClaimLostError:
+                raise EndpointRejectedError(
+                    McpToolResult(
+                        exit_code=EXIT_ERROR,
+                        report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
+                    )
+                ) from exc
+            except job_slots.ClaimLostError as exc:
                 logger.error("Queued %s run was cancelled before it started", self.name)
-                result = McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=(
-                        f"CANCELLED: this queued '{self.name}' run was "
-                        f"withdrawn (booley_cancel) before it started."
-                    ),
-                )
-                return self._finish_main(result, display_target, started=None)
-            # Capture HEAD before _run() so classify_git_diff sees endpoint
-            # commits; the clock starts after admission so duration measures
-            # the run, not the queue wait.
+                raise EndpointRejectedError(
+                    McpToolResult(
+                        exit_code=EXIT_ERROR,
+                        report_text=(
+                            f"CANCELLED: this queued '{self.name}' run was "
+                            f"withdrawn (booley_cancel) before it started."
+                        ),
+                    )
+                ) from exc
             self._pre_run_head = self._get_head_sha()
-            self._start_time = time.monotonic()
-            # Watch stdout for the duration of the run so _post_run can tell a
-            # verdict the endpoint already printed from one only it can surface.
-            witness = _StdoutWitness(sys.stdout)
-            self._stdout_witness = witness
-            sys.stdout = witness  # type: ignore[assignment]
-            try:
-                result = self._run()
-            except Exception:
-                logger.exception("MCP endpoint %s failed with exception", self.name)
-                result = McpToolResult(exit_code=EXIT_ERROR)
-            finally:
-                sys.stdout = witness.wrapped
-                self._finalize_result(result)
-            return self._finish_main(result, display_target, started=self._start_time)
+            yield
         finally:
             if slot_store is not None and slot_token is not None:
                 slot_store.release(slot_token)
+
+    def invoke_endpoint(
+        self,
+        prepared: _PreparedMcpExecution,
+        *,
+        started: float,
+    ) -> McpToolResult:
+        """Run the legacy implementation hook under the neutral coordinator."""
+        self._start_time = started
+        result = McpToolResult(exit_code=EXIT_ERROR)
+        witness = _StdoutWitness(sys.stdout)
+        self._stdout_witness = witness
+        sys.stdout = witness  # type: ignore[assignment]
+        try:
+            try:
+                result = _as_mcp_tool_result(self._run())
+            except Exception:
+                logger.exception("MCP endpoint %s failed with exception", self.name)
+                result = McpToolResult(exit_code=EXIT_ERROR)
+        finally:
+            sys.stdout = witness.wrapped
+        self._finalize_result(result)
+        return result
+
+    def finish_execution(
+        self,
+        prepared: _PreparedMcpExecution,
+        outcome: EndpointOutcome,
+        *,
+        started: float | None,
+        acceptance_recorded: bool,
+    ) -> int:
+        """Publish completion, persisting only after acceptance succeeds."""
+        return self._finish_main(
+            _as_mcp_tool_result(outcome),
+            prepared.display_target,
+            prepared.display_label,
+            started=started,
+            acceptance_recorded=acceptance_recorded,
+            dry_run=prepared.dry_run,
+            non_persisting_dry_run=prepared.non_persisting_dry_run,
+        )
+
+    def record_acceptance(
+        self,
+        prepared: _PreparedMcpExecution,
+        outcome: EndpointOutcome,
+    ) -> None:
+        """Record immutable Ticket evidence before state/report persistence."""
+        if prepared.non_persisting_dry_run:
+            self._pending_criteria_set = ()
+            return
+        result = _as_mcp_tool_result(outcome)
+        if self._state is not None and self._state._file_path is not None:
+            self.state.work_dir = str(Path(self.args.work_dir).resolve())
+            self._pre_save_hook(result)
+        reset_keys: list[str] = []
+        if result.exit_code == EXIT_SUCCESS and self.code_modifying:
+            reset_keys = self.invalidate_dependent_criteria()
+            self._record_acceptance_changes(
+                [
+                    CriterionChange(
+                        key,
+                        self.state.criteria[key].met,
+                        "source-invalidated",
+                        dict(self.state.criteria[key].detail),
+                        self.state.criteria[key].mandatory,
+                        dict(self.state.criteria[key].params),
+                    )
+                    for key in reset_keys
+                ]
+            )
+        criteria_set = [result.criterion_key] if result.criterion_key else []
+        criteria_set.extend(f"~{key}" for key in reset_keys)
+        self._pending_criteria_set = tuple(criteria_set)
+
+    def execute_cli(self, argv: list[str] | None = None) -> ExecutionResult:
+        """Adapt CLI arguments and run the transport-independent coordinator."""
+        prepared = self._prepare_cli_execution(argv)
+        if isinstance(prepared, EndpointOutcome):
+            return ExecutionResult(exit_code=prepared.exit_code, outcome=prepared)
+        return execute_endpoint(self, prepared)
+
+    def main(self, argv: list[str] | None = None) -> int:
+        """Run the CLI adapter and return its process exit code."""
+        return self.execute_cli(argv).exit_code
 
     def _finish_main(
         self,
         result: McpToolResult,
         display_target: str | None,
+        display_label: str | None,
         started: float | None,
+        *,
+        acceptance_recorded: bool,
+        dry_run: bool,
+        non_persisting_dry_run: bool,
     ) -> int:
         """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
         duration = (time.monotonic() - started) if started is not None else 0.0
         try:
-            self._post_run(result, duration)
+            if acceptance_recorded and not non_persisting_dry_run:
+                self._post_run(result, duration)
         finally:
+            self._pending_criteria_set = None
             _write_display_event(
                 _endpoint_end_event(
                     self.name,
                     display_target,
                     result,
                     duration,
-                    dry_run=bool(getattr(self.args, "dry_run", False)),
+                    display_label=display_label,
+                    dry_run=dry_run,
                 ),
             )
         return result.exit_code
@@ -1138,42 +1267,23 @@ class McpTool(ABC):
         """Resolve the config tag shown in display events."""
         return self.display_tag or ((self._selected_target or None) if self.config_aware else None)
 
-    def _post_run(self, result: McpToolResult, duration: float) -> None:
-        """Handle post-run bookkeeping: invalidation, timeline, report.
+    def _resolve_display_label(self) -> str | None:
+        """Return an optional human label without changing endpoint semantics."""
+        return None
 
-        Order matters: ``_pre_save_hook`` may flip ``result.exit_code`` and
-        ``result.criterion_met`` (e.g. a specialist rejects when a required
-        gate fails).  Running it BEFORE ``record_mcp_tool_run`` ensures the
-        timeline entry reflects the final outcome instead of the pre-hook
-        provisional success.
+    def _post_run(self, result: McpToolResult, duration: float) -> None:
+        """Persist mutable run state and publish the report.
+
+        The execution coordinator calls ``record_acceptance`` first. That step
+        also runs ``_pre_save_hook`` so this timeline sees the final rather than
+        provisional outcome before saving mutable state.
         """
-        if self._state is not None and self._state._file_path is not None:
-            self.state.work_dir = str(Path(self.args.work_dir).resolve())
-            self._pre_save_hook(result)
-        reset_keys: list[str] = []
-        if result.exit_code == EXIT_SUCCESS and self.code_modifying:
-            reset_keys = self.invalidate_dependent_criteria()
-            self._record_acceptance_changes(
-                [
-                    CriterionChange(
-                        key,
-                        self.state.criteria[key].met,
-                        "source-invalidated",
-                        dict(self.state.criteria[key].detail),
-                        self.state.criteria[key].mandatory,
-                        dict(self.state.criteria[key].params),
-                    )
-                    for key in reset_keys
-                ]
-            )
-        criteria_set = [result.criterion_key] if result.criterion_key else []
-        if reset_keys:
-            criteria_set.extend(f"~{k}" for k in reset_keys)
+        criteria_set = list(self._pending_criteria_set or ())
         # Extract key endpoint arguments for timeline filtering (e.g. --category)
         endpoint_args: dict[str, Any] | None = None
         if self._args:
             _ta: dict[str, Any] = {}
-            for attr in ("category", "config", "reason"):
+            for attr in ("category", "config", "reason", "dry_run"):
                 val = getattr(self._args, attr, None)
                 if val:
                     _ta[attr] = val

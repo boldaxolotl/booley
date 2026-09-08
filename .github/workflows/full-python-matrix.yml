@@ -1,0 +1,73 @@
+name: Full Python compatibility matrix
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: full-python-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: full / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run complete compatibility suite
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: >-
+          pytest tests/ -q --tb=short -n 4
+          --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
+          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --timeout=60 --durations=30
+          --junitxml="${{ runner.temp }}/junit.xml"
+
+      - name: Prove the full suite executed
+        if: always()
+        shell: bash
+        run: >-
+          python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
+          --label "${{ matrix.os }} / Python ${{ matrix.python }}"
+          --min-tests 10000 --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload full-matrix timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-junit-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: error
+          retention-days: 30
+
+  metrics:
+    name: full-matrix-metrics
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/collect-ci-metrics

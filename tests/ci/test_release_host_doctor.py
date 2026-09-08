@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +48,20 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
     return executable, log
 
 
+def test_host_doctor_isolates_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ambient = tmp_path / "ambient-config"
+    home = tmp_path / "home"
+    executable = tmp_path / "venv" / "bin" / "booley"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(ambient))
+
+    env = host_doctor._environment(home, executable)
+
+    assert env["HOME"] == str(home)
+    assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+
+
 def test_host_doctor_uses_isolated_paths_and_records_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -71,9 +86,35 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert commands == [
         ["bootstrap"],
-        ["init", "--skip-credentials"],
-        ["doctor", "--deep", "--skip-agent-checks"],
+        [
+            "init",
+            "--scaffold",
+            "release_host_doctor",
+            "--sim-eda-tool",
+            "verilator",
+            "--tb-style",
+            "sv",
+            "--lint-eda-tool",
+            "verilator",
+            "--no-asic",
+            "--provider",
+            "codex",
+            "--auth",
+            "subscription",
+            "--skip-credentials",
+        ],
+        ["doctor"],
     ]
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "true"
+    )
     assert evidence["schema"] == 1
     assert evidence["candidate"] == {
         "sha": "candidate-sha",
@@ -81,7 +122,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
     assert evidence["checks"][-1] == {
-        "id": "host-doctor.deep-issued-image",
+        "id": "host-doctor.plain-issued-image",
         "status": "pass",
     }
     assert evidence["cleanup"] == {

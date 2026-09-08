@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from booley.harness.bootstrap import BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
-from booley.harness.image_lifecycle import Intent
-from booley.harness.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.image_lifecycle import Intent
+from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
 
 def run_bootstrap(args: object) -> int:
@@ -18,14 +18,14 @@ def run_bootstrap(args: object) -> int:
         else Intent.ENSURE
     )
     if intent is Intent.CHECK:
-        from booley.harness.session_refresh import shared_recovery_blocks_command
+        from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         if shared_recovery_blocks_command(read_only=True):
             print(yellow("An interrupted Session refresh requires recovery."))
             return 2
         result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     else:
-        from booley.harness.session_refresh import shared_recovery_blocks_command
+        from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         with host_lifecycle_lock("host bootstrap"):
             if shared_recovery_blocks_command(read_only=False):

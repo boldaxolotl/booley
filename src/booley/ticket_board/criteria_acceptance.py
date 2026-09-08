@@ -164,7 +164,7 @@ def _sim_contract_requirements(
     registry: dict[str, dict],
     selected: set[str],
 ) -> tuple[set[str], int | None]:
-    """Resolve required names and minimum count from a sealed simulation criterion."""
+    """Resolve required names and minimum count from a basis-bound simulation criterion."""
     from booley.config.project_config import lookup_target_section
     from booley.criteria.actions import criterion_target
 
@@ -262,7 +262,7 @@ def _has_matching_failing_evidence(entry) -> bool:
 
 
 def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
-    """Fail closed on evidence that cannot satisfy a sealed Ticket contract."""
+    """Fail closed on evidence that cannot satisfy the recorded Acceptance Basis."""
     if not getattr(state, "strict_criteria", False):
         return []
     registry, registry_error = _load_test_registry(work_dir)
@@ -275,9 +275,7 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
         if (entry.params or {}).get("from_state") == "fail" and not (
             _has_matching_failing_evidence(entry)
         ):
-            reason = (
-                "sealed fail -> pass transition has no matching fingerprinted failing evidence"
-            )
+            reason = "basis-bound fail -> pass transition has no matching fingerprinted failing evidence"
         elif key.startswith("sim_pass"):
             reason = registry_error or _sim_evidence_error(key, entry, registry)
         if reason is None:
@@ -354,8 +352,8 @@ def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], no
             entry,
             categories=categories,
             now=now,
-            reason=f"Reviewer Target contract can no longer be resolved: {exc}",
-            dimensions=["target_surface"],
+            reason=f"Reviewer source context can no longer be resolved: {exc}",
+            dimensions=["source_context"],
         )
     if not changed:
         return False
@@ -364,7 +362,7 @@ def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], no
         categories=categories,
         now=now,
         reason=(
-            "Reviewer contract changed after the recorded verdict "
+            "Reviewer requirement changed after the recorded verdict "
             f"({', '.join(changed)}); re-run Reviewer."
         ),
         dimensions=changed,
@@ -426,6 +424,11 @@ def _refresh_verification_entry(
         now=now,
     ):
         return True
+    if (
+        key.startswith(("review_rtl_", "review_tb_"))
+        and (entry.detail or {}).get("review_detail_version") == 4
+    ):
+        return False
     return _source_evidence_is_stale(
         entry,
         work_dir=work_dir,

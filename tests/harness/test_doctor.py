@@ -19,13 +19,15 @@ import pytest
 from booley import __version__
 from booley.audit import config_common, design_size, project_schema, resource_policy
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import devcontainer as dc
-from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
+from booley.harness import developer_probe, doctor, doctor_stamp
 from booley.runtime import (
     auth_token,
     runtime_context,
+    session_runtime,
 )
+from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.targets.catalog import TargetCatalog
 
 
 def test_docker_permission_guidance_compatibility_facade(monkeypatch) -> None:
@@ -56,9 +58,10 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> 
         "    toplevel: selected\n",
         encoding="utf-8",
     )
-    refs = fusesoc_registry.enumerate_targets(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    refs = {handle.name: handle for handle in catalog.list()}
 
-    sources = doctor._CoreAuditInputs(tmp_path, refs).sources_for("sim")
+    sources = doctor._CoreAuditInputs(catalog, refs).sources_for("sim")
 
     assert sources.rtl_source_files == ("rtl/selected.sv",)
     assert sources.tb_files == ("tb/selected.sv",)
@@ -86,7 +89,8 @@ def test_doctor_reuses_one_target_source_inspector(
         f"{targets}",
         encoding="utf-8",
     )
-    refs = fusesoc_registry.enumerate_targets(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    refs = {handle.name: handle for handle in catalog.list()}
     managers: list[object] = []
     resolutions = 0
     real_manager = target_inspection.CoreManager
@@ -105,7 +109,7 @@ def test_doctor_reuses_one_target_source_inspector(
     monkeypatch.setattr(target_inspection, "CoreManager", counting_manager)
     monkeypatch.setattr(real_manager, "get_depends", counting_get_depends)
 
-    inputs = doctor._CoreAuditInputs(tmp_path, refs)
+    inputs = doctor._CoreAuditInputs(catalog, refs)
     for name in target_names:
         assert inputs.sources_for(name).rtl_source_files == ("rtl/dut.sv",)
 
@@ -222,7 +226,7 @@ def _write_tickets_tree(project_dir: Path) -> None:
 def _seed_interactive(root: Path) -> None:
     """Seed the ADR-0018 artifacts a healthy interactive setup has: an untracked
     devcontainer spec and the git info/exclude entries."""
-    from booley.harness import devcontainer as dc
+    from booley.runtime import devcontainer as dc
 
     dc.write_devcontainer(root, dc.build_devcontainer_spec(dc.APP_NONE))
     info_dir = root / ".git" / "info"
@@ -833,8 +837,6 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
-    from booley.fusesoc import fusesoc_registry
-
     (tmp_path / ".booley_project").mkdir(exist_ok=True)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -843,7 +845,6 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
         configs_toml={"fast": {"defines": [], "tb_top": "tb", "tests": ["smoke"]}},
         first_target="fast",
     )
-    monkeypatch.setattr(fusesoc_registry, "enumerate_targets", lambda _root: {})
     monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
 
     calls: list[list[str]] = []
@@ -1069,8 +1070,8 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
     monkeypatch.setattr(
         doctor.fusesoc_registry,
-        "resolve_target",
-        lambda name, **kwargs: calls.append((name, kwargs.get("vlnv"))),
+        "resolve_target_handle",
+        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
     )
     rec = _Rec()
 
@@ -1162,7 +1163,7 @@ def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
         assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
         raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
 
-    monkeypatch.setattr(doctor.fusesoc_registry, "resolve_target", fail_resolution)
+    monkeypatch.setattr(doctor.fusesoc_registry, "_resolve_target", fail_resolution)
     rec = _Rec()
 
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
@@ -1180,13 +1181,6 @@ def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
     project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
     matrix = MagicMock(seed_targets=("removed_target",))
     monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
-    monkeypatch.setattr(
-        doctor.fusesoc_registry,
-        "resolve_ref",
-        lambda _root, _selector: (_ for _ in ()).throw(
-            fusesoc_registry.UnknownTargetError("Target disappeared")
-        ),
-    )
     rec = _Rec()
 
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
@@ -1661,26 +1655,25 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     assert ok is False
     assert any(
         f"[flows.{retired}] is retired" in message
-        and "sim --elab-only" in message
+        and "sim --mode elab-only" in message
         and "[flows.sim].standalone_frontend" in message
         for message in fails
     )
 
 
-def test_validate_one_flow_table_warns_on_set_but_ignored_knob():
-    """A knob honored elsewhere but not by this Flow is flagged, not failed (F4)."""
+def test_validate_one_flow_table_accepts_lint_timeout_ms():
+    """Lint reads the same persistent timeout policy as every other built-in Flow."""
     fails: list[str] = []
     warns: list[str] = []
 
-    # lint does not read timeout_ms (only simulate/asic_synthesize do): warn.
     ok = doctor._validate_one_flow_table(
         "lint",
         {"timeout_ms": 900000},
         warns.append,
         lambda msg, fix="": fails.append(msg),
     )
-    assert ok is True  # well-typed, just inert — a warning, never a failure
-    assert any("[flows.lint].timeout_ms" in m and "ignores it" in m for m in warns)
+    assert ok is True
+    assert warns == []
 
     # simulate DOES read timeout_ms → no set-but-ignored warning.
     warns.clear()
@@ -2839,15 +2832,15 @@ class TestCoreAudit:
             '$display("[SIM_RESULT] PASSED");\n',
             encoding="utf-8",
         )
-        original = doctor.TargetSourceInspector.inspect
+        original = doctor.TargetCatalog.inspect
         calls: list[str] = []
 
-        def inspect(self, ref: fusesoc_registry.TargetRef):
-            result = original(self, ref)
-            calls.append(ref.name)
+        def inspect(self, handle):
+            result = original(self, handle)
+            calls.append(handle.name)
             return result
 
-        monkeypatch.setattr(doctor.TargetSourceInspector, "inspect", inspect)
+        monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
         monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
@@ -3277,7 +3270,7 @@ class TestStateVolumeCheck:
         )
 
     def _run(self, tmp_path, monkeypatch, vols, *, verbose=False) -> _Rec:
-        from booley.harness import interactive_docker as idk
+        from booley.runtime import interactive_docker as idk
 
         monkeypatch.setattr(idk, "state_volumes", lambda: vols)
         rec = _Rec()
@@ -3376,8 +3369,7 @@ class TestWcpServerCheck:
         in_container: bool = False,
         probe=None,
     ) -> _Rec:
-        from booley.harness import session_runtime
-        from booley.runtime import runtime_context
+        from booley.runtime import runtime_context, session_runtime
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
@@ -3484,7 +3476,7 @@ class TestDevcontainerSpecStaleness:
         image: str | None = None,
         declared_provider: str | None = None,
     ) -> _Rec:
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         # Isolate from git; tracking is exercised by other tests.
         monkeypatch.setattr(doctor, "_devcontainer_tracked", lambda p: False)
@@ -3506,14 +3498,14 @@ class TestDevcontainerSpecStaleness:
         return rec
 
     def test_fresh_claude_spec_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch)
         assert rec.kinds() == {"pass"}
 
     def test_verified_pdk_without_spec_mount_warns(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
@@ -3527,7 +3519,7 @@ class TestDevcontainerSpecStaleness:
         )
 
     def test_verified_pdk_with_spec_mount_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
@@ -3543,7 +3535,7 @@ class TestDevcontainerSpecStaleness:
     def test_image_drift_warns_not_fails(self, tmp_path, monkeypatch):
         # Spec frozen on the base image while [sandbox].image now names a custom
         # project image (extra toolchain) — the openc910/Xuantie blocker shape.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
@@ -3555,7 +3547,7 @@ class TestDevcontainerSpecStaleness:
 
     def test_matching_custom_image_passes(self, tmp_path, monkeypatch):
         # Spec built for the same custom image the project configures: no drift.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
@@ -3631,7 +3623,7 @@ class TestDevcontainerSpecStaleness:
         # still said claude. incontainer_register then wrote the Booley MCP
         # entry into ~/.claude.json while the Codex session — the only agent
         # actually running — saw no Booley MCP tools at all.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
@@ -3639,7 +3631,7 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_agent_app_matching_declared_provider_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
@@ -3648,7 +3640,7 @@ class TestDevcontainerSpecStaleness:
     def test_undeclared_provider_mutes_the_app_drift_warn(self, tmp_path, monkeypatch):
         # No [agent] provider: the seeder falls back to host detection, so
         # there is nothing the on-disk app can be drift-checked against.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=None)
@@ -3658,7 +3650,7 @@ class TestDevcontainerSpecStaleness:
         # A mismatched spec still mounts a volume for the app it *names*, so the
         # persistence check would pass and hide the real problem. Order matters:
         # the app drift must be what the user is told to fix.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         assert dc.spec_state_is_persisted(spec) is True  # the misleading "all good"
@@ -3668,7 +3660,7 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
@@ -3685,8 +3677,8 @@ class TestDevcontainerSpecStaleness:
         # A credential stored AFTER the spec was seeded: VS Code sessions can't
         # see it (no sidecar mount), so they silently run on the refreshing
         # credential — surface the drift, don't fail.
-        from booley.harness import devcontainer as dc
         from booley.runtime import auth_token
+        from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -3699,8 +3691,8 @@ class TestDevcontainerSpecStaleness:
         assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
 
     def test_stored_token_with_seed_mount_passes(self, tmp_path, monkeypatch):
-        from booley.harness import devcontainer as dc
         from booley.runtime import auth_token
+        from booley.runtime import devcontainer as dc
 
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         path = auth_token.store_token("sk-ant-oat01-stored")
@@ -3717,7 +3709,7 @@ class TestDevcontainerSpecStaleness:
         # and pins no WCP settings; an image rebuild never fixes that, so the
         # agent's scoped `bwave gui` fails in every session — surface it.
         # Exact shape hit live on a real project 2026-07-14.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
@@ -3732,7 +3724,7 @@ class TestDevcontainerSpecStaleness:
         # A spec seeded before the SystemVerilog highlighting extension landed
         # renders RTL as plain text in attached windows; extensions are
         # spec-delivered (never image-baked), so only a re-seed fixes it.
-        from booley.harness import devcontainer as dc
+        from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = [
@@ -3972,13 +3964,8 @@ targets:
 """
 
     def _refs(self, core, name, flow):
-        from booley.fusesoc import fusesoc_registry as fr
-
-        return {
-            name: fr.TargetRef(
-                name=name, vlnv="::demo:0", core_file=core, eda_tool="icarus", flow=flow
-            )
-        }
+        catalog = TargetCatalog.build(core.parent)
+        return {name: catalog.select(name)}
 
     def test_sim_target_missing_g2012_fails(self, tmp_path):
         core = _write_core(
@@ -4062,8 +4049,6 @@ targets:
         assert not c.failed and not c.warned
 
     def test_plain_verilog_and_non_icarus_targets_are_silent(self, tmp_path):
-        from booley.fusesoc import fusesoc_registry as fr
-
         core = _write_core(
             tmp_path,
             """\
@@ -4077,14 +4062,8 @@ targets:
   sim_ver: {flow: sim, flow_options: {tool: verilator}, filesets: [rtl_sv], toplevel: dut}
 """,
         )
-        refs = {
-            "sim_v": fr.TargetRef(
-                name="sim_v", vlnv="::demo:0", core_file=core, eda_tool="icarus", flow="sim"
-            ),
-            "sim_ver": fr.TargetRef(
-                name="sim_ver", vlnv="::demo:0", core_file=core, eda_tool="verilator", flow="sim"
-            ),
-        }
+        catalog = TargetCatalog.build(core.parent)
+        refs = {handle.name: handle for handle in catalog.list()}
         c = _Collector()
         doctor._check_icarus_sv_language_mode(tmp_path, refs, c._pass, c._warn, c._fail)
         # .v-only icarus target: the default generation is correct; verilator
@@ -4136,14 +4115,8 @@ targets:
 toplevel: {toplevel}}}
 """,
         )
-        from booley.fusesoc import fusesoc_registry as fr
-
-        refs = {
-            flow: fr.TargetRef(
-                name=flow, vlnv="::demo:0", core_file=core, eda_tool="verilator", flow=flow
-            )
-        }
-        return refs
+        catalog = TargetCatalog.build(core.parent)
+        return {flow: catalog.select(flow)}
 
     def test_interface_ports_on_lint_toplevel_warn(self, tmp_path: Path):
         refs = self._project(tmp_path, self._IFACE_DUT, "eth_mac")
@@ -5854,7 +5827,7 @@ class TestVenueCheck:
 class TestHostAgentSession:
     """An agent on the host gets no Booley Flows and no error — Doctor must say so.
 
-    MCP registration is container-side (booley.runtime.incontainer_register runs from
+    MCP registration is container-side (booley.harness.incontainer_register runs from
     the devcontainer hooks), so a host-launched agent has no `booley` MCP
     server at all. Nothing else reports that absence.
     """
@@ -6580,7 +6553,7 @@ targets:
     def _run(self, tmp_path: Path, text: str, booley_toml=None):
         (tmp_path / "i2c.v").write_text("module i2c; endmodule\n", encoding="utf-8")
         (tmp_path / "design.core").write_text(text, encoding="utf-8")
-        refs = doctor.fusesoc_registry.enumerate_targets(tmp_path)
+        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
         project = _schema_audit(tmp_path, booley_toml)
         passes, warns, notes = [], [], []
         doctor._check_legacy_core_targets(
@@ -6726,7 +6699,7 @@ targets:
         (tmp_path / "design.core").write_text(
             self._CORE.replace("{targets}", target_block), encoding="utf-8"
         )
-        refs = doctor.fusesoc_registry.enumerate_targets(tmp_path)
+        refs = {handle.name: handle for handle in TargetCatalog.build(tmp_path).list()}
         project = _schema_audit(tmp_path, booley_toml)
         passes, warns = [], []
         doctor._check_target_naming(project, tmp_path, refs, passes.append, warns.append)
@@ -7173,7 +7146,7 @@ class TestDisplayReportDir:
     def test_container_mount_is_rendered_repo_relative(self):
         from types import SimpleNamespace
 
-        from booley.harness.devcontainer import PROJECT_DIR_TARGET
+        from booley.runtime.devcontainer import PROJECT_DIR_TARGET
 
         project = SimpleNamespace(project_dir=Path(PROJECT_DIR_TARGET))
         report_dir = Path(PROJECT_DIR_TARGET) / "tmp" / "doctor" / "flow-reports"

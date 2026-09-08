@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import docker_base_contract
+from booley.runtime import docker_base_contract
 
 _SCRIPT = Path(".github/scripts/docker_base_contract.py").resolve()
 _MANIFEST = Path("src/booley/data/docker/stable-base-inputs.txt")
@@ -474,22 +474,6 @@ def test_image_resolution_shadow_returns_matching_immutable_digest(monkeypatch) 
     assert docker_base_contract.resolve_image(reference, "contract-value") == (
         f"ghcr.io/acme/base@{index_digest}"
     )
-
-
-@pytest.mark.parametrize(
-    "workflow_path",
-    [
-        ".github/workflows/test.yml",
-        ".github/workflows/docker-publish.yml",
-        ".github/workflows/docker-base-publish.yml",
-    ],
-)
-def test_runtime_base_callers_use_remote_resolver(workflow_path: str) -> None:
-    workflow = Path(workflow_path).read_text(encoding="utf-8")
-    resolver_calls = [line for line in workflow.splitlines() if "--resolve-image" in line]
-
-    assert resolver_calls, workflow_path
-    assert "--resolver remote" in workflow, workflow_path
 
 
 @pytest.mark.parametrize(

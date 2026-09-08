@@ -147,6 +147,22 @@ _Avoid_: Design Configuration, build config, profile, named config
 A directed baseline/candidate pair of frozen **Targets** used by a baseline-relative Criterion. A single Target name denotes the equal pair whose baseline and candidate are that Target.
 _Avoid_: mutable Target, recipe patch, before/after config
 
+**Target Plan**:
+An optional, machine-readable **Ticket** transition plan that classifies every Target authored during Ticket creation as persistent, replacement, or ephemeral. Its absence means the Ticket authors no Target changes of its own; the dispositions published in the Ticket's **Acceptance Basis** determine which Targets remain in the accepted Project.
+_Avoid_: Target removal list, Target metadata, build migration
+
+**Persistent Target**:
+A Target authored by a **Target Plan** as an additional supported build that remains independently selectable after Ticket acceptance.
+_Avoid_: permanent Target, default Target
+
+**Replacement Target**:
+A Target authored by a **Target Plan** to supersede one runnable baseline Target. Both recipes remain available while the Ticket runs; acceptance removes the baseline and retains the replacement exactly as approved.
+_Avoid_: modified Target, in-place Target edit, temporary Target
+
+**Ephemeral Target**:
+A Target authored by a **Target Plan** solely to collect one Ticket's evidence and removed during acceptance.
+_Avoid_: disposable config, temporary persistent Target
+
 **Cocotb Target**:
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Waveform analysis).
 _Avoid_: python testbench config, cocotb core, cocotb suite
@@ -198,7 +214,7 @@ A self-contained unit of hardware development work that carries its own acceptan
 _Avoid_: task, issue, story
 
 **Ticket Creation Guidance**:
-Project-authored prose that guides the Criteria and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
+Project-authored prose that guides the Criteria, optional **Target Plan**, and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
 _Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defaults
 
 **Criterion**:
@@ -206,7 +222,7 @@ A named boolean condition that must be satisfied for ticket completion, bound to
 _Avoid_: check, gate, acceptance test
 
 **Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Target Contract data as provenance; mutable runtime state is only a projection of these observations.
+An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
@@ -229,16 +245,24 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
-**Target Contract**:
-The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, and canonical creation-time Target-removal disposition to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
-_Avoid_: target snapshot, config patch, mutable recipe
+**Acceptance Basis**:
+The immutable authored Ticket inputs and repository identities for one executable Ticket generation, published automatically when that Ticket is enqueued. It includes the canonicalized **Target Plan** and derived Target dispositions, and is the authority for execution, baseline comparison, protected acceptance controls, and completion.
+
+**Basis Refresh**:
+
+A recoverable, automatic replacement of an untouched waiting Ticket's **Acceptance Basis** after its dependencies are accepted. It rebases the unchanged approved authoring inputs onto current destinations, retains the old basis as evidence, and promotes the Ticket only when publication and the Board transition complete together. Drift requires a new **Authoring Generation** through `return-to-draft`.
+_Avoid_: Target Contract, target snapshot, config patch, mutable recipe
+
+**Authoring Generation**:
+One draft period that ends when enqueue publishes an Acceptance Basis. Retry preserves the generation; returning a blocked Ticket to draft starts a new generation while retaining the old basis and evidence.
+_Avoid_: seal generation, execution attempt, retry
 
 **Ticket Workspace**:
-The disposable checkout set materialized from a Ticket's sealed repository refs for Target Contract authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
+The disposable checkout set materialized from a Ticket generation's repository refs for authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
-The active deep module and recoverable record for accepting a sealed Ticket. It owns source preservation, candidate preparation and finalization, multi-repository publication, post-approval destination verification, and identity-checked cleanup, while the Ticket Board owns approval policy and the review-to-done transition. Its journal lets acceptance roll forward after interruption, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose recovery or cleanup is still pending.
+The active deep module and recoverable record for accepting a basis-bound Ticket. It owns source preservation, candidate preparation and finalization, multi-repository publication, post-approval destination verification, and identity-checked cleanup, while the Ticket Board owns approval policy and the review-to-done transition. Its journal lets acceptance roll forward after interruption, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose recovery or cleanup is still pending.
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:
@@ -322,7 +346,7 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Target Contract data as provenance; mutable runtime state is only a projection of these observations.
+An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:

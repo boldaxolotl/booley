@@ -6,7 +6,7 @@ from typing import cast
 
 from booley.config.project_config import load_test_configuration_field, render_test_selector
 from booley.flows.sim.execution.pre_run import run_pre_run_commands
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 
 def _project(root: Path, marker: str) -> TargetHandle:

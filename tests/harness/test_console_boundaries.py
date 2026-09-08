@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from textual.widgets import Static
 
-from booley.harness.console.criteria_format import _format_metric
+from booley.harness.console.criteria_format import _format_criterion_presentation, _format_metric
 from booley.harness.console.widgets import McpToolCompletionMark, StatusBar, _render_entry_line
 
 from .console_scenario import ConsoleTestApp
@@ -185,3 +185,113 @@ def test_malformed_metric_detail_degrades_without_raising(
 ) -> None:
     """CRT-04/05: external metric payloads cannot crash header rendering."""
     assert _format_metric(key, entry) == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "entry", "label", "detail"),
+    [
+        (
+            "lint_clean_lint_core",
+            {"mandatory": True, "detail": {"warnings": 0}},
+            "Lint · lint_core",
+            "required no unwaived findings · observed clean",
+        ),
+        (
+            "elab_pass_sim_core",
+            {"mandatory": True},
+            "Elaboration · sim_core",
+            "required every selected design elaborates",
+        ),
+        (
+            "fpga_impl_ok_fpga_core",
+            {
+                "mandatory": True,
+                "params": {"lut_count_max": 4_000, "clk_i.fmax_mhz_min": 250},
+                "detail": {
+                    "checks": [
+                        {"param": "lut_count_max", "value": 3_800, "pass": True},
+                        {
+                            "param": "clk_i.fmax_mhz_min",
+                            "value": 275,
+                            "pass": True,
+                        },
+                    ]
+                },
+            },
+            "FPGA implementation · fpga_core",
+            (
+                "required LUTs ≤ 4,000 · clk_i Fmax ≥ 250 MHz · "
+                "observed LUTs 3,800 · clk_i Fmax 275 MHz"
+            ),
+        ),
+        (
+            "synthesis_ok_synth_core",
+            {
+                "mandatory": True,
+                "params": {"area_um2_max": 1_000, "wire_count_max": 10_000},
+                "detail": {
+                    "checks": [
+                        {"param": "area_um2_max", "value": 950, "pass": True},
+                        {"param": "wire_count_max", "value": 9_500, "pass": True},
+                    ]
+                },
+            },
+            "ASIC synthesis · synth_core",
+            ("required area ≤ 1,000 μm² · wires ≤ 10,000 · observed area 950 μm² · wires 9,500"),
+        ),
+        (
+            "mutation_score_sim_core",
+            {"mandatory": False, "params": {"min_detected": 8, "total": 10}},
+            "Mutation testing · sim_core",
+            "goal ≥ 8/10 mutations detected",
+        ),
+        (
+            "coverage_sim_core",
+            {
+                "mandatory": True,
+                "params": {"metrics": {"line": {"min_pct": 90}}},
+                "detail": {
+                    "status": "pass",
+                    "metrics": [{"metric": "line", "actual_percent": 92.5}],
+                },
+            },
+            "Coverage · sim_core",
+            "required line ≥ 90% · observed line 92.5%",
+        ),
+        (
+            "review_rtl_bugs_done",
+            {"mandatory": True},
+            "RTL bugs review",
+            "required review completed",
+        ),
+        (
+            "sim_pass_tb_uart.sv_sim_uart_test_transmit",
+            {
+                "mandatory": True,
+                "params": {
+                    "target": "sim_uart",
+                    "tb_path": "tb/tb_uart.sv",
+                    "test_selector": "test_transmit",
+                    "from_state": "fail",
+                },
+            },
+            "Simulation · sim_uart",
+            "tb tb_uart.sv · test test_transmit · required fail → pass transition",
+        ),
+        (
+            "project_specific_gate",
+            {"mandatory": True},
+            "project_specific_gate",
+            "",
+        ),
+    ],
+)
+def test_builtin_criterion_presentations_are_concise_and_informative(
+    key: str,
+    entry: dict,
+    label: str,
+    detail: str,
+) -> None:
+    presentation = _format_criterion_presentation(key, entry)
+    assert presentation.label == label
+    assert presentation.detail == detail

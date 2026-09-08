@@ -149,11 +149,12 @@ or revoked authority fails closed before Flow execution.
 
 ### Lint (`[flows.lint]`)
 
-Beyond the shared `enabled` setting, lint takes an optional
-`warnings_as_errors` (default `true`):
+Beyond the shared `enabled` and positive-integer `timeout_ms` settings, lint
+takes an optional `warnings_as_errors` (default `true`):
 
 ```toml
 [flows.lint]
+timeout_ms = 120000
 warnings_as_errors = false
 ```
 
@@ -292,7 +293,7 @@ writing to the same place under two different names. Prefer the variable.
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-run commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands share the per-test
-timeout budget (`timeout_ms` / `--timeout`), `--dry-run` previews them in
+timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
 their real position, and `booley doctor` validates the shape and notes when
 they're configured.
 
@@ -471,8 +472,9 @@ targets:
 `physical` runs Yosys followed by OpenROAD placement, optimization, parasitic
 estimation, and its embedded STA. Its `area_um2` is post-optimization area and
 `area_source` is `openroad_post_optimization`. Timing intent belongs in the
-Target's SDC fileset; a physical Target with neither SDC nor an explicit
-per-run clock is rejected rather than analyzed against a silent default.
+Target's SDC fileset. A physical Target without SDC is rejected before EDA
+execution, and OpenROAD rejects an SDC that creates no clocks. Booley loads the
+authored files in Target order and adds no generated timing constraints.
 
 `logical` runs only Yosys mapping. It is much faster and gives a useful mapped
 area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped
@@ -536,11 +538,14 @@ design as success.
 
 ### Elaboration Check (`[flows.sim]`)
 
-`booley flow sim --target <sim-target> --elab-only` compiles, elaborates, and
+`booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
 without running Pre-Run Commands, simulator tests, Cocotb Python, or tracing.
-`--build-only` is an equivalent permanent alias. Only simulation Targets are
-eligible; synthesis Targets belong to `synth`.
+Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
+and then sweep every RTL module from its declaring file. `--elab-only` and
+`--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
+aliases. Only simulation Targets are eligible; synthesis Targets belong to
+`synth`.
 
 ```toml
 [flows.sim]
@@ -1480,13 +1485,15 @@ What this asks of you, once, on the host:
 
 ```bash
 git submodule update --init --recursive
+# If .booley_project is a standalone Git repository:
+git -C .booley_project submodule update --init --recursive
 ```
 
-Every selected submodule must be **present, clean, and non-shallow** in the main
-Project before a ticket or baseline Flow starts. Its local object database must
-also contain the complete object closure for the destination's pinned commit.
-Worktree setup hard-errors when one of these preconditions is not met, for
-example:
+Every selected submodule must be **present, clean, and non-shallow** in its
+owning outer or paired project repository before a ticket or baseline Flow
+starts. Its local object database must also contain the complete object closure
+for the destination's pinned commit. Worktree setup hard-errors when one of
+these preconditions is not met, for example:
 
 - `submodule <path> not found in source Project; initialize it first`
 - `submodule <path> is dirty`
@@ -1513,9 +1520,10 @@ list is an allowlist intersected with that revision's top-level gitlinks;
 anything omitted remains an empty gitlink directory in the worktree. Nested
 gitlinks below a selected entry are always reconstructed recursively.
 
-Submodules inside a separately paired `.booley_project` repository are not
-currently materialized; keep build inputs in the outer Project's submodule
-tree.
+For a separately paired `.booley_project` repository, the allowlist above
+selects gitlinks in the outer repository. Booley also materializes every
+top-level gitlink recorded by the paired project repository, recursively and
+offline, because that repository can own acceptance controls and build inputs.
 
 ## Doctor waivers (`doctor-waivers.toml`)
 

@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-EXPECTED_CLAUDE = "2.1.259"
-EXPECTED_CODEX = "0.153.1"
+EXPECTED_CLAUDE = "2.1.263"
+EXPECTED_CODEX = "0.153.4"
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
@@ -132,12 +132,12 @@ anyio.run(main)
 
 def _assert_booley_configuration(root: Path) -> dict[str, str]:
     from booley.harness.web_isolation import policy_error
-    from booley.runtime import incontainer_register
+    from booley.runtime import incontainer_setup
 
     statuses: dict[str, str] = {}
     for app in ("claude", "codex"):
         home = root / f"booley-{app}-home"
-        statuses[app] = incontainer_register.register(app, home=home)
+        statuses[app] = incontainer_setup.register(app, home=home)
     codex = (root / "booley-codex-home" / ".codex" / "config.toml").read_text(encoding="utf-8")
     claude = json.loads(
         (root / "booley-claude-home" / ".claude" / "settings.json").read_text(encoding="utf-8")

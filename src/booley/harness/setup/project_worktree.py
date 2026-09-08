@@ -20,7 +20,12 @@ def ticket_workspace(ctx: TicketContext) -> TicketWorkspace:
     """Build the runtime workspace described by a validated harness context."""
     if ctx.worktree_path is None:
         raise TicketWorkspaceError("Ticket worktree is unavailable")
-    expected_sha = ctx.target_contract.project_sha if ctx.target_contract is not None else ""
+    expected_sha = ctx.acceptance_basis.project_sha if ctx.acceptance_basis is not None else ""
+    project = (
+        ctx.acceptance_basis.participant("project")
+        if ctx.acceptance_basis is not None and len(ctx.acceptance_basis.participants) > 1
+        else None
+    )
     return TicketWorkspace(
         TicketWorkspaceRequest(
             project_root=ctx.project_root,
@@ -30,6 +35,7 @@ def ticket_workspace(ctx: TicketContext) -> TicketWorkspace:
             ticket_scope=tuple(ctx.scope_raw),
             mode=WorkspaceMode(ctx.workspace_intent),
             expected_sha=expected_sha,
+            expected_ref=project.ticket_ref if project is not None else "",
         )
     )
 

@@ -20,14 +20,11 @@ import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
 from booley.config.project_config import TEST_LISTS_TABLE, normalize_tests_toml
-from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
 
-from .target_contract import (
-    ContractTargetBinding,
-    canonical_contract_bindings,
-    criterion_targets,
-)
+from .acceptance_targets import AcceptanceTargetBinding
 
 
 class TargetFinalizationError(ValueError):
@@ -50,7 +47,7 @@ class PlannedTargetRemoval:
 
 @dataclass(frozen=True)
 class TargetRemovalPlan:
-    """A deterministic, seal-validated set of acceptance-time removals."""
+    """A deterministic, basis-validated set of acceptance-time removals."""
 
     targets: tuple[PlannedTargetRemoval, ...]
 
@@ -59,11 +56,11 @@ class TargetRemovalPlan:
         return tuple(item.canonical for item in self.targets)
 
 
-def _bound_targets(bindings: Iterable[ContractTargetBinding]) -> set[str]:
+def _bound_targets(bindings: Iterable[AcceptanceTargetBinding]) -> set[str]:
     return {target for row in bindings for target in (row.baseline, row.candidate)}
 
 
-def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
+def _tests_key(root: Path, handle: TargetHandle, catalog: TargetCatalog) -> str:
     try:
         tests_path = resolve_checkout_project_dir(root) / "tests.toml"
     except FileNotFoundError:
@@ -75,89 +72,96 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
             raw = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise TargetFinalizationError(f"cannot inspect tests.toml: {exc}") from exc
-    canonical = f"{ref.vlnv}#{ref.name}"
+    canonical = handle.identity
     if canonical in raw:
         return canonical
-    matching = [key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == ref.name]
-    if not matching:
+    if handle.name not in raw:
         return ""
-    if len(matching) > 1:
+    declarations = catalog.declaration_count(handle.name, include_private=True)
+    if declarations > 1:
         raise TargetFinalizationError(
-            f"Target {canonical!r} matches multiple tests.toml sections: "
-            + ", ".join(repr(key) for key in sorted(matching))
+            f"ambiguous bare tests.toml section [{handle.name}] is shared by "
+            f"{declarations} cores; use a VLNV-qualified table before enqueue"
         )
-    declarations = fusesoc_registry.target_declarations(root).get(ref.name, [])
-    if matching[0] == ref.name and len(declarations) > 1:
-        raise TargetFinalizationError(
-            f"ambiguous bare tests.toml section [{ref.name}] is shared by "
-            f"{len(declarations)} cores; use a VLNV-qualified table before sealing"
-        )
-    return matching[0]
+    return handle.name
+
+
+def _require_participant_owned_target(
+    root: Path,
+    handle: TargetHandle,
+    canonical: str,
+) -> None:
+    from booley.runtime.ticket_repositories import (
+        TicketWorkspaceError,
+        ticket_repositories,
+    )
+
+    owner = handle.core_file.resolve().parent
+    while owner != root and owner.is_relative_to(root):
+        if (owner / ".git").exists():
+            break
+        owner = owner.parent
+    try:
+        participants = {row.worktree.resolve() for row in ticket_repositories(root)}
+    except TicketWorkspaceError as exc:
+        raise TargetFinalizationError(str(exc)) from exc
+    if owner in participants:
+        return
+    relative = owner.relative_to(root).as_posix()
+    raise TargetFinalizationError(
+        f"Acceptance Basis removal Target {canonical!r} is declared in nested "
+        f"repository {relative!r}; only outer and paired project participants can be finalized"
+    )
 
 
 def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
-    bindings: Iterable[ContractTargetBinding],
+    bindings: Iterable[AcceptanceTargetBinding],
 ) -> TargetRemovalPlan:
     """Resolve selectors and prove every edit is criterion-bound and unambiguous."""
     root = Path(project_root).resolve()
     allowed = _bound_targets(bindings)
+    try:
+        catalog = TargetCatalog.build(root)
+    except FuseSocError as exc:
+        raise TargetFinalizationError(str(exc)) from exc
     removals: list[PlannedTargetRemoval] = []
     seen: set[str] = set()
     for selector in selectors:
         try:
-            ref = fusesoc_registry.resolve_ref(root, selector)
-        except fusesoc_registry.FuseSocError as exc:
+            handle = catalog.select(selector)
+        except FuseSocError as exc:
             raise TargetFinalizationError(str(exc)) from exc
-        canonical = f"{ref.vlnv}#{ref.name}"
+        canonical = handle.identity
         if canonical not in allowed:
             raise TargetFinalizationError(
-                f"on_success.remove_targets target {canonical!r} is not bound by this "
+                f"Acceptance Basis removal Target {canonical!r} is not bound by this "
                 "Ticket's criteria"
             )
         if canonical in seen:
             raise TargetFinalizationError(
-                f"on_success.remove_targets resolves {canonical!r} more than once"
+                f"Acceptance Basis removal resolves {canonical!r} more than once"
             )
         seen.add(canonical)
         try:
-            core_path = ref.core_file.resolve().relative_to(root).as_posix()
+            core_path = handle.core_file.relative_to(root).as_posix()
         except ValueError as exc:
             raise TargetFinalizationError(
                 f"Target {canonical!r} is declared outside the project checkout"
             ) from exc
+        _require_participant_owned_target(root, handle, canonical)
         removals.append(
-            PlannedTargetRemoval(canonical, ref.name, core_path, _tests_key(root, ref))
+            PlannedTargetRemoval(
+                canonical,
+                handle.name,
+                core_path,
+                _tests_key(root, handle, catalog),
+            )
         )
     plan = TargetRemovalPlan(tuple(sorted(removals)))
     _validate_plan_spans(root, plan)
     return plan
-
-
-def canonical_remove_targets(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> tuple[str, ...]:
-    """Return the full-VLNV removal identities declared by ticket fields."""
-    on_success = fields.get("on_success")
-    if not isinstance(on_success, Mapping):
-        return ()
-    selectors = on_success.get("remove_targets", [])
-    if not isinstance(selectors, list) or not selectors:
-        return ()
-    bindings = canonical_contract_bindings(project_root, criterion_targets(fields.get("criteria")))
-    return plan_target_removals(project_root, selectors, bindings).canonical_targets
-
-
-def validate_remove_targets_for_seal(
-    fields: Mapping[str, Any], project_root: Path | str
-) -> list[str]:
-    """Return seal-time diagnostics for acceptance-time Target removal."""
-    try:
-        canonical_remove_targets(fields, project_root)
-    except (TargetFinalizationError, fusesoc_registry.FuseSocError) as exc:
-        return [str(exc)]
-    return []
 
 
 def _mapping_value(node: MappingNode, key: str) -> MappingNode | None:
@@ -226,7 +230,7 @@ def _core_replacements(text: str, names: set[str], path: Path) -> list[tuple[int
     ]
 
 
-_TOML_HEADER_RE = re.compile(r"^\s*\[(?!\[)(.+)\]\s*(?:#.*)?$")
+_TOML_HEADER_RE = re.compile(r"^\s*(\[\[?[^\]\r\n]+\]\]?)\s*(?:#.*)?$")
 
 
 def _single_toml_path(value: Mapping[str, Any]) -> tuple[str, ...]:
@@ -250,7 +254,7 @@ def _toml_headers(text: str) -> list[tuple[int, tuple[str, ...]]]:
         match = _TOML_HEADER_RE.match(line.rstrip("\r\n"))
         if match:
             try:
-                parsed = tomllib.loads(f"[{match.group(1)}]\n")
+                parsed = tomllib.loads(match.group(1) + "\n")
             except tomllib.TOMLDecodeError as exc:
                 raise TargetFinalizationError(
                     f"unsupported tests.toml table header: {exc}"
@@ -314,15 +318,19 @@ def _validate_plan_spans(root: Path, plan: TargetRemovalPlan) -> None:
 
 
 def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
+    try:
+        catalog = TargetCatalog.build(root)
+    except FuseSocError as exc:
+        raise TargetFinalizationError(str(exc)) from exc
     for removal in plan.targets:
         try:
-            ref = fusesoc_registry.resolve_ref(root, removal.canonical)
-        except fusesoc_registry.UnknownTargetError:
+            handle = catalog.select(removal.canonical)
+        except UnknownTargetError:
             continue
-        except fusesoc_registry.FuseSocError as exc:
+        except FuseSocError as exc:
             raise TargetFinalizationError(str(exc)) from exc
         raise TargetFinalizationError(
-            f"Target {removal.canonical!r} remains declared by {ref.core_file}"
+            f"Target {removal.canonical!r} remains declared by {handle.core_file}"
         )
     try:
         tests_path = resolve_checkout_project_dir(root) / "tests.toml"
@@ -336,9 +344,11 @@ def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
         normalize_tests_toml(raw)
     except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
         raise TargetFinalizationError(f"finalized tests.toml is invalid: {exc}") from exc
-    declarations = fusesoc_registry.target_declarations(root)
     orphaned = sorted(
-        key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) not in declarations
+        key
+        for key in raw
+        if key != TEST_LISTS_TABLE
+        and catalog.declaration_count(_bare_target(key), include_private=True) == 0
     )
     if orphaned:
         raise TargetFinalizationError(

@@ -22,8 +22,9 @@ import pytest
 # Make sure the src tree is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
@@ -49,6 +50,25 @@ from booley.specialists.coverage_analyst import (
 # ---------------------------------------------------------------------------
 
 
+def _catalog(
+    eda_tool: str = "verilator",
+    *,
+    cocotb_module: str | None = None,
+    project_root: Path | str = ".",
+):
+    def select(target: str, **_kwargs):
+        return types.SimpleNamespace(
+            selector=target,
+            name=target,
+            vlnv=f"::{target}:0",
+            project_root=Path(project_root),
+            eda_tool=eda_tool,
+            cocotb_module=cocotb_module,
+        )
+
+    return types.SimpleNamespace(select=select)
+
+
 def _sig(name="sig", transitions=5, value_hist=None, width=1):
     """Shorthand for building a SignalStats."""
     return SignalStats(
@@ -72,6 +92,7 @@ def _make_endpoint_with_args(**kwargs):
         "timeout": 1200,
     }
     defaults.update(kwargs)
+    endpoint._tb_top = defaults.pop("tb_top")
     endpoint._args = types.SimpleNamespace(**defaults)
     endpoint._state = DevelopmentState()
     return endpoint
@@ -80,6 +101,272 @@ def _make_endpoint_with_args(**kwargs):
 def _fake_bwave_stats_command() -> list[str]:
     """Return the stable fake command shared by B-Wave subprocess tests."""
     return ["/fake/bwave", "stats", "--format", "json"]
+
+
+def test_dry_run_stops_before_prerequisites_agents_and_eda(tmp_path: Path) -> None:
+    endpoint = CoverageAnalystSpecialist()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--target",
+            "sim",
+            "--scope",
+            "rtl/dut.sv",
+            "--dry-run",
+        ]
+    )
+    endpoint._tb_top = "tb_top"
+    endpoint._target_campaign = types.SimpleNamespace(
+        scope=("rtl/dut.sv",),
+        execution_units=lambda: (),
+        params_for=lambda _key: {},
+        criteria=(),
+    )
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=None),
+        patch.object(endpoint, "_check_prerequisites") as prerequisites,
+        patch.object(endpoint, "_run_phase1_measurement_for_suite") as phase_one,
+    ):
+        result = endpoint._run()
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.detail["mode"] == "dry_run"
+    prerequisites.assert_not_called()
+    phase_one.assert_not_called()
+
+
+def test_run_returns_campaign_and_input_errors_before_execution() -> None:
+    endpoint = _make_endpoint_with_args(dry_run=False)
+    campaign_error = McpToolResult(exit_code=EXIT_ERROR, report_text="campaign")
+    input_error = McpToolResult(exit_code=EXIT_ERROR, report_text="input")
+
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=campaign_error),
+        patch.object(endpoint, "_prepare_run_inputs") as prepare,
+    ):
+        assert endpoint._run() is campaign_error
+        prepare.assert_not_called()
+
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=input_error),
+        patch.object(endpoint, "_execute_coverage_analysis") as execute,
+    ):
+        assert endpoint._run() is input_error
+        execute.assert_not_called()
+
+
+def test_run_delegates_to_coverage_execution_after_validation() -> None:
+    endpoint = _make_endpoint_with_args(dry_run=False)
+    expected = McpToolResult(exit_code=EXIT_SUCCESS, report_text="complete")
+    with (
+        patch.object(endpoint, "_apply_campaign_defaults", return_value=None),
+        patch.object(endpoint, "_prepare_run_inputs", return_value=None),
+        patch.object(endpoint, "_check_prerequisites", return_value=None),
+        patch.object(endpoint, "_execute_coverage_analysis", return_value=expected),
+    ):
+        assert endpoint._run() is expected
+
+
+def _coverage_input_endpoint(**kwargs) -> CoverageAnalystSpecialist:
+    kwargs.setdefault("criteria", "")
+    endpoint = _make_endpoint_with_args(**kwargs)
+    endpoint._target_campaign = types.SimpleNamespace(scope=("rtl/dut.sv",))
+    return endpoint
+
+
+def _coverage_catalog(*, rtl_files=("rtl/dut.sv",)) -> MagicMock:
+    catalog = MagicMock()
+    catalog.inspect.return_value = types.SimpleNamespace(rtl_files=rtl_files)
+    return catalog
+
+
+def test_prepare_run_inputs_rejects_multiple_targets() -> None:
+    endpoint = _coverage_input_endpoint(target="sim,lint")
+
+    result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "exactly one Target" in result.report_text
+
+
+def test_prepare_run_inputs_reports_target_metadata_failure() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            side_effect=fusesoc_registry.FuseSocError("bad target"),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "could not resolve Target metadata" in result.report_text
+
+
+def test_prepare_run_inputs_requires_target_toplevel() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value=""),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "does not declare a toplevel" in result.report_text
+
+
+def test_prepare_run_inputs_rejects_scope_outside_target() -> None:
+    endpoint = _coverage_input_endpoint()
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(rtl_files=()),
+        ),
+    ):
+        result = endpoint._prepare_run_inputs()
+
+    assert result is not None
+    assert "outside the Target RTL closure" in result.report_text
+
+
+def test_prepare_run_inputs_validates_criteria() -> None:
+    endpoint = _coverage_input_endpoint(criteria="toggle,unknown")
+    with (
+        patch("booley.specialists.coverage_analyst.tb_top_for_target", return_value="tb"),
+        patch(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            return_value=_coverage_catalog(),
+        ),
+    ):
+        invalid = endpoint._prepare_run_inputs()
+        endpoint.args.criteria = "toggle,branch"
+        valid = endpoint._prepare_run_inputs()
+
+    assert invalid is not None
+    assert "unknown --criteria: unknown" in invalid.report_text
+    assert valid is None
+
+
+def test_measure_target_coverage_propagates_errors_and_builds_measurement(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    trace_error = McpToolResult(exit_code=EXIT_ERROR, report_text="trace")
+    phase_error = McpToolResult(exit_code=EXIT_ERROR, report_text="phase")
+    trace_dirs = [tmp_path / "trace"]
+
+    with patch.object(endpoint, "_ensure_target_traces", return_value=([], [], trace_error)):
+        assert endpoint._measure_target_coverage(tmp_path, []) is trace_error
+
+    with (
+        patch.object(
+            endpoint,
+            "_ensure_target_traces",
+            return_value=(["rtl/dut.sv"], trace_dirs, None),
+        ),
+        patch.object(
+            endpoint,
+            "_run_phase1_measurement_for_suite",
+            return_value=([], [], [], [], phase_error),
+        ),
+    ):
+        assert endpoint._measure_target_coverage(tmp_path, []) is phase_error
+
+    stats = [_sig("dut.valid")]
+    with (
+        patch.object(
+            endpoint,
+            "_ensure_target_traces",
+            return_value=(["rtl/dut.sv"], trace_dirs, None),
+        ),
+        patch.object(
+            endpoint,
+            "_run_phase1_measurement_for_suite",
+            return_value=(stats, ["noise"], [], [], None),
+        ),
+    ):
+        measurement = endpoint._measure_target_coverage(tmp_path, [])
+
+    assert not isinstance(measurement, McpToolResult)
+    assert measurement.stats == stats
+    assert measurement.trace_dirs == trace_dirs
+
+
+def test_execute_coverage_analysis_assembles_and_scores_report(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    measurement = types.SimpleNamespace(
+        stats=[_sig("dut.valid")],
+        structural_noise=["noise"],
+        toggle_failures=[],
+        low_diversity=[],
+        trace_dirs=[tmp_path / "trace"],
+    )
+    phases = ([], [], FsmResult(), [], {}, [], ReviewerResult())
+    expected = McpToolResult(exit_code=EXIT_SUCCESS, report_text="scored")
+    with (
+        patch.object(endpoint, "_measure_target_coverage", return_value=measurement),
+        patch.object(endpoint, "_read_rtl_sources", return_value="module dut; endmodule"),
+        patch.object(endpoint, "_get_active_criteria", return_value={"coverage_toggle"}),
+        patch.object(endpoint, "_run_phases_2_to_4", return_value=phases),
+        patch.object(endpoint, "_build_coverage_result", return_value=expected) as build_result,
+    ):
+        result = endpoint._execute_coverage_analysis()
+
+    assert result is expected
+    report = build_result.call_args.args[0]
+    assert report.signal_stats == measurement.stats
+    assert report.structural_noise == ["noise"]
+
+
+def test_execute_coverage_analysis_propagates_measurement_error(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    expected = McpToolResult(exit_code=EXIT_ERROR, report_text="measurement")
+    with patch.object(endpoint, "_measure_target_coverage", return_value=expected):
+        assert endpoint._execute_coverage_analysis() is expected
+
+
+def test_ensure_trace_reports_typed_setup_failure(tmp_path: Path) -> None:
+    endpoint = _coverage_input_endpoint(work_dir=tmp_path)
+    with (
+        patch.object(endpoint, "_check_tb_dump_calls", return_value=None),
+        patch.object(endpoint, "_derive_trace_scope", return_value="dut"),
+        patch.object(endpoint, "_build_edalize_trace_cmd", side_effect=ValueError("bad EDAM")),
+    ):
+        result = endpoint._ensure_trace(tmp_path / "trace", tmp_path)
+
+    assert result is not None
+    assert result.exit_code == EXIT_ERROR
+    assert "Traced simulation setup failed: bad EDAM" in result.report_text
+
+
+def test_reviewer_prompt_includes_steering_context() -> None:
+    endpoint = _make_endpoint_with_args(steer=["Prioritize reset coverage"])
+
+    prompt = endpoint._build_reviewer_resume_prompt([], [], active_criteria=set())
+
+    assert "## Caller Context\nPrioritize reset coverage" in prompt
+
+
+def test_coverage_records_each_active_target_criterion() -> None:
+    endpoint = _make_endpoint_with_args(report_dir=None)
+    endpoint._phase_errors = set()
+    endpoint._target_campaign = types.SimpleNamespace(
+        suite=types.SimpleNamespace(display_names=("smoke",)),
+        params_for=lambda _key: {},
+    )
+    report = CoverageReport(signal_stats=[_sig(transitions=2)])
+    with patch.object(endpoint, "set_criterion") as set_criterion:
+        result = endpoint._build_coverage_result(report, [], {"coverage_toggle"})
+
+    assert result.criterion_key == "coverage_toggle_default"
+    set_criterion.assert_called_once()
+    assert set_criterion.call_args.args[:2] == ("coverage_toggle_default", True)
 
 
 def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
@@ -774,7 +1061,9 @@ class TestFilterStructuralNoise:
             (tmp_path / scope_file).write_text(scope_content, encoding="utf-8")
         return endpoint
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_ivl_for_loop_zero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=0)]
@@ -782,7 +1071,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_ivl_for_loop_nonzero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=50)]
@@ -790,7 +1081,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_zero_transitions_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -799,7 +1092,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -808,7 +1103,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_zero_transitions_not_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -817,7 +1114,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_normal_signal_zero_transitions_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.data_out[7:0]", transitions=0)]
@@ -826,7 +1125,8 @@ class TestFilterStructuralNoise:
         assert excluded == []
 
     @patch(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
     )
     def test_unknown_backend_all_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
@@ -838,7 +1138,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 2
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_mixed_bag(self, _mock_be, tmp_path):
         rtl = "module alu;\n  localparam WIDTH = 8;\n  parameter DEPTH = 4;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -860,7 +1162,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.DEPTH", "dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_localparam_with_range(self, _mock_be, tmp_path):
         rtl = "localparam [7:0] INIT_VAL = 8'hFF;"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -868,7 +1172,9 @@ class TestFilterStructuralNoise:
         _kept, excluded = endpoint._filter_structural_noise(stats, ["alu.sv"])
         assert len(excluded) == 1
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_zero_transitions_excluded(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\n  generate for (i=0; i<4; i=i+1) begin : gen\n  end endgenerate\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -877,7 +1183,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -886,7 +1194,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_not_in_scope_generate_constant_excluded(self, _mock_be, tmp_path):
         """Signal under generate scope with ≤1 transition and ≤1 value is a
         generate-scope constant even if its leaf name isn't a declared genvar."""
@@ -897,7 +1207,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_genvar_not_in_scope_active_signal_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with many transitions is NOT noise."""
         rtl = "module top;\n  genvar i;\nendmodule"
@@ -907,7 +1219,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_generate_scope_nested_constant_excluded(self, _mock_be, tmp_path):
         """Nested generate hierarchy (row[0].col[1].word_idx) with constant
         value is structural noise."""
@@ -917,7 +1231,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_generate_scope_multi_value_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with multiple observed values is real."""
         endpoint = self._make_endpoint(tmp_path)
@@ -927,7 +1243,8 @@ class TestFilterStructuralNoise:
         assert excluded == []
 
     @patch(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
     )
     def test_generate_scope_constant_not_filtered_on_verilator(self, _mock_be, tmp_path):
         """Generate-scope constant detection is Icarus-only."""
@@ -937,7 +1254,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_param_one_transition_excluded(self, _mock_be, tmp_path):
         """Params with exactly 1 transition (X->constant) are now excluded."""
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
@@ -948,7 +1267,8 @@ class TestFilterStructuralNoise:
         assert kept == []
 
     @patch(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
     )
     def test_param_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
@@ -959,7 +1279,8 @@ class TestFilterStructuralNoise:
         assert kept == []
 
     @patch(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
     )
     def test_genvar_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar j;\nendmodule"
@@ -970,7 +1291,8 @@ class TestFilterStructuralNoise:
         assert kept == []
 
     @patch(
-        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+        "booley.specialists.coverage_analyst.TargetCatalog.build",
+        return_value=_catalog("verilator"),
     )
     def test_ivl_for_loop_not_filtered_on_verilator(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
@@ -979,7 +1301,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_mixed_bag_with_genvars(self, _mock_be, tmp_path):
         rtl = "module top;\n  parameter WIDTH = 8;\n  genvar i, j;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -1002,7 +1326,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_lowercase_param_not_filtered(self, _mock_be, tmp_path):
         """Lowercase params bypass the uppercase gate — avoids false filtering
         of dynamic signals that share a name with a localparam in another file."""
@@ -1013,7 +1339,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_submodule_param_in_sibling_file_filtered(self, _mock_be, tmp_path):
         """Params declared in sibling RTL files (same directory) are now
         picked up — fixes the AES submodule constant gap."""
@@ -1040,7 +1368,9 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.sub_inst.data_out[7:0]"}
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_typed_parameter_filtered(self, _mock_be, tmp_path):
         """Typed parameters (parameter int/logic/string) are correctly captured
         by the regex — the type keyword is skipped, not mistaken for the name."""
@@ -1062,7 +1392,9 @@ class TestFilterStructuralNoise:
         assert excluded_names == {"dut.WIDTH", "dut.DEPTH[3:0]", "dut.MODE"}
         assert kept == []
 
-    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch(
+        "booley.specialists.coverage_analyst.TargetCatalog.build", return_value=_catalog("icarus")
+    )
     def test_params_in_header_files_filtered(self, _mock_be, tmp_path):
         """Params declared in .svh/.vh header files are picked up."""
         endpoint = self._make_endpoint(tmp_path, scope_content="module top;\nendmodule")
@@ -2217,20 +2549,10 @@ class TestCriteriaFiltering:
         endpoint = _make_endpoint_with_args(criteria=criteria)
         if state_criteria is None:
             state_criteria = {
-                "coverage_toggle_default": True,
-                "coverage_fsm_default": True,
-                "coverage_value_default": True,
-                "coverage_branch_default": True,
-                "coverage_expression_default": True,
+                f"coverage_{name}_default": types.SimpleNamespace(params={"min_pct": 80})
+                for name in ("toggle", "fsm", "value", "branch", "expression")
             }
         endpoint._state = types.SimpleNamespace(criteria=state_criteria)
-        endpoint.satisfies = [
-            "coverage_toggle",
-            "coverage_fsm",
-            "coverage_value",
-            "coverage_branch",
-            "coverage_expression",
-        ]
         return endpoint
 
     def test_no_filter_returns_all(self):
@@ -2276,8 +2598,8 @@ class TestCriteriaFiltering:
         endpoint = self._make_endpoint_with_criteria(
             criteria="toggle,branch",
             state_criteria={
-                "coverage_toggle_default": True,
-                "coverage_value_default": True,
+                "coverage_toggle_default": types.SimpleNamespace(params={"min_pct": 80}),
+                "coverage_value_default": types.SimpleNamespace(params={"min_pct": 80}),
             },
         )
         active = endpoint._get_active_criteria()
@@ -2793,7 +3115,14 @@ class TestTraceTestPlusargs:
 
 
 class TestBuildEdalizeTraceCmd:
-    """_build_edalize_trace_cmd composes resolve_target → make && verilator_run."""
+    """_build_edalize_trace_cmd composes _resolve_target → make && verilator_run."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog_target(self, monkeypatch):
+        monkeypatch.setattr(
+            "booley.specialists.coverage_analyst.TargetCatalog.build",
+            lambda work_dir: _catalog(project_root=work_dir),
+        )
 
     def _resolved(self, build_root):
         return types.SimpleNamespace(build_root=Path(build_root), toplevel="tb_top")
@@ -2821,11 +3150,11 @@ class TestBuildEdalizeTraceCmd:
                 return_value=["hardcoded.fst"],
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
-                return_value=self._overlay(fusesoc_registry.TraceMode.NATIVE_FST),
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
+                return_value=self._overlay(TraceMode.NATIVE_FST),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry.resolve_target_handle",
                 return_value=self._resolved(build_root),
             ),
         ):
@@ -2860,11 +3189,11 @@ class TestBuildEdalizeTraceCmd:
         endpoint._coverage_test = "regress"
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
-                return_value=self._overlay(fusesoc_registry.TraceMode.VCD_FIFO),
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
+                return_value=self._overlay(TraceMode.VCD_FIFO),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry.resolve_target_handle",
                 return_value=self._resolved(build_root),
             ),
             patch("booley.config.project_config.TEST_NAMES", {"config_a": ["smoke", "regress"]}),
@@ -2888,16 +3217,16 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
-                return_value=self._overlay(fusesoc_registry.TraceMode.VCD_FIFO),
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
+                return_value=self._overlay(TraceMode.VCD_FIFO),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry.resolve_target_handle",
                 return_value=self._resolved(build_root),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
-                return_value={"sim_cocotb": "test_dut"},
+                "booley.specialists.coverage_analyst.TargetCatalog.build",
+                side_effect=lambda root: _catalog(cocotb_module="test_dut", project_root=root),
             ),
             patch(
                 "booley.config.project_config.TEST_NAMES",
@@ -2921,16 +3250,16 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
-                return_value=self._overlay(fusesoc_registry.TraceMode.NATIVE_FST),
+                "booley.flows.sim.trace_overlay.write_trace_overlay",
+                return_value=self._overlay(TraceMode.NATIVE_FST),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.resolve_target",
+                "booley.fusesoc.fusesoc_registry.resolve_target_handle",
                 return_value=self._resolved(tmp_path / "build"),
             ),
             patch(
-                "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
-                return_value={"sim_cocotb": "test_dut"},
+                "booley.specialists.coverage_analyst.TargetCatalog.build",
+                side_effect=lambda root: _catalog(cocotb_module="test_dut", project_root=root),
             ),
             pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
         ):

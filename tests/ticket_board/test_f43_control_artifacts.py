@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
+from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
@@ -16,7 +18,6 @@ from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatte
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.target_contract import ContractParticipant, build_contract
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -79,7 +80,7 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     return root, TicketIO(project / "tickets", project_root=root)
 
 
-def _ticket(tio: TicketIO, *, merge: bool = False) -> Path:
+def _ticket(tio: TicketIO, *, merge: bool = False, planned: bool = False) -> Path:
     path = tio.create_ticket_file(
         "change-target",
         TicketFileSpec(
@@ -87,7 +88,12 @@ def _ticket(tio: TicketIO, *, merge: bool = False) -> Path:
             ticket_type="refactor",
             branch="main",
             scope=["toy.core"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
+            criteria={
+                "mandatory": {"lint_clean": ["lint_toy_new"]}
+                if planned
+                else {"review_rtl_bugs": True}
+            },
+            target_plan=([{"target": "lint_toy_new", "role": "persistent"}] if planned else None),
             body="## Description\n\nExercise every Booley-owned control artifact.\n",
         ),
     )
@@ -185,22 +191,59 @@ def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
     assert not any("Dirty working tree" in error for error in errors)
 
 
-def test_integrated_contract_seals_tests_toml_update(tmp_path: Path, monkeypatch) -> None:
+def test_enqueue_records_tests_toml_update_in_acceptance_basis(
+    tmp_path: Path, monkeypatch
+) -> None:
     root, tio = _project(tmp_path, monkeypatch)
-    _ticket(tio)
-    opened = tio.contract_open("change-target")
-    outer = Path(opened["outer_worktree"])
+    _ticket(tio, merge=True, planned=True)
+    outer = root / ".booley_project" / "worktrees" / "change-target"
+    core = outer / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
     tests_toml = outer / ".booley_project" / "tests.toml"
-    tests_toml.write_text("[lint_toy]\ntests = ['smoke']\n", encoding="utf-8")
+    tests_toml.write_text(
+        tests_toml.read_text(encoding="utf-8") + "\n[lint_toy_new]\ntests = ['smoke']\n",
+        encoding="utf-8",
+    )
 
-    sealed = tio.contract_seal("change-target")
+    assert tio.enqueue_ticket("change-target") is True
+    queue = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    fields, _body = parse_frontmatter(queue.read_text(encoding="utf-8"))
+    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    outer_participant = basis.participant("outer")
 
-    assert sealed["outer_sha"] == _git(outer, "rev-parse", "HEAD")
+    assert outer_participant.authoring_sha == _git(outer, "rev-parse", "HEAD")
     assert (
         _git(outer, "show", "HEAD:.booley_project/tests.toml")
         == tests_toml.read_text(encoding="utf-8").strip()
     )
-    assert _git(root, "rev-parse", "change-target") == sealed["outer_sha"]
+    assert _git(root, "rev-parse", outer_participant.ticket_ref) == outer_participant.authoring_sha
+
+
+def test_validate_ticket_does_not_reopen_published_authoring_workspace(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, tio = _project(tmp_path, monkeypatch)
+    _ticket(tio)
+    assert tio.enqueue_ticket("change-target") is True
+    ticket = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
+    capsys.readouterr()
+
+    assert main(["validate-ticket", str(ticket)]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "errors": [],
+        "valid": True,
+        "warnings": [],
+    }
 
 
 def test_mutation_campaign_dictionary_round_trips_through_markdown() -> None:
@@ -219,14 +262,26 @@ def test_json_shaped_criterion_string_round_trips_as_a_string() -> None:
     assert parse_criteria_section(render_criteria_section(criteria)) == criteria
 
 
-def test_review_completion_ignores_its_board_rename_but_not_product_edits(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _review_completion_case(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "booley.ticket_board.operations._completion_acceptance_valid",
+        lambda *_: SimpleNamespace(participant_heads=None),
+    )
     root, tio = _project(tmp_path, monkeypatch)
-    draft = _ticket(tio, merge=True)
+    draft = _ticket(tio, merge=True, planned=True)
+    worktree = root / ".booley_project" / "worktrees" / "change-target"
+    core = worktree / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
+    assert tio.enqueue_ticket("change-target") is True
     queue = draft.parent.parent / "queue" / draft.name
-    queue.parent.mkdir(parents=True, exist_ok=True)
-    draft.rename(queue)
     unrelated_ticket = queue.parent / "unrelated-ticket.md"
     unrelated_ticket.write_text(queue.read_text(encoding="utf-8"), encoding="utf-8")
     _git(
@@ -237,38 +292,19 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
         str(unrelated_ticket.relative_to(root)),
     )
     _commit_all(root, "queue ticket")
-
-    worktree = root / ".booley_project" / "worktrees" / "change-target"
-    _git(root, "worktree", "add", "-b", "change-target", str(worktree), "main")
-    core = worktree / "toy.core"
-    core.write_text(core.read_text(encoding="utf-8").replace(":1.0", ":2.0"), encoding="utf-8")
-    _commit_all(worktree, "implement Target change")
-
     review = queue.parent.parent / "review" / queue.name
     review.parent.mkdir(parents=True, exist_ok=True)
     queue.rename(review)
-    sealed = _git(root, "rev-parse", "change-target")
-    destination = _git(root, "merge-base", "main", "change-target")
-    participant = ContractParticipant(
-        "outer",
-        sealed,
-        "refs/heads/change-target",
-        "refs/heads/main",
-        destination,
-    )
-    contract = build_contract(
-        worktree,
-        outer_sha=sealed,
-        participants=[participant],
-    )
-    update_frontmatter(
-        review,
-        {"base_sha": sealed, "target_contract": contract.as_dict()},
-    )
     monkeypatch.chdir(root)
-
     source = root / "rtl" / "toy.sv"
     original = source.read_text(encoding="utf-8")
+    return root, tio, unrelated_ticket, source, original
+
+
+def test_review_completion_ignores_its_board_rename_but_not_product_edits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, tio, unrelated_ticket, source, original = _review_completion_case(tmp_path, monkeypatch)
     source.write_text("module toy; wire unrelated_product_edit; endmodule\n", encoding="utf-8")
     assert op_complete(tio, "change-target") is False
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
@@ -282,4 +318,4 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     unrelated_ticket.write_text(unrelated_original, encoding="utf-8")
     assert op_complete(tio, "change-target") is True
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "done"
-    assert "acme:lib:toy:2.0" in (root / "toy.core").read_text(encoding="utf-8")
+    assert "lint_toy_new" in (root / "toy.core").read_text(encoding="utf-8")

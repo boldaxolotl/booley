@@ -112,7 +112,7 @@ def retired_config_error(raw: dict[str, Any]) -> str | None:
             if retired in flows:
                 return (
                     f"booley.toml [flows.{retired}] is retired; use "
-                    "`booley flow sim --elab-only` and move "
+                    "`booley flow sim --mode elab-only` and move "
                     "standalone_frontend to [flows.sim].standalone_frontend"
                 )
         for key in ("venue", "backend", "host_setup_commands"):

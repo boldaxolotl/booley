@@ -482,6 +482,21 @@ def _validate_on_success(value: Any) -> list[str]:
     return OnSuccess.from_dict(value).validate()
 
 
+def _validate_target_plan(value: Any, on_success: Any) -> list[str]:
+    """Validate an optional Target Plan at the authored Ticket seam."""
+    if value is None:
+        return []
+    from booley.core.models import TargetPlan, TargetPlanError
+
+    try:
+        TargetPlan.from_value(value)
+    except TargetPlanError as exc:
+        return [str(exc)]
+    if not isinstance(on_success, dict) or on_success.get("merge", True) is not True:
+        return ["target_plan requires on_success.merge: true"]
+    return []
+
+
 def _validate_no_duplicated_source_roots(
     scope: list[str],
     project_root: str | Path | None,
@@ -552,11 +567,11 @@ def _validate_criteria(
     errors.extend(_validate_retired_criteria(criteria))
     errors.extend(_validate_known_mandatory_criteria(criteria, project_root))
 
-    # Structured sim entry validation. Sealed Tickets resolve Targets only after
-    # setup materializes their contract checkout; project_root is the destination
+    # Structured sim entry validation. Basis-bound Tickets resolve Targets only after
+    # setup materializes their Ticket Workspace; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
-    if project_root and fields.get("target_contract") is None:
+    if project_root and fields.get("acceptance_basis") is None:
         errors.extend(_validate_sim_targets(criteria, fields, body, project_root))
 
     # Type-specific criteria rules (warnings only, no structural errors)
@@ -739,17 +754,9 @@ def _validate_sim_entries(criteria: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _eligible_sim_target_selectors(declarations: dict[str, list[Any]]) -> list[str]:
+def _eligible_sim_target_selectors(handles: tuple[Any, ...]) -> list[str]:
     """Return copy-pasteable selectors for Targets the sim Booley Flow can drive."""
-    from booley.fusesoc import fusesoc_registry
-    from booley.targets.target import flow_can_drive
-
-    selectors: list[str] = []
-    for bucket in declarations.values():
-        for ref in bucket:
-            if flow_can_drive("sim", ref):
-                selectors.append(fusesoc_registry.minimal_selector(ref, bucket))
-    return sorted(selectors)
+    return sorted(handle.selector for handle in handles if "sim" in handle.drivable_by)
 
 
 _TARGET_CREATION_VERBS = re.compile(
@@ -816,18 +823,19 @@ def _validate_sim_targets(
 ) -> list[str]:
     """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
     from booley.criteria.templates import parse_sim_criterion
-    from booley.fusesoc import fusesoc_registry
-    from booley.targets.target import flow_can_drive, select_target
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import FuseSocError, UnknownTargetError
 
     root = Path(project_root)
     try:
-        declarations = fusesoc_registry.target_declarations(root)
-    except fusesoc_registry.FuseSocError as exc:
+        catalog = TargetCatalog.build(root)
+        handles = catalog.list()
+    except FuseSocError as exc:
         return [f"criteria: cannot inspect simulation Targets: {exc}"]
-    if not declarations:
+    if not handles:
         return []  # No authored .core surface yet; preserve pre-migration validation.
 
-    eligible = _eligible_sim_target_selectors(declarations)
+    eligible = _eligible_sim_target_selectors(handles)
     eligible_hint = ", ".join(eligible) if eligible else "none"
     errors: list[str] = []
     for section_name in ("mandatory", "optional"):
@@ -842,10 +850,10 @@ def _validate_sim_targets(
                 continue
             try:
                 target = parse_sim_criterion(item).target
-                ref = select_target(root, target)
+                handle = catalog.select(target)
             except ValueError:
                 continue  # _validate_sim_entries owns malformed-entry errors.
-            except fusesoc_registry.UnknownTargetError as exc:
+            except UnknownTargetError as exc:
                 if _ticket_declares_future_target(fields, body, target):
                     continue
                 errors.append(
@@ -853,16 +861,16 @@ def _validate_sim_targets(
                     f"eligible simulation Targets: {eligible_hint}"
                 )
                 continue
-            except fusesoc_registry.FuseSocError as exc:
+            except FuseSocError as exc:
                 errors.append(
                     f"criteria.{section_name}.sim_pass: target {target!r}: {exc}; "
                     f"eligible simulation Targets: {eligible_hint}"
                 )
                 continue
-            if not flow_can_drive("sim", ref):
+            if "sim" not in handle.drivable_by:
                 errors.append(
                     f"criteria.{section_name}.sim_pass: target {target!r} cannot satisfy "
-                    f"sim_pass (flow={ref.flow!r}, EDA tool={ref.eda_tool!r}); eligible simulation "
+                    f"sim_pass (flow={handle.flow!r}, EDA tool={handle.eda_tool!r}); eligible simulation "
                     f"Targets: {eligible_hint}"
                 )
     return errors
@@ -1188,6 +1196,19 @@ def _validate_git_state(
     return errors
 
 
+def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
+    raw_basis = fields.get("acceptance_basis")
+    if raw_basis is None:
+        return []
+    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+
+    try:
+        AcceptanceBasis.from_mapping(raw_basis)
+    except AcceptanceBasisError as exc:
+        return [str(exc)]
+    return []
+
+
 def validate_ticket_fields(
     fields: dict[str, Any],
     body: str,
@@ -1206,12 +1227,8 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
-    from .target_contract import validate_contract_fields
-
-    # Generic Ticket Board validation may run from the destination branch,
-    # while the sealed Targets exist only in the ticket's contract worktree.
-    # Direction is resolved there by intake and every Flow gate.
-    errors.extend(validate_contract_fields(fields))
+    errors.extend(_validate_target_plan(fields.get("target_plan"), fields.get("on_success")))
+    errors.extend(_validate_acceptance_basis_field(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

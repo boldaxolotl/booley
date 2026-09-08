@@ -8,6 +8,7 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -27,6 +28,19 @@ from booley.config.project_config import (
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.display import format_flow_display_label
+from booley.flows.plan import (
+    CommandPlan,
+    FlowPlan,
+    WorkUnitPlan,
+    WorkUnitRole,
+    normalize_plan_argv,
+    normalize_plan_inputs,
+    normalize_plan_path,
+    normalize_plan_paths,
+    plan_value_fingerprint,
+    stable_unit_id,
+)
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.result import parse_summary_line
@@ -36,18 +50,16 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.flow_names import config_section
-from booley.targets.target import (
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
-    inspect_target,
-    select_target,
-    select_targets,
 )
+from booley.targets.flow_names import config_section
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -59,6 +71,7 @@ from ..flow_config import (
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
+from ..invocation import default_timeout_ms, resolve_timeout_ms
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -75,11 +88,13 @@ from .execution import (
     SimulationArtifactEvidence,
     SimulationExecution,
     SimulationOptions,
+    SimulationPreview,
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.failures import find_missing_executable
-from .standalone import StandaloneMixin, _StandaloneOutcome
+from .mode import SimulationMode, normalize_simulation_mode, parse_simulation_mode
+from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
@@ -87,6 +102,15 @@ from .target_tests import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _target_is_cocotb(work_dir: Path, target: str) -> bool:
+    """Read Cocotb identity through the Target catalog, failing soft for sizing."""
+    try:
+        return bool(TargetCatalog.build(work_dir).select(target).cocotb_module)
+    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
+        return False
+
 
 # Default literal prefix for cycle count extraction from sim output.
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -142,7 +166,7 @@ def _raise_if_missing_executable(text: str) -> None:
         raise MissingExecutableError(binary, context=text)
 
 
-_DEFAULT_TIMEOUT_MS = 600_000
+_DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 # Per-run disk budget for the sim run directory (SETUP-25) — on how much the dir
 # GROWS during one run, not on its total size (F-23: run_cwd is routinely shared
 # with the TB's staged input vectors, and charging those to the output budget
@@ -518,20 +542,10 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     budget in ``booley.toml`` (mirrors ``[flows.synth].timeout_ms``), so
     a heavy core (e.g. a 400+MB ``vvp`` whose cold rebuild+run exceeds the 600s
     default under load) need not raise it on every call. Precedence lives in the
-    caller: an explicit ``--timeout`` arg wins over this knob, which wins over
-    :data:`_DEFAULT_TIMEOUT_MS`. Non-positive / unparseable values fall back.
+    caller: an explicit ``--timeout-ms`` arg wins over this knob, which wins over
+    :data:`_DEFAULT_TIMEOUT_MS`. Invalid configured values fail at the boundary.
     """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("timeout_ms")
-            configured = as_int(val, _DEFAULT_TIMEOUT_MS)
-            return max(1, configured if configured is not None else _DEFAULT_TIMEOUT_MS)
-    except ImportError:
-        pass
-    return _DEFAULT_TIMEOUT_MS
+    return resolve_timeout_ms("sim", work_dir, None)
 
 
 def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
@@ -540,7 +554,7 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
     ``[flows.sim].sim_time_grace_s`` bounds how long a cocotb run may sit
     at *exactly* 0.00 ns of simulation time before Booley aborts it with the
     run-loop-mismatch diagnosis instead of burning the whole ``timeout_ms``
-    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under Verilator 5.046, then
+    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under an older Verilator, then
     no timed callback ever fired — 600 s of wall clock, zero sim time). ``0``
     disables the watchdog; anything else is a wall-clock second count.
     Defaults to :data:`run_guard.DEFAULT_SIM_TIME_GRACE_S`.
@@ -668,6 +682,7 @@ def _resolve_sim_campaign_work_units(
     target_arg: str,
     test_selector: str | None = None,
     skip_arg: str | None = None,
+    mode: SimulationMode | str = SimulationMode.SIMULATE,
 ) -> int:
     """Count sequential simulator processes selected by one sim invocation.
 
@@ -679,15 +694,16 @@ def _resolve_sim_campaign_work_units(
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
         return 1
-    try:
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
-    except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
-        cocotb_modules = {}
+    selected_mode = normalize_simulation_mode(mode)
+    if selected_mode is SimulationMode.ELAB_ONLY:
+        return len(targets)
+    if selected_mode is SimulationMode.ELAB_ONLY_STANDALONE:
+        return len(targets) + 1
     test_names = _get_test_names(work_dir)
     configured_skips = _get_test_skips(work_dir)
     units = 0
     for target in targets:
-        if lookup_target_section(cocotb_modules, target):
+        if _target_is_cocotb(work_dir, target):
             units += 1
             continue
         units += _selected_test_work_units(
@@ -784,6 +800,11 @@ def _build_display_lines(
     total_elapsed: float,
 ) -> list[str]:
     """Build rich display lines for the terminal Flow box."""
+    if len(results) == 1 and results[0].passed:
+        tests = results[0].tests
+        if len(tests) == 1:
+            return [f"✓ PASS  {_format_duration(total_elapsed)}"]
+
     targets_passed = sum(1 for r in results if r.passed)
     lines: list[str] = [
         f"{targets_passed}/{len(results)} targets passed, {total_elapsed:.1f}s",
@@ -1107,14 +1128,15 @@ def _append_batch_output_lines(
             )
 
 
-class SimulateFlow(StandaloneMixin, BooleyFlow):
+class SimulateFlow(StandaloneMixin, BuiltinFlow):
     """Run RTL simulation for one or more Targets."""
 
     name: str = "sim"
     description: str = (
-        "Run RTL simulation for one or more Targets. Set elab_only=true to "
+        "Run RTL simulation for one or more Targets. Set mode=elab_only to "
         "compile, elaborate, and link the ordinary untraced simulator image "
-        "without running tests (CLI: --elab-only; --build-only is an alias). "
+        "without running tests, or mode=elab_only_standalone to add the "
+        "reusable-module sweep. "
         "Do NOT use --trace for initial pass/fail checks — tracing adds "
         "overhead and is only useful after a failure, when you need waveforms "
         "for debugging via the B-Wave (`bwave`) MCP tool."
@@ -1133,12 +1155,31 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         "cycle_count",
     ]
     satisfies_args: ClassVar[dict[str, str]] = {
-        "elab_pass": "--elab-only",
-        "elaborate_standalone": "--elab-only --standalone",
+        "elab_pass": "--mode elab-only",
+        "elaborate_standalone": "--mode elab-only-standalone",
     }
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
+
+    def _resolve_display_label(self) -> str | None:
+        """Describe the requested Target/test scope without validating it."""
+        targets = self._requested_targets()
+        if self.args.mode.elaborates_only:
+            return format_flow_display_label(targets, mode="elaboration")
+        try:
+            test_names = _get_test_names(self.args.work_dir)
+            selected = [
+                test
+                for target in targets
+                for test in self._resolve_tests_to_run(target, test_names)
+            ]
+        except Exception:  # display metadata must not block a Flow run
+            logger.debug("could not resolve simulation display scope", exc_info=True)
+            return format_flow_display_label(targets, tests=None)
+        if any(test is None for test in selected):
+            return format_flow_display_label(targets, tests=None)
+        return format_flow_display_label(targets, tests=(str(test) for test in selected))
 
     def _add_args(self, parser: Any) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
@@ -1161,22 +1202,64 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
     @staticmethod
     def _add_elaboration_args(parser: Any) -> None:
-        """Add the compile-only Simulation mode and its optional sweep."""
+        """Add the canonical mode plus CLI-only compatibility aliases."""
+        parser.add_argument(
+            "--mode",
+            type=parse_simulation_mode,
+            choices=list(SimulationMode),
+            default=None,
+            metavar="{simulate,elab-only,elab-only-standalone}",
+            help="Execution mode: run tests, elaborate only, or elaborate then "
+            "perform the standalone module sweep",
+        )
         parser.add_argument(
             "--elab-only",
             "--build-only",
-            dest="elab_only",
+            dest="_legacy_elab_only",
             action="store_true",
-            help="Compile, elaborate, and link the ordinary untraced simulation "
-            "image without running tests, Cocotb Python, Pre-Run Commands, or "
-            "tracing. --build-only is a permanent alias.",
+            help=argparse.SUPPRESS,
         )
         parser.add_argument(
             "--standalone",
+            dest="_legacy_standalone",
             action="store_true",
-            help="With --elab-only, also check every RTL module from its "
-            "declaring file using [flows.sim].standalone_frontend.",
+            help=argparse.SUPPRESS,
         )
+
+    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
+        """Normalize legacy mode flags into the single canonical selector."""
+        args = super().parse_args(argv)
+        legacy_requested = args._legacy_elab_only or args._legacy_standalone
+        if args.mode is not None and legacy_requested:
+            self._parser.error("--mode cannot be combined with legacy mode flags")
+        args._legacy_standalone_without_elab = (
+            args._legacy_standalone and not args._legacy_elab_only
+        )
+        if legacy_requested:
+            logger.warning(
+                "--elab-only, --build-only, and --standalone are deprecated; use --mode"
+            )
+        if args._legacy_elab_only and args._legacy_standalone:
+            args.mode = SimulationMode.ELAB_ONLY_STANDALONE
+        elif args._legacy_elab_only:
+            args.mode = SimulationMode.ELAB_ONLY
+        elif args.mode is None:
+            args.mode = SimulationMode.SIMULATE
+        vars(args).pop("_legacy_elab_only")
+        vars(args).pop("_legacy_standalone")
+        return args
+
+    def mcp_schema(self) -> dict[str, object]:
+        """Advertise one mode field and hide all compatibility flags."""
+        schema = super().mcp_schema()
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("_legacy_elab_only", None)
+            properties.pop("_legacy_standalone", None)
+            mode = properties.get("mode")
+            if isinstance(mode, dict):
+                mode["default"] = SimulationMode.SIMULATE.value
+        return schema
 
     @staticmethod
     def _add_run_control_args(parser: Any) -> None:
@@ -1201,18 +1284,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             action="store_true",
             help="Skip zombie process cleanup",
         )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Print commands as JSON without executing",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=None,
-            help="Per-test timeout in milliseconds. Precedence: this arg > "
-            "[flows.sim].timeout_ms in booley.toml > 600000 default.",
-        )
 
     def _build_command(self) -> list[str]:
         # Not used — _run() is overridden for multi-config logic
@@ -1225,14 +1296,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _effective_timeout_ms(self) -> int:
         """Resolve the per-test timeout in ms.
 
-        Precedence: explicit ``--timeout`` CLI/MCP arg > ``[flows.sim]``
+        Precedence: explicit ``--timeout-ms`` CLI/MCP arg > ``[flows.sim]``
         ``timeout_ms`` in booley.toml (F4) > :data:`_DEFAULT_TIMEOUT_MS`. Mirrors
         ``AsicSynthesizeFlow._timeout_ms`` so a large core can persist a higher
-        sim budget instead of passing ``--timeout`` on every call.
+        sim budget instead of passing ``--timeout-ms`` on every call.
         """
-        if self.args.timeout is not None:
-            return max(1, int(self.args.timeout))
-        return _resolve_sim_timeout_ms(Path(self.args.work_dir))
+        return self._timeout_ms()
 
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).
@@ -1259,7 +1328,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """
         try:
             handle = self._target_handle(target)
-            options = inspect_target(self.args.work_dir, handle).flow_options
+            options = TargetCatalog.build(self.args.work_dir).inspect(handle).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
         module = options.get("cocotb_module")
@@ -1363,17 +1432,180 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if runnable_error is not None:
             return runnable_error
 
+        plan = self._plan_simulation(targets, test_names_map)
+        self._flow_plan = plan
         if self.args.dry_run:
             return self._handle_dry_run(targets, test_names_map)
+        if plan.aggregate_errors:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
+                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+            )
 
         return None
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _plan_simulation(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> FlowPlan:
+        """Resolve all Simulation work units before any executable is dispatched."""
+        baseline_units, baseline_errors = self._plan_cycle_count_baseline_units(
+            targets,
+            test_names_map,
+        )
+        candidate_role: WorkUnitRole = "candidate" if baseline_units else "ordinary"
+        candidate_units, candidate_errors = self._plan_simulation_targets(
+            targets,
+            test_names_map,
+            role=candidate_role,
+            revision=None,
+        )
+        return FlowPlan(
+            flow="sim",
+            mode=self.args.mode.value,
+            work_units=(*baseline_units, *candidate_units),
+            aggregate_errors=(*baseline_errors, *candidate_errors),
+        )
+
+    def _plan_simulation_targets(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+        *,
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Plan one checkout's selected Simulation Targets."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        execution = self._simulation_execution()
+        for target in targets:
+            tests = self._resolve_tests_to_run(target, test_names_map)
+            try:
+                preview = execution.preview(
+                    self._target_handle(target),
+                    self._execution_selection(tests),
+                )
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"{target}: {exc}")
+                continue
+            for group, command in zip(preview.groups, preview.commands, strict=True):
+                units.append(
+                    self._simulation_work_unit(target, preview, group, command, role, revision)
+                )
+        return units, errors
+
+    def _simulation_work_unit(
+        self,
+        target: str,
+        preview: SimulationPreview,
+        group: tuple[str, ...],
+        command: tuple[str, ...],
+        role: WorkUnitRole,
+        revision: str | None,
+    ) -> WorkUnitPlan:
+        """Normalize one resolved Simulation command into the shared plan model."""
+        build_root = edam_layer.work_root_for(
+            self.args.work_dir,
+            "sim",
+            target,
+            variant="trace" if self.args.trace else "",
+        )
+        sources = normalize_plan_paths(preview.sources, self.args.work_dir)
+        constraints = normalize_plan_paths(preview.constraints, self.args.work_dir)
+        environment = self._target_sim_env(target)
+        redacted = self._redact_plan_environment(target, command)
+        recipe = {
+            "environment_fingerprint": plan_value_fingerprint(environment),
+            "flow_options": preview.flow_options,
+            "mode": self.args.mode.value,
+            "result_verbosity": self.args.result_verbosity,
+            "toplevel": preview.toplevel,
+            "trace": self.args.trace,
+        }
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", target, group, role=role, revision=revision),
+            role=role,
+            revision=revision,
+            selector=target,
+            target_identity=preview.target_identity,
+            test_or_module_scope=group,
+            eda_tool=preview.eda_tool,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=preview.parameters,
+            recipe=recipe,
+            commands=(CommandPlan(normalize_plan_argv(redacted, self.args.work_dir), ".", True),),
+            expected_artifacts=(
+                normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+            ),
+        )
+
+    def _redact_plan_environment(
+        self,
+        target: str,
+        command: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Retain configured variable names while excluding their values."""
+        if len(command) != 3 or command[:2] != ("sh", "-c"):
+            return command
+        script = command[2]
+        for name, value in self._target_sim_env(target).items():
+            script = script.replace(
+                f"export {name}={shlex.quote(value)}",
+                f"export {name}=<configured>",
+            )
+        return (*command[:2], script)
+
+    def _plan_cycle_count_baseline_units(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
+        """Plan every baseline Simulation before the candidate can execute."""
+        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        if error is not None:
+            return [], [error]
+        if baseline_ref is None:
+            return [], []
+        project_root = Path(self.args.work_dir)
+        expected = {target: self._target_handle(target).identity for target in baseline_targets}
+        try:
+            with baseline_worktree(project_root, baseline_ref) as worktree:
+                self.args.work_dir = worktree
+                units, errors = self._plan_simulation_targets(
+                    baseline_targets,
+                    test_names_map,
+                    role="baseline",
+                    revision=baseline_ref,
+                )
+                mismatches = [
+                    f"{unit.selector}: baseline resolves to {unit.target_identity!r}, "
+                    f"expected {expected[unit.selector]!r}"
+                    for unit in units
+                    if unit.target_identity != expected[unit.selector]
+                ]
+                return units, [*errors, *mismatches]
+        except (BaselineWorktreeError, fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            return [], [f"sim: Cycle Count baseline planning failed: {exc}"]
+        finally:
+            self.args.work_dir = project_root
+
+    def _run(self) -> McpToolResult:
+        """Run the selected shape and stamp its canonical mode on every result."""
+        result = self._run_selected_mode()
+        result.detail["mode"] = self.args.mode.value
+        return result
+
+    def _run_selected_mode(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
             return mode_error
-        if self.args.elab_only:
+        if self.args.mode.elaborates_only:
             return self._run_elab_only()
         total_start = time.monotonic()
         resolution_started = total_start
@@ -1441,6 +1673,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         targets_passed = sum(1 for r in all_results if r.passed)
         any_elab_failed = any(r.elab_failed for r in all_results)
         detail: dict[str, Any] = {
+            "mode": self.args.mode.value,
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
@@ -1504,12 +1737,14 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
     def _validate_mode_args(self) -> McpToolResult | None:
         """Reject run-stage arguments that have no meaning in elab-only mode."""
-        if self.args.standalone and not self.args.elab_only:
+        if self.args._legacy_standalone_without_elab:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text="sim: --standalone requires --elab-only; add --elab-only or remove --standalone.",
+                report_text=(
+                    "sim: --standalone alone is invalid; use --mode elab-only-standalone"
+                ),
             )
-        if not self.args.elab_only:
+        if not self.args.mode.elaborates_only:
             return None
         conflicts = (
             ("--test", self.args.test is not None),
@@ -1523,8 +1758,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 return McpToolResult(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: {argument} conflicts with --elab-only; remove "
-                        f"{argument} or omit --elab-only."
+                        f"sim: {argument} conflicts with --mode {self.args.mode.value}; "
+                        f"remove {argument} or use --mode simulate."
                     ),
                 )
         return None
@@ -1540,7 +1775,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if missing is not None:
             target, exc = missing
             result = self._missing_executable_result(exc, target)
-            result.detail["mode"] = "elab_only"
+            result.detail["mode"] = self.args.mode.value
             result.detail["targets"] = [
                 self._elab_only_detail(target_result) for target_result in results
             ]
@@ -1578,20 +1813,157 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
-                detail={"mode": "elab_only"},
+                detail={"mode": self.args.mode.value},
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, McpToolResult):
-            targets_or_error.detail["mode"] = "elab_only"
+            targets_or_error.detail["mode"] = self.args.mode.value
             return targets_or_error
         targets = targets_or_error
         target_error = self._validate_interactive_args(targets)
         if target_error is not None:
-            target_error.detail["mode"] = "elab_only"
+            target_error.detail["mode"] = self.args.mode.value
             return target_error
+        plan = self._plan_elaboration(targets)
+        self._flow_plan = plan
         if self.args.dry_run:
             return self._handle_elab_only_dry_run(targets)
+        if plan.aggregate_errors:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
+                detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
+            )
         return targets
+
+    def _plan_elaboration(self, targets: list[str]) -> FlowPlan:
+        """Resolve every elaboration unit, including one cumulative standalone sweep."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        for target in targets:
+            try:
+                units.append(self._elaboration_work_unit(target))
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"{target}: {exc}")
+        standalone, standalone_error = self._planned_standalone_unit(targets)
+        if standalone is not None:
+            units.append(standalone)
+        if standalone_error is not None:
+            errors.append(standalone_error)
+
+        return FlowPlan(
+            flow="sim",
+            mode=self.args.mode.value,
+            work_units=tuple(units),
+            aggregate_errors=tuple(errors),
+        )
+
+    def _elaboration_work_unit(self, target: str) -> WorkUnitPlan:
+        """Normalize one resolved elaboration recipe."""
+        handle = self._target_handle(target)
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+        command = tuple(self._elab_only_dry_command(target))
+        if len(command) == 1 and command[0].startswith("ERROR:"):
+            raise ValueError(command[0])
+        sources, constraints = normalize_plan_inputs(inspection.inputs, self.args.work_dir)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        recipe = {
+            "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
+            "flow_options": inspection.flow_options,
+            "mode": self.args.mode.value,
+            "toplevel": inspection.toplevel,
+        }
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", target, ("elaboration",)),
+            role="ordinary",
+            revision=None,
+            selector=target,
+            target_identity=handle.identity,
+            test_or_module_scope=("elaboration",),
+            eda_tool=inspection.eda_tool,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=inspection.parameters,
+            recipe=recipe,
+            commands=(
+                CommandPlan(
+                    normalize_plan_argv(
+                        self._redact_plan_environment(target, command),
+                        self.args.work_dir,
+                    ),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(
+                normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
+            ),
+        )
+
+    def _planned_standalone_unit(
+        self,
+        targets: list[str],
+    ) -> tuple[WorkUnitPlan | None, str | None]:
+        """Plan the optional standalone sweep and preserve its execution recipe."""
+        if not self._standalone_requested():
+            return None, None
+        try:
+            standalone = self._plan_standalone_check(targets)
+        except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            return None, f"standalone: {exc}"
+        self._standalone_plan_recipe = standalone
+        return self._standalone_work_unit(targets, standalone), None
+
+    def _standalone_work_unit(
+        self,
+        targets: list[str],
+        standalone: _StandalonePlanRecipe,
+    ) -> WorkUnitPlan:
+        modules = tuple(module for module, _path in standalone.modules)
+        sources = tuple(
+            dict.fromkeys([path for _module, path in standalone.modules] + list(standalone.shared))
+        )
+        identities = [self._target_handle(target).identity for target in targets]
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("sim", "standalone", modules, role="standalone"),
+            role="standalone",
+            revision=None,
+            selector=",".join(targets),
+            target_identity="+".join(identities),
+            test_or_module_scope=modules,
+            eda_tool=standalone.frontend,
+            timeout_ms=self._effective_timeout_ms(),
+            sources=tuple(normalize_plan_path(path, self.args.work_dir) for path in sources),
+            parameters={},
+            recipe={
+                "frontend": standalone.frontend,
+                "mode": self.args.mode.value,
+                "module_sources": [
+                    {"module": module, "source": source} for module, source in standalone.modules
+                ],
+                "shared_sources": list(standalone.shared),
+            },
+            commands=tuple(
+                CommandPlan(
+                    normalize_plan_argv(command, self.args.work_dir),
+                    cwd=".",
+                )
+                for command in standalone.commands
+            ),
+            expected_artifacts=(
+                normalize_plan_path(
+                    edam_layer.work_root_for(
+                        self.args.work_dir,
+                        "sim",
+                        "standalone",
+                        variant="sweep",
+                    )
+                    / RUN_LOG_NAME,
+                    self.args.work_dir,
+                ),
+            ),
+        )
 
     def _run_elab_only_campaign(
         self,
@@ -1650,7 +2022,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
         detail: dict[str, Any] = {
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "targets": [self._elab_only_detail(result) for result in results],
         }
         artifacts = {
@@ -1776,7 +2148,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             result.outcome.passed,
             source_target=result.target,
             detail={
-                "mode": "elab_only",
+                "mode": self.args.mode.value,
                 "target": result.target,
                 "elapsed_s": round(result.outcome.elapsed_s, 3),
                 "error_gist": (
@@ -1832,7 +2204,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return
         report = {
             "flow": "sim",
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
@@ -1858,7 +2230,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         completed = [result.target for result in results]
         payload = {
             "flow": self.name,
-            "mode": "elab_only",
+            "mode": self.args.mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -1871,23 +2243,16 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         _atomic_write_json(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> McpToolResult:
-        commands = {target: self._elab_only_dry_command(target) for target in targets}
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} elab-only build command(s)",
-            detail={"mode": "elab_only", "commands": commands},
-        )
+        del targets
+        return self._dry_run_result(self._flow_plan)
 
     def _elab_only_dry_command(self, target: str) -> list[str]:
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         try:
             handle = self._target_handle(target)
-            setup = fusesoc_registry.setup_command(
-                handle.selector,
-                project_root=handle.project_root,
+            setup = fusesoc_registry.setup_command_for_handle(
+                handle,
                 build_root=build_root,
-                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
@@ -1954,7 +2319,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         test_names_map: dict[str, list[str]],
     ) -> dict[str, TargetResult] | McpToolResult:
         """Run each relative Cycle Count Target once in a throwaway baseline tree."""
-        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        del targets  # Selection is frozen in the FlowPlan before execution.
+        baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
         if error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
         if baseline_ref is None:
@@ -1981,6 +2347,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                             self._tb_top_for_target(target),
                             test_names_map,
                             [],
+                            plan_role="baseline",
                         )
                         result.target_identity = baseline_handle.identity
                         results[result.target_identity] = result
@@ -1996,6 +2363,27 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             self.args.work_dir = project_root
             return self._cycle_baseline_failure(exc, baseline_targets)
         return results
+
+    def _planned_cycle_baseline_selection(
+        self,
+    ) -> tuple[str | None, list[str], str | None]:
+        """Read the baseline revision and Target order from the frozen plan."""
+        baseline_units = tuple(
+            unit for unit in self._flow_plan.work_units if unit.role == "baseline"
+        )
+        if not baseline_units:
+            return None, [], None
+        revisions = {unit.revision for unit in baseline_units}
+        if len(revisions) != 1 or None in revisions:
+            return (
+                None,
+                [],
+                "sim: planned Cycle Count baseline has no unique revision",
+            )
+        baseline_ref = next(iter(revisions))
+        assert baseline_ref is not None
+        baseline_targets = list(dict.fromkeys(unit.selector for unit in baseline_units))
+        return baseline_ref, baseline_targets, None
 
     def _cycle_baseline_failure(
         self,
@@ -2081,7 +2469,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        handles = select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        handles = TargetCatalog.build(self.args.work_dir).select_many(
+            self.args.target,
+            for_flow="sim",
+        )
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if targets:
@@ -2104,14 +2495,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         selected = getattr(self, "_target_handles", {}).get(target)
         if selected is not None and selected.project_root == root:
             return selected
-        return select_target(root, target, for_flow="sim")
+        return TargetCatalog.build(root).select(target, for_flow="sim")
 
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
         if resolved is None:
-            return inspect_target(
-                self.args.work_dir,
-                self._target_handle(target),
-            ).toplevel
+            catalog = TargetCatalog.build(self.args.work_dir)
+            return catalog.inspect(self._target_handle(target)).toplevel
         return tb_top_for_target(
             target,
             self.args.work_dir,
@@ -2154,6 +2543,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             target_result.passed,
             source_target=target_result.target,
             detail={
+                "mode": self.args.mode.value,
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
@@ -2189,6 +2579,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
+                "mode": self.args.mode.value,
                 "target": target_result.target,
                 "target_identity": target_result.target_identity,
                 "test": test_name,
@@ -2431,7 +2822,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            inspection = inspect_target(self.args.work_dir, self._target_handle(target))
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(self._target_handle(target))
             fileset = {
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
@@ -2507,6 +2899,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         tb_top: str,
         test_names_map: dict[str, list[str]],
         output_lines: list[str],
+        *,
+        plan_role: WorkUnitRole | None = None,
     ) -> TargetResult:
         """Execute one selected Target through the deep Simulation boundary."""
         del tb_top
@@ -2516,7 +2910,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
         selection = self._execution_selection(tests_to_run)
         execution = self._simulation_execution()
-        outcome = execution.run(self._target_handle(target), selection)
+        planned_groups = self._planned_simulation_groups(target, plan_role)
+        outcome = execution.run(
+            self._target_handle(target),
+            selection,
+            planned_groups=planned_groups,
+        )
         result = self._project_execution_outcome(outcome)
         output_lines.append(f"[sim] {target} (session-runtime)")
         output_lines.extend(result.diagnostics)
@@ -2528,6 +2927,23 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
         return result
 
+    def _planned_simulation_groups(
+        self,
+        target: str,
+        role: WorkUnitRole | None,
+    ) -> tuple[tuple[str, ...], ...]:
+        """Read the exact test grouping authorized by the current FlowPlan."""
+        groups = tuple(
+            unit.test_or_module_scope
+            for unit in self._flow_plan.work_units
+            if unit.selector == target
+            and (unit.role == role if role is not None else unit.role in {"ordinary", "candidate"})
+        )
+        if not groups:
+            label = role or "candidate"
+            raise RuntimeError(f"Simulation plan has no {label} work for {target!r}")
+        return groups
+
     def _simulation_execution(self) -> SimulationExecution:
         """Compose the execution boundary with the Flow's process transport."""
         override = getattr(self, "_simulation_execution_override", None)
@@ -2538,7 +2954,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             artifact_root=self.args.report_dir,
             options=SimulationOptions(
                 trace=self.args.trace,
-                timeout_ms=int(self.args.timeout) if self.args.timeout is not None else None,
+                timeout_ms=self.args.timeout_ms,
                 result_verbosity=self.args.result_verbosity,
             ),
         )
@@ -2814,22 +3230,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> McpToolResult:
-        """Render side-effect-free previews through the execution boundary."""
-        commands: list[list[str]] = []
-        for target in targets:
-            tests = self._resolve_tests_to_run(target, test_names_map)
-            preview = self._simulation_execution().preview(
-                self._target_handle(target),
-                self._execution_selection(tests),
-            )
-            commands.extend([list(command) for command in preview.commands])
-
-        print(json.dumps(commands, indent=2))
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=f"Dry run: {len(commands)} command(s)",
-            detail={"commands": commands},
-        )
+        """Render the normalized plan resolved by preflight."""
+        del targets, test_names_map
+        return self._dry_run_result(self._flow_plan)
 
     def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
         """Write one Target's verdict, build context, and artifact pointers."""
@@ -2854,6 +3257,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """Compose best-effort build context around one Target verdict."""
         report: dict[str, Any] = {
             "flow": self.name,
+            "mode": self.args.mode.value,
             "target": result.target,
             "target_identity": result.target_identity,
             "tb_top": result.tb_top,
@@ -2900,6 +3304,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         completed = [result.target for result in results]
         payload: dict[str, Any] = {
             "flow": self.name,
+            "mode": self.args.mode.value,
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "timestamp": utc_now_rfc3339(),
             "phase": phase,
@@ -2949,7 +3354,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             f"elab_pass_{result.target}",
             met,
             source_target=result.target,
-            detail={"mode": "simulation", "target": result.target, "attempts": attempts},
+            detail={"mode": self.args.mode.value, "target": result.target, "attempts": attempts},
         )
 
 

@@ -18,13 +18,34 @@ class SubmoduleMaterializationError(RuntimeError):
     """A destination submodule could not be reconstructed from local objects."""
 
 
-def materialize_submodules(source_root: Path, destination_root: Path) -> None:
-    """Populate destination gitlinks from initialized same-path source repositories."""
+def materialize_submodules(
+    source_root: Path,
+    destination_root: Path,
+    *,
+    excluded_top_level: frozenset[str] = frozenset(),
+) -> None:
+    """Populate destination gitlinks from initialized same-path source repositories.
+
+    The destination checkout supplies ``[submodules].paths`` so historical and
+    Acceptance Basis projections retain the selection policy of their exact commit.
+    ``excluded_top_level`` names checkouts already owned by a higher-level workspace
+    transaction; their own nested gitlinks are materialized by that owner separately.
+    """
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
+    selected = _selected_top_level_paths(destination_root)
+    selected = [path for path in selected if path.as_posix() not in excluded_top_level]
+    _materialize_selection(source_root, destination_root, selected)
+
+
+def _materialize_selection(
+    source_root: Path,
+    destination_root: Path,
+    selected: list[Path],
+) -> None:
+    """Populate one already-resolved top-level selection with rollback."""
     created: list[tuple[Path, bool]] = []
     try:
-        selected = _selected_top_level_paths(source_root, destination_root)
         _materialize_tree(
             source_root,
             destination_root,
@@ -44,6 +65,50 @@ def materialize_submodules(source_root: Path, destination_root: Path) -> None:
         raise
 
 
+def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> None:
+    """Populate every repository in a composite Ticket checkout offline."""
+    from booley.runtime.project_dir import checkout_project_dir_relative_to
+    from booley.runtime.ticket_repositories import (
+        TicketWorkspaceError,
+        paired_project_repository,
+        resolve_inner_project_repo,
+    )
+
+    source_root = source_root.resolve()
+    destination_root = destination_root.resolve()
+    try:
+        paired_source = paired_project_repository(source_root)
+    except TicketWorkspaceError as exc:
+        raise SubmoduleMaterializationError(str(exc)) from exc
+    project_source = (
+        paired_source.worktree
+        if paired_source is not None
+        else resolve_inner_project_repo(source_root)
+    )
+    if project_source is None:
+        materialize_submodules(source_root, destination_root)
+        return
+    try:
+        project_relative = checkout_project_dir_relative_to(source_root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SubmoduleMaterializationError(f"paired project path is unavailable: {exc}") from exc
+    project_destination = destination_root / project_relative
+    if not (project_destination / ".git").exists():
+        raise SubmoduleMaterializationError(
+            f"paired project checkout is unavailable: {project_destination}"
+        )
+    materialize_submodules(
+        source_root,
+        destination_root,
+        excluded_top_level=frozenset({project_relative.as_posix()}),
+    )
+    _materialize_selection(
+        project_source.resolve(),
+        project_destination.resolve(),
+        submodule_paths(project_destination.resolve()),
+    )
+
+
 def _materialize_tree(
     source_root: Path,
     destination_repo: Path,
@@ -52,7 +117,7 @@ def _materialize_tree(
     created: list[tuple[Path, bool]],
     selected: list[Path] | None = None,
 ) -> None:
-    for relative in selected if selected is not None else _submodule_paths(destination_repo):
+    for relative in selected if selected is not None else submodule_paths(destination_repo):
         full_relative = prefix / relative
         source = source_root / full_relative
         destination = destination_root / full_relative
@@ -68,10 +133,10 @@ def _materialize_tree(
         _materialize_tree(source_root, destination, destination_root, full_relative, created)
 
 
-def _selected_top_level_paths(source_root: Path, destination_root: Path) -> list[Path]:
-    discovered = _submodule_paths(destination_root)
+def _selected_top_level_paths(destination_root: Path) -> list[Path]:
+    discovered = submodule_paths(destination_root)
     try:
-        configured_paths = load_submodule_config(source_root).paths
+        configured_paths = load_submodule_config(destination_root).paths
     except SubmoduleConfigError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
     if configured_paths is None:
@@ -83,7 +148,8 @@ def _selected_top_level_paths(source_root: Path, destination_root: Path) -> list
     return [path for path in discovered if path.as_posix() in configured_values]
 
 
-def _submodule_paths(repository: Path) -> list[Path]:
+def submodule_paths(repository: Path) -> list[Path]:
+    """Return validated stage-zero gitlink paths from a repository index."""
     result = _run_git(repository, "ls-files", "--stage", "-z")
     records = [record for record in result.stdout.split("\0") if record]
     paths: list[Path] = []

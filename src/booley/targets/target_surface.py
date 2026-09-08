@@ -1,9 +1,7 @@
-"""target_surface.py — the project's runnable-Target surface (``booley targets``).
+"""Presentation of the Project's runnable Target catalog (``booley targets``).
 
-A read-only presentation layer over :mod:`booley.fusesoc.fusesoc_registry`: the cheap
-YAML-only enumeration (never ``fusesoc run``) joined with per-Target Doctor
-membership from the same ``.core``. Shared by the ``booley targets`` CLI verb and the
-``booley_targets`` MCP tool so both render the same facts.
+A read-only presentation layer over :class:`booley.targets.catalog.TargetCatalog`.
+Shared by the CLI verb and MCP tool so both render the same catalog facts.
 
 Vocabulary (docs/CONTEXT.md): a **Target** is a named FuseSoC ``.core`` build
 target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
@@ -23,8 +21,8 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.fusesoc_registry import TargetRef
-from booley.targets.target import TARGET_AWARE_FLOWS, flow_can_drive
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle
 
 # Glob metacharacters: a `booley targets` positional containing any of these is
 # a filter pattern; anything else is a selection token for the detail view.
@@ -37,32 +35,12 @@ def is_glob(token: str) -> bool:
 
 
 @dataclass(frozen=True)
-class TargetEntry:
-    """One Target row: the enumerated ref plus everything the listing shows."""
-
-    ref: TargetRef
-    selector: str
-    """Shortest ``--target`` token that uniquely selects this Target
-    (:func:`fusesoc_registry.minimal_selector`) — copy-pasteable as-is."""
-
-    toplevel: str
-    """Statically-declared ``toplevel`` from the ``.core`` (``""`` when absent
-    or parameter-derived — the resolved detail view has the authority)."""
-
-    doctor_flows: tuple[str, ...]
-    """Booley Flows selected by this Target's Doctor metadata."""
-
-    drivable_by: tuple[str, ...]
-    """Booley Flows that could drive this Target (:func:`flow_can_drive`)."""
-
-
-@dataclass(frozen=True)
 class CoreGroup:
     """All Targets one ``.core`` declares — the listing's grouping unit."""
 
     vlnv: str
     core_file: Path
-    entries: tuple[TargetEntry, ...]
+    entries: tuple[TargetHandle, ...]
 
 
 @dataclass(frozen=True)
@@ -73,7 +51,7 @@ class TargetSurface:
     warnings: tuple[str, ...]
     """Non-fatal observations produced while building the surface."""
 
-    def entries(self) -> Iterator[TargetEntry]:
+    def entries(self) -> Iterator[TargetHandle]:
         for group in self.groups:
             yield from group.entries
 
@@ -142,36 +120,19 @@ class TargetDetailPayload(TypedDict):
 
 def collect_surface(project_root: Path | str) -> TargetSurface:
     """Build the public Target surface for *project_root* — YAML reads only."""
-    root = Path(project_root)
-    declarations = fusesoc_registry.target_declarations(root)
+    return _surface_from_catalog(TargetCatalog.build(project_root))
 
-    core_docs: dict[Path, Mapping[str, object]] = {}
 
-    def declared_toplevel(ref: TargetRef) -> str:
-        doc = core_docs.get(ref.core_file)
-        if doc is None:
-            doc = fusesoc_registry.read_core(ref.core_file)
-            core_docs[ref.core_file] = doc
-        return fusesoc_registry.core_target_toplevel(doc, ref.name)
-
-    grouped: dict[tuple[str, Path], list[TargetEntry]] = {}
-    for bucket in declarations.values():
-        public_bucket = [ref for ref in bucket if not ref.doctor_selftest]
-        for ref in public_bucket:
-            entry = TargetEntry(
-                ref=ref,
-                selector=fusesoc_registry.minimal_selector(ref, public_bucket),
-                toplevel=declared_toplevel(ref),
-                doctor_flows=ref.doctor_flows,
-                drivable_by=tuple(b for b in TARGET_AWARE_FLOWS if flow_can_drive(b, ref)),
-            )
-            grouped.setdefault((ref.vlnv, ref.core_file), []).append(entry)
+def _surface_from_catalog(catalog: TargetCatalog) -> TargetSurface:
+    grouped: dict[tuple[str, Path], list[TargetHandle]] = {}
+    for handle in catalog.list():
+        grouped.setdefault((handle.vlnv, handle.core_file), []).append(handle)
 
     groups = tuple(
         CoreGroup(
             vlnv=vlnv,
             core_file=core_file,
-            entries=tuple(sorted(entries, key=lambda e: e.ref.name)),
+            entries=tuple(sorted(entries, key=lambda entry: entry.name)),
         )
         for (vlnv, core_file), entries in sorted(grouped.items(), key=lambda kv: kv[0])
     )
@@ -197,14 +158,14 @@ def filter_surface(
 
         for_flow = canonical(for_flow)
 
-    def keep(entry: TargetEntry) -> bool:
-        if for_flow is not None and not flow_can_drive(for_flow, entry.ref):
+    def keep(entry: TargetHandle) -> bool:
+        if for_flow is not None and for_flow not in entry.drivable_by:
             return False
         if glob is not None:
             candidates = (
-                entry.ref.name,
+                entry.name,
                 entry.selector,
-                f"{_vlnv_identity(entry.ref.vlnv)}#{entry.ref.name}",
+                f"{_vlnv_identity(entry.vlnv)}#{entry.name}",
             )
             if not any(fnmatch.fnmatchcase(c, glob) for c in candidates):
                 return False
@@ -252,12 +213,12 @@ def surface_payload(surface: TargetSurface, project_root: Path | str) -> Surface
                 "core_file": _rel_to(group.core_file, root),
                 "targets": [
                     {
-                        "name": e.ref.name,
+                        "name": e.name,
                         "selector": e.selector,
-                        "flow": e.ref.flow,
-                        "eda_tool": e.ref.eda_tool,
-                        "cocotb_module": e.ref.cocotb_module,
-                        "toplevel": e.toplevel or None,
+                        "flow": e.flow,
+                        "eda_tool": e.eda_tool,
+                        "cocotb_module": e.cocotb_module,
+                        "toplevel": e.declared_toplevel or None,
                         "doctor_flows": list(e.doctor_flows),
                         "drivable_by": list(e.drivable_by),
                     }
@@ -284,25 +245,27 @@ def detail_payload(
     The cheap half always fills in (enumeration + Doctor metadata); when enabled,
     the resolved half runs ``fusesoc run --setup`` and lands under ``"resolved"``.
     A resolution failure lands under ``"resolved_error"`` instead of raising. Unknown and
-    ambiguous *token*\\ s DO raise (:class:`fusesoc_registry.UnknownTargetError`
-    / :class:`fusesoc_registry.AmbiguousTargetError`) — their messages already
+    ambiguous *token*\\ s DO raise (:class:`booley.targets.domain.UnknownTargetError`
+    / :class:`booley.targets.domain.AmbiguousTargetError`) — their messages already
     name the candidates. The remaining keyword arguments mirror
     :func:`fusesoc_registry.resolve_target`.
     """
     root = Path(project_root)
-    ref = fusesoc_registry.resolve_public_ref(root, token)
-    surface = collect_surface(root)
-    entry = next(e for e in surface.entries() if e.ref == ref)
+    catalog = TargetCatalog.build(root)
+    handle = catalog.select(token)
+    surface = _surface_from_catalog(catalog)
+    entry = next(e for e in surface.entries() if e.selector == handle.selector)
+    selected = entry
 
     payload: TargetDetailPayload = {
-        "name": ref.name,
+        "name": selected.name,
         "selector": entry.selector,
-        "vlnv": ref.vlnv,
-        "core_file": _rel_to(ref.core_file, root),
-        "flow": ref.flow,
-        "eda_tool": ref.eda_tool,
-        "cocotb_module": ref.cocotb_module,
-        "toplevel": entry.toplevel or None,
+        "vlnv": selected.vlnv,
+        "core_file": _rel_to(selected.core_file, root),
+        "flow": selected.flow,
+        "eda_tool": selected.eda_tool,
+        "cocotb_module": selected.cocotb_module,
+        "toplevel": entry.declared_toplevel or None,
         "doctor_flows": list(entry.doctor_flows),
         "drivable_by": list(entry.drivable_by),
         "warnings": list(surface.warnings),
@@ -312,11 +275,10 @@ def detail_payload(
 
     from booley.flows import edam as edam_layer
 
-    build_root = edam_layer.work_root_for(root, "targets", ref.name)
+    build_root = edam_layer.work_root_for(root, "targets", selected.name)
     try:
-        resolved = fusesoc_registry.resolve_target(
-            token,
-            project_root=root,
+        resolved = fusesoc_registry.resolve_target_handle(
+            handle,
             build_root=build_root,
             fusesoc_cmd=fusesoc_cmd,
             env=env,
@@ -368,19 +330,19 @@ def render_listing(surface: TargetSurface, project_root: Path | str) -> str:
     entries = list(surface.entries())
     if entries:
         name_w = max(len(e.selector) for e in entries)
-        flow_w = max(len(e.ref.flow or "-") for e in entries)
-        eda_tool_w = max(len(e.ref.eda_tool or "-") for e in entries)
-        top_w = max(len(_top_display(e.toplevel)) for e in entries)
+        flow_w = max(len(e.flow or "-") for e in entries)
+        eda_tool_w = max(len(e.eda_tool or "-") for e in entries)
+        top_w = max(len(_top_display(e.declared_toplevel)) for e in entries)
         for group in surface.groups:
             lines.append(f"{group.vlnv}  ({_rel_to(group.core_file, root)})")
             for e in group.entries:
-                top = _top_display(e.toplevel)
+                top = _top_display(e.declared_toplevel)
                 row = (
-                    f"  {e.selector:<{name_w}}  {e.ref.flow or '-':<{flow_w}}  "
-                    f"{e.ref.eda_tool or '-':<{eda_tool_w}}  {top:<{top_w}}"
+                    f"  {e.selector:<{name_w}}  {e.flow or '-':<{flow_w}}  "
+                    f"{e.eda_tool or '-':<{eda_tool_w}}  {top:<{top_w}}"
                 )
-                if e.ref.cocotb_module:
-                    row += f"  cocotb={e.ref.cocotb_module}"
+                if e.cocotb_module:
+                    row += f"  cocotb={e.cocotb_module}"
                 if e.doctor_flows:
                     row += f"  {_DOCTOR_MARK} {', '.join(e.doctor_flows)}"
                 lines.append(row.rstrip())

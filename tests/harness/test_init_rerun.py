@@ -31,9 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.eda.provisioning import runtime_spec
 from booley.harness import init_cmd
-from booley.harness import session_runtime as sr
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
+from booley.runtime import session_runtime as sr
 from booley.runtime.project_dir import reset_cache
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
@@ -473,7 +473,7 @@ class TestHandAuthoredImageBuild:
         # The generated name is derived from docker/; booley.toml stays clean.
         toml_text = (repo / ".booley_project" / "booley.toml").read_text(encoding="utf-8")
         assert "image =" not in toml_text
-        assert init_cmd.project_sandbox_image(repo) == pi.project_image_name(repo)
+        assert pi.project_sandbox_image(repo) == pi.project_image_name(repo)
         assert ctx.results[-1].status == "ok"
 
     def test_check_only_reports_would_build_without_touching_anything(self, hand_repo):

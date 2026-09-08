@@ -16,11 +16,9 @@ import yaml
 
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
-    available_targets,
+    _resolve_target,
     core_schema_errors,
-    enumerate_targets,
     read_core,
-    resolve_target,
 )
 from booley.harness import doctor
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
@@ -33,6 +31,7 @@ from booley.harness.setup.scaffold import (
     step_scaffold,
 )
 from booley.runtime.project_dir import reset_cache
+from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
 
 
@@ -169,7 +168,9 @@ def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
 
 
 @pytest.mark.parametrize("lint_eda_tool", ["verilator", "verible"])
-def test_scaffold_supplies_doctor_fail_path_fixtures(tmp_path: Path, lint_eda_tool: str) -> None:
+def test_scaffold_supplies_doctor_fail_path_fixtures(
+    tmp_path: Path, lint_eda_tool: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool))
 
     sim_overlay = ".booley_project/selftest/sim/bad-overlay/my_ip.sv"
@@ -222,9 +223,12 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(tmp_path: Path, lint_eda_to
     ]
 
     assert core_schema_errors(tmp_path / lint_bad_core) == []
-    assert "lint_selftest_bad" in enumerate_targets(tmp_path)
-    assert "lint_selftest_bad" not in available_targets(tmp_path)
-    assert "lint_selftest_bad" not in {e.ref.name for e in collect_surface(tmp_path).entries()}
+    public = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    assert "lint_selftest_bad" not in {entry.name for entry in collect_surface(tmp_path).entries()}
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    doctor_targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    assert "lint_selftest_bad" in doctor_targets
+    assert "lint_selftest_bad" not in public
 
 
 def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> None:
@@ -235,7 +239,7 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build")
     staged_rtl = resolved.build_root / "my_ip.sv"
     assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
 
@@ -258,7 +262,7 @@ def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = resolve_target(
+    resolved = _resolve_target(
         "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build"
     )
 
@@ -402,11 +406,13 @@ def test_every_combo_parses_with_booleys_own_readers(
     core = read_core(tmp_path / "my_ip.core")  # raises on unparseable YAML
     assert core["CAPI=2"] is None  # marker line parsed as expected
 
-    targets = enumerate_targets(tmp_path)
+    targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
     expected = {"sim", "lint", "synth", "fpga"}
-    assert expected <= set(targets)
-    assert "lint_selftest_bad" in targets
-    assert "lint_selftest_bad" not in available_targets(tmp_path)
+    assert expected <= targets
+    assert "lint_selftest_bad" not in targets
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    doctor_targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    assert "lint_selftest_bad" in doctor_targets
     reset_cache()
 
 

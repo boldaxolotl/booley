@@ -12,7 +12,7 @@ from pathlib import Path
 from booley.flows.sim.config import resolve_pre_run_commands, resolve_run_cwd
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
-from booley.targets.target import TargetHandle
+from booley.targets.domain import TargetHandle
 
 from .contract import PreRunEvidence
 from .failures import find_missing_executable

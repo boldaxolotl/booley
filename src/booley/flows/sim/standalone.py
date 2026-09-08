@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shlex
@@ -14,13 +15,15 @@ from typing import Any
 
 from booley.flows.eda_parsers import extract_error_gist
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import inspect_target
+from booley.targets.catalog import TargetCatalog
 
 from .. import edam as edam_layer
 from .. import output_budget
 from ..flow_config import _load_flow_config
+from .mode import SimulationMode
 
 logger = logging.getLogger(__name__)
+
 
 # Max chars of error output retained in the report / displayed. This is the
 # 12KB-MCP-budget default; the effective cap scales with a raised
@@ -143,12 +146,23 @@ class _StandaloneOutcome:
     display: str = ""
 
 
+@dataclass(frozen=True)
+class _StandalonePlanRecipe:
+    """Resolved standalone sweep shared by planning and execution."""
+
+    frontend: str
+    modules: tuple[tuple[str, str], ...]
+    shared: tuple[str, ...]
+    commands: tuple[tuple[str, ...], ...]
+
+
 class StandaloneMixin:
     """Standalone module sweep mixed into :class:`SimulateFlow`."""
 
     def _standalone_requested(self) -> bool:
         """Whether the caller explicitly requested the standalone sweep."""
-        return bool(getattr(self.args, "standalone", False))
+        mode = getattr(self.args, "mode", None)
+        return isinstance(mode, SimulationMode) and mode.includes_standalone
 
     def _standalone_rtl_scope(self, targets: list[str]) -> list[str]:
         """Project-relative HDL files in the Targets' RTL source scope.
@@ -162,8 +176,9 @@ class StandaloneMixin:
         failure — the caller grades that a Flow ERROR (no verdict reached).
         """
         seen: dict[str, None] = {}
+        catalog = TargetCatalog.build(self.args.work_dir)
         for tgt in targets:
-            for rel in inspect_target(self.args.work_dir, self._target_handle(tgt)).rtl_files:
+            for rel in catalog.inspect(self._target_handle(tgt)).rtl_files:
                 seen.setdefault(rel, None)
         return [rel for rel in seen if Path(rel).suffix.lower() in _HDL_SUFFIXES]
 
@@ -292,47 +307,62 @@ class StandaloneMixin:
         *,
         gap_is_credible: bool,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str], str]:
-        """Probe every module and sort the outcomes into three buckets.
-
-        Returns ``(failures, unparsed, log_chunks, eda_tool_error)``:
-
-        * *failures* — the compiler ran and rejected the module: a design
-          finding, the point of the criterion;
-        * *unparsed* — the compiler could not read the construct at all, and
-          (per *gap_is_credible*) a different frontend demonstrably could:
-          no verdict about that module, but the sweep keeps going so the
-          modules it CAN grade still get graded;
-        * *eda_tool_error* — the probe never ran (spawn failure / timeout), which
-          says nothing about any module and aborts the sweep.
-        """
+        """Probe every module under one deadline and classify its outcome."""
         failures: list[dict[str, str]] = []
         unparsed: list[dict[str, str]] = []
         log_chunks: list[str] = []
+        deadline = time.monotonic() + (self._effective_timeout_ms() / 1000)
         for module, rel in modules:
-            cmd = self._standalone_compile_command(module, rel, shared, frontend)
-            proc = self._execute(cmd)
-            combined = (proc.stdout + proc.stderr).strip()
-            log_chunks.append(f"$ {shlex.join(cmd)}\n{combined}\n")
-            if proc.returncode == 0:
-                continue
-            if proc.returncode < 0:
-                # Spawn failure / timeout — no verdict about the RTL.
-                eda_tool_error = (
-                    f"{frontend} timed out after {self._get_timeout()}s"
-                    if proc.timed_out
-                    else f"{frontend} could not run (is it installed in the Session Runtime?)"
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                return (
+                    failures,
+                    unparsed,
+                    log_chunks,
+                    f"{frontend} standalone sweep timed out after {self._get_timeout()}s",
                 )
-                if combined:
-                    eda_tool_error += f": {combined}"
+            record, log_chunk, eda_tool_error = self._run_standalone_probe(
+                module,
+                rel,
+                shared,
+                frontend,
+                timeout_s=max(1, math.ceil(remaining_s)),
+            )
+            log_chunks.append(log_chunk)
+            if eda_tool_error:
                 return failures, unparsed, log_chunks, eda_tool_error
-            if gap_is_credible and _PARSE_GAP_RE.search(combined):
-                # A *different* frontend compiled these very sources, so the
-                # construct is legal and it is the probe frontend that is short
-                # — no verdict about the module (F-25).
-                unparsed.append({"module": module, "file": rel, "error": combined})
-                continue
-            failures.append({"module": module, "file": rel, "error": combined})
+            if record is not None:
+                parse_gap = gap_is_credible and _PARSE_GAP_RE.search(record["error"])
+                destination = unparsed if parse_gap else failures
+                destination.append(record)
         return failures, unparsed, log_chunks, ""
+
+    def _run_standalone_probe(
+        self,
+        module: str,
+        rel: str,
+        shared: list[str],
+        frontend: str,
+        *,
+        timeout_s: int,
+    ) -> tuple[dict[str, str] | None, str, str]:
+        """Run one bounded probe and return its finding, log, and tool error."""
+        command = self._standalone_compile_command(module, rel, shared, frontend)
+        proc = self._execute(command, timeout=timeout_s)
+        combined = (proc.stdout + proc.stderr).strip()
+        log_chunk = f"$ {shlex.join(command)}\n{combined}\n"
+        if proc.returncode == 0:
+            return None, log_chunk, ""
+        if proc.returncode >= 0:
+            return {"module": module, "file": rel, "error": combined}, log_chunk, ""
+        message = (
+            f"{frontend} timed out after {self._get_timeout()}s"
+            if proc.timed_out
+            else f"{frontend} could not run (is it installed in the Session Runtime?)"
+        )
+        if combined:
+            message += f": {combined}"
+        return None, log_chunk, message
 
     def _run_standalone_check(
         self,
@@ -382,27 +412,42 @@ class StandaloneMixin:
             "standalone",
             edam_layer.work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
         )
+        planned = getattr(self, "_standalone_plan_recipe", None)
+        if isinstance(planned, _StandalonePlanRecipe):
+            return planned.frontend, list(planned.modules), list(planned.shared)
         try:
-            frontend = self._resolve_standalone_frontend()
+            planned = self._plan_standalone_check(targets)
         except ValueError as exc:
             return self._standalone_error(str(exc))
+        return planned.frontend, list(planned.modules), list(planned.shared)
+
+    def _plan_standalone_check(self, targets: list[str]) -> _StandalonePlanRecipe:
+        """Resolve the complete standalone scope without opening logs or running tools."""
+        frontend = self._resolve_standalone_frontend()
         try:
             scope = self._standalone_rtl_scope(targets)
         except (fusesoc_registry.FuseSocError, OSError) as exc:
             logger.debug("standalone: RTL scope resolution failed", exc_info=True)
-            return self._standalone_error(
-                f"could not resolve RTL source scope: {exc}",
-            )
+            raise ValueError(f"could not resolve RTL source scope: {exc}") from exc
         modules, shared = self._scan_standalone_scope(scope)
         if not modules:
             # Zero modules would make a green criterion vacuous — the same
             # false-pass family the lint toplevel check hard-fails.
-            return self._standalone_error(
+            raise ValueError(
                 f"no module declarations found in the RTL source scope "
                 f"({len(scope)} files) — the criterion would be vacuous. "
                 "Check the Targets' RTL filesets.",
             )
-        return frontend, modules, shared
+        commands = tuple(
+            tuple(self._standalone_compile_command(module, rel, shared, frontend))
+            for module, rel in modules
+        )
+        return _StandalonePlanRecipe(
+            frontend=frontend,
+            modules=tuple(modules),
+            shared=tuple(shared),
+            commands=commands,
+        )
 
     def _standalone_probe_error(
         self,
@@ -456,6 +501,7 @@ class StandaloneMixin:
         detail = self._standalone_detail(
             frontend, modules, shared, failures, unparsed, log_pointer
         )
+        detail["mode"] = self.args.mode.value
         if self.args.state_file is not None:
             self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).

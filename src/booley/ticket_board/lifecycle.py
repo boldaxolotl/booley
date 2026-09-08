@@ -112,7 +112,10 @@ TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
         {TicketState.RUNNING, TicketState.BLOCKED, TicketState.WAITING}
         # activate/claim; block (e.g. validation); deps-gate back to waiting
     ),
-    TicketState.WAITING: frozenset({TicketState.QUEUED}),  # promote_waiting
+    TicketState.WAITING: frozenset(
+        {TicketState.QUEUED, TicketState.BLOCKED}
+        # promote_waiting; failed pre-execution Basis Refresh
+    ),
     TicketState.RUNNING: frozenset(
         {
             TicketState.REVIEW,  # handoff

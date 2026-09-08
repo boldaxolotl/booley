@@ -177,23 +177,6 @@ def _validate_resolved_ppa(
         raise SystemExit("ERROR: repair_tns_percent must be between 0 and 100")
 
 
-def _resolved_period_ps(args: argparse.Namespace, timing_required: bool) -> float | None:
-    """Resolve an explicit period, rejecting implicit physical-mode timing."""
-    default_clock_ps = getattr(args, "default_clock", None)
-    if timing_required and not args.sta_sdc and args.period_ps is None:
-        if default_clock_ps is None:
-            sys.exit(
-                "ERROR: no timing constraints for this synthesis run. Provide a "
-                "file_type:SDC fileset (create_clock / set_input_delay / "
-                "set_output_delay / set_false_path, forwarded as --sta-sdc), an "
-                "explicit --period-ps, or the named --default-clock <ps> opt-in. "
-                "Refusing to fabricate a default clock silently — a reported Fmax "
-                "would be measured against a period no one chose."
-            )
-        return default_clock_ps
-    return args.period_ps if timing_required else args.period_ps or default_clock_ps
-
-
 def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
     """Return standalone-only legacy utilization and repair fallback flags."""
     profile_explicit = getattr(args, "ppa_profile", None) is not None
@@ -215,14 +198,9 @@ def _resolve_syn_timing(
 ) -> StaTimingConfig:
     """Resolve validated timing configuration for logical or physical synthesis."""
     mode = SynthMode(args.synth_mode)
-    resolved_period_ps = _resolved_period_ps(args, mode.runs_openroad)
     legacy_utilization_fallback, legacy_repair_fallback = _legacy_timing_fallbacks(args)
     return synth_timing_config(
         mode=mode,
-        clock=args.clock,
-        period_ps=resolved_period_ps,
-        input_delay_pct=args.input_delay_pct,
-        output_delay_pct=args.output_delay_pct,
         sdc=args.sta_sdc,
         utilization_pct=openroad.utilization_pct,
         repair_timing=openroad.repair_setup,
@@ -268,6 +246,12 @@ def resolve_spec(
     inc_dirs = tuple(_resolve_inc_dirs(args, root))
     profile, yosys_ppa, openroad_ppa = _resolve_ppa_settings(args)
     timing = _resolve_syn_timing(args, openroad_ppa, project_root=project_root)
+    if timing.mode.runs_openroad and not timing.sdc:
+        sys.exit(
+            f"ERROR: physical synthesis Target {(args.workdir or args.top)!r} "
+            "requires a Target-owned `file_type: SDC` fileset. Logical "
+            "synthesis may run without SDC."
+        )
 
     if require_liberty:
         liberty, liberty_found = resolve_liberty(args.liberty), True
@@ -292,6 +276,7 @@ def resolve_spec(
         generic_abc_before_mapping=yosys_ppa.generic_abc_before_mapping,
         abc_script=yosys_ppa.abc_script,
         abc_delay_ps=yosys_ppa.abc_delay_ps,
+        target=args.workdir or args.top,
     )
 
 
@@ -487,39 +472,6 @@ def _add_timing_args(parser: argparse.ArgumentParser) -> None:
         type=SynthMode,
         default=SynthMode.PHYSICAL,
         help="Synthesis depth: physical runs OpenROAD + STA; logical stops after Yosys",
-    )
-    parser.add_argument(
-        "--clock", default=None, help="Clock port for STA (default: booley.toml or auto-detect)"
-    )
-    parser.add_argument(
-        "--period-ps",
-        type=float,
-        default=None,
-        help="STA clock period in ps (an explicit design constraint override)",
-    )
-    parser.add_argument(
-        "--default-clock",
-        type=float,
-        default=None,
-        metavar="PS",
-        dest="default_clock",
-        help="Named opt-in canned clock period (ps) for a Target "
-        "that carries no SDC. Without it (and no --sta-sdc / "
-        "--period-ps) a constraint-less run is a hard error "
-        "(ADR 0031): the default clock must be chosen and "
-        "named, never applied silently.",
-    )
-    parser.add_argument(
-        "--input-delay-pct",
-        type=float,
-        default=None,
-        help="Default input delay as percent of period (default: 30)",
-    )
-    parser.add_argument(
-        "--output-delay-pct",
-        type=float,
-        default=None,
-        help="Default output delay as percent of period (default: 70)",
     )
     parser.add_argument(
         "--sta-sdc",

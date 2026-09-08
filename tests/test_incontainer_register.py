@@ -5,8 +5,15 @@ from __future__ import annotations
 import json
 import os
 
-from booley.runtime import incontainer_register as reg
+from booley.harness import incontainer_register as entry
+from booley.runtime import incontainer_setup as reg
 from tests.conftest import require_symlinks
+
+
+def test_legacy_runtime_module_keeps_entrypoint_compatibility():
+    from booley.runtime import incontainer_register as compatibility
+
+    assert compatibility.main is entry.main
 
 
 def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
@@ -14,10 +21,10 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
     monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
     monkeypatch.setattr(reg, "register", lambda _app: "claude:current")
-    monkeypatch.setattr(reg, "observe_upgrade", lambda: events.append("observe") or "current")
-    monkeypatch.setattr(reg, "launch_auto_doctor", lambda: events.append("health") or "started")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: events.append("observe") or "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: events.append("health") or "started")
 
-    reg.main()
+    entry.main()
 
     assert (
         "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
@@ -768,8 +775,9 @@ class TestRegister:
         monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
         # Registration must not depend on the real server spawn in tests.
         monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
-        monkeypatch.setattr(reg, "launch_auto_doctor", lambda: "current")
-        reg.main()
+        monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
+        monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+        entry.main()
         assert reg.claude_config_path(tmp_path).exists()
 
     def test_main_skips_server_without_app(self, tmp_path, monkeypatch):
@@ -780,6 +788,7 @@ class TestRegister:
             raise AssertionError("must not start a server with no client app")
 
         monkeypatch.setattr(reg, "ensure_http_server", fail)
-        monkeypatch.setattr(reg, "launch_auto_doctor", lambda: "current")
-        reg.main()
+        monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
+        monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+        entry.main()
         assert not list(tmp_path.iterdir())
