@@ -2485,8 +2485,13 @@ class TestOneShotGuard:
         assert detail["receipt_id"]
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_one_shot_replays_prior_verdict_verbatim(self, mock_agent, state_file: Path):
+    def test_one_shot_replays_prior_verdict_verbatim(
+        self, mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The replayed report repeats the recorded findings, not just a refusal (F-49)."""
+        # This standalone receipt has no Ticket context. An inherited logs dir
+        # would bind it to a missing decisions file and correctly mark it stale.
+        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
         st = DevelopmentState.load(state_file)
