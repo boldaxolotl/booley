@@ -881,7 +881,8 @@ events = ["blocked", "review", "done", "doctor", "rate_limit"]
 ```
 
 `blocked` asks for input, `review` announces work ready for review, and `done`
-announces successful Ticket completion. `doctor` announces changed automatic
+announces the accepted transition to `done`, even if cleanup still needs recovery.
+`doctor` announces changed automatic
 Doctor issues; `rate_limit` announces Claude rate-limit waits.
 
 The Session Runtime's default network policy blocks ntfy.sh. To permit delivery,
@@ -894,7 +895,9 @@ any other entries:
 egress_allowlist = ["ntfy.sh"]
 ```
 
-Recreate existing Session Runtimes after changing the policy. This permission
+After changing the policy, shut down active Session Runtimes for every Project,
+run `booley bootstrap` on the host to update the shared proxy, then restart the
+Sessions. Recreating a Session alone does not update the proxy. This permission
 applies to all Projects on the host. Delivery uses HTTPS and is best-effort:
 notifications do not change Ticket outcomes, wait for delivery, or retry failed
 requests. Each delivery attempt has a 5-second connection timeout and a

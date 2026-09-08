@@ -777,7 +777,7 @@ def _append_unblock_marker(tio, slug):
 def _approve_transition(
     tio: Any, slug: str, actor: str = "ticket-triage", detail: str = "user approved merge"
 ) -> bool:
-    """Apply only the final board transition after terminal validation."""
+    """Publish the final board transition and its advisory completion event."""
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -789,9 +789,12 @@ def _approve_transition(
             file=sys.stderr,
         )
         return False
-    return _op_move_and_log(
+    ok = _op_move_and_log(
         tio, slug, "done", {"step": "complete"}, ("review:summary", "done:complete", actor, detail)
     )
+    if ok and is_event_enabled("done"):
+        ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
+    return ok
 
 
 def op_approve(tio: Any, slug: str) -> bool:
@@ -1056,17 +1059,11 @@ def op_complete(
     if request is None:
         return False
     slug, on_success, accepted_snapshot = request
-    entry = tio.find_ticket(slug) or {}
-    already_done = entry.get("status") == "done"
     if on_success.merge:
-        if not _complete_with_merge(tio, slug, on_success, accepted_snapshot):
-            return False
-    else:
-        if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
-            return False
-        _finish_completed_ticket(tio, slug, cleanup=False)
-    if not already_done and is_event_enabled("done"):
-        ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
+        return _complete_with_merge(tio, slug, on_success, accepted_snapshot)
+    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
+        return False
+    _finish_completed_ticket(tio, slug, cleanup=False)
     return True
 
 
