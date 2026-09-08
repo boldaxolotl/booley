@@ -6,6 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
@@ -252,3 +254,53 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
     load.assert_not_called()
     execute.assert_called_once()
     assert metrics.passed
+
+
+@pytest.mark.parametrize(
+    ("completion_log", "returncode", "passes"),
+    [
+        ("ERROR: post-route optimization failed", 1, False),
+        ("", 0, False),
+        ('puts "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"', 1, False),
+        ("BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE", 0, True),
+        ("BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE\nERROR: bitstream failed", 1, True),
+    ],
+)
+def test_post_route_completion_gates_success_and_cache(
+    tmp_path: Path, completion_log: str, returncode: int, passes: bool
+) -> None:
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    flow = _flow(tmp_path)
+    prepared = _PreparedFpgaCommand(
+        ["make"],
+        tmp_path,
+        "a" * 64,
+        False,
+        ppa_profile=VIVADO_PROFILES["max_frequency"],
+    )
+    with (
+        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
+        patch.object(fpga_cache, "load", return_value=None),
+        patch.object(fpga_cache, "store") as store,
+        patch.object(
+            flow,
+            "_execute_boundary",
+            return_value=SubprocessResult(
+                returncode=returncode,
+                stdout="route_design completed successfully\n" + completion_log + "\n",
+            ),
+        ),
+        patch.object(flow, "_collect_route_reports", return_value=""),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value=_parsed_pass(),
+        ),
+    ):
+        metrics = flow._run_single_target("fpga_demo")
+    assert metrics.passed is passes
+    if passes:
+        store.assert_called_once()
+    else:
+        assert "post-route" in metrics.infra_error.lower()
+        store.assert_not_called()

@@ -18,7 +18,7 @@ from booley.flows.fpga.recipe import normalized_fpga_flow_options
 
 CACHE_SCHEMA = 3
 CACHE_FILE = ".booley-fpga-cache.json"
-_IMPLEMENTATION_REVISION = 2
+_IMPLEMENTATION_REVISION = 3
 _REPORT_PATTERNS = (
     "*_utilization_placed.rpt",
     "*_timing_summary_routed.rpt",

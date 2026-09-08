@@ -31,6 +31,8 @@ from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
 
 logger = logging.getLogger(__name__)
 
+POST_ROUTE_COMPLETION_MARKER = "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"
+
 
 # ---------------------------------------------------------------------------
 # EDAM construction (the edalize ``vivado`` flow)
@@ -210,7 +212,32 @@ def apply_ppa_profile(work_root: Path, name: str, profile: VivadoProfile) -> Non
         f"set_property strategy {profile.synthesis_strategy} [get_runs synth_1]\n"
         f"set_property strategy {profile.implementation_strategy} [get_runs impl_1]\n"
     )
+    if profile.final_step == "phys_opt_design (Post-Route)":
+        snippet += _post_route_completion_hook(work_root)
     project_tcl.write_text(content + snippet, encoding="utf-8")
+
+
+def _post_route_completion_hook(work_root: Path) -> str:
+    """Emit a witness only after the required post-route optimization succeeds."""
+    hook_name = "booley_post_route_complete.tcl"
+    (work_root / hook_name).write_text(
+        f'puts "{POST_ROUTE_COMPLETION_MARKER}"\n', encoding="utf-8"
+    )
+    # Resolve at Vivado runtime, where the workspace may have a different mount.
+    return (
+        "set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.TCL.POST "
+        "[file normalize [file join [file dirname [info script]] "
+        f"{hook_name}]] [get_runs impl_1]\n"
+    )
+
+
+def profile_completion_error(text: str, profile: VivadoProfile) -> str:
+    """Require a final-step witness, independently of route or bitstream status."""
+    if profile.final_step == "route_design":
+        return ""
+    if POST_ROUTE_COMPLETION_MARKER in {line.strip() for line in text.splitlines()}:
+        return ""
+    return f"Vivado did not complete required {profile.final_step} for {profile.name}."
 
 
 def fpga_run_command(work_root: Path, work_dir: Path) -> list[str]:

@@ -804,7 +804,10 @@ generated Tcl), applies the characterized non-default `synth_1` and `impl_1`
 strategy properties, then invokes its `make` target. `balanced` performs no Tcl
 write and preserves Edalize's existing defaults byte-for-byte. Strategy
 assignment must precede the out-of-context patch because Vivado resets synthesis
-step properties when a strategy changes:
+step properties when a strategy changes. The recipe records the final required
+step. `max_frequency` installs a post-route Tcl hook and requires its completion
+witness before accepting a run or caching its reports, even if routing succeeded.
+A later boardless bitstream failure remains acceptable once that witness exists:
 
 ```
 make -C .booley_project/.runtime/edalize/fpga/<target>

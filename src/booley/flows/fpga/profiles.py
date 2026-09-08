@@ -18,6 +18,7 @@ class VivadoProfile:
     synthesis_strategy: str
     implementation_strategy: str
     apply_strategy: bool = True
+    final_step: str = "route_design"
 
     def as_dict(self) -> dict[str, Any]:
         """Return stable recipe evidence for plans, reports, and fingerprints."""
@@ -28,6 +29,7 @@ class VivadoProfile:
                 "synthesis_strategy": self.synthesis_strategy,
                 "implementation_strategy": self.implementation_strategy,
                 "applied": self.apply_strategy,
+                "final_step": self.final_step,
             },
         }
 
@@ -48,6 +50,7 @@ VIVADO_PROFILES: dict[str, VivadoProfile] = {
         "max_frequency",
         "Flow_PerfOptimized_high",
         "Performance_ExplorePostRoutePhysOpt",
+        final_step="phys_opt_design (Post-Route)",
     ),
 }
 

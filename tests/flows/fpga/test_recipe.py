@@ -57,6 +57,7 @@ def test_snapshot_fingerprint_tracks_target_recipe_and_xdc(tmp_path: Path) -> No
             "synthesis_strategy": "Vivado Synthesis Defaults",
             "implementation_strategy": "Vivado Implementation Defaults",
             "applied": False,
+            "final_step": "route_design",
         },
     }
 
@@ -73,6 +74,7 @@ def test_snapshot_fingerprint_tracks_resolved_profile_mapping(tmp_path: Path) ->
         "synthesis_strategy": "Flow_AreaOptimized_high",
         "implementation_strategy": "Area_Explore",
         "applied": True,
+        "final_step": "route_design",
     }
     assert fpga_recipe_snapshot_fingerprint(compact) != fpga_recipe_snapshot_fingerprint(balanced)
 

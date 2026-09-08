@@ -112,7 +112,7 @@ from .backends.vivado.metrics import (
 from .implementation_report import (
     build_fpga_implementation_report,
 )
-from .profiles import VivadoProfile, resolve_fpga_profile
+from .profiles import VIVADO_PROFILES, VivadoProfile, resolve_fpga_profile
 from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,7 @@ class _PreparedFpgaCommand:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
+    ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
@@ -626,6 +627,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             recipe_snapshot=recipe.recipe_snapshot,
             recipe_fingerprint=recipe.recipe_fingerprint,
             run_evidence=dispatch_evidence.as_dict(),
+            ppa_profile=recipe.ppa_profile,
         )
 
     def _fpga_recipe_for_execution(self, target: str) -> _ResolvedFpgaRecipe:
@@ -764,17 +766,24 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             log_text + "\n" + report_text if report_text else log_text
         )
 
-        # QoR flow stops at route_design: a boardless soft IP cannot write a
+        # A boardless soft IP cannot write a
         # bitstream (write_bitstream's NSTD-1/UCIO-1 DRC precondition fails with
         # no pinout), so ``make`` exits non-zero even when synth+place+route fully
         # succeed. fpga_impl is a QoR Flow — route completion (the report files +
         # the route-done marker parse_fpga_reports keys ``status`` on) defines
         # success, NOT the bitstream/make exit code. Only when route did *not*
         # complete do we surface the boundary command's exit code as the failure.
+        # Profiles requiring post-route work must also pass the completion gate below.
         route_completed = metric_dict.get("status") in ("pass", "success")
         metric_dict["exit_code"] = 0 if route_completed else result.returncode
         metrics = self._metrics_from_parsed_reports(metric_dict, result.duration_s)
         metrics.cache_fingerprint = fingerprint
+        completion_error = fpga_edam.profile_completion_error(
+            log_text + "\n" + report_text, prepared.ppa_profile
+        )
+        if completion_error:
+            metrics.returncode = result.returncode or 1
+            metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
         if metrics.returncode != 0 and not metrics.infra_error:

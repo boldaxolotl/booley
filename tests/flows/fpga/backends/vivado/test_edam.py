@@ -362,6 +362,9 @@ class TestConfigure:
         )
         fpga_edam.enable_out_of_context(work_root, "fpga_cfgA")
         patched = project_tcl.read_text(encoding="utf-8")
+        assert "STEPS.POST_ROUTE_PHYS_OPT_DESIGN.TCL.POST" in patched
+        hook = work_root / "booley_post_route_complete.tcl"
+        assert hook.read_text() == 'puts "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"\n'
         assert "Flow_PerfOptimized_high [get_runs synth_1]" in patched
         assert "Performance_ExplorePostRoutePhysOpt [get_runs impl_1]" in patched
         assert patched.index("Flow_PerfOptimized_high") < patched.index(
