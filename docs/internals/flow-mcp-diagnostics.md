@@ -4,7 +4,7 @@ Evidence for [#422](https://github.com/boldaxolotl/booley/issues/422) and the
 architecture-fitness record in [#279](https://github.com/boldaxolotl/booley/issues/279).
 
 - Before: `9d9ae6832b944a125acf3a926820d2a0d65728cb` (current main when the implementation was rebased).
-- After: `3a5b871daf960ec7ee4d044096f7faac7ee98912` (implementation commit; subsequent documentation does not change the graph).
+- After: `3a5b871daf960ec7ee4d044096f7faac7ee98912` (implementation commit; isolates this refactor before later main merges).
 - Analyzer: the existing test-only source analyzer, including nested, conditional,
   relative and TYPE_CHECKING imports.
 
@@ -21,6 +21,11 @@ was added.
 | Flow-to-MCP edges | 5 | 0 |
 | Mutual package pairs | 21 | 19 |
 | Cyclic top-level group | Same 18 packages | Same 18 packages |
+
+The later merge of main at `546fece2` preserves these historical comparison
+revisions. It also includes #423's Runtime/Ticket Board separation, so its
+combined graph totals differ. The Flow/MCP prohibition is now D15; D14 remains
+the Runtime/Ticket Board prohibition introduced by #423.
 
 ## Removed Flow-to-MCP edges
 

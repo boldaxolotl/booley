@@ -36,6 +36,7 @@ from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 from booley.runtime.timefmt import compact_utc_now
+from booley.ticket_board.agent_execution import configure_agent_call, resolve_agent_artifacts
 from booley.ticket_board.paths import (
     existing_ticket_runtime_file,
     migrate_runtime_file,
@@ -1173,7 +1174,7 @@ def _check_ticket_dirty_statuses(ctx: TicketContext) -> list[DirtyFile]:
 
 def _commit_ticket_paths(ctx: TicketContext, paths: list[str], message: str) -> None:
     """Commit authorized paths through the Ticket Workspace."""
-    from booley.runtime.ticket_repositories import TicketWorkspaceError
+    from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
     from .blocking import BlockingError
     from .setup.project_worktree import ticket_workspace
@@ -1190,7 +1191,7 @@ def _run_post_guardrails(
     run_index: int,
 ) -> bool:
     """Run post-developer guardrails. Returns True if ticket was blocked."""
-    from booley.runtime.ticket_repositories import TicketWorkspaceError
+    from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
     from .colors import yellow
     from .scope_policy import is_restore_artifact
@@ -1552,7 +1553,7 @@ def _write_developer_prompt_snapshot(
         )
 
     write_prompt_artifacts(
-        transcript_path,
+        resolve_agent_artifacts(transcript_path, label="developer"),
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         metadata={
@@ -1739,7 +1740,7 @@ def _resolve_booley_project_dir(project_root: Path) -> Path:
 def _ticket_project_dir(ctx: TicketContext) -> Path:
     """Return ticket-authored project content, falling back to control-plane data."""
     if ctx.worktree_path is not None:
-        from booley.runtime.ticket_repositories import TicketWorkspaceError
+        from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
         from .setup.project_worktree import ticket_workspace
 
@@ -1981,12 +1982,12 @@ async def _launch_developer_agent(
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
     with scoped_environment(endpoint_env):
-        return await cfg.active_backend.call(params, **backend_kwargs)
+        return await cfg.active_backend.call(configure_agent_call(params), **backend_kwargs)
 
 
 def _paired_project_repository_required(cwd: Path, project_root: Path | None) -> bool:
     """Whether this Developer session must retain a paired project checkout."""
-    from booley.runtime.ticket_repositories import (
+    from booley.ticket_board.ticket_repositories import (
         paired_project_repository,
         resolve_inner_project_repo,
     )

@@ -15,7 +15,7 @@ from typing import Any
 
 import anyio
 
-from booley.core.models import AgentCallParams, AgentResult
+from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
 
 from ._codex_live_usage import CodexLiveUsage
 from ._codex_transcript_md import (  # noqa: F401 — re-exported for backward compat
@@ -46,7 +46,7 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .developer_budget import DeveloperBudget, run_with_developer_budget
-from .prompt_artifacts import write_prompt_artifacts
+from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -323,10 +323,13 @@ class CodexBackend:
         budget: DeveloperBudget | None = None,
     ) -> AgentResult:
         """Single Codex CLI invocation."""
+        source = transcript_path_for_label(transcript_path, params.label)
+        paths = (params.artifact_paths or adjacent_artifact_paths)(source)
         transcript_path, cmd, schema_file = self._prepare_call(
             params,
             full_prompt=full_prompt,
             transcript_path=transcript_path,
+            paths=paths,
         )
         try:
             raw_output, raw_stderr, returncode = await _codex_run_subprocess(
@@ -344,6 +347,7 @@ class CodexBackend:
             _codex_write_markdown(
                 events,
                 transcript_path,
+                markdown_path=paths.transcript_markdown,
                 system_prompt=params.system_prompt,
                 user_prompt=params.prompt,
             )
@@ -373,6 +377,7 @@ class CodexBackend:
         *,
         full_prompt: str,
         transcript_path: Path | None,
+        paths: AgentArtifactPaths | None = None,
     ) -> tuple[Path | None, list[str], Any]:
         """Resolve the transcript, write prompt artifacts, and build the cmd.
 
@@ -380,7 +385,7 @@ class CodexBackend:
         """
         transcript_path = transcript_path_for_label(transcript_path, params.label)
         write_prompt_artifacts(
-            transcript_path,
+            paths or adjacent_artifact_paths(transcript_path),
             system_prompt=params.system_prompt,
             user_prompt=params.prompt or full_prompt,
             full_prompt=full_prompt,

@@ -78,7 +78,7 @@ supported. Diagnostic/elaboration modes keep their existing distinct semantics.
 
 ## Architecture and validation
 
-D14 in [the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md) forbids
+D15 in [the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md) forbids
 all `booley.flows -> booley.mcp` imports, including nested and type-only imports,
 without exemptions. D5/D6/D9 remain unchanged. Criteria producer discovery and
 its W1/W2 waivers remain owned by #284.

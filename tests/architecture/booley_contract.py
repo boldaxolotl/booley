@@ -81,6 +81,12 @@ _D10_SIM_RULES = tuple(
 DIRECTION_RULES = (
     DirectionRule(
         "D14",
+        (prefix("booley.runtime"),),
+        (prefix("booley.ticket_board"),),
+        "shared Runtime mechanics accept artifact locations and policy from execution callers",
+    ),
+    DirectionRule(
+        "D15",
         (prefix("booley.flows"),),
         (prefix("booley.mcp"),),
         "Deterministic Flow execution and its shared services do not depend on MCP exposure.",

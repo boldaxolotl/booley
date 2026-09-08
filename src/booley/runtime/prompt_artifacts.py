@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
-from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
-from booley.ticket_board.paths import HUMAN_LOGS_DIR, RUNTIME_DIR, ticket_runtime_dir
+from booley.core.models import AgentArtifactPaths
+from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
 
@@ -26,38 +25,16 @@ def _prompt_base_path(transcript_path: Path) -> Path:
     return transcript_path
 
 
-def human_readable_sidecar_path(source_path: Path, suffix: str) -> Path:
-    """Return the Markdown sidecar path for a runtime artifact.
-
-    Run-time artifacts live under ``.runtime``. Their rendered Markdown
-    copies belong under the parallel ``human-logs`` tree so people can browse
-    readable logs without digging through machine state.
-    """
-    source_path = Path(source_path)
-    parts = list(source_path.parts)
-    try:
-        runtime_index = parts.index(RUNTIME_DIR)
-    except ValueError:
-        return source_path.with_suffix(suffix)
-
-    parts[runtime_index] = HUMAN_LOGS_DIR
-    return Path(*parts).with_suffix(suffix)
-
-
-def _fallback_prompt_path(metadata: dict[str, Any] | None) -> Path | None:
-    """Return a fallback prompt path when transcript logging is disabled."""
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
-    if not logs_dir:
-        return None
-    runtime_dir = (
-        Path(os.environ.get("BOOLEY_RUNTIME_DIR", ""))
-        if os.environ.get("BOOLEY_RUNTIME_DIR")
-        else ticket_runtime_dir(logs_dir)
+def adjacent_artifact_paths(transcript_path: Path | None) -> AgentArtifactPaths:
+    """Default standalone artifacts beside an explicitly supplied transcript."""
+    if transcript_path is None:
+        return AgentArtifactPaths()
+    base = _prompt_base_path(transcript_path)
+    return AgentArtifactPaths(
+        base.with_suffix(".prompt.json"),
+        base.with_suffix(".prompt.md"),
+        transcript_path.with_suffix(".md"),
     )
-    label = str((metadata or {}).get("label") or "agent")
-    safe_label = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in label)
-    stamp = compact_utc_now(microseconds=True)
-    return runtime_dir / "prompts" / f"{safe_label}-{stamp}.jsonl"
 
 
 def _format_markdown(record: dict[str, Any]) -> str:
@@ -73,7 +50,7 @@ def _format_markdown(record: dict[str, Any]) -> str:
 
 
 def write_prompt_artifacts(
-    transcript_path: Path | None,
+    paths: AgentArtifactPaths,
     *,
     system_prompt: str | None,
     user_prompt: str,
@@ -85,10 +62,8 @@ def write_prompt_artifacts(
     This is deliberately best-effort: prompt logging must never change solver
     behavior or fail an otherwise valid run.
     """
-    if transcript_path is None:
-        transcript_path = _fallback_prompt_path(metadata)
-        if transcript_path is None:
-            return
+    if paths.prompt_json is None and paths.prompt_markdown is None:
+        return
 
     system_text = system_prompt or ""
     full_text = (
@@ -112,17 +87,13 @@ def write_prompt_artifacts(
     }
 
     try:
-        base = _prompt_base_path(transcript_path)
-        base.parent.mkdir(parents=True, exist_ok=True)
-        base.with_suffix(".prompt.json").write_text(
-            json.dumps(record, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
-        markdown_path = human_readable_sidecar_path(base, ".prompt.md")
-        markdown_path.parent.mkdir(parents=True, exist_ok=True)
-        markdown_path.write_text(
-            _format_markdown(record),
-            encoding="utf-8",
-        )
+        if paths.prompt_json is not None:
+            paths.prompt_json.parent.mkdir(parents=True, exist_ok=True)
+            paths.prompt_json.write_text(
+                json.dumps(record, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+        if paths.prompt_markdown is not None:
+            paths.prompt_markdown.parent.mkdir(parents=True, exist_ok=True)
+            paths.prompt_markdown.write_text(_format_markdown(record), encoding="utf-8")
     except OSError:
-        logger.warning("Failed to write prompt artifacts for %s", transcript_path)
+        logger.warning("Failed to write prompt artifacts for %s", paths.prompt_json)

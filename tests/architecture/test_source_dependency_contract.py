@@ -175,9 +175,31 @@ def test_flow_mcp_prohibition_includes_deferred_and_type_only_imports(tmp_path, 
     (root / "flows/rogue.py").write_text(source)
     contract = ArchitectureContract(
         rules=tuple(
-            rule for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules if rule.identifier == "D14"
+            rule for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules if rule.identifier == "D15"
         ),
     )
     problems = evaluate_contract(analyze_imports(root), contract)
     assert problems
-    assert "D14" in format_problems(problems)
+    assert "D15" in format_problems(problems)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.ticket_board.paths\n",
+        "def helper():\n    from booley.ticket_board import paths\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from booley.ticket_board.paths import value\n",
+    ],
+)
+def test_runtime_ticket_board_rule_catches_all_static_import_locations(tmp_path, statement):
+    root = tmp_path / "booley"
+    for package in (root, root / "runtime", root / "ticket_board"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "ticket_board" / "paths.py").write_text("value = 1\n")
+    (root / "runtime" / "seed.py").write_text(statement)
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+    assert "D14" in report
+    assert "booley.runtime.seed" in report
+    assert "booley.ticket_board.paths" in report

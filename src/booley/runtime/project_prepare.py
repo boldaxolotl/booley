@@ -11,7 +11,7 @@ from pathlib import Path
 
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_checkout_project_dir
-from booley.runtime.ticket_repositories import paired_project_repository
+from booley.runtime.project_repositories import paired_project_repository
 
 logger = logging.getLogger(__name__)
 

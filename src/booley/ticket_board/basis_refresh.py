@@ -19,9 +19,9 @@ from booley.runtime.project_dir import (
     resolve_project_dir,
     runtime_dir,
 )
-from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
+from booley.ticket_board.ticket_repositories import paired_project_repository
 
 from .acceptance_basis import (
     AcceptanceBasis,

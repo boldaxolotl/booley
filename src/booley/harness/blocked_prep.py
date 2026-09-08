@@ -17,6 +17,7 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
@@ -248,22 +249,24 @@ Evidence:
 async def _invoke(ctx: BlockedContext) -> AgentResult:
     cfg = get_backend_config()
     return await call_agent(
-        AgentCallParams(
-            prompt=_prompt(ctx),
-            system_prompt=(
-                "You are a read-only senior incident reviewer preparing a concise "
-                "blocked-ticket triage dossier grounded only in supplied evidence."
-            ),
-            model=cfg.model_for_role("triage_report", "standard"),
-            reasoning_effort=cfg.effort_for_tier("standard"),
-            cwd=ctx.worktree or ctx.project_root,
-            allowed_agent_capabilities=["Read", "Glob", "Grep"],
-            output_format=_schema(),
-            max_turns=40,
-            timeout_seconds=600,
-            transcript_path=ctx.runtime_dir / "blocked-agent.jsonl",
-            label="blocked-triage-report",
-            nested_mcp_tools=[],
+        configure_agent_call(
+            AgentCallParams(
+                prompt=_prompt(ctx),
+                system_prompt=(
+                    "You are a read-only senior incident reviewer preparing a concise "
+                    "blocked-ticket triage dossier grounded only in supplied evidence."
+                ),
+                model=cfg.model_for_role("triage_report", "standard"),
+                reasoning_effort=cfg.effort_for_tier("standard"),
+                cwd=ctx.worktree or ctx.project_root,
+                allowed_agent_capabilities=["Read", "Glob", "Grep"],
+                output_format=_schema(),
+                max_turns=40,
+                timeout_seconds=600,
+                transcript_path=ctx.runtime_dir / "blocked-agent.jsonl",
+                label="blocked-triage-report",
+                nested_mcp_tools=[],
+            )
         )
     )
 
