@@ -24,6 +24,7 @@ from typing import ClassVar
 
 from booley.core.boundary import BoundaryError
 from booley.flows import execution
+from booley.flows.display import format_flow_display_label
 from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
 from booley.mcp.base import McpTool, McpToolResult
 from booley.runtime import runtime_context
@@ -155,6 +156,10 @@ class BooleyFlow(McpTool):
 
     endpoint_kind = "flow"
     target_required = True
+
+    def _resolve_display_label(self) -> str | None:
+        """Describe the requested Target scope without resolving it."""
+        return format_flow_display_label(self._requested_targets())
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""

@@ -639,6 +639,23 @@ class TestSynthTimingConfigTomlBoundary:
             syn_core.synth_timing_config(sdc=["/nope/does_not_exist.sdc"])
         assert "does_not_exist.sdc" in str(exc_info.value)
 
+    def test_unreadable_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        sdc_file = tmp_path / "dut.sdc"
+        sdc_file.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        original_read_bytes = Path.read_bytes
+
+        def fail_for_sdc(path):
+            if path == sdc_file:
+                raise OSError("permission denied")
+            return original_read_bytes(path)
+
+        self._with_timing(monkeypatch, {})
+        monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
+        with pytest.raises(SystemExit, match="is not readable"):
+            syn_core.synth_timing_config(sdc=[str(sdc_file)], project_root=tmp_path)
+
     def test_unknown_timing_key_warns(self, monkeypatch, capsys):
         from booley.flows.synth.backends.yosys import core as syn_core
 

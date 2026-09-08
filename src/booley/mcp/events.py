@@ -79,6 +79,7 @@ def _endpoint_start_event(
     endpoint_name: str,
     display_target: str | None,
     *,
+    display_label: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Build an endpoint_start display event dict."""
@@ -89,6 +90,8 @@ def _endpoint_start_event(
         "pid": os.getpid(),
         "timestamp": utc_now_rfc3339(),
     }
+    if display_label:
+        event["display_label"] = display_label
     if dry_run:
         event["dry_run"] = True
     return event
@@ -131,10 +134,12 @@ def _endpoint_end_event(
     display_target: str | None,
     result: McpToolResult,
     duration: float,
+    *,
+    display_label: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Build an endpoint_end display event dict."""
-    return {
+    event = {
         "type": "endpoint_end",
         "endpoint": endpoint_name,
         "target": display_target,
@@ -155,3 +160,6 @@ def _endpoint_end_event(
         "summary": result.summary,
         "timestamp": utc_now_rfc3339(),
     }
+    if display_label:
+        event["display_label"] = display_label
+    return event

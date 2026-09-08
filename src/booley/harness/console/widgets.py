@@ -23,6 +23,7 @@ from textual.widgets import Static
 # and re-exported for backward compatibility with existing import sites.
 from .criteria_format import (  # noqa: F401 — re-exported for backward compatibility
     _format_coverage_metric,
+    _format_criterion_presentation,
     _format_fpga_impl_metric,
     _format_metric,
     _format_synthesis_metric,
@@ -52,11 +53,6 @@ _DEFAULT_ENDPOINT_STYLE = "color(249)"
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
-
-_GROUP_PREFIXES: list[tuple[str, str]] = [
-    ("review_", "reviews"),
-    ("mutation_", "mutation"),
-]
 
 
 @dataclass
@@ -88,13 +84,6 @@ def _render_entry_line(mark: McpToolCompletionMark) -> Text:
     return line
 
 
-def _group_of(key: str) -> str | None:
-    for prefix, name in _GROUP_PREFIXES:
-        if key.startswith(prefix):
-            return name
-    return None
-
-
 _CriterionStatus = Literal["met", "failing", "needs_recheck", "not_run"]
 
 
@@ -107,10 +96,6 @@ def _criterion_status(entry: dict) -> _CriterionStatus:
     if entry.get("detail") or entry.get("ever_failed") or entry.get("ever_met"):
         return "failing"
     return "not_run"
-
-
-def _is_never_evaluated(entry: dict) -> bool:
-    return _criterion_status(entry) == "not_run"
 
 
 def _truncate_name(name: str, max_len: int = 28) -> str:
@@ -563,40 +548,17 @@ class TicketHeader(VerticalScroll):
         list[tuple[str, dict]],
         list[tuple[str, dict]],
         list[tuple[str, dict]],
-        list[tuple[str, dict | None]],
+        list[tuple[str, dict]],
     ]:
-        """Sort criteria into failing, recheck, not-run, and met buckets.
-
-        Groups whose criteria have never run collapse into one placeholder row.
-        """
+        """Sort criteria into failing, recheck, not-run, and met buckets."""
         real = {k: v for k, v in self._criteria.items() if not k.startswith("_")}
-
-        groups: dict[str, list[tuple[str, dict]]] = {}
-        for k, v in real.items():
-            gname = _group_of(k)
-            if gname is not None:
-                groups.setdefault(gname, []).append((k, v))
-
-        # Collapse groups whose criteria have never run into one placeholder row.
-        collapsed = {
-            gname
-            for gname, members in groups.items()
-            if all(_is_never_evaluated(e) for _, e in members)
-        }
 
         failing_items: list[tuple[str, dict]] = []
         recheck_items: list[tuple[str, dict]] = []
-        not_run_items: list[tuple[str, dict | None]] = []
+        not_run_items: list[tuple[str, dict]] = []
         met_items: list[tuple[str, dict]] = []
-        emitted: set[str] = set()
 
         for key, entry in real.items():
-            gname = _group_of(key)
-            if gname in collapsed:
-                if gname not in emitted:
-                    emitted.add(gname)
-                    not_run_items.append((gname, None))
-                continue
             status = _criterion_status(entry)
             if status == "met":
                 met_items.append((key, entry))
@@ -612,7 +574,7 @@ class TicketHeader(VerticalScroll):
     @staticmethod
     def _append_expanded_section(
         content: Text,
-        items: list[tuple[str, dict | None]],
+        items: list[tuple[str, dict]],
         *,
         heading: str,
         icon: str,
@@ -623,15 +585,14 @@ class TicketHeader(VerticalScroll):
         content.append(f"{icon} {heading}\n", style=f"bold {style}")
         for key, entry in items:
             content.append("  ")
-            if entry is None:
-                content.append(f"{key} (not yet run)\n", style="dim italic")
-                continue
+            presentation = _format_criterion_presentation(key, entry)
             content.append(
-                _truncate_name(key, name_max), style="dim" if icon in {"✓", "○"} else ""
+                _truncate_name(presentation.label, name_max),
+                style="dim" if icon in {"✓", "○"} else "",
             )
-            metric = _format_metric(key, entry)
-            if metric and metric not in key:
-                content.append(f"  {metric}", style="dim")
+            if presentation.detail:
+                content.append("\n    ")
+                content.append(presentation.detail, style="dim")
             content.append("\n")
 
     def _render_expanded_criteria(self, content: Text, name_max: int) -> None:
