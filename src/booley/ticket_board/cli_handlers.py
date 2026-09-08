@@ -135,20 +135,7 @@ def _cmd_show(tio, args):
     mandatory = criteria.get("mandatory") or {}
     optional = criteria.get("optional") or {}
 
-    # Active Tickets use the live projection. Accepted Tickets use their
-    # durable snapshot so runtime cleanup cannot turn a recorded pass into 0/N.
-    accepted_error = ""
-    if entry.get("status") in {"review", "done"}:
-        from .acceptance_ledger import read_acceptance
-
-        accepted = read_acceptance(logs_dir)
-        state_crit = accepted.snapshot.criteria if accepted.snapshot is not None else {}
-        accepted_error = accepted.reason if accepted.kind != "accepted" else ""
-    else:
-        state_data = _load_state_data(
-            existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
-        )
-        state_crit = (state_data or {}).get("criteria", {}) if isinstance(state_data, dict) else {}
+    state_crit, accepted_error = _show_criteria(entry, tio, slug, logs_dir)
 
     def _met(key: str) -> bool:
         entry = state_crit.get(key)
@@ -1030,3 +1017,17 @@ def _cmd_usage(tio, args):
     report = format_usage_report(step_data, total_cost, title, step_durations=durations)
     print(report)
     return 0
+
+
+def _show_criteria(entry, tio, slug, logs_dir):
+    from booley.review.entry import criteria_projection
+
+    from .acceptance_ledger import read_acceptance
+
+    if entry.get("status") in {"review", "done"}:
+        projection = criteria_projection(logs_dir)
+        return (
+            (projection["criteria"], "") if projection else ({}, read_acceptance(logs_dir).reason)
+        )
+    state = _load_state_data(existing_runtime_file(tio.logs_dir, slug, "booley_state.json")) or {}
+    return state.get("criteria", {}), ""

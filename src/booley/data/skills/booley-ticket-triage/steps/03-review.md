@@ -1,8 +1,8 @@
 # Step 3: Review Tickets
 
 For each `status: "review"` ticket, use the prepared package as the normal path.
-The post-developer report agent has already inspected the ticket, source, diff,
-logs, reports, scope, and state. The harness has already enumerated all criteria,
+The post-developer or explicitly requested review preparation has already
+inspected the ticket, source, diff, logs, reports, scope, and state. The harness has already enumerated all criteria,
 commits, changed files, health findings, economics, and durable diff pairs.
 
 ## 1. Render once
@@ -53,14 +53,26 @@ appear with its justification.
 
 ## 3. Decision
 
-Ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
+For a briefing marked **unaccepted**, offer **fix here** / **refresh** /
+**finalize** / **hold** / **reset** / **archive**. Keep the Ticket in review
+while making corrections. Run verification endpoints and `submit_run_report`
+through `booley board review-exec $SLUG -- <normal endpoint command>` so they
+record Ticket evidence. Commit changes, then use `booley board refresh-review
+$SLUG` to capture new inputs. `booley board finalize-review $SLUG` checks every
+normal acceptance gate and publishes first acceptance; only a successful
+finalization makes approval available. Hold leaves the Ticket unchanged.
+
+If a legacy review has no accepted snapshot, the explicit recovery operation is
+`booley board request-review $SLUG --repair --reason "<recovery intent>"`.
+It preserves work and creates an unaccepted package when its Basis/worktree are
+valid. Never substitute a mechanical move or fabricate accepted evidence.
+
+For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
 
 - **Approve**: `python -m booley.ticket_board complete $SLUG`
-- **Fix here**: keep the Ticket in review and make only the correction the
-  reviewer can complete interactively in its existing worktree. Invoke the
-  relevant Flows and Specialists directly against that worktree, commit the
-  correction to the same Ticket branch, refresh its review evidence, and return
-  to this decision. Do not hand it back to the Runner for partial rework.
+- **Fix here**: accepted snapshots are immutable. Explain that changed source
+  heads cannot be silently reaccepted by `refresh-review`; retain work and
+  resolve the required acceptance recovery before claiming another approval.
 - **Reset**: ask why a clean run is required, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`.
   This is a clean start:
