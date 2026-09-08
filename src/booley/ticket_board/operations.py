@@ -1056,11 +1056,17 @@ def op_complete(
     if request is None:
         return False
     slug, on_success, accepted_snapshot = request
+    entry = tio.find_ticket(slug) or {}
+    already_done = entry.get("status") == "done"
     if on_success.merge:
-        return _complete_with_merge(tio, slug, on_success, accepted_snapshot)
-    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
-        return False
-    _finish_completed_ticket(tio, slug, cleanup=False)
+        if not _complete_with_merge(tio, slug, on_success, accepted_snapshot):
+            return False
+    else:
+        if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
+            return False
+        _finish_completed_ticket(tio, slug, cleanup=False)
+    if not already_done and is_event_enabled("done"):
+        ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
     return True
 
 

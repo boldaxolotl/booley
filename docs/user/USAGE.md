@@ -870,10 +870,35 @@ your ticket scopes are drawn too narrowly, not that the agent is misbehaving.
 
 ## Push Notifications
 
-Configure an [ntfy.sh](https://ntfy.sh) topic in `booley.toml` to get a push
-notification when a ticket completes, blocks, or an automatic Doctor run finds
-an issue. No need to watch the terminal. Install the ntfy.sh app on your phone
-to receive them.
+Configure an [ntfy.sh](https://ntfy.sh) topic in your Project's `booley.toml`,
+then subscribe to that topic in the ntfy app:
+
+```toml
+[notifications]
+ntfy_topic = "your-private-topic"
+# Optional: omit events to enable all, or use [] to disable all.
+events = ["blocked", "review", "done", "doctor", "rate_limit"]
+```
+
+`blocked` asks for input, `review` announces work ready for review, and `done`
+announces successful Ticket completion. `doctor` announces changed automatic
+Doctor issues; `rate_limit` announces Claude rate-limit waits.
+
+The Session Runtime's default network policy blocks ntfy.sh. To permit delivery,
+add `"ntfy.sh"` to `egress_allowlist` in the existing `[interactive]` table of
+[your host configuration](CONFIG.md#host-configuration-configtoml), preserving
+any other entries:
+
+```toml
+[interactive]
+egress_allowlist = ["ntfy.sh"]
+```
+
+Recreate existing Session Runtimes after changing the policy. This permission
+applies to all Projects on the host. Delivery uses HTTPS and is best-effort:
+notifications do not change Ticket outcomes, wait for delivery, or retry failed
+requests. Each delivery attempt has a 5-second connection timeout and a
+15-second total timeout. Set `NTFY_DISABLE=1` to suppress delivery in tests.
 
 ## When Booley itself misbehaves
 
