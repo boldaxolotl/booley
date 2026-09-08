@@ -1,0 +1,28 @@
+# Worked format example
+
+This illustrative slice borrows the PicoRV32 Wishbone fault/recovery shape. It is
+not a production scenario and its evidence paths, hashes, identities, timestamps,
+and results are examples, not execution evidence. It grants no coverage credit.
+Production encoding must supply the complete accepted journey and concrete inputs.
+
+Read [scenario.yaml](scenario.yaml) and [profiles.yaml](profiles.yaml) beside [run.json](run.json),
+[results.jsonl](results.jsonl), and [summary.md](summary.md). The example shows:
+
+- a normal baseline check with a local stimulus and evidence contract;
+- an expected seeded failure followed by restored-state proof;
+- an unavailable visual check that leaves GUI qualification incomplete;
+- cleanup and a core pass that does not claim full qualification.
+
+The fault-detection check passes because the injected fault is expected. If baseline
+instead fails unexpectedly, append its failure and any recovery evidence separately;
+core remains failed. If restoration has no result, core is incomplete unless another
+trustworthy failure already makes it failed. If cleanup has no proof, core cannot pass.
+
+The profile file alone selects checks for each scope; scenario checks own their
+capability references. Actual production profiles select all checks required by
+their full journey. Here the selections describe only this slice, not qualification
+of PicoRV32.
+
+The GUI profile includes baseline/fault/restoration work needed to supply its trace.
+When both example profiles are selected, that supporting work executes once in the
+same run. It is not reused from a prior run or silently omitted from a GUI-only run.

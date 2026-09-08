@@ -187,7 +187,6 @@ async def run_ticket(
     project_root: Path | None = None,
     *,
     save_transcripts: bool = True,
-    use_console: bool = False,
 ) -> TicketRunResult | None:
     """Execute the full developer flow for a ticket.
 
@@ -195,18 +194,15 @@ async def run_ticket(
         ticket_path_or_slug: Path to ticket .md file, or slug for resume.
         project_root: Project root directory. Defaults to cwd.
         save_transcripts: Write per-agent JSONL transcripts to logs dir.
-        use_console: Use full-screen Console TUI instead of log mode.
 
-    In console mode the TUI is launched first and preflight/parse-validate
+    The Console TUI is launched first and preflight/parse-validate
     run inside its worker (with SetupProgress events for visibility) so the
     user never sees pre-TUI chrome flash by.
     """
     if project_root is None:
         project_root = Path.cwd()
 
-    if use_console:
-        return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
-    return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
+    return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
 
 
 async def _prepare_ticket(
@@ -214,11 +210,7 @@ async def _prepare_ticket(
     project_root: Path,
     save_transcripts: bool,
 ) -> TicketContext:
-    """Run config-load, preflight, and parse-validate. Returns the ready ctx.
-
-    Shared by log-mode and console-mode entry paths so the bring-up sequence
-    stays identical.
-    """
+    """Run config-load, preflight, and parse-validate. Returns the ready ctx."""
     from booley.config.settings import load_models_config
 
     from .setup.intake import run as parse_validate
@@ -234,23 +226,6 @@ async def _prepare_ticket(
         raise
     ctx.save_transcripts = save_transcripts
     return ctx
-
-
-async def _run_log_mode(
-    ticket_path_or_slug: str,
-    project_root: Path,
-    save_transcripts: bool,
-) -> TicketRunResult | None:
-    """Original (no-TUI) flow: prepare, then run the ticket body inline."""
-    exec_start = time.monotonic()
-    ctx = await _prepare_ticket(ticket_path_or_slug, project_root, save_transcripts)
-    setup_file_logging(ticket_human_log_file(ctx.logs_dir, "harness.log"))
-    open_log(ticket_human_log_file(ctx.logs_dir, "run.log"))
-    try:
-        return await _run_ticket_body(ctx, project_root, exec_start)
-    finally:
-        close_log()
-        teardown_file_logging()
 
 
 def _invalidate_missing_worktree(ctx: TicketContext, project_root: Path) -> None:
@@ -443,33 +418,25 @@ async def _run_with_console(
     sees pre-TUI INFO logs flash before the screen takeover. The header
     is filled in once parse-validate has produced a ticket context.
 
-    On Textual ImportError, falls back to log mode. Errors raised inside
-    the worker are captured and re-raised after the app exits, so the
-    outer entry point can map them to the right exit code (preflight=2,
+    Errors raised inside the worker are captured and re-raised after the
+    app exits, so the outer entry point can map them to the right exit code (preflight=2,
     user-quit=EXIT_USER_QUIT, etc.).
     """
-    try:
-        from .console.app import ConsoleApp, ConsolePhase
-        from .console.events import SetupProgress
-        from .console.widgets import TicketHeader
-    except ImportError:
-        logger.warning("Textual not available, falling back to log mode")
-        return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-
     from .blocking import UserQuitError
+    from .console.app import ConsoleApp, ConsolePhase
+    from .console.events import SetupProgress
+    from .console.widgets import TicketHeader
 
     # Empty/placeholder header -- TicketHeader renders blank until
     # parse-validate succeeds and set_ticket_info() is called below.
     app = ConsoleApp()
 
     worker_error: list[BaseException] = []
-    harness_started = False
     harness_completed = False
     ticket_result: TicketRunResult | None = None
 
     async def harness_work() -> None:
-        nonlocal harness_started, harness_completed, ticket_result
-        harness_started = True
+        nonlocal harness_completed, ticket_result
         exec_start = time.monotonic()
         try:
             app.post_message(SetupProgress("loading model/backend config..."))
@@ -513,21 +480,15 @@ async def _run_with_console(
 
     try:
         await app.run_async()
-    except Exception:
-        logger.exception("Console crashed")
-        terminal.set_console_active(False)
-        app.transition_to(ConsolePhase.EXITED)
-        # If the worker never started, we can still retry in log mode.
-        if not harness_started:
-            return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-        if not harness_completed:
-            logger.error("Console crashed mid-run -- harness was in progress, cannot safely retry")
     finally:
         terminal.set_console_active(False)
         app.transition_to(ConsolePhase.EXITED)
 
     if worker_error:
         raise worker_error[0]
+    # Textual handles lifecycle errors internally instead of raising from run_async.
+    if app.return_code != 0:
+        raise RuntimeError(f"Console failed with exit code {app.return_code}")
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")

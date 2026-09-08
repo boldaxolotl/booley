@@ -18,18 +18,14 @@ def main() -> int:
     _force_utf8()
     args = _parse_args()
     _stamp_developer_pid()
-    # Detect console BEFORE setting up logging: the stdout handler would
-    # otherwise print "Preflight OK" etc. to the terminal a beat before
-    # the TUI takes over, exactly the chrome we want to suppress.
-    use_console = _detect_console(args)
-    _setup_logging(args.verbose, suppress_stdout=use_console)
+    _setup_logging(args.verbose)
 
     project_root = Path(args.project_root) if args.project_root else _find_project_root()
     if project_root is None:
         print("ERROR: Could not find project root (no .git directory found)", file=sys.stderr)
         return 1
 
-    return _run_harness(args, project_root, use_console)
+    return _run_harness(args, project_root)
 
 
 def _force_utf8() -> None:
@@ -64,9 +60,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable per-agent transcript logging (saves disk space)",
     )
-    parser.add_argument(
-        "--no-console", action="store_true", help="Disable full-screen Console TUI (use log mode)"
-    )
     return parser.parse_args()
 
 
@@ -81,64 +74,22 @@ def _stamp_developer_pid() -> None:
     os.environ.setdefault(_orch_env, str(os.getpid()))
 
 
-def _setup_logging(verbose: bool, *, suppress_stdout: bool = False) -> None:
-    """Configure root logger with console handler.
+def _setup_logging(verbose: bool) -> None:
+    """Keep debug detail in file logs and surface startup warnings on stderr."""
+    from .logging_utils import TerseFormatter
 
-    When ``suppress_stdout`` is set (console mode), no StreamHandler is
-    attached -- the TUI will own the terminal, and INFO chatter from
-    preflight/parse-validate would otherwise flash before it takes over.
-    The file handler attached later by setup_file_logging still captures
-    everything for post-mortem.
-    """
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
-
-    if not suppress_stdout:
-        console = logging.StreamHandler()
-        if verbose:
-            console.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-                    datefmt="%H:%M:%S",
-                )
-            )
-            console.setLevel(logging.DEBUG)
-        else:
-            from .logging_utils import TerseFormatter
-
-            console.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
-            console.setLevel(logging.INFO)
-        root.addHandler(console)
-    else:
-        # Console mode hides INFO chatter, but WARN+/ERROR must still reach
-        # the user (preflight failures, crashes during bring-up). Send those
-        # to stderr -- the TUI redraws over stdout but errors that happen
-        # before or after the TUI runs still need to surface somewhere.
-        err = logging.StreamHandler(sys.stderr)
-        err.setLevel(logging.WARNING)
-        from .logging_utils import TerseFormatter
-
-        err.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
-        root.addHandler(err)
+    err = logging.StreamHandler(sys.stderr)
+    err.setLevel(logging.WARNING)
+    err.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
+    root.addHandler(err)
 
     for noisy in ("claude_agent_sdk._internal", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def _detect_console(args: argparse.Namespace) -> bool:
-    """Determine whether to use the Console TUI."""
-    if args.no_console:
-        return False
-    if os.environ.get("BOOLEY_CONSOLE") == "0":
-        return False
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM") == "dumb":
-        return False
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-
-
-def _run_harness(args: argparse.Namespace, project_root: Path, use_console: bool) -> int:
+def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
     """Run the developer, returning an exit code."""
     try:
         result = asyncio.run(
@@ -146,7 +97,6 @@ def _run_harness(args: argparse.Namespace, project_root: Path, use_console: bool
                 args.ticket,
                 project_root,
                 save_transcripts=not args.no_transcripts,
-                use_console=use_console,
             )
         )
     except KeyboardInterrupt:
