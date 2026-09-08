@@ -9,3 +9,4 @@ from booley.flows.request import FlowRequest
 class FpgaRequest(FlowRequest):
     baseline: str | None = None
     no_cache: bool = False
+    ppa_profile: str | None = None

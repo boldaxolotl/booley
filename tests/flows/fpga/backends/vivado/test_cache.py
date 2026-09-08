@@ -88,6 +88,26 @@ def test_input_fingerprint_changes_with_source_and_resolved_parameters(tmp_path:
     assert parameter_changed != source_changed
 
 
+def test_input_fingerprint_changes_with_resolved_recipe(tmp_path: Path) -> None:
+    resolved = _resolved(tmp_path)
+    edam = {"name": "fpga_demo", "toplevel": "top", "tool_options": {"part": "p"}}
+
+    balanced = fpga_cache.input_fingerprint(
+        resolved,
+        edam,
+        out_of_context=False,
+        recipe_sha256="balanced-recipe",
+    )
+    compact = fpga_cache.input_fingerprint(
+        resolved,
+        edam,
+        out_of_context=False,
+        recipe_sha256="compact-recipe",
+    )
+
+    assert compact != balanced
+
+
 def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
     _artifacts(tmp_path)
     assert fpga_cache.store(

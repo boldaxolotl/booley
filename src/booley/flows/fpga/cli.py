@@ -6,6 +6,7 @@ import argparse
 import logging
 
 from booley.flows.cli_arguments import BuiltinArguments
+from booley.flows.implementation_profiles import PPA_PROFILE_CHOICES
 
 logger = logging.getLogger(__name__)
 
@@ -18,4 +19,10 @@ class FpgaArguments(BuiltinArguments):
             "--no-cache",
             action="store_true",
             help="Bypass reusable implementation results and run the recipe again",
+        )
+        parser.add_argument(
+            "--ppa-profile",
+            choices=PPA_PROFILE_CHOICES,
+            default=None,
+            help="Override the Target's portable FPGA optimization profile for this call",
         )

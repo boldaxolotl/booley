@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.clock_timing import CLOCK_TIMING_FIELDS, make_clock_timing
+from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +65,14 @@ def build_fpga_edam(
     constraint file (``file_type: xdc``, inferred from suffix), defines become
     ``vlogdefine`` parameters, ``vlogparams`` remain top-level parameter
     overrides, and the top module is the EDAM ``toplevel``.
-    ``extra_eda_tool_options`` allows a Target to pass further *whitelisted* vivado
-    flow options (``pnr``/``synth``/``jobs``); anything outside the whitelist is
-    rejected by :func:`edam.build_edam`.
+    ``extra_eda_tool_options`` is an internal, typed extension seam for
+    whitelisted Edalize flow options. The built-in FPGA Flow does not forward
+    Target ``synth`` or ``pnr`` values through it: those are Edalize engine
+    selectors, not optimization strategies.
 
-    Strategy / free-form Vivado knobs deliberately do **not** ride here: the
-    edalize 0.6.8 vivado flow exposes no ``strategy`` option, so forwarding it
-    would be a silent no-op. It stays a Phase-2 Target concern (plan §fpga_impl).
+    Portable profile strategies deliberately do **not** ride in EDAM. Edalize
+    0.6.8 exposes no ``strategy`` option, so :func:`apply_ppa_profile` patches
+    the generated project Tcl after configuration instead.
     """
     from booley.flows import edam as edam_layer
 
@@ -180,6 +182,35 @@ def enable_out_of_context(work_root: Path, name: str) -> None:
     content = project_tcl.read_text(encoding="utf-8")
     if "-mode out_of_context" not in content:
         project_tcl.write_text(content + _OOC_TCL_SNIPPET, encoding="utf-8")
+
+
+def apply_ppa_profile(work_root: Path, name: str, profile: VivadoProfile) -> None:
+    """Patch one characterized profile into Edalize's generated project Tcl.
+
+    ``balanced`` deliberately performs no write so its generated Tcl stays
+    byte-for-byte identical to the pre-profile implementation. Strategy
+    assignment resets Vivado step properties, so callers must invoke this
+    before :func:`enable_out_of_context`.
+    """
+    profile = validate_vivado_profile(profile)
+    if not profile.apply_strategy:
+        return
+    project_tcl = work_root / f"{name}.tcl"
+    if not project_tcl.is_file():
+        raise FileNotFoundError(
+            f"fpga: cannot apply ppa_profile {profile.name!r} — "
+            f"generated project tcl not found: {project_tcl}"
+        )
+    marker = f"# Booley: portable FPGA ppa_profile = {profile.name}."
+    content = project_tcl.read_text(encoding="utf-8")
+    if marker in content:
+        return
+    snippet = (
+        f"\n{marker}\n"
+        f"set_property strategy {profile.synthesis_strategy} [get_runs synth_1]\n"
+        f"set_property strategy {profile.implementation_strategy} [get_runs impl_1]\n"
+    )
+    project_tcl.write_text(content + snippet, encoding="utf-8")
 
 
 def fpga_run_command(work_root: Path, work_dir: Path) -> list[str]:
