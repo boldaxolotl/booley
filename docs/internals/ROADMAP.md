@@ -46,21 +46,18 @@ not support.
 
 The blocker is licenses, not design: the maintainer can't validate a Flow for an EDA tool they can't run, which makes this the best place for an outside contribution. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools) lists the specific EDA tools worth porting per vendor, which of them Edalize already invokes, and what a port actually takes. For what ships today, see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
-## Coverage Measurement
+## Native Coverage Campaigns
 
-**In tree, hidden.** A coverage engine (the `coverage_analyst` Specialist) exists in the tree but is hidden from the MCP tool registry until it matures. It is built on bwave queries against the simulation trace: bwave measures toggle and value coverage mechanically, LLM Specialists derive branch/expression conditions and FSM states, and deterministic Python scores each goal (toggle, value, FSM state/transition, branch, expression) against configurable thresholds. No UVM covergroups, no simulator-specific coverage databases. Two things remain before it ships: maturing the Specialist itself, and making every metric fully deterministic, with no LLM in the measurement loop. This is one of the highest-impact items on this list: coverage analysis is the gate that decides whether a testbench is good enough, and testbench quality determines the correctness of Booley's output.
+Phases 0–6 of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
+Verilator-native measurement, immutable Campaigns, deterministic Criteria,
+transactional waivers, canonical persistence, exact pruning, and the report-driven
+Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
+it explains evidence and proposes advisory candidates without evaluating Criteria.
+The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
-**The determinism half will use slang, not a Booley-written Verilog
-front-end.** Toggle and value coverage are already mechanical: bwave reads them
-straight off the trace. Branch and expression coverage are not: they need the
-branches and sub-expressions *enumerated from the RTL* before anything can be
-scored, which is why an LLM Specialist derives them today, as it does the FSM
-state set. The slang integration will use its source-aware syntax model to
-enumerate those constructs and its elaborated semantic model where resolved
-types and names are needed, including FSM state discovery. The same integration
-backs the [HDL Dependency Graph](#hdl-dependency-graph-intra-target-file-pruning),
-so Booley does not build or maintain a second HDL parser. Toggle and value
-coverage can ship deterministic ahead of the slang-backed metrics.
+Phase 7 still owns public Simulation coverage controls, the complete cross-mode
+release matrix, and release documentation. Native FSM and covergroup records
+remain unscored evidence in V1. B-Wave has no coverage measurement role.
 
 ## Continuous Integration (`booley ci`)
 

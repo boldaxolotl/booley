@@ -196,7 +196,7 @@ A passing criterion-family-specific Booley Flow run required after an RTL or tes
 _Avoid_: review gate, planner approval
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer and Mutation Tester (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); Coverage Analyst and TB Coder also exist but are hidden until they mature; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and Coverage Analyst (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -272,6 +272,36 @@ _Avoid_: allowlist
 **Escalation**:
 A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.
 _Avoid_: spec gap, blocker, impediment
+
+### Coverage
+
+**Coverage Campaign**:
+One indivisible, durable coverage document for exactly one Target and one Simulation Flow invocation, preserving independent simulation, collection, and evaluation truths.
+_Avoid_: latest coverage, waveform score
+
+**Coverage Point**:
+One losslessly identified native measurement point, including source span, elaborated instance, metric-specific subject, and native record identity.
+_Avoid_: signal score, source-line identity
+
+**Coverage Window**:
+The interval in which native counters contribute to a Campaign, including reset activity unless the Target declares a delayed start.
+_Avoid_: waveform slice
+
+**Coverage Criterion**:
+One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND.
+_Avoid_: Analyst score, inferred coverage goal
+
+**Approved Waiver Set**:
+The immutable, transactionally validated project-wide set of human-approved exact Target-and-point exclusions used by coverage evaluators.
+_Avoid_: cached LLM waivers
+
+**Waiver Candidate**:
+Advisory Coverage Analyst output for human investigation or review, with no approval or evaluation authority.
+_Avoid_: approved waiver, automatic exclusion
+
+**Coverage Analyst**:
+A read-only Specialist that explains one exact Coverage Campaign and may propose Waiver Candidates, using verified Target sources when available.
+_Avoid_: coverage scorer, waveform coverage engine
 
 ### Waveform analysis
 

@@ -1807,3 +1807,11 @@ history. Back up or version `.booley_project/` separately, together with any
 root `FUSESOC_IGNORE` quarantine marker. Booley propagates that marker into
 ticket and baseline worktrees, but a fresh clone cannot reconstruct hidden
 configuration that was never exported.
+
+### Coverage Analyst model role
+
+`coverage_analyst` retains its configured Specialist model role and standard tier
+floor. Its input is one exact canonical `coverage.json` path plus an optional
+`instruction`. It has no per-call coverage policy or waiver-directory settings.
+The model receives normalized evidence and, only when the entire current Target
+closure matches its recorded fingerprints, verified RTL/testbench text.

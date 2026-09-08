@@ -502,9 +502,8 @@ def _ensure_nested_codex_home(
     the agent. Letting them through caused infinite recursion (reviewer →
     codex → MCP reviewer → codex → …).
 
-    The previous "empty config" fix broke specialists that genuinely need MCP
-    primitives (e.g. debugger needs simulate + bwave_*; coverage_analyst
-    Phase-2 same). Current design: each spawning specialist declares
+    Specialists such as TB Coder need narrowly selected Flow capabilities.
+    Each spawning specialist declares
     ``nested_mcp_tools`` (an allowlist of safe, non-recursive MCP tool
     names); we generate a per-parent config.toml with that list baked into
     ``BOOLEY_NESTED_MCP_TOOLS`` in [env]. The MCP server reads that env on
@@ -634,7 +633,7 @@ async def _codex_spawn(
     behavior).
     """
     env = None
-    if _inside_container():
+    if _inside_container() and not params.text_only:
         env = dict(os.environ)
         if params.developer_mcp_tools is not None:
             env["HOME"] = _ensure_developer_codex_home(
@@ -653,6 +652,13 @@ async def _codex_spawn(
         # inherited, so the scrub forces an explicit copy.
         env = dict(os.environ) if env is None else env
         env.pop("OPENAI_API_KEY", None)
+
+    if params.text_only:
+        from .text_only_agent import prepare_codex_text_only
+
+        cmd, env = prepare_codex_text_only(cmd, params, dict(os.environ))
+        if auth_mode == "subscription":
+            env.pop("OPENAI_API_KEY", None)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

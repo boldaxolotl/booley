@@ -204,7 +204,6 @@ class TestRequired:
             {"target", "scope"},
             {"tb_top", "dut_top", "dut_files"},
         ),
-        (CoverageAnalystSpecialist, {"target", "scope"}, {"tb_top"}),
     ],
 )
 def test_specialist_input_contracts_are_unified(specialist, required, removed) -> None:
@@ -233,3 +232,12 @@ class TestDescription:
         p.add_argument("--name")
         schema = extract_schema(p)
         assert "description" not in schema["properties"]["name"]
+
+
+def test_coverage_analyst_accepts_only_exact_campaign_and_instruction():
+    schema = extract_schema(CoverageAnalystSpecialist()._parser)
+    assert "campaign" in schema["required"]
+    assert "instruction" in schema["properties"]
+    assert {"target", "scope", "steer", "criteria", "reset_waivers", "tb_top"}.isdisjoint(
+        schema["properties"]
+    )
