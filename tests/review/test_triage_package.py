@@ -605,3 +605,22 @@ def test_review_shows_developer_justifications_in_scope_and_file_sections(tmp_pa
     tp._render_scope(lines, facts)
     tp._render_changes(lines, facts, set())
     assert "\n".join(lines).count(reason) == 2
+
+
+def test_review_rejects_malformed_persisted_justifications(tmp_path):
+    import pytest
+
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    malformed = [
+        {"criteria": None},
+        {"criteria": {"_report_submitted": []}},
+        {"criteria": {"_report_submitted": {"detail": None}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": []}}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": {"a": 1}}}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": {"a": " "}}}}},
+    ]
+    for state in malformed:
+        state_path.write_text(json.dumps(state))
+        with pytest.raises(tp.TriagePackageError, match="file justifications"):
+            tp.build_review_facts(ctx)
