@@ -62,6 +62,10 @@ def _run_endpoint(
 ) -> tuple[int, DevelopmentState]:
     """Invoke the endpoint via main(), returning (exit_code, reloaded_state)."""
     argv = list(argv)
+    if "--file-justifications" not in argv:
+        argv.extend(["--file-justifications", "{}"])
+    # Existing report tests isolate unrelated finalization gates.
+    monkeypatch.setattr("booley.mcp.report_changes.changed_ticket_paths", lambda _: [])
     if "--work-dir" not in argv:
         work_dir = report_dir / "worktree"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -916,6 +920,8 @@ class TestSubmissionEcho:
         (repo / "rtl.sv").write_text("module m; endmodule\n", encoding="utf-8")
         _git(repo, "add", "rtl.sv")
         _git(repo, "commit", "-qm", "init")
+        _git(repo, "branch", "report-base")
+        _git(repo, "branch", "--set-upstream-to=report-base")
         return repo
 
     def _submit(
@@ -937,6 +943,8 @@ class TestSubmissionEcho:
             [
                 "--work-dir",
                 str(work_dir),
+                "--file-justifications",
+                "{}",
                 "--summary",
                 "Fixed it.",
                 "--root-cause",
@@ -994,3 +1002,79 @@ class TestSubmissionEcho:
     ) -> None:
         text = self._submit(tmp_path, state_file, git_repo, monkeypatch)
         assert "last simulate" not in text
+
+
+@pytest.mark.parametrize(
+    "explanations",
+    [
+        None,
+        "{}",
+        '{"outside.sv":" "}',
+        '{"outside.sv":7}',
+        '{"outside.sv":"why","outside.sv":"again"}',
+    ],
+)
+def test_final_submission_rejects_unjustified_actual_change(
+    tmp_path, state_file, monkeypatch, explanations
+):
+    repo = _justification_repo(tmp_path, monkeypatch, state_file)
+    args = [
+        "--work-dir",
+        str(repo),
+        "--summary",
+        "Change",
+        "--root-cause",
+        "Bug",
+        "--uncertainties",
+        "Coverage",
+    ]
+    if explanations is not None:
+        args.extend(["--file-justifications", explanations])
+    assert SubmitRunReportMcpTool().main(args) == EXIT_ERROR
+    assert not DevelopmentState.load(state_file).is_met("_report_submitted")
+    assert not (tmp_path / "logs" / "REPORT.md").exists()
+
+
+def _justification_repo(tmp_path, monkeypatch, state_file):
+    repo = tmp_path / "change-repo"
+    _init_repo(repo)
+    _git(repo, "commit", "--allow-empty", "-qm", "base")
+    _git(repo, "branch", "report-base")
+    _git(repo, "branch", "--set-upstream-to=report-base")
+    (repo / "outside.sv").write_text("module outside; endmodule\n")
+    _git(repo, "add", "outside.sv")
+    _git(repo, "commit", "-qm", "change")
+    for key, value in {
+        "BOOLEY_STATE_FILE": state_file,
+        "BOOLEY_LOGS_DIR": tmp_path / "logs",
+        "BOOLEY_RUNTIME_DIR": tmp_path / "runtime",
+        "BOOLEY_TICKET_TYPE": "bugfix",
+        "BOOLEY_SLUG": "report-test",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+    monkeypatch.delenv("BOOLEY_TICKET_FILE", raising=False)
+    monkeypatch.delenv("BOOLEY_WORKTREE", raising=False)
+    return repo
+
+
+def test_final_submission_persists_each_file_justification(tmp_path, state_file, monkeypatch):
+    repo = _justification_repo(tmp_path, monkeypatch, state_file)
+    reason = {"outside.sv": "The shared module must handle the corrected reset."}
+    result = SubmitRunReportMcpTool().main(
+        [
+            "--work-dir",
+            str(repo),
+            "--summary",
+            "Change",
+            "--root-cause",
+            "Bug",
+            "--uncertainties",
+            "Coverage",
+            "--file-justifications",
+            json.dumps(reason),
+        ]
+    )
+    assert result == EXIT_SUCCESS
+    state = DevelopmentState.load(state_file)
+    assert state.criteria["_report_submitted"].detail["file_justifications"] == reason
+    assert reason["outside.sv"] in (tmp_path / "logs" / "REPORT.md").read_text()

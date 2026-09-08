@@ -601,7 +601,7 @@ class Specialist(McpTool):
             logger.info("Agent already committed — using existing commit")
             return _read_commit_info(work_dir, before_sha)
 
-        # Determine which files to stage, revert out-of-scope
+        # Stage selected files while preserving other authored changes
         to_stage, reverted = self._resolve_stageable_files(scope_files)
         if not to_stage:
             return None
@@ -659,7 +659,7 @@ class Specialist(McpTool):
         self,
         scope_files: list[str],
     ) -> tuple[list[str], list[dict[str, str]]]:
-        """Determine which files to stage; revert out-of-scope files.
+        """Determine which selected files to stage; preserve other edits.
 
         Returns (to_stage, reverted_info).
         """
@@ -672,22 +672,8 @@ class Specialist(McpTool):
             return [], []
         allowed = {f.replace("\\", "/") for f in scope_files}
         to_stage = [f for f in uncommitted if f in allowed]
-        # Never revert project config — it's not agent-authored scope
-        _PROTECTED_PREFIXES = (".booley_project/",)
-        skipped = {
-            f
-            for f in uncommitted
-            if f not in allowed and not any(f.startswith(p) for p in _PROTECTED_PREFIXES)
-        }
-        reverted: list[dict[str, str]] = []
-        if skipped:
-            logger.warning(
-                "Skipping %d out-of-scope files: %s",
-                len(skipped),
-                ", ".join(sorted(skipped)[:5]),
-            )
-            reverted = self._revert_out_of_scope(sorted(skipped))
-        return to_stage, reverted
+        # Preserve other authored work for the Developer to commit and explain.
+        return to_stage, []
 
     def _git_add_and_commit(
         self,

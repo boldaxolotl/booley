@@ -992,7 +992,8 @@ class TestMcpToolMain:
                 "_resolve_display_label",
                 side_effect=[sentinel, "must not be resolved twice"],
             ) as resolve_label,
-            mock.patch("booley.mcp.base._write_display_event") as write_event,
+            mock.patch("booley.flows.endpoint_session._write_display_event") as write_event,
+            mock.patch("booley.flows.endpoint_reporting._write_display_event", write_event),
         ):
             exit_code = endpoint.main([])
 
@@ -1626,7 +1627,7 @@ class TestReportDirRejectsMangledHostPath:
         needs a concrete ``Path.cwd()``; only the parse is flavour-pinned.
         """
         endpoint = ConcreteMcpTool()
-        with mock.patch("booley.mcp.base.Path", PurePosixPath):
+        with mock.patch("booley.flows.endpoint_cli.Path", PurePosixPath):
             return endpoint.parse_args(argv)
 
     def test_drive_lettered_relative_path_is_rejected(self):

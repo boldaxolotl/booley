@@ -60,7 +60,7 @@ def test_configured_run_cwd_is_normalized_for_workload_snapshot(tmp_path: Path) 
     )
     (project_root / "tests" / "work").mkdir(parents=True)
 
-    flow = object.__new__(SimulateFlow)
+    flow = SimulateFlow()
     flow._args = SimpleNamespace(work_dir=project_root)
     flow._resolved_targets = {"sim_core": _resolved(project_root)}
     flow._target_sim_env = MagicMock(return_value={})

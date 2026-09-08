@@ -2313,7 +2313,8 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     """Server import precedes Interactive setup; asynchronous writes retain its root."""
     import asyncio
 
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    # Track the variable even when initially absent: setup writes it directly.
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".booley_project").mkdir()

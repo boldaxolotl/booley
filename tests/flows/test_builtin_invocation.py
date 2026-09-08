@@ -13,6 +13,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
+from booley.flows.flow_session import FlowSession
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
@@ -20,6 +21,7 @@ from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.base import EXIT_ERROR
+from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
 
 BUILTINS = (
@@ -36,7 +38,7 @@ def test_builtin_schema_exposes_one_canonical_timeout(
     _name: str,
     _default_ms: int,
 ) -> None:
-    schema = flow_type().mcp_schema()
+    schema = flow_schema(flow_type())
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
@@ -247,10 +249,9 @@ class _DryLifecycleFlow(BuiltinFlow):
     """Minimal built-in proving the shared non-persisting lifecycle."""
 
     name = "dry_contract"
-    JOB_CLASS = "heavy"
 
-    def _add_args(self, parser: argparse.ArgumentParser) -> None:
-        pass
+    def _resolve_job_class(self) -> str:
+        return "heavy"
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return None
@@ -275,12 +276,12 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
 
     with (
         mock.patch.object(
-            flow,
+            FlowSession,
             "_acquire_job_slot",
             side_effect=AssertionError("dry-run acquired a heavy slot"),
         ),
         mock.patch.object(
-            flow,
+            FlowSession,
             "_post_run",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),
