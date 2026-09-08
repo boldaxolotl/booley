@@ -853,6 +853,7 @@ _COMPILED_SUFFIXES = frozenset(
         ".s28",
         ".s37",
         ".mem",
+        ".vmem",
         ".mif",
         ".coe",
         ".uf2",

@@ -22,6 +22,7 @@ def test_triage_only_opens_source_diffs(monkeypatch, editor_available):
             ("rtl/core.sv", "text"),
             ("firmware/image.hex", "text"),
             ("rom/init.mem", "text"),
+            ("sw/firmware.vmem", "text"),
             ("vendor/fw/image.ELF", "text"),
             ("build/core.o", "text"),
             ("fpga/top.bit", "binary"),
