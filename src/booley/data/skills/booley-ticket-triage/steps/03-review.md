@@ -30,8 +30,8 @@ Present the briefing with each changed-file diff status corrected to the actual
 outcome: opened, omitted (compiled artifact), or not opened (provenance unclear
 or viewer unavailable). The command's printed "diff opened" text is not evidence
 of a launch when `--no-open-diffs` was used. Preserve all other briefing facts
-and tables. Do not run `prepare-review` during interactive triage and do not
-poll the manifest.
+and tables. Do not run `prepare-review` during
+interactive triage and do not poll the manifest.
 
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
 the polished HTML report. It then presents the decision summary, actionable
