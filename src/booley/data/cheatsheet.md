@@ -18,9 +18,12 @@ and nested actions.
 
 #### Session Runtime-only commands
 
+For Interactive Mode, we recommend `booley` / `booley chat`, which launches
+`claude` or `codex` according to `[agent].provider`.
+
 | Command | Purpose |
 |---------|---------|
-| `booley` | Recommended Interactive entry point: launch `claude` or `codex` according to `[agent].provider` |
+| `booley` | Open the Project's configured Claude Code or Codex CLI |
 | `booley chat` | Explicit spelling of the default `booley` command |
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
