@@ -1465,6 +1465,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     import importlib
     import importlib.util
 
+    from booley.flows.base import BooleyFlow, BuiltinFlow
     from booley.mcp.base import McpTool
 
     path = Path(info.path)
@@ -1482,7 +1483,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     for obj in vars(module).values():
         if (
             isinstance(obj, type)
-            and issubclass(obj, McpTool)
+            and issubclass(obj, (McpTool, BooleyFlow, BuiltinFlow))
             and obj is not McpTool
             and getattr(obj, "name", "") == info.name
         ):

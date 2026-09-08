@@ -790,14 +790,15 @@ def _find_mcp_tool_class_in_module(
     Returns (cls, instance, schema) or None if nothing found.
     Logs and skips classes whose schema extraction fails.
     """
+    from booley.flows.base import BooleyFlow, BuiltinFlow
     from booley.mcp.base import McpTool
-    from booley.mcp.schema_extractor import extract_schema
+    from booley.mcp.flow_adapter import flow_schema
 
     for attr_name in dir(mod):
         obj = getattr(mod, attr_name)
         if not (
             isinstance(obj, type)
-            and issubclass(obj, McpTool)
+            and issubclass(obj, (McpTool, BooleyFlow, BuiltinFlow))
             and obj is not McpTool
             and hasattr(obj, "name")
             and obj.name
@@ -805,8 +806,7 @@ def _find_mcp_tool_class_in_module(
             continue
         try:
             instance = obj()
-            schema_hook = getattr(instance, "mcp_schema", None)
-            schema = schema_hook() if callable(schema_hook) else extract_schema(instance._parser)
+            schema = flow_schema(instance)
         except Exception as exc:
             msg = f"SCHEMA EXTRACTION FAILED: {obj.name} in {source_label}: {exc}"
             logger.error(msg, exc_info=True)

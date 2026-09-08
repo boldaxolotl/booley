@@ -11,6 +11,7 @@ import pytest
 from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
+from booley.flows.builtin_cli import build_parser
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
@@ -99,7 +100,7 @@ def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> Non
     flow = flow_type()
     parser_options = {
         option
-        for action in flow._parser._actions
+        for action in build_parser(flow)._actions
         for option in action.option_strings
         if option.startswith("--")
     }
@@ -113,7 +114,7 @@ def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> Non
 def test_flow_reference_distinguishes_target_owned_synth_mode() -> None:
     options = {
         option
-        for action in AsicSynthesizeFlow()._parser._actions
+        for action in build_parser(AsicSynthesizeFlow())._actions
         for option in action.option_strings
     }
 

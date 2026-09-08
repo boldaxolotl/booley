@@ -80,6 +80,12 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D14",
+        (prefix("booley.flows"),),
+        (prefix("booley.mcp"),),
+        "Deterministic Flow execution and its shared services do not depend on MCP exposure.",
+    ),
+    DirectionRule(
         "D1",
         tuple(
             prefix(name)

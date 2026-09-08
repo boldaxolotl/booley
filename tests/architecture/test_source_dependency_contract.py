@@ -155,3 +155,29 @@ def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: s
     path.write_text(source, encoding="utf-8")
 
     assert _target_mechanics_violations(path, "consumer.py")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def schema():\n    from booley.mcp.base import McpTool\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.mcp.base\n",
+    ),
+)
+def test_flow_mcp_prohibition_includes_deferred_and_type_only_imports(tmp_path, source):
+    from tests.architecture.contract import ArchitectureContract
+
+    root = tmp_path / "booley"
+    for package in (root, root / "flows", root / "mcp"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").write_text("")
+    (root / "mcp/base.py").write_text("class McpTool: pass\n")
+    (root / "flows/rogue.py").write_text(source)
+    contract = ArchitectureContract(
+        rules=tuple(
+            rule for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules if rule.identifier == "D14"
+        ),
+    )
+    problems = evaluate_contract(analyze_imports(root), contract)
+    assert problems
+    assert "D14" in format_problems(problems)

@@ -30,6 +30,9 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
+        ("D14", "booley.flows", "booley.mcp", "flows/__init__.py"),
+        ("D14", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
+        ("D14", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),
         ("D1", "booley.audit.policy", "booley.mcp.registry", "seed.py"),
         ("D1", "booley.config.settings", "booley.harness.cli", "seed.py"),
         ("D1", "booley.fusesoc.target", "booley.specialists.reviewer", "seed.py"),

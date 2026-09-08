@@ -19,7 +19,6 @@ Mode as well as Ticket Mode (ADR 0012).
 
 from __future__ import annotations
 
-import argparse
 import copy
 import logging
 import os
@@ -34,6 +33,8 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.flows.fpga.cli import FpgaArguments
+from booley.flows.fpga.request import FpgaRequest
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -43,8 +44,8 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -202,7 +203,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BuiltinFlow):
+class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -210,6 +211,9 @@ class FpgaImplFlow(BuiltinFlow):
     identity, and the supported set moves (SUPPORTED-EDA-TOOLS.md owns that list).
     ``asic_synthesize`` reads the same way.
     """
+
+    request_type = FpgaRequest
+    argument_adapter = FpgaArguments
 
     name: str = "fpga"
     description: str = (
@@ -228,21 +232,13 @@ class FpgaImplFlow(BuiltinFlow):
         """FPGA implementation is a heavy Session Runtime workload."""
         return job_slots.CLASS_HEAVY
 
-    def _add_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--baseline", default=None, help="Baseline git ref for comparison")
-        parser.add_argument(
-            "--no-cache",
-            action="store_true",
-            help="Bypass reusable implementation results and run the recipe again",
-        )
-
     def _build_command(self) -> list[str]:
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
-        return McpToolResult()
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+        return EndpointOutcome()
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911 — linear aggregate orchestration
+    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear aggregate orchestration
         # The initially selected worktree, captured before any baseline run
         # swaps ``self.args.work_dir`` to a throwaway worktree.  It distinguishes
         # primary-run artifacts from temporary baseline artifacts.
@@ -255,7 +251,7 @@ class FpgaImplFlow(BuiltinFlow):
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "fpga: no Target selected. Pass --target <name> "
@@ -267,7 +263,7 @@ class FpgaImplFlow(BuiltinFlow):
         if comparison_error is not None:
             return comparison_error
         if not self._flow_enabled():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="fpga is disabled ([flows.fpga].enabled = false).",
             )
@@ -276,7 +272,7 @@ class FpgaImplFlow(BuiltinFlow):
         if self.args.dry_run:
             return self._dry_run_result(plan)
         if plan.aggregate_errors:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "fpga: infrastructure error during planning: "
@@ -290,7 +286,7 @@ class FpgaImplFlow(BuiltinFlow):
         self.reserve_invocation_dir()
         self._write_progress_report(targets, {}, {}, phase="starting")
         baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, McpToolResult):
+        if isinstance(baseline_results, EndpointOutcome):
             return baseline_results
         current_results = self._run_current_targets(targets, baseline_results, short_sha)
         result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
@@ -333,7 +329,7 @@ class FpgaImplFlow(BuiltinFlow):
                 )
         return current_results
 
-    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> McpToolResult | None:
+    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> EndpointOutcome | None:
         baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
@@ -348,7 +344,7 @@ class FpgaImplFlow(BuiltinFlow):
         except ImplementationComparisonError as exc:
             comparison_error = f"fpga: {exc}"
         if baseline_error is not None or comparison_error is not None:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=baseline_error or comparison_error or "fpga comparison error",
             )
@@ -996,10 +992,10 @@ class FpgaImplFlow(BuiltinFlow):
     def _run_baseline_configs(
         self,
         pairs: tuple[TargetPairPlan, ...],
-    ) -> tuple[dict[str, FpgaMetrics] | McpToolResult, str | None]:
+    ) -> tuple[dict[str, FpgaMetrics] | EndpointOutcome, str | None]:
         """Implement *configs* at ``--baseline`` in a throwaway worktree.
 
-        Returns ``(results_dict, short_sha)``, or ``(McpToolResult, None)`` when the
+        Returns ``(results_dict, short_sha)``, or ``(EndpointOutcome, None)`` when the
         worktree could not be created. The baseline ref is materialized in an
         ephemeral ``git worktree`` under the project (inside the Session
         Runtime workspace) rather than checked out in
@@ -1036,7 +1032,7 @@ class FpgaImplFlow(BuiltinFlow):
                     self._execution_role = current_role
                     self.args.work_dir = project_root
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"fpga: {exc}",
             ), None
@@ -1168,7 +1164,7 @@ class FpgaImplFlow(BuiltinFlow):
         current_results: dict[str, FpgaMetrics],
         baseline_results: dict[str, FpgaMetrics],
         short_sha: str | None,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         implementation_reports = {
             target: getattr(self, "_implementation_reports", {}).get(target)
             or self._implementation_report(
@@ -1187,7 +1183,7 @@ class FpgaImplFlow(BuiltinFlow):
         self._append_target_results(lines, failures, configs, current_results, baseline_results)
         lines.append("")
         lines.append("RESULT: PASS" if not failures else f"RESULT: FAIL ({'; '.join(failures)})")
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
             report_text="\n".join(lines),
             display_lines=_first_valid_display(configs, current_results),

@@ -16,6 +16,7 @@ from booley.flows.synth.backends.yosys.core import (
 )
 from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
+from booley.flows.synth.request import SynthRequest
 
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
@@ -76,7 +77,7 @@ def default_recipe_args() -> argparse.Namespace:
 
 def synthesis_recipe_args(
     flow_options: Mapping[str, Any],
-    args: argparse.Namespace,
+    args: SynthRequest | argparse.Namespace,
     *,
     target: str,
 ) -> list[str]:
@@ -150,7 +151,7 @@ def resolve_synth_mode(
 
 def synthesis_recipe_snapshot(
     resolved: Any,
-    args: argparse.Namespace,
+    args: SynthRequest | argparse.Namespace,
     *,
     target: str,
 ) -> dict[str, Any]:
@@ -192,7 +193,7 @@ def synthesis_recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 def synthesis_recipe_fingerprint(
     resolved: Any,
-    args: argparse.Namespace,
+    args: SynthRequest | argparse.Namespace,
     *,
     target: str,
 ) -> str:

@@ -75,6 +75,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | For the exact target modules: prefix `booley.fusesoc`, prefixes `booley.flows.{sim,synth,fpga,lint}`, and exact modules `booley.targets.catalog` and `booley.targets.target_surface`. For FuseSoC: the exact catalog and target-surface modules. | Forbid | Target domain values and selector policy stay independent of FuseSoC, concrete Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend back on catalog orchestration or presentation. |
 | D13 | Prefix `booley.fusesoc` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | FuseSoC mechanics remain reusable beneath concrete Flow implementations. |
 
+| D14 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
+
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file
 modules such as `booley.flows.target_campaign`. It excludes child package
