@@ -9,7 +9,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
-from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
+from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 
 
 def _current(resource: str) -> bootstrap.BootstrapFinding:

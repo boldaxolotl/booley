@@ -9,17 +9,24 @@ per-Flow execution-location selection or host command boundary.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
+import json
 import logging
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
+from booley.core.boundary import BoundaryError
 from booley.flows import execution
-from booley.mcp.base import McpTool
+from booley.flows.display import format_flow_display_label
+from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
+from booley.mcp.base import McpTool, McpToolResult
 from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -150,6 +157,10 @@ class BooleyFlow(McpTool):
     endpoint_kind = "flow"
     target_required = True
 
+    def _resolve_display_label(self) -> str | None:
+        """Describe the requested Target scope without resolving it."""
+        return format_flow_display_label(self._requested_targets())
+
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
         self._acceptance_basis = None
@@ -164,10 +175,9 @@ class BooleyFlow(McpTool):
         if not ticket_file:
             return None
         from booley.runtime.project_dir import resolve_checkout_project_dir
-        from booley.ticket_board.acceptance_basis import (
-            BLOCK_REASON,
-            AcceptanceBasisError,
-            assert_inputs_unchanged,
+        from booley.ticket_board.acceptance_basis import BLOCK_REASON, AcceptanceBasisError
+        from booley.ticket_board.acceptance_validation import (
+            assert_ticket_worktree_inputs_unchanged,
         )
         from booley.ticket_board.helpers import (
             TicketSlugError,
@@ -189,11 +199,16 @@ class BooleyFlow(McpTool):
             )
             self._acceptance_basis = basis
             work_dir = Path(self.args.work_dir)
-            assert_inputs_unchanged(basis, work_dir)
-        except (OSError, AcceptanceBasisError, TicketSlugError) as exc:
+            assert_ticket_worktree_inputs_unchanged(project_root, basis, work_dir)
+        except TicketSlugError as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
+            )
+        except (OSError, AcceptanceBasisError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"BLOCKED: {exc}",
             )
         return None
 
@@ -400,6 +415,122 @@ class BooleyFlow(McpTool):
         if not fresh:
             logger.debug("boundary: skipping stale artifact %s (predates dispatch)", path)
         return not fresh
+
+
+class BuiltinFlow(BooleyFlow):
+    """Invocation seam shared only by Booley's four shipped Flows."""
+
+    default_timeout: ClassVar[int] = 600
+    non_persisting_dry_run = True
+
+    def _dry_run_result(self, plan: object) -> McpToolResult:
+        """Render and optionally persist one normalized built-in Flow plan."""
+        from booley.flows.plan import FlowPlan
+
+        if not isinstance(plan, FlowPlan):
+            raise TypeError("built-in dry-run requires a FlowPlan")
+        payload = plan.as_dict()
+        report_dir = self.args.report_dir
+        if report_dir is not None:
+            report_path = Path(report_dir) / self.name / "flow_plan.json"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            serialized = json.dumps(payload, indent=2) + "\n"
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=report_path.parent,
+                    prefix=f".{report_path.name}.",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    temporary.write(serialized)
+                temporary_path.replace(report_path)
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+        print(json.dumps(payload, indent=2))
+        if plan.aggregate_errors:
+            summary = "Dry-run planning failed: " + "; ".join(plan.aggregate_errors)
+            exit_code = EXIT_ERROR
+        else:
+            summary = f"Dry run: {len(plan.work_units)} work unit(s)"
+            exit_code = 0
+        return McpToolResult(exit_code=exit_code, report_text=summary, detail=payload)
+
+    def _add_common_args(self) -> None:
+        super()._add_common_args()
+        self._parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Resolve and validate the requested work without executing EDA tools",
+        )
+        self._parser.add_argument(
+            "--timeout-ms",
+            type=positive_milliseconds,
+            default=None,
+            help=(
+                "Active-time budget in milliseconds for each Flow work unit. "
+                "Overrides [flows.<name>].timeout_ms."
+            ),
+        )
+        self._parser.add_argument(
+            "--timeout",
+            dest="_legacy_timeout_ms",
+            type=positive_milliseconds,
+            default=None,
+            help=argparse.SUPPRESS,
+        )
+
+    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
+        """Parse and normalize the built-in-only compatibility aliases."""
+        args = super().parse_args(argv)
+        legacy = args._legacy_timeout_ms
+        if args.timeout_ms is not None and legacy is not None:
+            self._parser.error("--timeout-ms cannot be combined with deprecated --timeout")
+        if legacy is not None:
+            logger.warning("--timeout is deprecated; use --timeout-ms")
+            args.timeout_ms = legacy
+        del args._legacy_timeout_ms
+        return args
+
+    def _timeout_ms(self) -> int:
+        """Resolve the strict shared timeout precedence for this built-in Flow."""
+        return resolve_timeout_ms(
+            self.name,
+            Path(self.args.work_dir),
+            self.args.timeout_ms,
+        )
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        """Validate the shared invocation contract before dry-run can return."""
+        if (rejection := super()._pre_state_gate()) is not None:
+            return rejection
+        try:
+            self._timeout_ms()
+        except BoundaryError as exc:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"ERROR: {exc}")
+        return None
+
+    def _get_timeout(self) -> int:
+        """Return the active work-unit budget in whole seconds."""
+        return max(1, self._timeout_ms() // 1000)
+
+    def mcp_schema(self) -> dict[str, object]:
+        """Expose the canonical timeout while hiding the CLI-only alias."""
+        from booley.mcp.schema_extractor import extract_schema
+
+        schema = extract_schema(self._parser)
+        schema["additionalProperties"] = False
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("_legacy_timeout_ms", None)
+            timeout = properties.get("timeout_ms")
+            if isinstance(timeout, dict):
+                timeout["type"] = "integer"
+                timeout["minimum"] = 1
+        return schema
 
 
 def _drain_after_kill(proc: subprocess.Popen) -> tuple[str, str]:

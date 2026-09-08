@@ -669,9 +669,10 @@ def _execute_with_heartbeat(
     max_rundir_bytes: int,
 ) -> tuple[deque[str], subprocess.Popen]:
     """Execute one simulator process with heartbeat and trace cleanup."""
+    from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
-    heartbeat = Heartbeat("Verilator sim", interval=60)
+    heartbeat = Heartbeat("Verilator sim", render=render_heartbeat, interval=60)
     heartbeat.start()
     try:
         return _stream_output(

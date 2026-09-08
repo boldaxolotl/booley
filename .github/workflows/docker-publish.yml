@@ -42,7 +42,7 @@ jobs:
             echo "revision=$(git rev-parse --short HEAD)"
             echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
             echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
             echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
           } >> "$GITHUB_OUTPUT"
 
@@ -55,7 +55,7 @@ jobs:
       - name: Build wheel
         run: |
           pip install build==1.6.0
-          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import write_build_stamp; write_build_stamp(Path.cwd())'
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import write_build_stamp; write_build_stamp(Path.cwd())'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           python -m build --wheel --outdir dist/
 
@@ -132,7 +132,7 @@ jobs:
         run: |
           {
             echo "version=$(cat VERSION)"
-            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
             echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
           } >> "$GITHUB_OUTPUT"
 
@@ -201,7 +201,7 @@ jobs:
           EXPECTED_PARENT: ${{ needs.build-and-push.outputs.runtime-base }}
         run: |
           mkdir -p "${RUNNER_TEMP}/standard-image-evidence"
-          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
           expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${IMAGE}" --candidate-sha "${GITHUB_SHA}" \
@@ -466,7 +466,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
           docker pull "${BASE_IMAGE}"
           docker pull "${RISCV_IMAGE}"
-          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+          expected_payload="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
           expected_recipe="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
           python .github/scripts/release_validation/image_provenance.py \
             --image "${RISCV_IMAGE}" --candidate-sha "${GITHUB_SHA}" \

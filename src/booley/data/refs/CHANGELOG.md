@@ -7,6 +7,86 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## 0.2.15 - 08 SEP 2026
+
+### New features
+
+- Every built-in Flow now returns the same versioned `FlowPlan` from a dry run.
+  The plan records each Target or baseline work unit, timeout, resolved inputs,
+  recipe, command, expected artifacts, and planning errors without running EDA
+  or changing durable Project state. When `--report-dir` is set, the dry run
+  writes only `<report-dir>/<flow>/flow_plan.json`.
+  ([PR #398](https://github.com/boldaxolotl/booley/pull/398),
+  [PR #406](https://github.com/boldaxolotl/booley/pull/406))
+- Simulation now uses one explicit mode selector for ordinary simulation,
+  elaboration-only checks, and elaboration plus standalone module checks. The
+  CLI values are `simulate`, `elab-only`, and `elab-only-standalone`.
+  ([PR #400](https://github.com/boldaxolotl/booley/pull/400),
+  [PR #406](https://github.com/boldaxolotl/booley/pull/406))
+
+### Quality of life
+
+- Built-in Flow timeouts now use one positive `timeout_ms` contract across
+  configuration, CLI, and MCP calls. Each work unit gets the full active-time
+  budget; time waiting for a job slot is excluded.
+  ([PR #398](https://github.com/boldaxolotl/booley/pull/398))
+- Reviewer and Mutation Tester calls now share required scope, repeatable
+  steering, and non-persisting dry-run inputs. Reviewer calls are source-scoped
+  and targetless. Mutation calls take one Target and derive the testbench and
+  RTL closure from it.
+  ([PR #405](https://github.com/boldaxolotl/booley/pull/405))
+- The Session Runtime now uses Verilator v5.052 at source commit
+  `ea338be98e1e838d3518809ce8899f85a009963c`. The release passed the compiler,
+  Cocotb, waveform, diagnostic, and native coverage compatibility matrix.
+  ([PR #233](https://github.com/boldaxolotl/booley/pull/233),
+  [#153](https://github.com/boldaxolotl/booley/issues/153))
+
+### Bug fixes
+
+- Doctor keeps its known-good and known-bad Simulation overlays in separate,
+  freshly reset build variants. Stale timestamps or a cached good executable
+  can no longer make the deliberate failure probe pass.
+  ([PR #397](https://github.com/boldaxolotl/booley/pull/397))
+- Target validation distinguishes executable inputs from simulator option
+  values. Valid settings such as the Verilator timescale `1ns/1ns` no longer
+  appear as missing programs, while missing executables still fail strictly.
+  ([PR #399](https://github.com/boldaxolotl/booley/pull/399))
+- Acceptance Basis validation reconstructs Booley-generated core projections
+  from the accepted commit. Setup, Flow entry, resume, and final handoff accept
+  unchanged generated files and still reject altered or externally routed
+  projections. ([PR #410](https://github.com/boldaxolotl/booley/pull/410))
+- Returning a Ticket to draft now preflights standalone submodules before
+  moving worktrees, recovers interruptions after the filesystem move, and
+  reports the deinitialization command for unsupported native Git submodules.
+  ([PR #412](https://github.com/boldaxolotl/booley/pull/412))
+
+### Upgrade notes
+
+- Replace `--timeout` with `--timeout-ms`. The old CLI spelling remains a
+  deprecated alias for one compatibility window. Configuration and MCP calls
+  use `timeout_ms`.
+- Replace Simulation's agent-facing `elab_only` and `standalone` booleans with
+  `mode: simulate`, `mode: elab_only`, or `mode: elab_only_standalone`. The CLI
+  accepts `--mode simulate`, `--mode elab-only`, or
+  `--mode elab-only-standalone`; `--elab-only`, `--build-only`, and
+  `--standalone` remain deprecated CLI aliases for one compatibility window.
+- Physical synthesis Targets must own an SDC fileset that creates a clock.
+  Booley no longer accepts a per-run default clock or generates a timing
+  constraint. Logical synthesis does not require or consume SDC.
+- Reviewer callers must pass `--scope`; standalone specification reviews use
+  `--spec` instead of `--ticket`. Remove `--diff-ref` and Reviewer `--target`.
+  Mutation callers must select one Target instead of supplying DUT or testbench
+  topology separately.
+- When Acceptance Basis inputs must change, run
+  `booley board return-to-draft <slug>`. Booley archives the previous run and
+  starts a new authoring generation. Deinitialize native Git submodules first
+  if the command reports them.
+- After upgrading, run `booley bootstrap`. Refresh a headless runtime with
+  `booley session refresh`, or use **Dev Containers: Rebuild Container** for a
+  VS Code runtime so the Verilator v5.052 image is installed.
+
+[Full changes from v0.2.14](https://github.com/boldaxolotl/booley/compare/v0.2.14...v0.2.15)
+
 ## 0.2.14 - 07 SEP 2026
 
 ### Bug fixes

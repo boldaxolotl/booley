@@ -19,8 +19,7 @@ import subprocess
 from pathlib import Path
 
 from booley.config.settings import InteractiveConfig
-
-from .devcontainer import EGRESS_NETWORK, PROXY_PORT
+from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
 
 logger = logging.getLogger(__name__)
 

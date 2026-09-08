@@ -163,11 +163,12 @@ class TestNoTicketDryRun:
         result = tool._run()
         assert result.exit_code == EXIT_SUCCESS, result.report_text
 
-        commands = json.loads(capsys.readouterr().out)
-        assert len(commands) == 2  # one per test
-        for cmd in commands:
+        plan = json.loads(capsys.readouterr().out)
+        assert plan["flow"] == "sim"
+        assert len(plan["work_units"]) == 2  # one per test
+        for unit in plan["work_units"]:
             # The preview shows the fusesoc --setup command without executing it.
-            script = " ".join(cmd)
+            script = " ".join(unit["commands"][0]["argv"])
             assert "--setup" in script
             assert "--target lite" in script
             assert "sim_demo" in script  # the resolved vlnv from the .core

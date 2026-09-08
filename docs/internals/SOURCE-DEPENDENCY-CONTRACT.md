@@ -1,19 +1,19 @@
 # Source Dependency Contract
 
 This contract defines Booley's intended Python source-dependency directions. Its
-stable rules do not make the current package graph a universal allowlist. The
-test-only analyzer describes source knowledge without adding a production
-abstraction layer.
+stable rules leave other edges unclassified; the current package graph is not a
+universal allowlist. The test-only analyzer records source knowledge without adding
+a production abstraction layer.
 
 ## Source map
 
-The package layout serves the canonical concepts in [CONTEXT.md](../CONTEXT.md):
+The package layout maps to the canonical concepts in [CONTEXT.md](../CONTEXT.md):
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |
 | Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars` | Reconcile Project-independent host prerequisites and shared infrastructure. |
 | Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup`, `booley.agent_workspace` | Validate and reconcile one Project before issuing its Session Runtime. |
-| Session Runtime | `booley.runtime`, `booley.harness.session_runtime`, `booley.harness.runtime_attachment` | Own shared execution records, processes, paths, and runtime lifecycle. |
+| Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment` | Own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint. |
@@ -45,17 +45,17 @@ base is the dependency. Aliases do not change identity. The graph retains only
 modules discoverable below the selected `booley` source root. A source read or
 syntax failure aborts analysis.
 
-Rules and permissions operate at module granularity. A prefix selector matches a
+Rules and permissions apply at module granularity. A prefix selector matches a
 named module and its descendants; an exact selector matches only the named module.
 Fan-out counts the unique target modules imported by one source module.
 
 The cycle diagnostic projects each edge to its immediate `booley.<package>` owner
-and discards same-package edges. An approved legacy SCC specifies an exact member
-set at that projection; it does not approve every edge within the set.
+and discards same-package edges. An approved legacy SCC lists an exact member set at
+that projection. It does not approve every edge within the set.
 
 ## Direction rules
 
-Each rule states independent policy. The production-tree gate in
+Each rule has its own design justification. The production-tree gate in
 `tests/architecture/test_source_dependency_contract.py` enforces the full table,
 as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 
@@ -66,13 +66,14 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D3 | Prefix `booley.specialists` | Prefix `booley.harness` and exact module `booley.mcp.server` | Forbid | A Specialist returns evidence without depending on its Harness or MCP composition mechanism. |
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Session Runtime mechanisms must remain usable without agent-facing mechanisms. |
-| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C3-C7 | Shared Session Runtime mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
+| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Session Runtime mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
 | D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp`, `booley.ticket_board` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, and Ticket Board persistence. |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
-| D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | Respectively, prefix `booley.fusesoc`; exact modules `booley.targets.catalog` and `booley.targets.target_surface` | Forbid | Target domain values and selector policy stay dependency-neutral, and FuseSoC adapters do not depend back on the Target catalog or its presentation facade. |
+| D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | For the exact target modules: prefix `booley.fusesoc`, prefixes `booley.flows.{sim,synth,fpga,lint}`, and exact modules `booley.targets.catalog` and `booley.targets.target_surface`. For FuseSoC: the exact catalog and target-surface modules. | Forbid | Target domain values and selector policy stay independent of FuseSoC, concrete Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend back on catalog orchestration or presentation. |
+| D13 | Prefix `booley.fusesoc` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | FuseSoC mechanics remain reusable beneath concrete Flow implementations. |
 
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file
@@ -93,23 +94,20 @@ For each S1-S3 source, D10 forbids targets in the other S1-S3 sets. Each S4-S5
 source cannot target the other S4-S5 set. Shared backend policy and the
 experimental simulator readers remain unclassified.
 
-All other source edges remain unclassified pending design work. Their presence
-does not endorse them, and the checker must not generate permissions from them.
+Other source edges remain unclassified pending design work. They have no
+architectural endorsement, and the checker must not generate permissions from
+their presence.
 
 ## Exact composition-root permissions
 
-These are the only rule exceptions classified as enforced design. Each permission
-belongs to one named rule and gives no source module a blanket exemption.
+Only these rule exceptions are enforced design. Each permission belongs to one
+named rule and gives no source module a blanket exemption.
 
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
 | C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
-| C3 | D6 | `booley.runtime.heartbeat -> booley.harness.colors` | The heartbeat command composes terminal presentation at its executable entry point. |
-| C4 | D6 | `booley.runtime.heartbeat -> booley.harness.terminal` | The heartbeat command composes terminal lifecycle at its executable entry point. |
-| C5 | D6 | `booley.runtime.incontainer_register -> booley.harness.auto_doctor` | In-container registration composes its Doctor command entry point. |
-| C6 | D6 | `booley.runtime.incontainer_register -> booley.harness.upgrade_cli` | In-container registration composes upgrade commands. |
-| C7 | D6 | `booley.runtime.incontainer_register -> booley.harness.upgrade_review` | In-container registration composes upgrade-review commands. |
+| C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 
 ## Exact legacy waivers
 
@@ -124,9 +122,8 @@ to a replacement edge. Both current waivers retire through
 
 ## Dynamic-import inventory
 
-The general graph excludes dynamic resolution. This inventory names each current
-production use and its existing proof so the limits of static analysis remain
-explicit:
+The general graph excludes dynamic resolution. The following production uses and
+proofs define that limit:
 
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
@@ -198,7 +195,8 @@ booley.review <-> booley.ticket_board
 booley.runtime <-> booley.ticket_board
 ```
 
-Named composition hotspots use file fan-out only as diagnostic evidence:
+The deterministic report lists named composition hotspots under a diagnostic-only
+heading. Their fan-out values do not gate changes:
 
 | Canonical role | Exact module | Unique target modules |
 | --- | --- | ---: |
@@ -213,23 +211,21 @@ Named composition hotspots use file fan-out only as diagnostic evidence:
 | Mutation Specialist | `booley.specialists.mutation_tester` | 24 |
 | Coverage Specialist | `booley.specialists.coverage_analyst` | 22 |
 
-High fan-out is diagnostic, not a violation. A change to one of these modules
-records before and after output in
-[#279](https://github.com/boldaxolotl/booley/issues/279), allowing the later fan-out
-decision to distinguish legitimate composition from unjustified knowledge growth.
+When one of these modules changes, record before-and-after output in
+[#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
+work distinguish legitimate composition from unjustified knowledge growth.
 
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
 rules, exact composition permissions, and exact legacy waivers. It rejects missing
-waiver metadata and stale waivers whose exact edge has gone. Its SCC ratchet rejects
-each current multi-package SCC that is not a subset of an approved legacy member
-set. Approved groups may split; new acyclic singletons need no baseline entry.
+waiver metadata and stale waivers whose exact edges are absent. Its SCC ratchet
+rejects any current multi-package SCC that is not a subset of an approved legacy
+member set. Approved groups may split; new acyclic singletons need no baseline
+entry.
 
 Direction failures name the source location, normalized edge, rule, and any exact
-permission or waiver for that source under the rule. The deterministic report also
-prints every named hotspot fan-out value under a diagnostic-only heading. Fan-out
-values do not gate changes.
+permission or waiver for that source under the rule.
 
 Run the complete architecture check and its report from the repository root:
 

@@ -35,6 +35,11 @@ _DEFAULT_POLL_INTERVAL_S = 2.0
 _HEARTBEAT_INTERVAL_S = 300.0  # 5 minutes
 
 
+def _event_display_label(event: dict) -> str | None:
+    """Return the preferred human label, with legacy Target fallback."""
+    return event.get("display_label") or event.get("target") or None
+
+
 class DisplayWatcher:
     """Background thread that polls display.jsonl for MCP endpoint events.
 
@@ -140,7 +145,7 @@ class DisplayWatcher:
     def _handle_endpoint_start(self, event: dict) -> None:
         """Handle ``endpoint_start`` by opening the outermost endpoint box."""
         name = event.get("endpoint", "?")
-        target = event.get("target") or None
+        target = _event_display_label(event)
         self._nesting_depth += 1
         self._endpoint_active.set()
         if self._nesting_depth == 1:
@@ -196,7 +201,7 @@ class DisplayWatcher:
         if not is_outermost:
             return
         name = event.get("endpoint", "?")
-        target = event.get("target") or None
+        target = _event_display_label(event)
         exit_code = event.get("exit_code", 2)
         duration_s = event.get("duration_s", 0.0)
         cost_usd = event.get("cost_usd", 0.0)

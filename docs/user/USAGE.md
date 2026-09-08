@@ -270,13 +270,13 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints commands without executing them; `booley flow <name> --help` shows the full contract.
+Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
 Key Flow-specific controls:
 
-- `sim`: `--elab-only` (`--build-only`) compiles, elaborates, and links without running tests; add `--standalone` for the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
-- `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
+- `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
 
 **Specialists**
@@ -291,7 +291,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB review may add `--target <sim-target>`.
+Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -301,9 +301,9 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB r
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
-| `tb` | `quality` | False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
+| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's Acceptance Basis simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
+Controls: required `--scope <file,...>` selects files; repeatable `--steer` adds review context; `--dry-run` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while standalone mode uses `--spec <path>`.
 
 #### `mutation_tester`
 
@@ -317,9 +317,9 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 | Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |
 | Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
 
-Standalone `--dry-run` prints the source-size breakdown and proposed auto count without running mutations.
+`--dry-run` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` as a prompt hint, and `--tb-top` for classic simulator Targets.
+Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 Booley validates each proposal as one exact replacement, compiles it in
@@ -535,21 +535,17 @@ stores the concrete immutable Criteria selected for that one run.
 
 The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
-A TB-quality review belongs to exactly one simulation Target. When structured
-`sim_pass` criteria establish one unique Target, Ticket Mode derives that
-binding. Otherwise author it explicitly as
-`review_tb_quality: {target: <sim-target>}`; the Target identity and callable
-selector are recorded in the Ticket's Acceptance Basis.
-This Reviewer-discovery binding does not change the condition-selected Target
-input behavior established by [#131](https://github.com/boldaxolotl/booley/issues/131).
+A TB-quality review is source-scoped and does not require a simulation Target.
+Ticket intake records the TB files from the Ticket scope directly on the
+review criterion so its suggested invocation is immediately callable.
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --elab-only` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --elab-only --standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --mode elab-only` | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --mode elab-only-standalone` | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review
@@ -567,7 +563,7 @@ input behavior established by [#131](https://github.com/boldaxolotl/booley/issue
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | TB review within one simulation Target: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
 
 #### Simulation
 

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
+from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
 from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
-DEFAULT_SIM_TIMEOUT_MS = 600_000
+DEFAULT_SIM_TIMEOUT_MS: Final[int] = default_timeout_ms("sim")
 
 
 def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
@@ -61,11 +62,8 @@ def resolve_max_rundir_bytes(work_dir: Path | str | None = None) -> int:
 
 def resolve_sim_timeout_ms(work_dir: Path | str | None = None) -> int:
     """Return the Project-owned default simulator timeout in milliseconds."""
-    value = _sim_config(work_dir).get("timeout_ms", DEFAULT_SIM_TIMEOUT_MS)
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return DEFAULT_SIM_TIMEOUT_MS
+    path = Path(work_dir) if work_dir is not None else None
+    return resolve_timeout_ms("sim", path, None)
 
 
 def resolve_sim_time_grace_s(work_dir: Path | str | None = None) -> float:

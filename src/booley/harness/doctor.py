@@ -54,22 +54,14 @@ from booley.fusesoc import (
 )
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness import bootstrap as host_bootstrap
-from booley.harness import devcontainer as dc
 from booley.harness import (
     doctor_stamp,
     image_lifecycle,
     nangate_pdk,
-    session_runtime,
     upgrade_cli,
     upgrade_review,
 )
-from booley.harness import interactive_docker as idk
 from booley.harness.colors import green, red, yellow
-from booley.harness.devcontainer import (
-    devcontainer_path,
-    spec_mounts_token_seed,
-    spec_state_is_persisted,
-)
 from booley.harness.doctor_waivers import (
     WAIVER_FILENAME,
     DoctorWaiverError,
@@ -103,8 +95,15 @@ from booley.harness.setup.line_endings import (
     line_ending_repository_display,
     reconcile_project_line_endings,
 )
-from booley.runtime import auth_token, runtime_context
+from booley.runtime import auth_token, runtime_context, session_runtime
+from booley.runtime import devcontainer as dc
+from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.devcontainer import (
+    devcontainer_path,
+    spec_mounts_token_seed,
+    spec_state_is_persisted,
+)
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import (
@@ -1795,7 +1794,7 @@ def _check_runtime_location(
 def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
     """Name the one runtime-location mistake that is otherwise completely silent.
 
-    MCP registration happens container-side (``booley.runtime.incontainer_register``,
+    MCP registration happens container-side (``booley.harness.incontainer_register``,
     run from the devcontainer's postCreate/postStart hooks). An agent started
     from a *host* shell therefore has no ``booley`` MCP server at all: no
     ``booley_status``, no Booley Flows, no error either — the MCP tools are not
@@ -4034,7 +4033,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout, and set "
+            "flows manually with a raised --timeout-ms, and set "
             "[flows.<flow>].timeout_ms so --deep honors a larger budget."
         )
     else:
@@ -5036,7 +5035,7 @@ def _check_sim_traceable(
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
-    the design lacks it (:func:`booley.fusesoc.fusesoc_trace_overlay._inject_dump_module`),
+    the design lacks it (:func:`booley.flows.sim.trace_overlay._inject_dump_module`),
     so those EDA tools self-heal — a pre-flight check earns nothing there. The
     findings are aggregated into a single WARN: a project with many untraced unit
     TBs (each independently fixable) should not spray one WARN per Target and
@@ -6893,7 +6892,7 @@ def _flow_argv(
         "--diagnostic",
     ]
     if dry_run:
-        argv.extend(["--dry-run", "--timeout", "30000"])
+        argv.extend(["--dry-run", "--timeout-ms", "30000"])
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])

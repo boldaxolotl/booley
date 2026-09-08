@@ -40,7 +40,9 @@ from booley.config.project_config import lookup_target_section
 from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
 from booley.flows import edam as edam_layer
+from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim import trace_overlay
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession, trace_cache_key
@@ -51,7 +53,7 @@ from booley.flows.target_campaign import (
 )
 from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_test_suite import NoRunnableTestsError
-from booley.fusesoc import fusesoc_registry, fusesoc_trace_overlay
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -63,6 +65,7 @@ from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 from .coverage_verilog_utils import (
     _build_rtl_name_map,  # noqa: F401  # re-exported for backward compatibility
@@ -214,6 +217,17 @@ class SignalStats:
     transitions: int = 0
     value_hist: dict[str, int] = field(default_factory=dict)
     width: int = 1
+
+
+@dataclass(frozen=True)
+class _CoverageMeasurement:
+    """Mechanical coverage facts passed from phase 1 to analysis."""
+
+    stats: list[SignalStats]
+    structural_noise: list[SignalStats]
+    toggle_failures: list[SignalStats]
+    low_diversity: list[SignalStats]
+    trace_dirs: list[Path]
 
 
 @dataclass
@@ -485,6 +499,32 @@ _COVERAGE_CRITERIA_TABLE = (
     ("coverage_expression", "EXPRESSION", "expression", "no expression conditions found"),
 )
 
+_COVERAGE_REVIEWER_OUTPUT_FORMAT = """## Output Format (MANDATORY)
+
+Return ONLY valid JSON matching this schema:
+```json
+{
+  "toggle_waivers": ["signal_constant_by_design", "signal_unused"],
+  "value_classifications": {
+    "signal_name": "sufficient",
+    "another_signal": "insufficient"
+  },
+  "value_waivers": ["signal_with_intentionally_low_diversity"],
+  "notes": ["Brief explanation of key waiver decisions"],
+  "improvement_hints": ["Concrete testbench change to improve coverage"]
+}
+```
+
+Rules:
+- toggle_waivers: signals that GENUINELY never toggle by design (constants, resets, clock-gated, genvar loop indices)
+- Genvar loop indices (i, j, k, etc. from generate-for blocks) are elaboration-time constants — always waive toggle, classify value as "sufficient"
+- value_classifications: MUST include an entry for EVERY low-diversity signal listed above
+- value_waivers: signals where low value diversity is expected by design (narrow enums, flags)
+- Binary control signals (enable, valid, ready) are "sufficient"
+- notes: brief explanations of your reasoning for key decisions
+- improvement_hints: for any signal/branch/expression that is NOT waived and NOT meeting coverage, provide a concrete, actionable testbench modification. Omit this field or leave empty if all criteria are already met.
+"""
+
 
 @dataclass(frozen=True)
 class _TraceRunContext:
@@ -595,6 +635,8 @@ class CoverageAnalystSpecialist(Specialist):
         "for waivers and branch analysis"
     )
     code_modifying: bool = False
+    target_required: bool = True
+    non_persisting_dry_run: bool = True
     min_model: str = "standard"
     default_timeout: int = 1200
     min_timeout: int = 600
@@ -621,56 +663,10 @@ class CoverageAnalystSpecialist(Specialist):
             return False
         return module is not None
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
-        """Reject missing args in Interactive Mode with a clear message.
-
-        The hierarchy discovery and sim invocation assume ``--tb-top`` is
-        populated; the sim wrapper requires ``--target``.
-
-        E3 (ADR 0034): for a Cocotb Target the testbench top *is* the
-        Target's ``toplevel`` (DUT-as-toplevel), so
-        ``--tb-top`` is not required — it defaults from the ``.core``.
-        """
-        if not getattr(self.args, "tb_top", None) and self._is_cocotb_target():
-            from booley.flows.flow_config import tb_top_for_target
-
-            try:
-                self.args.tb_top = tb_top_for_target(
-                    self.args.target,
-                    self.args.work_dir,
-                    resolved=None,
-                )
-            except Exception:  # fall through to the hard requirement
-                logger.debug("cocotb tb_top default failed", exc_info=True)
-        if not getattr(self.args, "tb_top", None):
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "coverage_analyst: --tb-top is required when running "
-                    "outside a ticket (testbench top module name, e.g. 'tb')."
-                ),
-            )
-        if not getattr(self.args, "target", "").strip():
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "coverage_analyst: --target is required. Pass --target "
-                    "<name>; it names a Target in the project's .core file "
-                    "(list them with `booley targets`)."
-                ),
-            )
-        return None
-
     def _add_agent_args(self, parser) -> None:
-        parser.add_argument(
-            "--tb-top",
-            default=None,
-            help="Testbench top module name. Defaults to the resolved sim Target's toplevel.",
-        )
-        parser.add_argument(
-            "--scope",
-            default=None,
-            help="Comma-separated RTL files; defaults from this Target's criteria",
+        self._add_scope_arg(
+            parser,
+            help_text="Comma-separated RTL files to analyze",
         )
         # --hierarchy-scope removed: auto-derived glob always used to prevent
         # developer from narrowing scope to trivially pass coverage.
@@ -686,6 +682,8 @@ class CoverageAnalystSpecialist(Specialist):
             default=False,
             help="Discard cached waivers from previous runs and re-evaluate all signals from scratch",
         )
+        self._add_steer_arg(parser, help_text="Developer Agent context for coverage analysis.")
+        self._add_dry_run_arg(parser)
 
     # _agent_lock initialized per-instance in _run() to avoid serializing concurrent runs
 
@@ -1188,8 +1186,8 @@ class CoverageAnalystSpecialist(Specialist):
     def _get_active_criteria(self) -> set[str]:
         """Determine which coverage criteria are active for this run."""
         active = {criterion.base_key for criterion in self._campaign_for_tests().criteria}
-        # If nothing in state, assume all are active
-        active = active if active else set(self.satisfies)
+        if not active:
+            active = set(self.satisfies)
 
         # Intersect with --criteria CLI filter if provided
         cli_criteria = getattr(self.args, "criteria", None)
@@ -1333,8 +1331,10 @@ For each branch condition, decompose into atomic sub-expressions and test each.
             if (trace_file := self._find_trace_file(candidate)) is not None
         ]
         trace_paths = "\n".join(f"- `{path}`" for path in trace_files) or "- `<trace_file>`"
-        instruction = getattr(self.args, "instruction", "")
-        spec_section = f"\n## Spec / Context\n\n{instruction}\n" if instruction else ""
+        context = "\n".join(
+            part for part in (getattr(self.args, "instruction", ""), self.steering_text()) if part
+        )
+        spec_section = f"\n## Spec / Context\n\n{context}\n" if context else ""
         tb_dirs = ", ".join(_configured_testbench_source_dirs(self.args.work_dir))
         signal_lines = [f"  - `{s.name}` (width: {s.width})" for s in signal_stats[:100]]
         if len(signal_stats) > 100:
@@ -1441,8 +1441,11 @@ For each branch condition, decompose into atomic sub-expressions and test each.
 
     def _build_fsm_prompt(self, rtl_context: str) -> str:
         """Build prompt for FSM identifier — RTL embedded, no agent capabilities needed."""
+        steer = self.steering_text()
+        context_section = f"\n## Caller Context\n{steer}\n" if steer else ""
         return f"""You are an FSM identification specialist. Analyze the RTL source below and
 identify all finite state machine (FSM) registers and their expected state values.
+{context_section}
 
 ## RTL Source
 {rtl_context}
@@ -1614,24 +1617,10 @@ Rules:
         if active_criteria:
             sections.append(f"Active criteria: {', '.join(sorted(active_criteria))}")
             sections.append("")
-        sections.append("""\
-Return ONLY valid JSON matching this schema:
-```json
-{
-  "toggle_waivers": ["signal_constant_by_design"],
-  "value_classifications": {
-    "signal_name": "sufficient",
-    "another_signal": "insufficient"
-  },
-  "value_waivers": ["signal_with_intentionally_low_diversity"],
-  "notes": ["Brief explanation of key waiver decisions"],
-  "improvement_hints": ["Concrete testbench change to improve coverage"]
-}
-```
-
-Do not emit prose sections or uppercase headings; the parser reads only the
-lowercase JSON keys above.
-""")
+        steer = self.steering_text()
+        if steer:
+            sections.extend(["## Caller Context", steer, ""])
+        sections.append(_COVERAGE_REVIEWER_OUTPUT_FORMAT)
         return "\n".join(sections)
 
     @staticmethod
@@ -1728,9 +1717,10 @@ Signals:
         active_criteria: set[str] | None = None,
     ) -> str:
         """Build prompt for coverage reviewer — full context, no agent capabilities."""
-        spec_section = ""
-        if hasattr(self.args, "instruction") and self.args.instruction:
-            spec_section = f"\n## Spec\n{self.args.instruction}\n"
+        context = "\n".join(
+            part for part in (getattr(self.args, "instruction", ""), self.steering_text()) if part
+        )
+        spec_section = f"\n## Spec / Caller Context\n{context}\n" if context else ""
 
         # Toggle failures section (skip if toggle not active)
         toggle_section = self._reviewer_toggle_section(toggle_failures, active_criteria)
@@ -1741,7 +1731,7 @@ Signals:
         # FSM results section
         fsm_section = self._reviewer_fsm_section(fsm_result)
 
-        return f"""You are a coverage reviewer. You have full context from all prior phases.
+        prompt = f"""You are a coverage reviewer. You have full context from all prior phases.
 Your job is to apply waivers and value classifications with informed judgment.
 {spec_section}
 ## RTL Source
@@ -1751,36 +1741,8 @@ Your job is to apply waivers and value classifications with informed judgment.
 {value_section}
 {branch_section}
 {fsm_section}
-
-## Output Format (MANDATORY)
-
-Respond with ONLY a JSON object:
-```json
-{{
-  "toggle_waivers": ["signal_constant_by_design", "signal_unused"],
-  "value_classifications": {{
-    "signal_name": "sufficient",
-    "another_signal": "insufficient"
-  }},
-  "value_waivers": ["signal_with_intentionally_low_diversity"],
-  "notes": ["Brief explanation of key waiver decisions"],
-  "improvement_hints": ["Concrete testbench change to improve coverage"]
-}}
-```
-
-Rules:
-- toggle_waivers: signals that GENUINELY never toggle by design (constants, resets, clock-gated, genvar loop indices)
-- Genvar loop indices (i, j, k, etc. from generate-for blocks) are elaboration-time constants — always waive toggle, classify value as "sufficient"
-- value_classifications: MUST include an entry for EVERY low-diversity signal listed above
-- value_waivers: signals where low value diversity is expected by design (narrow enums, flags)
-- Binary control signals (enable, valid, ready) are "sufficient"
-- notes: brief explanations of your reasoning for key decisions
-- improvement_hints: for any signal/branch/expression that is NOT waived and NOT meeting coverage, \
-provide a concrete, actionable testbench modification. Examples: "Drive `cfg_mode` to all 4 enum \
-values across separate test phases", "Add a stimulus sequence that triggers the else-branch of \
-the overflow check at line 42", "Toggle `chip_select` during an active transaction to cover the \
-abort path". Omit this field or leave empty if all criteria are already met.
 """
+        return f"{prompt}\n{_COVERAGE_REVIEWER_OUTPUT_FORMAT}"
 
     @staticmethod
     def _parse_reviewer_output(raw: str) -> ReviewerResult:
@@ -1966,7 +1928,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         value, branch, expression = scores["value"], scores["branch"], scores["expression"]
 
         results_lines: list[str] = []
-        # Set criteria independently with per-type detail (order fixed by the table)
+        # Set criteria independently with per-type detail in stable table order.
         for row in _COVERAGE_CRITERIA_TABLE:
             self._emit_criterion_result(active, results_lines, row, scored)
 
@@ -1983,16 +1945,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
         self._write_report_artifact(report_dict)
 
-        display_parts = []
-        for label, score in [
-            ("TOG", toggle),
-            ("FSM", fsm),
-            ("VAL", value),
-            ("BR", branch),
-            ("EXPR", expression),
-        ]:
-            if score["pct"] is not None:
-                display_parts.append(f"{label}: {score['pct']:.0f}%")
+        display_parts = self._coverage_display_parts(toggle, fsm, value, branch, expression)
 
         active_keys = [self._target_criterion_key(k) for k in self.satisfies if k in active]
         return McpToolResult(
@@ -2005,6 +1958,24 @@ abort path". Omit this field or leave empty if all criteria are already met.
             report_text=report_text,
             display_lines=[" | ".join(display_parts)] if display_parts else [],
         )
+
+    @staticmethod
+    def _coverage_display_parts(
+        toggle: dict,
+        fsm: dict,
+        value: dict,
+        branch: dict,
+        expression: dict,
+    ) -> list[str]:
+        """Format the compact per-metric percentages for the live display."""
+        scores = zip(
+            ("TOG", "FSM", "VAL", "BR", "EXPR"),
+            (toggle, fsm, value, branch, expression),
+            strict=True,
+        )
+        return [
+            f"{label}: {score['pct']:.0f}%" for label, score in scores if score["pct"] is not None
+        ]
 
     def _resolve_threshold(self, criterion_key: str, default: int) -> int:
         """Resolve threshold: ticket params (min_pct) > hardcoded default.
@@ -2534,73 +2505,161 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     def _run(self) -> McpToolResult:
         """Five-phase coverage analysis."""
+        if campaign_error := self._apply_campaign_defaults():
+            return campaign_error
+        if input_error := self._prepare_run_inputs():
+            return input_error
+        if getattr(self.args, "dry_run", False):
+            return self._dry_run_preview()
         err = self._check_prerequisites()
         if err:
             return err
-        if campaign_error := self._apply_campaign_defaults():
-            return campaign_error
+        return self._execute_coverage_analysis()
 
-        t0, work_dir, output_lines = self._init_run_state()
-
-        # Validate --scope files early + ensure one trace per Target test.
-        scope_files, trace_dirs, scope_or_trace_err = self._ensure_target_traces(work_dir)
-        if scope_or_trace_err:
-            return scope_or_trace_err
-        self._trace_dirs = trace_dirs
-
-        # Phase 1: Mechanical measurement
-        stats, structural_noise, toggle_failures, low_diversity, phase1_err = (
-            self._run_phase1_measurement_for_suite(trace_dirs, scope_files, output_lines)
+    def _dry_run_preview(self) -> McpToolResult:
+        """Describe the validated coverage campaign without executing it."""
+        campaign = self._target_campaign
+        active = sorted(self._get_active_criteria())
+        summary = (
+            f"coverage_analyst dry-run: target={self.args.target}; "
+            f"scope={len(campaign.scope)} file(s); top={self._tb_top}; "
+            f"criteria={','.join(active)}"
         )
-        if phase1_err:
-            return phase1_err
+        return self._dry_run_result(
+            summary=summary,
+            detail={
+                "target": self.args.target,
+                "scope": list(campaign.scope),
+                "tb_top": self._tb_top,
+                "tests": [unit.display_name for unit in campaign.execution_units()],
+                "criteria": active,
+                "steering_count": len(getattr(self.args, "steer", None) or []),
+            },
+        )
 
-        # Read RTL sources once for phases 3 + 4
+    def _execute_coverage_analysis(self) -> McpToolResult:
+        """Run measurement, specialist analysis, and scoring."""
+        t0, work_dir, output_lines = self._init_run_state()
+        measurement = self._measure_target_coverage(work_dir, output_lines)
+        if isinstance(measurement, McpToolResult):
+            return measurement
         rtl_context = self._read_rtl_sources()
-
-        # Phases 2+3: Virtual Signal Creator + FSM Identifier (parallel when both needed)
         active_criteria = self._get_active_criteria()
-
-        (
-            branch_results,
-            expression_results,
-            fsm_result,
-            valid_toggle_waivers,
-            value_classifications,
-            valid_value_waivers,
-            reviewer_result,
-        ) = self._run_phases_2_to_4(
+        phase_results = self._run_phases_2_to_4(
             work_dir,
-            trace_dirs[0],
-            stats,
-            toggle_failures,
-            low_diversity,
+            measurement.trace_dirs[0],
+            measurement.stats,
+            measurement.toggle_failures,
+            measurement.low_diversity,
             rtl_context,
             active_criteria,
             t0,
             output_lines,
         )
-
-        # Resolve symbolic enum/localparam names in FSM expected_values
-        resolved_fsm = _resolve_fsm_enum_names(fsm_result.fsm_registers, rtl_context)
-
-        # Build report
-        report = CoverageReport(
-            signal_stats=stats,
-            structural_noise=structural_noise,
-            branch_results=branch_results,
-            expression_results=expression_results,
-            fsm_registers=resolved_fsm,
-            toggle_waivers=valid_toggle_waivers,
-            value_classifications=value_classifications,
-            value_waivers=valid_value_waivers,
-            reviewer_notes=reviewer_result.notes,
-            improvement_hints=reviewer_result.improvement_hints,
-        )
-
-        # Phase 5: Scoring
+        report = self._assemble_coverage_report(measurement, phase_results, rtl_context)
         output_lines.append("[coverage] phase 5: scoring")
         return self._build_coverage_result(report, output_lines, active_criteria)
+
+    def _measure_target_coverage(
+        self,
+        work_dir: Path,
+        output_lines: list[str],
+    ) -> _CoverageMeasurement | McpToolResult:
+        """Validate traces and run the mechanical coverage phase."""
+        scope_files, trace_dirs, error = self._ensure_target_traces(work_dir)
+        if error:
+            return error
+        self._trace_dirs = trace_dirs
+        stats, noise, toggle_failures, low_diversity, error = (
+            self._run_phase1_measurement_for_suite(trace_dirs, scope_files, output_lines)
+        )
+        if error:
+            return error
+        return _CoverageMeasurement(
+            stats,
+            noise,
+            toggle_failures,
+            low_diversity,
+            trace_dirs,
+        )
+
+    @staticmethod
+    def _assemble_coverage_report(
+        measurement: _CoverageMeasurement,
+        phase_results: tuple[
+            list[BranchResult],
+            list[BranchResult],
+            FsmResult,
+            list[str],
+            dict[str, str],
+            list[str],
+            ReviewerResult,
+        ],
+        rtl_context: str,
+    ) -> CoverageReport:
+        """Assemble all phase outputs into the immutable scoring input."""
+        branch, expression, fsm, toggle_waivers, values, value_waivers, reviewer = phase_results
+        return CoverageReport(
+            signal_stats=measurement.stats,
+            structural_noise=measurement.structural_noise,
+            branch_results=branch,
+            expression_results=expression,
+            fsm_registers=_resolve_fsm_enum_names(fsm.fsm_registers, rtl_context),
+            toggle_waivers=toggle_waivers,
+            value_classifications=values,
+            value_waivers=value_waivers,
+            reviewer_notes=reviewer.notes,
+            improvement_hints=reviewer.improvement_hints,
+        )
+
+    def _prepare_run_inputs(self) -> McpToolResult | None:
+        """Resolve metadata-only inputs before dry-run or execution."""
+        if target_error := self._validate_single_target():
+            return target_error
+        try:
+            self._tb_top = tb_top_for_target(self.args.target, self.args.work_dir, resolved=None)
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target))
+        except FuseSocError as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"coverage_analyst: could not resolve Target metadata: {exc}",
+            )
+        if not self._tb_top:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="coverage_analyst: selected Target does not declare a toplevel",
+            )
+        scope = set(self._target_campaign.scope)
+        unknown = sorted(scope - set(inspection.rtl_files))
+        if unknown:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "coverage_analyst: --scope contains files outside the Target RTL "
+                    f"closure: {', '.join(unknown)}"
+                ),
+            )
+        valid = {"toggle", "fsm", "value", "branch", "expression"}
+        requested = {
+            item.strip() for item in (self.args.criteria or "").split(",") if item.strip()
+        }
+        invalid = sorted(requested - valid)
+        if invalid:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"coverage_analyst: unknown --criteria: {', '.join(invalid)}",
+            )
+        return None
+
+    def _validate_single_target(self) -> McpToolResult | None:
+        targets = [part.strip() for part in self.args.target.split(",") if part.strip()]
+        if len(targets) == 1:
+            return None
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text="coverage_analyst: --target must select exactly one Target",
+        )
 
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Resolve one consistent RTL scope from Target-specific criteria."""
@@ -2844,7 +2903,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             variant="trace",
         )
         handle = TargetCatalog.build(work_dir).select(self.args.target, for_flow="sim")
-        overlay = fusesoc_trace_overlay.write_trace_overlay(handle)
+        overlay = trace_overlay.write_trace_overlay(handle)
         try:
             resolved = fusesoc_registry.resolve_target_handle(
                 handle,
@@ -2934,7 +2993,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             TargetCatalog.build(context.work_dir).select(self.args.target).cocotb_module
         )
         if cocotb_module:
-            fusesoc_trace_overlay.validate_cocotb_trace_mode(
+            trace_overlay.validate_cocotb_trace_mode(
                 self.args.target,
                 context.trace_mode,
             )
@@ -3073,9 +3132,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
                 trace_scope,
                 trace_timeout,
             )
-        except (
-            Exception  # isolate arbitrary adapter/configure failures
-        ) as exc:  # isolate EDAM/configure failure and surface it as an error McpToolResult
+        except (FuseSocError, OSError, ValueError) as exc:
             logger.debug("coverage EDAM/configure failed for %s", self.args.target, exc_info=True)
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -3135,7 +3192,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             Path(self.args.work_dir),
             "sim",
             target,
-            top_module=self.args.tb_top,
+            top_module=self._tb_top,
             test_name=resolved_test,
         )
 

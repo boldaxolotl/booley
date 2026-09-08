@@ -199,7 +199,11 @@ def _config_auxiliary_paths(root: Path, config_path: Path) -> set[Path]:
     )
 
 
-def acceptance_control_paths(project_root: Path | str) -> tuple[str, ...]:
+def acceptance_control_paths(
+    project_root: Path | str,
+    *,
+    git_command: tuple[str, ...] = ("git",),
+) -> tuple[str, ...]:
     """Return control inputs and entries capable of redirecting them."""
     root = Path(project_root).resolve()
     paths: set[Path] = set()
@@ -212,7 +216,7 @@ def acceptance_control_paths(project_root: Path | str) -> tuple[str, ...]:
             paths.update(_config_auxiliary_paths(root, config_path))
     for path in tuple(paths):
         paths.update(_redirecting_control_entries(root, path))
-    gitlinks = _tracked_gitlinks(root)
+    gitlinks = _tracked_gitlinks(root, git_command)
     for path in tuple(paths):
         identity = _identity(root, path)
         paths.update(
@@ -232,9 +236,9 @@ def _redirecting_control_entries(root: Path, path: Path) -> Iterator[Path]:
         current = current.parent
 
 
-def _tracked_gitlinks(root: Path) -> set[str]:
+def _tracked_gitlinks(root: Path, git_command: tuple[str, ...]) -> set[str]:
     result = subprocess.run(
-        ["git", "ls-files", "--stage", "-z"],
+        [*git_command, "ls-files", "--stage", "-z"],
         cwd=root,
         capture_output=True,
         text=True,

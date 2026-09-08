@@ -218,9 +218,6 @@ known-first-party = ["booley"]
 #   PLR0915 (sim) — _run is a linear per-target drive loop (resolve,
 #             execute, classify, write report, accumulate display); splitting
 #             would scatter the per-config result/criterion bookkeeping.
-#   PLR0912/PLR0915 (fusesoc_trace_overlay) — write_trace_overlay is a per-simulator
-#             dispatch (verilator/icarus/xcelium/vcs); the branches ARE the four
-#             documented tool injections, each with its own validation gate.
 #   PLR0915 (init_cmd) — _step_interactive is a linear Step-12 setup flow
 #             (tracked-guard, build spec, check-only branch, write, docker
 #             provisioning); the sequential guards are one cohesive step.
@@ -244,7 +241,6 @@ known-first-party = ["booley"]
 "src/booley/harness/developer.py" = ["PLR0915"]
 "src/booley/harness/console/links.py" = ["PLR0911"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
-"src/booley/fusesoc/fusesoc_trace_overlay.py" = ["PLR0912", "PLR0915"]
 "src/booley/harness/init_cmd.py" = ["PLR0915", "F401"]
 "src/booley/flows/synth/backends/openroad/timing.py" = ["PLR0911"]
 "crates/bwave/tests/gen_xcelium_dialect_vcd.py" = ["PLR0915"]
@@ -323,6 +319,9 @@ include = [
     "src/booley/flows/lint/flow.py",
     "src/booley/flows/sim/build.py",
     "src/booley/flows/sim/flow.py",
+    "src/booley/flows/sim/verilator_coverage.py",
+    "src/booley/flows/sim/verilator_coverage_execution.py",
+    "src/booley/flows/sim/coverage_overlay.py",
     "src/booley/flows/synth/flow.py",
     "src/booley/flows/fpga/flow.py",
     "src/booley/flows/implementation_comparison.py",

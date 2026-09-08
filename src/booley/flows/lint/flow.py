@@ -23,6 +23,15 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.flows import eda_parsers
+from booley.flows.plan import (
+    CommandPlan,
+    FlowPlan,
+    WorkUnitPlan,
+    normalize_plan_argv,
+    normalize_plan_inputs,
+    normalize_plan_path,
+    stable_unit_id,
+)
 from booley.flows.run_log import write_run_log
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
@@ -34,12 +43,12 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import MissingTargetToplevelError, TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
 from .. import edam as edam_layer
-from ..base import BooleyFlow, SubprocessResult
+from ..base import BuiltinFlow, SubprocessResult
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +150,15 @@ class LintConfigResult:
     report carries rule/file:line/message per warning, but the linter's raw
     output — banner, include resolution, the lines around a diagnostic — only
     exists there. Empty when the log could not be written."""
+
+
+@dataclass
+class _PreparedLintTarget:
+    """One fully resolved lint unit, ready for the first EDA command."""
+
+    command: list[str]
+    resolved: fusesoc_registry.ResolvedTarget
+    result: LintConfigResult
 
 
 def parse_warnings(output: str, target: str) -> list[LintWarning]:
@@ -382,7 +400,7 @@ def _build_warning_details(
     return details
 
 
-class LintFlow(BooleyFlow):
+class LintFlow(BuiltinFlow):
     """Run the Target's linter for one or more Targets."""
 
     name: str = "lint"
@@ -400,17 +418,6 @@ class LintFlow(BooleyFlow):
             default="",
             help="Comma-separated file paths to filter warnings",
         )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Print lint commands without executing",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=120000,
-            help="Per-config lint timeout in milliseconds",
-        )
 
     # --- Command building ---
 
@@ -422,10 +429,6 @@ class LintFlow(BooleyFlow):
         """Not used вЂ” LintFlow overrides _run()."""
         return EndpointOutcome()
 
-    def _get_timeout(self) -> int:
-        """Per-config timeout in seconds (CLI flag is ms)."""
-        return self.args.timeout // 1000
-
     def _get_targets(self) -> tuple[TargetHandle, ...]:
         """Validated Target selection for this run (ADR 0030).
 
@@ -436,7 +439,9 @@ class LintFlow(BooleyFlow):
         (``--target a,b``). An empty ``--target`` returns no selection rather
         than linting every core.
         """
-        return TargetCatalog.build(self.args.work_dir).select_many(
+        catalog = TargetCatalog.build(self.args.work_dir)
+        self._target_catalog = catalog
+        return catalog.select_many(
             self.args.target,
             for_flow="lint",
         )
@@ -503,19 +508,81 @@ class LintFlow(BooleyFlow):
         return ["sh", "-c", script]
 
     def _dry_run(self, targets: tuple[TargetHandle, ...]) -> EndpointOutcome:
-        """Print the side-effect-free ``fusesoc run --setup`` + ``make`` preview.
+        """Render the normalized plan resolved by preflight."""
+        del targets
+        return self._dry_run_result(self._flow_plan)
 
-        One ``sh -c`` script per Target, emitted as JSON — the same shape the
-        simulate/elaborate built-ins use, so a dry-run never invokes fusesoc.
-        """
-        commands = {target.selector: self._dry_run_command(target) for target in targets}
-        output = json.dumps(commands, indent=2)
-        print(output)
-        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
+    def _plan_lint(self, targets: tuple[TargetHandle, ...]) -> FlowPlan:
+        """Resolve every selected lint recipe before any linter can execute."""
+        units: list[WorkUnitPlan] = []
+        errors: list[str] = []
+        for target in targets:
+            try:
+                units.append(self._lint_work_unit(target))
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                errors.append(f"{target.selector}: {exc}")
+        return FlowPlan(
+            flow="lint",
+            mode="lint",
+            work_units=tuple(units),
+            aggregate_errors=tuple(errors),
+        )
+
+    def _lint_work_unit(self, target: TargetHandle) -> WorkUnitPlan:
+        """Normalize one selected lint Target into the shared plan model."""
+        inspection = self._lint_plan_inspection(target)
+        command = self._lint_plan_command(target)
+        inputs = inspection.inputs if inspection is not None else ()
+        sources, constraints = normalize_plan_inputs(inputs, self.args.work_dir)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("lint", target.selector, (target.selector,)),
+            role="ordinary",
+            revision=None,
+            selector=target.selector,
+            target_identity=target.identity,
+            test_or_module_scope=(target.selector,),
+            eda_tool=inspection.eda_tool if inspection is not None else target.eda_tool,
+            timeout_ms=self._timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=inspection.parameters if inspection is not None else {},
+            recipe={
+                "flow_options": inspection.flow_options if inspection is not None else {},
+                "scope": self.args.scope,
+                "toplevel": inspection.toplevel if inspection is not None else "",
+            },
+            commands=(
+                CommandPlan(
+                    normalize_plan_argv(command, self.args.work_dir),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(normalize_plan_path(build_root / "run.log", self.args.work_dir),),
+        )
+
+    def _lint_plan_inspection(self, target: TargetHandle) -> Any | None:
+        """Inspect a Target, tolerating only the supported legacy no-top shape."""
+        catalog = getattr(self, "_target_catalog", None)
+        try:
+            return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
+        except fusesoc_registry.FuseSocError as exc:
+            if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
+                raise
+            return None
+
+    def _lint_plan_command(self, target: TargetHandle) -> tuple[str, ...]:
+        """Render the command shape used by the lint plan."""
+        command = tuple(self._dry_run_command(target))
+        if len(command) == 1 and command[0].startswith("ERROR:"):
+            raise ValueError(command[0])
+        return command
 
     def _run_lint_target(
         self,
         target: TargetHandle,
+        prepared: _PreparedLintTarget | None = None,
     ) -> LintConfigResult:
         """Run lint for a single Target via the Edalize lint flow, parse warnings.
 
@@ -528,27 +595,20 @@ class LintFlow(BooleyFlow):
         one shared path.
         """
         selector = target.selector
-        result = LintConfigResult(target=selector)
-        family = _lint_eda_tool_family(target.eda_tool)
-        # Claim this Target's run.log up front: it is only WRITTEN at the end
-        # of the run below, so until then it still holds the previous run's
-        # findings and a tail would read them as this run's (F-26).
+        # Claim this Target's run.log before preparation, so a concurrent tail
+        # can never mistake a previous invocation's findings for current work.
         self._open_run_log(
             selector,
             edam_layer.work_root_for(self.args.work_dir, "lint", selector),
         )
-
-        try:
-            cmd, resolved = self._prepare_lint_command(target)
-        except Exception as exc:  # isolate and normalize a Target setup failure
-            result.error = f"lint setup failed: {exc}"
-            result.error_is_eda_tool_failure = True
-            logger.debug("lint EDAM/configure failed for %s", selector, exc_info=True)
-            return result
-
-        if not self._record_coverage_facts(result, resolved, family):
-            return result
-
+        if prepared is None:
+            prepared_units, errors = self._prepare_lint_targets((target,))
+            if errors:
+                return errors[0]
+            prepared = prepared_units[target.identity]
+        result = prepared.result
+        cmd = prepared.command
+        family = _lint_eda_tool_family(prepared.resolved.eda_tool)
         start = time.monotonic()
         proc = self._execute_boundary(cmd)
         result.duration_s = time.monotonic() - start
@@ -588,6 +648,34 @@ class LintFlow(BooleyFlow):
                 pointer = posix_relpath(log_path, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
+
+    def _prepare_lint_targets(
+        self,
+        targets: tuple[TargetHandle, ...],
+    ) -> tuple[dict[str, _PreparedLintTarget], list[LintConfigResult]]:
+        """Resolve and coverage-check the complete aggregate before execution."""
+        prepared: dict[str, _PreparedLintTarget] = {}
+        errors: list[LintConfigResult] = []
+        for target in targets:
+            result = LintConfigResult(target=target.selector)
+            try:
+                command, resolved = self._prepare_lint_command(target)
+            except Exception as exc:  # isolate and normalize a Target setup failure
+                result.error = f"lint setup failed: {exc}"
+                result.error_is_eda_tool_failure = True
+                logger.debug(
+                    "lint EDAM/configure failed for %s",
+                    target.selector,
+                    exc_info=True,
+                )
+                errors.append(result)
+                continue
+            family = _lint_eda_tool_family(resolved.eda_tool)
+            if not self._record_coverage_facts(result, resolved, family):
+                errors.append(result)
+                continue
+            prepared[target.identity] = _PreparedLintTarget(command, resolved, result)
+        return prepared, errors
 
     def _record_coverage_facts(
         self,
@@ -701,12 +789,14 @@ class LintFlow(BooleyFlow):
     def _run_all_targets(
         self,
         targets: tuple[TargetHandle, ...],
+        prepared: dict[str, _PreparedLintTarget] | None = None,
     ) -> tuple[list[LintConfigResult], list[LintWarning]]:
         """Run lint per Target sequentially, print per-Target summary."""
         all_warnings: list[LintWarning] = []
         target_results: list[LintConfigResult] = []
         for target in targets:
-            cr = self._run_lint_target(target)
+            unit = prepared[target.identity] if prepared is not None else None
+            cr = self._run_lint_target(target, unit)
             target_results.append(cr)
             line = _target_summary_line(cr)
             print(line)
@@ -768,7 +858,7 @@ class LintFlow(BooleyFlow):
             )
         return None
 
-    def _run(self) -> EndpointOutcome:
+    def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear aggregate orchestration
         """Run lint across configured build Targets."""
         err = self._validate_interactive_args()
         if err is not None:
@@ -789,13 +879,40 @@ class LintFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text="lint is disabled ([flows.lint].enabled = false).",
             )
-        # Builtin (FuseSoC) dry-run: a cheap side-effect-free preview that never
-        # resolves — short-circuits before the per-Target make loop below.
+        plan = self._plan_lint(targets)
+        self._flow_plan = plan
         if self.args.dry_run:
             return self._dry_run(targets)
+        if plan.aggregate_errors:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="lint planning failed: " + "; ".join(plan.aggregate_errors),
+                detail={"plan": plan.as_dict()},
+            )
+        for target in targets:
+            self._open_run_log(
+                target.selector,
+                edam_layer.work_root_for(self.args.work_dir, "lint", target.selector),
+            )
+        prepared, preparation_errors = self._prepare_lint_targets(targets)
+        if preparation_errors:
+            messages = tuple(f"{result.target}: {result.error}" for result in preparation_errors)
+            self._flow_plan = FlowPlan(
+                flow=plan.flow,
+                mode=plan.mode,
+                work_units=plan.work_units,
+                aggregate_errors=messages,
+            )
+            for result in preparation_errors:
+                print(_target_summary_line(result))
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text="lint planning failed: " + "; ".join(messages),
+                detail={"plan": self._flow_plan.as_dict()},
+            )
 
         overall_start = time.monotonic()
-        target_results, all_warnings = self._run_all_targets(targets)
+        target_results, all_warnings = self._run_all_targets(targets, prepared)
         selectors = [target.selector for target in targets]
 
         # Deduplicate and scope-filter

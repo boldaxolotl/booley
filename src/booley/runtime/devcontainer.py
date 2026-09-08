@@ -206,7 +206,7 @@ _APP_CREDS_SEED_TARGET = {
 # Code's "Reopen in Container": VS Code resolves localEnv against its own
 # process env, where the stored file is invisible. ``incontainer_register``
 # reads this sidecar on every container start and applies it container-side
-# (see :func:`booley.runtime.incontainer_register.apply_stored_credential`), so every
+# (see :func:`booley.runtime.incontainer_setup.apply_stored_credential`), so every
 # entry point — VS Code, ``booley session``, headless drivers — sees the same
 # credential with no manual export. Same home-sidecar placement rationale as
 # ``_APP_CREDS_SEED_TARGET`` above.
@@ -237,7 +237,7 @@ def mcp_post_start_command() -> str:
     it reconnects instead of being stranded with a dead stdio child. The app
     to register comes from ``BOOLEY_AGENT_APP``.
     """
-    return "python -m booley.runtime.incontainer_register"
+    return "python -m booley.harness.incontainer_register"
 
 
 def vaporview_patch_command() -> str:

@@ -47,25 +47,23 @@ def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -
     entry = CriterionEntry(
         met=False,
         mandatory=True,
-        params={"target": "acme:ip:uart:1.0#sim_uart"},
+        params={"scope": ["rtl/uart.sv"]},
     )
 
     assert (
-        planned_invocation("review_rtl_spec_done", entry) == "reviewer --category rtl --focus spec"
+        planned_invocation("review_rtl_spec_done", entry)
+        == "reviewer --category rtl --focus spec --scope rtl/uart.sv"
     )
 
 
-def test_target_bound_tb_reviewer_action_uses_sealed_selector() -> None:
+def test_tb_reviewer_action_uses_source_scope_without_target() -> None:
     entry = CriterionEntry(
         met=False,
         mandatory=True,
-        params={
-            "target": "acme:ip:uart:1.0#sim_uart",
-            "_target_selector": "uart#sim_uart",
-        },
+        params={"scope": ["tb/test_uart.py", "tb/uart_tb.sv"]},
     )
 
     assert (
         planned_invocation("review_tb_quality_clean", entry)
-        == "reviewer --category tb --focus quality --target uart#sim_uart"
+        == "reviewer --category tb --focus quality --scope tb/test_uart.py,tb/uart_tb.sv"
     )

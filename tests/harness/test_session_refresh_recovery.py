@@ -9,15 +9,16 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from booley.eda.provisioning import runtime_spec
 from booley.eda.provisioning.runtime_spec import Issuance
-from booley.harness import bootstrap_cli, init_cmd, session_refresh
-from booley.harness import session_runtime as sr
-from booley.harness.init_cmd import SessionSpecSnapshot
+from booley.harness import bootstrap_cli, init_cmd
+from booley.runtime import session_refresh
+from booley.runtime import session_runtime as sr
+from booley.runtime.session_spec import SessionSpecSnapshot
 
 
 def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
@@ -259,7 +260,6 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
 
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
-        patch.object(session_refresh, "inspect_refreshable_session_image"),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
         patch.object(sr, "plan_session_refresh", return_value=parked, create=True),
@@ -274,7 +274,10 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
         patch.object(session_refresh, "_verify_restored_journal"),
         pytest.raises(RuntimeError, match="parking failed"),
     ):
-        session_refresh.refresh(project)
+        session_refresh.refresh(
+            project,
+            Mock(spec=session_refresh.SessionImageOperations),
+        )
 
 
 def test_committed_recovery_only_finishes_replacement_cleanup(tmp_path: Path, monkeypatch) -> None:
@@ -396,7 +399,10 @@ def test_refresh_stops_after_recovering_shared_host_state(tmp_path: Path) -> Non
         patch.object(session_refresh, "_refresh_unlocked") as refresh_unlocked,
         pytest.raises(sr.SessionError, match=r"recovered.*run.*again"),
     ):
-        session_refresh.refresh(project)
+        session_refresh.refresh(
+            project,
+            Mock(spec=session_refresh.SessionImageOperations),
+        )
 
     refresh_unlocked.assert_not_called()
 

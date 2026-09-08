@@ -699,16 +699,19 @@ def _validate_materialized_acceptance_basis(
     """Validate the basis-bound surface after disposable checkouts are materialized."""
     if ctx.acceptance_basis is None:
         return None
-    from booley.ticket_board.acceptance_basis import (
-        BLOCK_REASON,
-        AcceptanceBasisError,
-        assert_inputs_unchanged,
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+    from booley.ticket_board.acceptance_validation import (
+        assert_ticket_worktree_inputs_unchanged,
     )
 
     try:
-        assert_inputs_unchanged(ctx.acceptance_basis, worktree_path)
+        assert_ticket_worktree_inputs_unchanged(
+            ctx.project_root,
+            ctx.acceptance_basis,
+            worktree_path,
+        )
     except (OSError, AcceptanceBasisError) as exc:
-        return StepResult(block_reason=f"{BLOCK_REASON}: {exc}")
+        return StepResult(block_reason=str(exc))
     return None
 
 

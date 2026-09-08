@@ -19,6 +19,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from booley.presentation.heartbeat import format_heartbeat
 from booley.ticket_board.helpers import fmt_duration
 
 from .colors import (
@@ -200,9 +201,8 @@ def step_footer() -> None:
 
 def heartbeat_line(desc: str, elapsed_str: str, extra: str = "") -> None:
     """Print a heartbeat progress line."""
-    suffix = f" | {extra}" if extra else ""
     with _output_lock:
-        _emit(dim(f"  * [{desc}] elapsed: {elapsed_str}{suffix}"), flush=True)
+        _emit(dim(format_heartbeat(desc, elapsed_str, extra)), flush=True)
 
 
 # ---------------------------------------------------------------------------

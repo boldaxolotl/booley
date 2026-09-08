@@ -36,6 +36,7 @@ def _plan(tmp_path: Path, scope: str) -> MutationRunPlan:
         scope_hashes={},
         work_dir=tmp_path,
         target="sim",
+        tb_top="tb",
         report_dir=None,
         min_detected=1,
         count=2,

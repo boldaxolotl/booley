@@ -118,7 +118,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 @pytest.fixture(autouse=True)
 def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep host-global mutation locks local to each test process."""
-    from booley.harness import lifecycle_lock
+    from booley.runtime import lifecycle_lock
 
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path / "host-config")
 
