@@ -260,3 +260,53 @@ def test_source_drift_after_preflight_never_runs_with_stale_provenance(tmp_path)
     assert outcome.exit_code == 2
     assert execution.runs == []
     assert not outcome.campaign_path.exists()
+
+
+@pytest.mark.parametrize("failure_at", ["merge", "second_run"])
+def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, failure_at):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class Interrupted(NativeExecution):
+        def run(self, request):
+            if failure_at == "second_run" and self.runs:
+                raise FileNotFoundError("runner unavailable")
+            return super().run(request)
+
+        def command(self, request):
+            raise FileNotFoundError("merge executable unavailable")
+
+    outcome = run_coverage_target(plan, Interrupted(), Progress())
+    assert outcome.exit_code == 2
+    assert outcome.abort_remaining is True
+    campaign = decode_coverage_campaign(
+        json.loads(outcome.campaign_path.read_text()), DurableTargetIdentity(plan.handle.identity)
+    )
+    expected = ["pass", "pass"] if failure_at == "merge" else ["pass", "inconclusive"]
+    assert [run.simulation_verdict for run in campaign.runs] == expected
+    assert campaign.collection["status"] == "collector_error"
+    assert campaign.evaluation["status"] == "not_requested"
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert [run["verdict"] for run in simulation["tests"]] == expected
+
+
+def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp_path):
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.contract import SimulationOptions
+    from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    execution = VerilatorCoverageExecution(
+        plan.handle,
+        invoke=lambda command, timeout: SubprocessResult(0, "Verilator 5.052", ""),
+        options=SimulationOptions(),
+        provenance_path=tmp_path / "missing-provenance",
+    )
+    outcome = run_coverage_target(plan, execution, Progress())
+    assert outcome.exit_code == 2
+    assert outcome.abort_remaining is True
+    assert outcome.detail["simulation"] == "inconclusive"
+    assert outcome.campaign_path.is_file()

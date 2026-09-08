@@ -131,3 +131,54 @@ def test_hidden_cli_aliases_select_same_internal_request():
     assert flow.parse_args(["--target", "sim", "--coverage"]).coverage is True
     assert flow.parse_args(["--target", "sim", "--cov"]).coverage is True
     assert flow.parse_args(["--target", "sim"]).coverage is False
+
+
+import pytest
+
+
+@pytest.mark.parametrize("config", ["coverage = true", "flows = []", "[flows]\nsim = 1"])
+def test_invalid_coverage_tables_return_preflight_error(tmp_path, monkeypatch, config):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    (data / "booley.toml").write_text(config)
+    before = set(tmp_path.rglob("*"))
+    result = SimulateFlow().execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
+    assert result.exit_code == 2
+    assert "Coverage Preflight" in result.outcome.report_text
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_results(
+    tmp_path, monkeypatch
+):
+    from booley.flows.sim.verilator_coverage import SimulationBuildResult
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    (data / "tests.toml").write_text('[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n')
+    built = []
+
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            built.append(request.target.identity)
+            return SimulationBuildResult(
+                False, "Verilator identity unavailable", infrastructure_error=True
+            )
+
+    result = SimulateFlow(coverage_execution=lambda handle, options: Unavailable()).execute(
+        SimRequest(
+            target="sim_0,sim_1", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+    assert result.exit_code == 2
+    assert len(built) == 1
+    assert result.outcome.detail["pending_targets"] == ["sim_1"]
+    target = result.outcome.detail["targets"]["sim_0"]
+    assert target["simulation"] == "inconclusive"
+    assert (tmp_path / target["coverage_campaign"]).is_file()

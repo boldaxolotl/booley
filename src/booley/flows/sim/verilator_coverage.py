@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol
@@ -174,6 +174,7 @@ class SimulationBuildResult:
     success: bool
     output: str = ""
     collector: VerilatorCollectorIdentity | None = None
+    infrastructure_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,7 @@ class CoverageCollectionResult:
     coverage_window: CoverageWindowEvidence
     collector: VerilatorCollectorIdentity
     unrecognized_records: tuple[Mapping[str, FrozenJson], ...] = ()
+    infrastructure_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -1062,9 +1064,14 @@ def _build_collection(
     request_finding = coverage_request_finding(request)
     if request_finding is not None:
         return build, _preflight_error_result(request, build, request_finding)
-    build_result = execution.build(
-        SimulationBuildRequest(request.target, variant, VERILATOR_COVERAGE_INSTRUMENTATION)
-    )
+    try:
+        build_result = execution.build(
+            SimulationBuildRequest(request.target, variant, VERILATOR_COVERAGE_INSTRUMENTATION)
+        )
+    except OSError as exc:
+        return build, _infrastructure_failure(request, build, (), str(exc))
+    if build_result.infrastructure_error:
+        return build, _infrastructure_failure(request, build, (), build_result.output)
     if not build_result.success:
         return build, _build_error_result(request, build, build_result.output)
     if build_result.collector != PINNED_VERILATOR:
@@ -1074,7 +1081,9 @@ def _build_collection(
             "/collector/version",
             "Coverage collection requires the exact pinned stable Verilator identity.",
         )
-        return build, _preflight_error_result(request, build, finding)
+        return build, _infrastructure_failure(
+            request, build, (), finding.message, code=finding.code
+        )
     return build, None
 
 
@@ -1160,10 +1169,16 @@ def collect(
     build, failure = _build_collection(request, execution)
     if failure is not None:
         return failure
-    collected = tuple(
-        _collect_one_run(request, execution, index, selected)
-        for index, selected in enumerate(request.selected_tests, start=1)
-    )
+    completed: list[_CollectedRun] = []
+    try:
+        for index, selected in enumerate(request.selected_tests, start=1):
+            completed.append(_collect_one_run(request, execution, index, selected))
+        return _finish_collection(request, execution, build, tuple(completed))
+    except OSError as exc:
+        return _infrastructure_failure(request, build, tuple(completed), str(exc))
+
+
+def _finish_collection(request, execution, build, collected) -> CoverageCollectionResult:
     findings = tuple(finding for item in collected for finding in item.findings)
     if findings:
         capabilities, capability_findings = _capabilities_and_findings(collected)
@@ -1183,3 +1198,46 @@ def collect(
             compatibility=compatibility,
         )
     return _merge_collection(request, execution, build, collected)
+
+
+def _infrastructure_failure(
+    request, build, completed, message, *, code="COV_INFRASTRUCTURE_ERROR"
+) -> CoverageCollectionResult:
+    collected = list(completed)
+    for index, selected in enumerate(request.selected_tests[len(completed) :], len(completed) + 1):
+        collected.append(
+            _CollectedRun(
+                CoverageRun(
+                    id=f"run:{index:03d}:{_path_component(selected.name)}",
+                    test=selected.name,
+                    simulation_verdict="inconclusive",
+                    collection="collector_error",
+                    raw_artifact=None,
+                    attributes=MappingProxyType({"execution": "not_completed"}),
+                ),
+                None,
+                (),
+            )
+        )
+    observations = tuple(collected)
+    capabilities, capability_findings = _capabilities_and_findings(observations)
+    findings = tuple(f for item in observations for f in item.findings)
+    finding = CoverageFinding(
+        "error",
+        code,
+        "/collection",
+        message,
+    )
+    result = _result(
+        request,
+        build,
+        observations,
+        status="collector_error",
+        capabilities=capabilities,
+        findings=(*findings, *capability_findings, finding),
+        merge=NativeMergeEvidence("not_run"),
+        compatibility="incompatible"
+        if any(f.code == "COV_NATIVE_FORMAT_INCOMPATIBLE" for f in findings)
+        else "unknown",
+    )
+    return replace(result, infrastructure_error=True)

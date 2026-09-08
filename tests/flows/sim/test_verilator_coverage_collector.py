@@ -867,5 +867,6 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
     result = collect(request, _WrongVerilatorExecution())
 
     assert result.status == "collector_error"
-    assert result.runs == ()
+    assert result.infrastructure_error is True
+    assert [run.simulation_verdict for run in result.runs] == ["inconclusive"]
     assert [finding.code for finding in result.findings] == ["COV_VERILATOR_IDENTITY_MISMATCH"]

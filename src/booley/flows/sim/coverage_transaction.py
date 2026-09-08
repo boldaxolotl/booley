@@ -188,6 +188,7 @@ def _publish(
         campaign_path,
         simulation_path,
         freeze_coverage_mapping(detail),
+        abort_remaining=result.infrastructure_error,
     )
     if plan.acceptance is not None:
         plan.acceptance.publish(plan, campaign, campaign_path)
@@ -297,6 +298,7 @@ def _simulation_projection(
         "eda_tool": "verilator",
         "passed": passed,
         "simulation": _simulation_status(result),
+        "abort_remaining": result.infrastructure_error,
         "tests": [
             {
                 "name": run.test,

@@ -8,6 +8,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from booley.config.project_config import load_test_configuration_field
+from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
@@ -34,12 +35,14 @@ def coverage_project_context(root: Path, state: DevelopmentState) -> CoveragePro
     data = resolve_project_dir(root)
     config_path = resolve_toml(data)
     config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
-    sim = config.get("flows", {}).get("sim", {})
+    flows = require_dict(config.get("flows", {}), field="flows")
+    sim = require_dict(flows.get("sim", {}), field="flows.sim")
     if "coverage" in sim or "reset_included" in sim or "custom_main_hooks" in sim:
         raise ValueError(
             "Coverage Window/hook controls belong to Target flow_options.booley.coverage"
         )
-    raw = config.get("coverage", {}).get("waivers")
+    coverage = require_dict(config.get("coverage", {}), field="coverage")
+    raw = coverage.get("waivers")
     waivers = None
     if raw is not None:
         if not isinstance(raw, dict) or set(raw) != {"anchor", "directory"}:
