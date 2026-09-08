@@ -10,13 +10,28 @@ commits, changed files, health findings, economics, and durable diff pairs.
 Run exactly once:
 
 ```bash
-booley board review-briefing $SLUG
+booley board review-briefing $SLUG --no-open-diffs
 ```
 
-This command performs a fast freshness check, opens eligible source diffs, and
-prints the fixed review briefing. Present that output without rebuilding its
-tables or rereading its underlying evidence. Do not run `prepare-review` during
-interactive triage and do not poll the manifest.
+This command performs a fast freshness check and prints the fixed review
+briefing with diff launching disabled. Always use `--no-open-diffs`: the automatic
+filter uses extensions and binary detection, so it cannot recognize every
+compiled output (for example, hexadecimal firmware stored as `.txt`).
+
+Before opening any diff, apply the artifact classification rule in `SKILL.md`
+to the changed paths. Use the prepared report first; when a path's provenance
+is unclear, inspect only its relevant build rule/output declaration and, if
+needed, a small content sample without displaying an artifact diff. Open the
+prepared base/head pairs individually for confirmed human-authored files using
+the configured diff viewer. Leave compiled artifacts and unresolved paths
+unopened; do not rerun the command with automatic launching enabled.
+
+Present the briefing with each changed-file diff status corrected to the actual
+outcome: opened, omitted (compiled artifact), or not opened (provenance unclear
+or viewer unavailable). The command's printed "diff opened" text is not evidence
+of a launch when `--no-open-diffs` was used. Preserve all other briefing facts
+and tables. Do not run `prepare-review` during interactive triage and do not
+poll the manifest.
 
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
 the polished HTML report. It then presents the decision summary, actionable
@@ -36,8 +51,9 @@ inspect those facts and diffs before offering the normal decision choices.
 
 ## 2. Evidence escalation only
 
-Read raw evidence only when the user asks a follow-up the prepared briefing
-cannot answer or the briefing identifies an anomaly requiring diagnosis. Start
+Read raw evidence only for the artifact-classification gate above, when the user
+asks a follow-up the prepared briefing cannot answer, or when the briefing
+identifies an anomaly requiring diagnosis. Start
 with the one cited source relevant to that question. Do not routinely reread
 `REPORT.md`, state, run logs, transcripts, Flow reports, Git history, or diffs.
 

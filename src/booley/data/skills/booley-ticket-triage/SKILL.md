@@ -56,12 +56,16 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
   ticket, configuration, and environment defects do not take this route.
 - Show diffs for human-authored source, tests, configuration, and documentation,
   including changes inside submodules. Never show or open diffs for compiled
-  artifacts, including firmware binaries, text-encoded firmware/memory images
-  (`.hex`, `.mem`, `.mif`), object files, and FPGA bitstreams. Keep these paths
-  in the changed-file and scope summaries, marked "diff omitted (compiled
-  artifact)"; review their source/build inputs and validation evidence instead.
-  Apply this rule to automatic viewers, inline diffs, and follow-up inspection;
-  a text encoding or a tracked file does not make a build output source code.
+  artifacts. Classify by provenance and purpose, not filename extension: firmware
+  encoded as hexadecimal words in a `.txt` file is still a compiled artifact,
+  just like a binary, memory image, object file, or FPGA bitstream. Use the
+  developer report and build rules/output declarations to identify generated
+  outputs; text encoding and Git tracking do not establish source status.
+  Keep artifact paths in changed-file and scope summaries, marked "diff omitted
+  (compiled artifact)"; review their source/build inputs and validation evidence
+  instead. If provenance is unclear, leave the diff unopened while checking
+  the relevant build evidence. Apply this rule before automatic viewers,
+  inline diffs, and follow-up inspection; the review step defines the opening gate.
 - Review tickets use the fixed briefing emitted by `booley board review-briefing`.
   Blocked tickets first use `booley board blocked-briefing`. Both commands are
   freshness-checking, read-only fast paths and never invoke an agent.
