@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import require_list
 from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
 from booley.criteria.cycle_count import build_cycle_comparison
 from booley.criteria.templates import BASELINE_TARGET_PARAM
@@ -322,6 +324,8 @@ class DevelopmentState:
     # source freshness checks when the harness does not pass a work_dir.
     work_dir: str = ""
     last_updated: str = ""
+    # Ledger transactions selected atomically with the Criterion projection.
+    acceptance_transactions: list[str] = field(default_factory=list)
 
     _file_path: Path | None = field(default=None, repr=False)
 
@@ -346,6 +350,9 @@ class DevelopmentState:
                 category_map=data.get("category_map", {}),
                 flow_key_aliases=data.get("flow_key_aliases", {}),
                 timeline=data.get("timeline", []),
+                acceptance_transactions=_acceptance_transactions(
+                    data.get("acceptance_transactions", [])
+                ),
                 work_dir=data.get("work_dir", ""),
                 last_updated=data.get("last_updated", ""),
             )
@@ -380,6 +387,7 @@ class DevelopmentState:
             "category_map": self.category_map,
             "all_mandatory_met": self.all_mandatory_met(),
             "timeline": self.timeline,
+            "acceptance_transactions": self.acceptance_transactions,
             "last_updated": self.last_updated,
         }
         if self.work_dir:
@@ -983,3 +991,15 @@ def _atomic_replace(src: Path, dst: Path) -> None:
                 src,
             )
             raise
+
+
+def _acceptance_transactions(value: object) -> list[str]:
+    transactions = require_list(value, field="acceptance_transactions")
+    if any(
+        not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{64}", item) is None
+        for item in transactions
+    ):
+        raise ValueError("acceptance_transactions must contain SHA-256 transaction IDs")
+    if len(set(transactions)) != len(transactions):
+        raise ValueError("acceptance_transactions must not contain duplicate IDs")
+    return transactions

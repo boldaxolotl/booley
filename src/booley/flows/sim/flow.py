@@ -1595,6 +1595,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
+        from .campaign_reports import campaign_invocation_lock
+
+        self.context.publication_resources.enter_context(campaign_invocation_lock(invocation))
+        return self._run_coverage_invocation(invocation, prepared)
+
+    def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
         progress = CoverageProgress(
             invocation, tuple(item.handle.selector for item in prepared.targets)
         )

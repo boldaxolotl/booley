@@ -696,3 +696,11 @@ class TestEverFailedLatch:
         evidence = state.criteria["sim_pass_default"].transition_evidence
         assert [record["met"] for record in evidence] == [False, True]
         assert evidence[0]["detail"]["failed_tests"] == ["test_uart"]
+
+
+@pytest.mark.parametrize("value", [None, "a" * 64, {}, [1], ["invalid"], ["a" * 64, "a" * 64]])
+def test_state_rejects_invalid_acceptance_transaction_membership(tmp_path, value):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"acceptance_transactions": value}))
+    with pytest.raises(ValueError, match="acceptance_transactions"):
+        DevelopmentState.load(path)

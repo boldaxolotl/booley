@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.acceptance_ledger import AcceptanceLedgerError
 
 from .campaign_reports import target_report_directory, write_campaign_json
 from .coverage_campaign import (
@@ -140,13 +141,16 @@ def run_coverage_target(
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = target_report_directory(plan.invocation_dir, plan.handle.selector)
     result = None
+    campaign = None
     try:
         validate_coverage_sources(plan)
+        _start_target(root)
         result = collect(replace(plan.collection_request, artifact_root=root), execution)
         validate_coverage_sources(plan)
-        outcome = _publish(plan, result, root)
-    except (OSError, ValueError) as exc:
-        outcome = _transaction_error(plan, root, result, exc)
+        campaign = _evaluate(plan, _campaign(plan, result))
+        outcome = _publish(plan, result, root, campaign)
+    except (OSError, ValueError, AcceptanceLedgerError) as exc:
+        outcome = _transaction_error(plan, root, result, exc, campaign)
     try:
         progress.completed(outcome)
     except OSError as exc:
@@ -165,10 +169,21 @@ def run_coverage_target(
     return outcome
 
 
+def _start_target(root: Path) -> None:
+    if (root / "coverage.json").exists() or (root / "native").exists():
+        raise ValueError("Coverage attempts cannot resume; allocate a new invocation")
+    root.mkdir(parents=True, exist_ok=True)
+    # Exclusive creation also rejects an interrupted build with no native output.
+    with (root / ".collection-started").open("x", encoding="utf-8"):
+        pass
+
+
 def _publish(
-    plan: CoverageTargetPlan, result: CoverageCollectionResult, root: Path
+    plan: CoverageTargetPlan,
+    result: CoverageCollectionResult,
+    root: Path,
+    campaign: CoverageCampaign,
 ) -> CoverageTargetOutcome:
-    campaign = _evaluate(plan, _campaign(plan, result))
     document = encode_coverage_campaign(campaign)
     decode_coverage_campaign(document, DurableTargetIdentity(plan.handle.identity))
     campaign_path, simulation_path = root / "coverage.json", root / "simulation.json"
@@ -218,7 +233,7 @@ def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageC
     return evaluate_coverage_campaign(campaign, plan.criterion, waivers)
 
 
-def _transaction_error(plan, root, result, exc) -> CoverageTargetOutcome:
+def _transaction_error(plan, root, result, exc, campaign) -> CoverageTargetOutcome:
     detail = {
         "target": plan.handle.selector,
         "passed": None,
@@ -228,6 +243,8 @@ def _transaction_error(plan, root, result, exc) -> CoverageTargetOutcome:
         "error": str(exc),
         "abort_remaining": True,
     }
+    if campaign is not None:
+        detail["evaluation"] = campaign.evaluation["status"]
     if isinstance(exc, CoverageCampaignValidationError):
         detail["findings"] = [
             {"code": f.code, "pointer": f.pointer, "message": f.message} for f in exc.findings
