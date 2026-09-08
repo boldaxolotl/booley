@@ -337,10 +337,10 @@ def _run_through_runner(monkeypatch: pytest.MonkeyPatch, project: Path, slug: st
     def in_process_child(cmd: list[str], _cwd: str, child_project: Path) -> int:
         ticket = cmd[cmd.index("--ticket") + 1]
         args = argparse.Namespace(ticket=ticket, no_transcripts=True)
-        return harness_main._run_harness(args, Path(child_project), use_console=False)
+        return harness_main._run_harness(args, Path(child_project))
 
     monkeypatch.setattr(runner, "_run_with_heartbeat", in_process_child)
-    args = argparse.Namespace(slug=slug, no_console=True, verbose=False)
+    args = argparse.Namespace(slug=slug, verbose=False)
     return runner._run_harness(args, project, sys.executable)[0]
 
 

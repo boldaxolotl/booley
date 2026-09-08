@@ -23,7 +23,7 @@ def test_successful_review_emits_stable_package_record(tmp_path, monkeypatch, ca
     monkeypatch.setattr(harness_main, "run_ticket", run)
     args = argparse.Namespace(ticket="demo", no_transcripts=False)
 
-    assert harness_main._run_harness(args, tmp_path, use_console=True) == 0
+    assert harness_main._run_harness(args, tmp_path) == 0
 
     line = capsys.readouterr().out.strip()
     assert line.startswith(RUN_RESULT_PREFIX)
@@ -38,7 +38,6 @@ def test_successful_review_emits_stable_package_record(tmp_path, monkeypatch, ca
         "demo",
         tmp_path,
         save_transcripts=True,
-        use_console=True,
     )
 
 
@@ -46,6 +45,6 @@ def test_non_review_run_emits_no_result_record(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(harness_main, "run_ticket", AsyncMock(return_value=None))
     args = argparse.Namespace(ticket="demo", no_transcripts=True)
 
-    assert harness_main._run_harness(args, tmp_path, use_console=False) == 0
+    assert harness_main._run_harness(args, tmp_path) == 0
 
     assert capsys.readouterr().out == ""

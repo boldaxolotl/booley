@@ -84,7 +84,7 @@ class DisplayWatcher:
         self._endpoint_active = threading.Event()
         # Reset on any display event so heartbeat only fires after true silence
         self._last_output: float = time.monotonic()
-        # Console callbacks (None in log mode)
+        # Console callbacks (wired when the display starts)
         self.on_endpoint_start = on_endpoint_start
         self.on_endpoint_progress = on_endpoint_progress
         self.on_specialist_thinking = on_specialist_thinking
@@ -278,7 +278,7 @@ def agent_event_handler(
 
     Routes the agent's reasoning (``agent_thinking``) and prose
     (``agent_text``) to terminal.agent_text() while no endpoint is active.
-    ``usage`` events carry no log-mode rendering — the run summary already
+    ``usage`` events produce no text output — the run summary already
     reports final totals.
     """
     if event.get("type") in ("agent_text", "agent_thinking"):

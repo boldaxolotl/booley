@@ -298,7 +298,7 @@ _Avoid_: waveform renderer, waveform GUI, wave window, B-Wave display
 ### Presentation
 
 **Console**:
-The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the default display for `booley run`; disable it with `--no-console` (`-L`) to fall back to plain scrolling log output.
+The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
 _Avoid_: flashy mode, monitor, dashboard
 
 ### Feedback

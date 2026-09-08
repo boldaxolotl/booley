@@ -292,8 +292,8 @@ class TestDisplayWatcherNewEvents:
             watcher._poll_events()
         callback.assert_called_once()
 
-    def test_log_mode_ignores_new_events(self, tmp_path: Path):
-        """Log mode (no callbacks) processes new events without errors."""
+    def test_unwired_watcher_ignores_new_events(self, tmp_path: Path):
+        """A watcher without callbacks processes new events without errors."""
         display = tmp_path / "display.jsonl"
         display.touch()
         watcher = DisplayWatcher(display)
