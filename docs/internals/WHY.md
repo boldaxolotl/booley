@@ -26,7 +26,7 @@ The cost is real: a shared container makes admission control mandatory — a slo
 
 VS Code is the interactive front end because it collapses three needs into one program:
 
-- One editor for both agents. VS Code has mature extensions for both Claude Code and Codex, the two agent backends Booley supports: a single application to install and drive.
+- One editor for both agents. Run the recommended Claude Code or Codex CLI in the container terminal through `booley` / `booley chat`, or use the corresponding VS Code extension if you prefer a chat panel. Both share the editor and Session Runtime.
 - Sandbox sessions for free. The Dev Containers extension makes "open my repo *inside the Booley container*" a trivial, first-class operation. Interactive Mode's whole premise (chat with an agent that lives in the same sandbox the Booley Flows run in) falls out of an extension that already exists, rather than something we had to build.
 - It's a genuinely good editor. Hardware design is not pure delegation: you will read and edit RTL yourself between agent turns, and the agent and the human share one workspace instead of context-switching between EDA tools.
 

@@ -134,18 +134,26 @@ These steps begin on your normal computer:
    booley
    ```
 
-   Booley opens either [Claude Code](https://code.claude.com/docs/en/quickstart)
-   or [Codex](https://developers.openai.com/codex/cli), matching the Project's
-   `[agent].provider` setting. Bare `booley` is the short form of `booley chat`;
-   both replace themselves with the selected CLI and leave the terminal session
-   native. Use `booley --help` to see the command reference instead.
+   **We recommend the CLI for Interactive Mode.** Bare `booley` is the short
+   form of `booley chat`: both are convenience launchers for the Project's
+   `[agent].provider` setting in `.booley_project/booley.toml`:
 
-   If you use the Claude Code VS Code extension instead, open its chat panel in
-   this reloaded window; there is no CLI command to run. For Codex, Booley
-   recommends the CLI because you can run a separate Codex session in each
-   container terminal and therefore keep multiple interactive sessions in
-   flight. The Codex VS Code extension supports only one chat at a time, so it
-   gives up that concurrency.
+   | Provider | Equivalent command in the container terminal |
+   | --- | --- |
+   | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
+   | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
+
+   Think of `booley` / `booley chat` as an alias for the selected command.
+   Booley replaces itself with that CLI; you use the agent's native chat,
+   commands, and controls. To pass agent-specific options, invoke `claude` or
+   `codex` directly. `booley --help` shows Booley's own command reference.
+   For concurrent Interactive sessions, open a separate container terminal
+   and launch the CLI in each one.
+
+   If you prefer a chat panel, you can use the Claude Code or Codex VS Code
+   extension instead. Booley's devcontainer configuration installs the
+   extension for the selected provider inside the container. Open its chat
+   panel in this reloaded VS Code window; there is no CLI command to run.
 
    If the CLI shows a login screen instead of a chat, open a separate **host
    terminal** and run `booley auth --status`. Follow its guidance (usually
