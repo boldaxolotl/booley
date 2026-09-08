@@ -13,6 +13,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.plan import FlowPlan
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -1080,6 +1081,28 @@ class TestExecutionValidation:
 
 
 class TestDryRun:
+    def test_plan_keeps_non_shell_commands_unchanged(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        command = ("make", "-C", ".booley_work/sim")
+
+        assert flow._redact_plan_environment("lite", command) == command
+
+    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        execution = MagicMock()
+        execution.preview.side_effect = ValueError("preview failed")
+        flow._simulation_execution_override = execution
+
+        units, errors = flow._plan_simulation_targets(
+            ["lite"],
+            {},
+            role="ordinary",
+            revision=None,
+        )
+
+        assert units == []
+        assert errors == ["lite: preview failed"]
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
@@ -1111,6 +1134,22 @@ class TestDryRun:
             ("stress",),
             ("boot",),
         ]
+
+    @patch("booley.flows.sim.flow._get_test_names", return_value={})
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
+    def test_plan_fingerprint_changes_with_configured_environment(
+        self,
+        _mock_backend,
+        _mock_tests,
+        tmp_path: Path,
+    ) -> None:
+        flow = _make_flow(tmp_path, config="lite")
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
+            first = flow._plan_simulation(["lite"], {})
+        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
+            second = flow._plan_simulation(["lite"], {})
+
+        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -1613,6 +1652,7 @@ class TestReportGeneration:
 
     def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite,full")
+        flow._flow_plan = FlowPlan("sim", "simulate", ())
         first = TargetResult(
             target="lite",
             tb_top="alu_tb",

@@ -96,7 +96,8 @@ def _stub_probes(
     captured: list[list[str]] = []
     by_module = results or {}
 
-    def execute(command: list[str]) -> SubprocessResult:
+    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
+        assert timeout > 0
         captured.append(command)
         flag = "-s" if command[0] == "iverilog" else "--top-module"
         module = command[command.index(flag) + 1]
@@ -206,6 +207,70 @@ class TestStandaloneSweep:
 
         assert not failures and not unparsed and not error
         assert observed_timeouts == [3, 2]
+
+    def test_complete_sweep_stops_when_shared_deadline_expires(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flow = _make_flow(tmp_path)
+        monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 1_000)
+        monotonic_values = iter((0.0, 1.0))
+        monkeypatch.setattr(
+            standalone_mod.time,
+            "monotonic",
+            lambda: next(monotonic_values),
+        )
+        probe = MagicMock(side_effect=AssertionError("expired sweep must not start a probe"))
+        monkeypatch.setattr(flow, "_run_standalone_probe", probe)
+
+        failures, unparsed, logs, error = flow._run_standalone_probes(
+            [("late", "late.sv")],
+            [],
+            "iverilog",
+            gap_is_credible=False,
+        )
+
+        assert not failures and not unparsed and not logs
+        assert error == "iverilog standalone sweep timed out after 1s"
+        probe.assert_not_called()
+
+    def test_prepare_reuses_frozen_standalone_recipe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flow = _make_flow(tmp_path)
+        recipe = standalone_mod._StandalonePlanRecipe(
+            frontend="iverilog",
+            modules=(("top", "rtl/top.sv"),),
+            shared=("rtl/pkg.sv",),
+            commands=(("iverilog", "rtl/top.sv"),),
+        )
+        flow._standalone_plan_recipe = recipe
+        monkeypatch.setattr(flow, "_open_run_log", MagicMock())
+
+        assert flow._prepare_standalone_check(["sim_dut"]) == (
+            "iverilog",
+            [("top", "rtl/top.sv")],
+            ["rtl/pkg.sv"],
+        )
+
+    def test_plan_reports_source_scope_resolution_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flow = _make_flow(tmp_path)
+        monkeypatch.setattr(flow, "_resolve_standalone_frontend", lambda: "iverilog")
+        monkeypatch.setattr(
+            flow,
+            "_standalone_rtl_scope",
+            MagicMock(side_effect=OSError("catalog unavailable")),
+        )
+
+        with pytest.raises(ValueError, match="could not resolve RTL source scope"):
+            flow._plan_standalone_check(["sim_dut"])
 
     def test_design_failure_names_module_and_records_fail(
         self,

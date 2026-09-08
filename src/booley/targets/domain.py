@@ -54,6 +54,10 @@ class StaleTargetCatalogError(FuseSocError):
     """Target declaration or projection inputs changed after catalog creation."""
 
 
+class MissingTargetToplevelError(FuseSocError):
+    """A selected Target has no condition-resolved toplevel declaration."""
+
+
 @dataclass(frozen=True)
 class TargetRef:
     """One Target declaration resolved to its authored core."""
@@ -228,6 +232,7 @@ __all__ = [
     "FuseSocError",
     "IncompatibleTargetError",
     "MissingSourceError",
+    "MissingTargetToplevelError",
     "StaleTargetCatalogError",
     "TargetHandle",
     "TargetInput",

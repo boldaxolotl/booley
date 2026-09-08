@@ -28,6 +28,7 @@ from booley.flows.plan import (
     FlowPlan,
     WorkUnitPlan,
     normalize_plan_argv,
+    normalize_plan_inputs,
     normalize_plan_path,
     stable_unit_id,
 )
@@ -42,7 +43,7 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import MissingTargetToplevelError, TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
@@ -517,72 +518,66 @@ class LintFlow(BuiltinFlow):
         errors: list[str] = []
         for target in targets:
             try:
-                catalog = getattr(self, "_target_catalog", None)
-                inspection = (catalog or TargetCatalog.build(target.project_root)).inspect(target)
-            except fusesoc_registry.FuseSocError as exc:
-                # Some legacy lint Targets intentionally omit a toplevel. The
-                # authoritative FuseSoC preparation below supports that shape,
-                # so retain a metadata-light unit rather than making the cheap
-                # inspection seam stricter than real execution.
-                if "has no toplevel" not in str(exc) and not target.doctor_private:
-                    errors.append(f"{target.selector}: {exc}")
-                    continue
-                inspection = None
-            try:
-                command = tuple(self._dry_run_command(target))
-                if len(command) == 1 and command[0].startswith("ERROR:"):
-                    raise ValueError(command[0])
+                units.append(self._lint_work_unit(target))
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target.selector}: {exc}")
-                continue
-            inputs = inspection.inputs if inspection is not None else ()
-            constraints = tuple(item.path for item in inputs if item.file_type.lower() == "sdc")
-            sources = tuple(item.path for item in inputs if item.file_type.lower() != "sdc")
-            build_root = edam_layer.work_root_for(
-                self.args.work_dir,
-                "lint",
-                target.selector,
-            )
-            units.append(
-                WorkUnitPlan(
-                    unit_id=stable_unit_id("lint", target.selector, (target.selector,)),
-                    role="ordinary",
-                    revision=None,
-                    selector=target.selector,
-                    target_identity=target.identity,
-                    test_or_module_scope=(target.selector,),
-                    eda_tool=inspection.eda_tool if inspection is not None else target.eda_tool,
-                    timeout_ms=self._timeout_ms(),
-                    sources=tuple(
-                        normalize_plan_path(path, self.args.work_dir) for path in sources
-                    ),
-                    constraints=tuple(
-                        normalize_plan_path(path, self.args.work_dir) for path in constraints
-                    ),
-                    parameters=inspection.parameters if inspection is not None else {},
-                    recipe={
-                        "flow_options": inspection.flow_options if inspection is not None else {},
-                        "scope": self.args.scope,
-                        "toplevel": inspection.toplevel if inspection is not None else "",
-                    },
-                    commands=(
-                        CommandPlan(
-                            normalize_plan_argv(command, self.args.work_dir),
-                            cwd=".",
-                            template=True,
-                        ),
-                    ),
-                    expected_artifacts=(
-                        normalize_plan_path(build_root / "run.log", self.args.work_dir),
-                    ),
-                )
-            )
         return FlowPlan(
             flow="lint",
             mode="lint",
             work_units=tuple(units),
             aggregate_errors=tuple(errors),
         )
+
+    def _lint_work_unit(self, target: TargetHandle) -> WorkUnitPlan:
+        """Normalize one selected lint Target into the shared plan model."""
+        inspection = self._lint_plan_inspection(target)
+        command = self._lint_plan_command(target)
+        inputs = inspection.inputs if inspection is not None else ()
+        sources, constraints = normalize_plan_inputs(inputs, self.args.work_dir)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
+        return WorkUnitPlan(
+            unit_id=stable_unit_id("lint", target.selector, (target.selector,)),
+            role="ordinary",
+            revision=None,
+            selector=target.selector,
+            target_identity=target.identity,
+            test_or_module_scope=(target.selector,),
+            eda_tool=inspection.eda_tool if inspection is not None else target.eda_tool,
+            timeout_ms=self._timeout_ms(),
+            sources=sources,
+            constraints=constraints,
+            parameters=inspection.parameters if inspection is not None else {},
+            recipe={
+                "flow_options": inspection.flow_options if inspection is not None else {},
+                "scope": self.args.scope,
+                "toplevel": inspection.toplevel if inspection is not None else "",
+            },
+            commands=(
+                CommandPlan(
+                    normalize_plan_argv(command, self.args.work_dir),
+                    cwd=".",
+                    template=True,
+                ),
+            ),
+            expected_artifacts=(normalize_plan_path(build_root / "run.log", self.args.work_dir),),
+        )
+
+    def _lint_plan_inspection(self, target: TargetHandle) -> Any | None:
+        """Inspect a Target, tolerating only the supported legacy no-top shape."""
+        catalog = getattr(self, "_target_catalog", None)
+        try:
+            return (catalog or TargetCatalog.build(target.project_root)).inspect(target)
+        except fusesoc_registry.FuseSocError as exc:
+            if not isinstance(exc, MissingTargetToplevelError) and not target.doctor_private:
+                raise
+            return None
+
+    def _lint_plan_command(self, target: TargetHandle) -> tuple[str, ...]:
+        """Render the command shape used by the lint plan."""
+        command = tuple(self._dry_run_command(target))
+        if len(command) == 1 and command[0].startswith("ERROR:"):
+            raise ValueError(command[0])
+        return command
 
     def _run_lint_target(
         self,

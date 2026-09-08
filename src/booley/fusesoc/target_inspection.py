@@ -15,6 +15,7 @@ from fusesoc.vlnv import Vlnv
 
 from booley.fusesoc import fusesoc_registry
 from booley.targets.domain import (
+    MissingTargetToplevelError,
     TargetHandle,
     TargetInput,
     TargetInspection,
@@ -201,9 +202,15 @@ class _TargetSourceInspector:
         )
         core = cores[-1]
         try:
+            toplevel = str(core.get_toplevel(flags))
+        except SyntaxError as exc:
+            raise MissingTargetToplevelError(
+                f"Target {handle.identity!r} has no toplevel"
+            ) from exc
+        try:
             return TargetInspection(
                 handle=handle,
-                toplevel=str(core.get_toplevel(flags)),
+                toplevel=toplevel,
                 flow=core.get_flow(flags),
                 eda_tool=handle.eda_tool,
                 flow_options=dict(core.get_flow_options(flags)),

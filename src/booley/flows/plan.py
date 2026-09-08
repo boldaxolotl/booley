@@ -5,13 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
+
+from booley.core.boundary import require_finite_number
 
 PLAN_SCHEMA_VERSION = 1
 WorkUnitRole = Literal["candidate", "baseline", "ordinary", "standalone"]
+
+
+class PlanInput(Protocol):
+    """The Target input facts needed by normalized Flow planning."""
+
+    @property
+    def path(self) -> str: ...
+
+    @property
+    def file_type(self) -> str: ...
 
 
 def _json_value(value: object) -> object:
@@ -24,9 +36,23 @@ def _json_value(value: object) -> object:
         return sorted((_json_value(item) for item in value), key=repr)
     if isinstance(value, Path):
         return value.as_posix()
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if isinstance(value, float):
+        require_finite_number(value, field="plan value")
+        return value
+    if value is None or isinstance(value, (str, int, bool)):
         return value
     raise TypeError(f"plan value {value!r} is not JSON-serializable")
+
+
+def plan_value_fingerprint(value: object) -> str:
+    """Hash a semantic value without exposing it in the rendered plan."""
+    encoded = json.dumps(
+        _json_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
@@ -42,23 +68,57 @@ def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
 
 def normalize_plan_argv(argv: tuple[str, ...], work_dir: Path) -> tuple[str, ...]:
     """Remove the selected checkout's absolute prefix from command arguments."""
-    checkout = work_dir.resolve().as_posix().rstrip("/")
-    prefixes = ((checkout + "/", "/"), (checkout.replace("/", "\\") + "\\", "\\"))
+    roots = {
+        str(work_dir).rstrip("/\\"),
+        work_dir.as_posix().rstrip("/"),
+        str(work_dir.resolve()).rstrip("/\\"),
+        work_dir.resolve().as_posix().rstrip("/"),
+    }
+    roots |= {root.replace("\\", "/") for root in roots}
+    roots |= {root.replace("/", "\\") for root in roots}
+    ordered_roots = sorted((root for root in roots if root), key=len, reverse=True)
 
-    def normalize(argument: str) -> str:
-        normalized = argument
-        for prefix, separator in prefixes:
-            if prefix in normalized:
-                normalized = normalized.replace(prefix, "")
-                if separator == "\\":
-                    normalized = normalized.replace("\\", "/")
-        for spelling in (checkout, checkout.replace("/", "\\")):
-            if normalized == spelling:
+    def normalize_argument(argument: str) -> str:
+        for root in ordered_roots:
+            if argument == root:
                 return "."
-            normalized = normalized.replace(f"={spelling}", "=.").replace(f" {spelling}", " .")
-        return normalized
+            for separator in ("/", "\\"):
+                prefix = root + separator
+                if argument.startswith(prefix):
+                    return argument[len(prefix) :].replace("\\", "/")
 
-    return tuple(normalize(argument) for argument in argv)
+        normalized = argument
+        matched = False
+        for root in ordered_roots:
+            for separator in ("/", "\\"):
+                prefix = root + separator
+                if prefix in normalized:
+                    normalized = normalized.replace(prefix, "")
+                    matched = True
+            exact_root = re.compile(rf"(?<![a-zA-Z0-9_.-]){re.escape(root)}(?![a-zA-Z0-9_./\\-])")
+            normalized, substitutions = exact_root.subn(".", normalized)
+            matched = matched or substitutions > 0
+        return normalized.replace("\\", "/") if matched else normalized
+
+    return tuple(normalize_argument(argument) for argument in argv)
+
+
+def normalize_plan_inputs(
+    inputs: Iterable[PlanInput],
+    work_dir: Path,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return normalized ``(sources, constraints)`` for Target inputs."""
+    sources: list[str] = []
+    constraints: list[str] = []
+    for item in inputs:
+        destination = constraints if item.file_type.lower() == "sdc" else sources
+        destination.append(item.path)
+    return normalize_plan_paths(sources, work_dir), normalize_plan_paths(constraints, work_dir)
+
+
+def normalize_plan_paths(paths: Iterable[str | Path], work_dir: Path) -> tuple[str, ...]:
+    """Normalize an ordered collection of paths to one checkout."""
+    return tuple(normalize_plan_path(path, work_dir) for path in paths)
 
 
 @dataclass(frozen=True)
@@ -208,6 +268,9 @@ __all__ = [
     "WorkUnitPlan",
     "WorkUnitRole",
     "normalize_plan_argv",
+    "normalize_plan_inputs",
     "normalize_plan_path",
+    "normalize_plan_paths",
+    "plan_value_fingerprint",
     "stable_unit_id",
 ]

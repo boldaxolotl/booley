@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from math import inf, nan
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +11,9 @@ from booley.flows.plan import (
     FlowPlan,
     WorkUnitPlan,
     normalize_plan_argv,
+    normalize_plan_inputs,
     normalize_plan_path,
+    plan_value_fingerprint,
     stable_unit_id,
 )
 
@@ -109,8 +113,9 @@ def test_paths_and_argv_are_normalized_to_checkout(tmp_path: Path) -> None:
     nested = tmp_path / ".booley_work" / "sim"
 
     assert normalize_plan_path(nested, tmp_path) == ".booley_work/sim"
-    assert normalize_plan_argv(("tool", str(nested)), tmp_path) == (
+    assert normalize_plan_argv(("tool", str(tmp_path), str(nested)), tmp_path) == (
         "tool",
+        ".",
         ".booley_work/sim",
     )
     assert normalize_plan_argv(
@@ -126,6 +131,74 @@ def test_windows_argv_spelling_is_normalized_to_checkout(tmp_path: Path) -> None
         ("tool", f"{checkout}\\.booley_work\\sim"),
         tmp_path,
     ) == ("tool", ".booley_work/sim")
+
+
+def test_argv_normalization_is_checkout_independent() -> None:
+    first = normalize_plan_argv(
+        ("sh", "-c", "export BOOLEY_PROJECT_ROOT=/tmp/first && tool /tmp/first/rtl/a.sv"),
+        Path("/tmp/first"),
+    )
+    second = normalize_plan_argv(
+        ("sh", "-c", "export BOOLEY_PROJECT_ROOT=/tmp/second && tool /tmp/second/rtl/a.sv"),
+        Path("/tmp/second"),
+    )
+
+    assert first == second
+
+
+def test_argv_normalization_accepts_native_and_posix_separators(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    native = normalize_plan_argv(
+        (root, f"{root}\\.booley_work\\sim"),
+        tmp_path,
+    )
+    posix_root = tmp_path.as_posix()
+    posix = normalize_plan_argv(
+        (posix_root, f"{posix_root}/.booley_work/sim"),
+        tmp_path,
+    )
+
+    assert native == posix == (".", ".booley_work/sim")
+
+
+def test_inputs_are_partitioned_and_normalized_once(tmp_path: Path) -> None:
+    inputs = (
+        SimpleNamespace(path=str(tmp_path / "rtl/top.sv"), file_type="systemVerilogSource"),
+        SimpleNamespace(path=str(tmp_path / "constraints/top.sdc"), file_type="SDC"),
+    )
+
+    assert normalize_plan_inputs(inputs, tmp_path) == (
+        ("rtl/top.sv",),
+        ("constraints/top.sdc",),
+    )
+
+
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_non_finite_plan_values_are_rejected(value: float) -> None:
+    with pytest.raises(ValueError, match="finite number"):
+        _unit(parameters={"unsafe": value})
+
+
+def test_sensitive_semantic_values_have_distinct_fingerprints() -> None:
+    assert plan_value_fingerprint({"FLAVOR": "fast"}) != plan_value_fingerprint({"FLAVOR": "safe"})
+
+
+def test_plan_values_normalize_supported_containers_and_paths() -> None:
+    first = plan_value_fingerprint({"items": {Path("rtl/top.sv")}, "ratio": 1.5})
+    second = plan_value_fingerprint({"ratio": 1.5, "items": frozenset({"rtl/top.sv"})})
+
+    assert first == second
+
+
+def test_unsupported_plan_value_is_rejected() -> None:
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        plan_value_fingerprint(object())
+
+
+def test_path_outside_checkout_remains_absolute(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.sv"
+
+    assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
 
 
 def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:

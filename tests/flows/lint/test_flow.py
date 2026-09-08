@@ -22,7 +22,7 @@ from booley.flows.lint.flow import (
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import IncompatibleTargetError, TargetHandle
+from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -630,6 +630,50 @@ class TestLintFlowArgs:
 
 
 class TestDryRun:
+    def test_plan_collects_target_setup_errors(self, tmp_path: Path, monkeypatch) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        monkeypatch.setattr(flow, "_lint_work_unit", MagicMock(side_effect=ValueError("bad plan")))
+
+        plan = flow._plan_lint((_target_handle("broken", project_root=tmp_path),))
+
+        assert plan.aggregate_errors == ("broken: bad plan",)
+
+    def test_plan_rejects_untyped_inspection_errors(self, tmp_path: Path) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        flow._target_catalog = MagicMock(
+            inspect=MagicMock(side_effect=fusesoc_registry.FuseSocError("inspection failed"))
+        )
+
+        with pytest.raises(fusesoc_registry.FuseSocError, match="inspection failed"):
+            flow._lint_plan_inspection(_target_handle("broken", project_root=tmp_path))
+
+    def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
+        target = _target_handle("broken", project_root=tmp_path)
+        target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
+        flow = LintFlow()
+        flow.parse_args(["--target", "broken", "--work-dir", str(tmp_path)])
+        monkeypatch.setattr(flow, "_dry_run_command", lambda _target: ["ERROR: invalid target"])
+
+        with pytest.raises(ValueError, match="invalid target"):
+            flow._lint_plan_command(target)
+
+    def test_plan_tolerates_typed_missing_toplevel_without_message_matching(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        flow = LintFlow()
+        flow.parse_args(["--target", "legacy", "--work-dir", str(tmp_path)])
+        flow._target_catalog = MagicMock(
+            inspect=MagicMock(side_effect=MissingTargetToplevelError("wording may change"))
+        )
+
+        plan = flow._plan_lint((_target_handle("legacy", project_root=tmp_path),))
+
+        assert not plan.aggregate_errors
+        assert plan.work_units[0].recipe["toplevel"] == ""
+
     def test_dry_run_shows_fusesoc_setup_without_resolving(
         self,
         tmp_path: Path,

@@ -8,6 +8,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
+from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,
@@ -26,6 +27,88 @@ from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
+
+
+def _install_baseline_plan(
+    flow: SimulateFlow,
+    *,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str = "b" * 40,
+) -> None:
+    unit = _plan_unit("baseline", selector, identity, revision)
+    flow._flow_plan = FlowPlan("sim", "simulate", (unit,))
+
+
+def _plan_unit(
+    role: WorkUnitRole,
+    selector: str = _TARGET_SELECTOR,
+    identity: str = _TARGET_IDENTITY,
+    revision: str | None = None,
+) -> WorkUnitPlan:
+    return WorkUnitPlan(
+        unit_id="sim-baseline-coremark",
+        role=role,
+        revision=revision,
+        selector=selector,
+        target_identity=identity,
+        test_or_module_scope=("coremark",),
+        eda_tool="verilator",
+        timeout_ms=1_000,
+    )
+
+
+def test_simulation_plan_includes_baseline_before_candidate() -> None:
+    flow, _key = _criterion_flow(relative=True)
+    baseline = _plan_unit("baseline", revision="b" * 40)
+    candidate = _plan_unit("candidate")
+    flow._plan_cycle_count_baseline_units = MagicMock(return_value=([baseline], []))
+    flow._plan_simulation_targets = MagicMock(return_value=([candidate], []))
+
+    plan = flow._plan_simulation([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
+
+    assert plan.work_units == (baseline, candidate)
+
+
+def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = tmp_path
+    baseline_ref = "b" * 40
+    baseline = _plan_unit("baseline", identity="drifted", revision=baseline_ref)
+    flow._cycle_baseline_selection = MagicMock(
+        return_value=(baseline_ref, [_TARGET_SELECTOR], None)
+    )
+    flow._plan_simulation_targets = MagicMock(return_value=([baseline], ["preview failed"]))
+    baseline_root = tmp_path / "baseline"
+
+    @contextmanager
+    def fake_baseline_worktree(project_root: Path, revision: str):
+        assert project_root == tmp_path
+        assert revision == baseline_ref
+        yield baseline_root
+
+    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
+
+    units, errors = flow._plan_cycle_count_baseline_units(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+    )
+
+    assert units == [baseline]
+    assert errors == [
+        "preview failed",
+        "sim_core: baseline resolves to 'drifted', expected 'sim_core'",
+    ]
+    assert flow.args.work_dir == tmp_path
+    flow._plan_simulation_targets.assert_called_once_with(
+        [_TARGET_SELECTOR],
+        {_TARGET_SELECTOR: ["coremark"]},
+        role="baseline",
+        revision=baseline_ref,
+    )
 
 
 def _patch_catalog_select(monkeypatch, resolver) -> None:
@@ -227,6 +310,7 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
         return_value=TargetResult(target="sim_core", passed=True, tests=[])
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow, identity="sim_core")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -247,7 +331,13 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
 
     assert result["sim_core"].passed is True
     assert flow.args.work_dir == current
-    flow._run_target.assert_called_once_with("sim_core", "tb_top", {"sim_core": ["coremark"]}, [])
+    flow._run_target.assert_called_once_with(
+        "sim_core",
+        "tb_top",
+        {"sim_core": ["coremark"]},
+        [],
+        plan_role="baseline",
+    )
 
 
 def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None:
@@ -267,6 +357,7 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
         )
     )
     flow._attach_workload_snapshots = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -298,6 +389,7 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
     _patch_catalog_select(
         monkeypatch,
@@ -330,6 +422,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     flow._args.work_dir = current
     flow._target_handles[_TARGET_SELECTOR].project_root = current
     flow._run_target = MagicMock()
+    _install_baseline_plan(flow)
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
 
     def ambiguous_target(*_args, **_kwargs):
