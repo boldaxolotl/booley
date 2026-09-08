@@ -43,6 +43,7 @@ def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, An
             "eda_tool": snapshot.get("eda_tool"),
             "part": options.get("part"),
             "out_of_context": options.get("out_of_context", False),
+            "ppa_profile": jsonable(snapshot.get("ppa_profile")),
             "constraints": jsonable(snapshot.get("constraints", [])),
         }
     return {

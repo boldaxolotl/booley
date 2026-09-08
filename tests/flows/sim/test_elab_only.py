@@ -462,7 +462,7 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
     assert '"mode": "elab_only"' in progress.read_text(encoding="utf-8")
     assert '"complete": true' in progress.read_text(encoding="utf-8")
     for target in targets:
-        report = tmp_path / "reports" / f"sim_{target}.json"
+        report = tmp_path / "reports" / f"sim/1/targets/{target}/simulation.json"
         assert '"mode": "elab_only"' in report.read_text(encoding="utf-8")
 
 

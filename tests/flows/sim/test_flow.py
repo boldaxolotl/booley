@@ -1464,7 +1464,7 @@ class TestReportGeneration:
     def test_writes_config_report(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         flow._run()
-        report_path = tmp_path / "reports" / "sim_lite.json"
+        report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
         assert report_path.exists()
         report = json.loads(report_path.read_text())
         assert report["flow"] == "sim"
@@ -1497,7 +1497,7 @@ class TestReportGeneration:
         ):
             result = flow._run()
 
-        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         test = report["tests"][0]
         assert report["complete"] is True
         assert result.detail["resolution_s"] >= 0.0
@@ -1530,7 +1530,7 @@ class TestReportGeneration:
         ):
             flow._persist_target_outcome(target)
 
-        report_path = tmp_path / "reports/sim_lite.json"
+        report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
         assert json.loads(report_path.read_text())["complete"] is False
 
         with (
@@ -1562,7 +1562,7 @@ class TestReportGeneration:
         result = _make_flow(tmp_path, config="lite")._run()
 
         assert "31,415 cycles" in result.report_text
-        report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert report["tests"][0]["cycles"] == 31415
 
     def test_grouped_hdl_run_preserves_each_test_log_after_later_failure(
@@ -1605,7 +1605,7 @@ class TestReportGeneration:
 
         assert result.exit_code == EXIT_FAILURE
         assert calls == 2
-        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
         pointers = [test["artifacts"]["run_log"] for test in report["tests"]]
         assert pointers == [
@@ -1644,7 +1644,7 @@ class TestReportGeneration:
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
-        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert len(report["tests"]) == 1
         pointer = report["tests"][0]["artifacts"]["run_log"]
         assert pointer == "reports/artifacts/sim_lite/tests/smoke/run.log"
@@ -1688,14 +1688,14 @@ class TestReportGeneration:
             flow._run()
 
         report_dir = tmp_path / "reports"
-        target_report = json.loads((report_dir / "sim_lite.json").read_text())
+        target_report = json.loads((report_dir / "sim/1/targets/lite/simulation.json").read_text())
         assert target_report["run_id"] == "sim-checkpoint-1"
         invocation_dirs = sorted((report_dir / "sim").iterdir())
         progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
         assert progress["run_id"] == "sim-checkpoint-1"
         assert progress["completed_targets"] == ["lite"]
         assert progress["pending_targets"] == ["full"]
-        assert (invocation_dirs[-1] / "targets" / "sim_lite.json").is_file()
+        assert (invocation_dirs[-1] / "targets/lite/simulation.json").is_file()
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -1766,7 +1766,9 @@ class TestTimeout:
             flow = _make_flow(tmp_path, config="lite")
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
-        report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text(encoding="utf-8"))
+        report = json.loads(
+            (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
+        )
         test = report["tests"][0]
         assert report["complete"] is True
         assert test["timed_out"] is True
@@ -1878,7 +1880,9 @@ class TestErrorTailSource:
 
     @staticmethod
     def _read_tail(tmp_path: Path) -> str:
-        report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text(encoding="utf-8"))
+        report = json.loads(
+            (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
+        )
         return report["tests"][0]["error_tail"]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
@@ -2235,7 +2239,9 @@ class TestBuildContextReporting:
 
         flow._write_target_report(tr)
 
-        report = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())
+        report = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/sim/simulation.json").read_text()
+        )
         assert report["target"] == "sim"
         assert report["target_identity"] == "::sim_demo:0#sim"
         # The composed sh -c script: fusesoc setup chained to the edalize make.
@@ -2278,11 +2284,13 @@ class TestBuildContextReporting:
             )
         )
 
-        artifacts = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())["artifacts"]
+        artifacts = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/sim/simulation.json").read_text()
+        )["artifacts"]
         assert artifacts["log"] == "build/run.log"
         assert artifacts["result"] == "build/result.json"
         assert artifacts["trace"] == "build/trace.fst"
-        assert artifacts["report"] == "reports/sim_sim.json"
+        assert artifacts["report"] == "reports/sim/1/targets/sim/simulation.json"
         # Nothing wrote these, so they are absent rather than dead pointers.
         assert "results_xml" not in artifacts
         assert "trace_incident" not in artifacts
@@ -2308,9 +2316,11 @@ class TestBuildContextReporting:
         (build_root / "trace_incident.txt").write_text("old incident", encoding="utf-8")
         flow._write_target_report(TargetResult(target="sim", passed=False, elapsed_s=1.0))
 
-        artifacts = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())["artifacts"]
+        artifacts = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/sim/simulation.json").read_text()
+        )["artifacts"]
         assert set(artifacts) == {"report"}, "only this run's own report may be cited"
-        assert artifacts["report"] == "reports/sim_sim.json"
+        assert artifacts["report"] == "reports/sim/1/targets/sim/simulation.json"
 
     def test_trace_pointer_follows_a_custom_dump_path(self, tmp_path: Path):
         """A project's own ``trace_files`` dump path (F-22) still gets cited —
@@ -2339,7 +2349,9 @@ class TestBuildContextReporting:
             )
         )
 
-        artifacts = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())["artifacts"]
+        artifacts = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/sim/simulation.json").read_text()
+        )["artifacts"]
         assert artifacts["trace"] == "build/waves/dump.fst"
 
     def test_report_omits_context_keys_when_uncomposable(self, tmp_path: Path):
@@ -2353,7 +2365,9 @@ class TestBuildContextReporting:
 
         flow._write_target_report(tr)
 
-        report = json.loads((tmp_path / "reports" / "sim_ghost.json").read_text())
+        report = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/ghost/simulation.json").read_text()
+        )
         assert "compile_command" not in report
         assert "fileset" not in report
 
@@ -2574,7 +2588,7 @@ class TestTraceArtifactReported:
         assert result.exit_code == EXIT_SUCCESS
         rel = "build/lite/dump.fst"
         assert f"trace: {rel} (4.0 KB, 42 signals, scope tb.dut, 900 ticks)" in result.report_text
-        report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert report["tests"][0]["trace_path"] == rel
         assert report["tests"][0]["trace_bytes"] == 4096
         assert report["tests"][0]["trace_top_scope"] == "tb.dut"

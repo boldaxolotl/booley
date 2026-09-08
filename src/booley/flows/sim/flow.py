@@ -15,7 +15,7 @@ import re
 import shlex
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -41,11 +41,17 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
+from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.coverage_campaign import coverage_mapping_document
+from booley.flows.sim.coverage_invocation import CoverageTargetPlan
+from booley.flows.sim.coverage_progress import CoverageProgress
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -1137,6 +1143,15 @@ def _append_batch_output_lines(
 class SimulateFlow(StandaloneMixin, BuiltinFlow):
     """Run RTL simulation for one or more Targets."""
 
+    def __init__(
+        self,
+        *,
+        coverage_execution: Callable[[TargetHandle, SimulationOptions], SimulationExecutionPort]
+        | None = None,
+    ) -> None:
+        super().__init__()
+        self._coverage_execution_factory = coverage_execution
+
     request_type = SimRequest
     argument_adapter = SimArguments
 
@@ -1501,9 +1516,157 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
-        result = self._run_selected_mode()
+        result = (
+            self._run_coverage()
+            if getattr(self.args, "coverage", False)
+            else self._run_selected_mode()
+        )
         result.detail["mode"] = self.args.mode.value
         return result
+
+    def _pre_state_gate(self) -> EndpointOutcome | None:
+        error = super()._pre_state_gate()
+        if error is not None or not getattr(self.args, "coverage", False):
+            return error
+        return self._prepare_coverage()
+
+    def _prepare_coverage(self) -> EndpointOutcome | None:
+        from booley.criteria.state import DevelopmentState
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_invocation import (
+            CoverageInvocationRequest,
+            prepare_coverage_invocation,
+        )
+
+        if self.args.mode.elaborates_only:
+            return EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
+        if not self._flow_enabled():
+            return EndpointOutcome(exit_code=2, report_text="sim is disabled")
+        try:
+            context = coverage_project_context(
+                self.args.work_dir,
+                (
+                    DevelopmentState.load(self.args.state_file)
+                    if self.args.state_file
+                    else DevelopmentState()
+                ),
+            )
+            prepared = prepare_coverage_invocation(
+                CoverageInvocationRequest(
+                    tuple(self._requested_targets()),
+                    trace=self.args.trace,
+                    test_filter=self.args.test,
+                    skip=tuple(
+                        part.strip() for part in (self.args.skip or "").split(",") if part.strip()
+                    ),
+                ),
+                context,
+            )
+        except (ValueError, OSError, fusesoc_registry.FuseSocError) as exc:
+            return EndpointOutcome(exit_code=2, report_text=f"Coverage Preflight: {exc}")
+        if prepared.plan is None:
+            return EndpointOutcome(
+                exit_code=2,
+                report_text="\n".join(item.message for item in prepared.findings),
+                detail={
+                    "findings": [
+                        {"code": item.code, "pointer": item.pointer, "message": item.message}
+                        for item in prepared.findings
+                    ]
+                },
+            )
+        self._coverage_prepared = prepared.plan
+        self._coverage_context = context
+        return None
+
+    def _run_coverage(self) -> EndpointOutcome:
+        error = self._prepare_coverage()
+        if error is not None:
+            return error
+        prepared = self._coverage_prepared
+        if self.args.dry_run:
+            return EndpointOutcome(
+                detail={
+                    "coverage": True,
+                    "targets": [item.handle.selector for item in prepared.targets],
+                }
+            )
+        if self.args.report_dir is None:
+            self.args.report_dir = self._coverage_context.project_data_repository / "flow-reports"
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        progress = CoverageProgress(
+            invocation, tuple(item.handle.selector for item in prepared.targets)
+        )
+        started_at = utc_now_rfc3339()
+        outcomes = []
+        progress.checkpoint()
+        for target in prepared.targets:
+            outcome = self._execute_coverage_target(target, progress, started_at)
+            outcomes.append(outcome)
+            if outcome.abort_remaining:
+                break
+        result = self._coverage_result(outcomes)
+        completed = {item.target for item in outcomes}
+        result.detail["pending_targets"] = [
+            target for target in progress.targets if target not in completed
+        ]
+        try:
+            progress.checkpoint(complete=True)
+        except OSError as exc:
+            result.exit_code = 2
+            result.detail["progress_error"] = str(exc)
+        return result
+
+    def _execute_coverage_target(
+        self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
+    ) -> CoverageTargetOutcome:
+        from booley.flows.sim.coverage_flow_context import coverage_acceptance
+        from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+
+        plan = replace(
+            target,
+            invocation_dir=progress.invocation_dir,
+            started_at=started_at,
+            acceptance=coverage_acceptance(self.state, diagnostic=self.args.diagnostic),
+        )
+        options = SimulationOptions(
+            trace=self.args.trace,
+            timeout_ms=self._effective_timeout_ms(),
+            result_verbosity=self.args.result_verbosity,
+        )
+        execution = (
+            self._coverage_execution_factory(plan.handle, options)
+            if self._coverage_execution_factory is not None
+            else VerilatorCoverageExecution(
+                plan.handle, invoke=self._execute_boundary, options=options
+            )
+        )
+        return run_coverage_target(plan, execution, progress)
+
+    def _coverage_result(self, outcomes: list[CoverageTargetOutcome]) -> EndpointOutcome:
+        targets = {}
+        lines = []
+        for outcome in outcomes:
+            detail = coverage_mapping_document(outcome.detail)
+            detail["exit_code"] = outcome.exit_code
+            if outcome.campaign_path.is_file():
+                detail["coverage_campaign"] = posix_relpath(
+                    outcome.campaign_path, self.args.work_dir
+                )
+            if outcome.simulation_path.is_file():
+                detail["simulation_report"] = posix_relpath(
+                    outcome.simulation_path, self.args.work_dir
+                )
+            targets[outcome.target] = detail
+            lines.append(
+                f"{outcome.target}: simulation={detail.get('simulation', 'inconclusive')}, collection={detail.get('collection')}, coverage={detail.get('evaluation')}"
+            )
+        return EndpointOutcome(
+            exit_code=max((item.exit_code for item in outcomes), default=2),
+            detail={"coverage": True, "targets": targets},
+            report_text="\n".join(lines),
+        )
 
     def _run_selected_mode(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
@@ -1620,8 +1783,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 # MCP, and without it the block names every file the run wrote
                 # except the one holding the rest of the numbers.
                 if self.args.report_dir is not None:
+                    invocation_dir = self.reserve_invocation_dir()
+                    assert invocation_dir is not None
                     block["report"] = posix_relpath(
-                        self.args.report_dir / f"sim_{r.target}.json",
+                        target_report_directory(invocation_dir, r.target) / "simulation.json",
                         self.args.work_dir,
                     )
                 detail.setdefault("artifacts", {})[r.target] = block
@@ -2114,10 +2279,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             **self._elab_only_detail(result),
         }
         report_dir.mkdir(parents=True, exist_ok=True)
-        path = report_dir / f"sim_{result.target}.json"
         invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            _atomic_write_json(invocation_dir / "targets" / path.name, report)
+        assert invocation_dir is not None
+        path = target_report_directory(invocation_dir, result.target) / "simulation.json"
         _atomic_write_json(path, report)
 
     def _write_elab_only_progress(
@@ -3145,11 +3309,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if report_dir is None:
             return
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / f"sim_{result.target}.json"
-        report = self._target_report_payload(result, report_path, complete=complete)
         invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
+        assert invocation_dir is not None
+        report_path = target_report_directory(invocation_dir, result.target) / "simulation.json"
+        report = self._target_report_payload(result, report_path, complete=complete)
         _atomic_write_json(report_path, report)
 
     def _target_report_payload(

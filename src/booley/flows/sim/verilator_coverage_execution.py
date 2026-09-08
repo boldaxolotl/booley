@@ -87,7 +87,7 @@ class VerilatorCoverageExecution:
             return SimulationBuildResult(False, "coverage Target identity does not match handle")
         identity, version_output = self._collector_identity()
         if identity is None:
-            return SimulationBuildResult(False, version_output)
+            return SimulationBuildResult(False, version_output, infrastructure_error=True)
         prepared = self._prepare_build(request)
         if isinstance(prepared, str):
             return SimulationBuildResult(False, prepared)

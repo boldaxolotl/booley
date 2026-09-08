@@ -372,7 +372,7 @@ class SubmitRunReportMcpTool(McpTool):
     def _last_simulate_line(self) -> str | None:
         """Fingerprint of the newest simulate per-target report, or None.
 
-        Reads the ``simulate_<target>.json`` files simulate writes into the
+        Reads the ``sim/<N>/targets/<target>/simulation.json`` files Simulation writes into the
         runtime flow-reports dir (``self.args.report_dir`` resolves there in
         ticket mode). Best-effort: absent/unreadable reports are omitted.
         """
@@ -384,7 +384,7 @@ class SubmitRunReportMcpTool(McpTool):
             report_dir = report_dir.parent / "flow-reports"
         try:
             newest = max(
-                Path(report_dir).glob("sim_*.json"),
+                Path(report_dir).glob("sim/*/targets/*/simulation.json"),
                 key=lambda p: p.stat().st_mtime,
                 default=None,
             )
@@ -393,7 +393,7 @@ class SubmitRunReportMcpTool(McpTool):
             data = json.loads(newest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
-        target = data.get("target") or newest.stem.removeprefix("sim_")
+        target = data.get("target") or newest.parent.name
         stamp = data.get("timestamp")
         if stamp:
             stamp = format_human_datetime_safe(str(stamp), seconds=True)
