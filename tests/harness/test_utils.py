@@ -304,7 +304,7 @@ class TestScopePrecommitHook:
         assert hook.main() == 0
 
     @patch("subprocess.run")
-    def test_wildcard_scope_blocks_commit(self, mock_run, tmp_path, monkeypatch):
+    def test_wildcard_scope_allows_commit(self, mock_run, tmp_path, monkeypatch):
         hook = self._import_hook()
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".scope.json").write_text('{"scope": ["*"]}')
@@ -314,7 +314,7 @@ class TestScopePrecommitHook:
             stdout="rtl/foo.sv\0",
             stderr="",
         )
-        assert hook.main() == 1
+        assert hook.main() == 0
 
     @patch("subprocess.run")
     def test_in_scope_files_pass(self, mock_run, tmp_path, monkeypatch):
@@ -330,8 +330,8 @@ class TestScopePrecommitHook:
         assert hook.main() == 0
 
     @patch("subprocess.run")
-    def test_out_of_scope_files_block_commit(self, mock_run, tmp_path, monkeypatch, capsys):
-        """Scope is a hard commit boundary."""
+    def test_out_of_scope_files_allow_commit(self, mock_run, tmp_path, monkeypatch, capsys):
+        """Scope deviations are allowed for review."""
         hook = self._import_hook()
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".scope.json").write_text('{"scope": ["rtl/foo.sv"]}')
@@ -341,10 +341,9 @@ class TestScopePrecommitHook:
             stdout="rtl/foo.sv\0rtl/rogue.sv\0",
             stderr="",
         )
-        assert hook.main() == 1
+        assert hook.main() == 0
         err = capsys.readouterr().err
-        assert "rtl/rogue.sv" in err
-        assert "rtl/foo.sv" not in err.split("Outside it:")[1]
+        assert not err
 
     @patch("subprocess.run")
     def test_harness_owned_files_rejected(self, mock_run, tmp_path, monkeypatch):

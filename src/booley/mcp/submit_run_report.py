@@ -66,7 +66,7 @@ class SubmitRunReportMcpTool(McpTool):
         "Write the final run report (REPORT.md) summarizing what was done, "
         "type-specific details (root cause / design decisions / "
         "behavior preservation / coverage added), reviewer uncertainties, "
-        "and justification for every unmet optional criterion. "
+        "and justification for every changed file and unmet optional criterion. "
         "For native MCP calls, pass type_specific_detail and do not pass "
         "root_cause/design_decisions/behavior_preservation/coverage_added. "
         "For CLI calls, pass exactly one legacy type-specific field: bugfix "
@@ -93,6 +93,13 @@ class SubmitRunReportMcpTool(McpTool):
         )
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--file-justifications",
+            help=(
+                "Required JSON object mapping every net changed file to its justification; "
+                "use {} for no changes. Include added/deleted paths and both sides of renames."
+            ),
+        )
         parser.add_argument(
             "--summary",
             required=True,
@@ -187,7 +194,7 @@ class SubmitRunReportMcpTool(McpTool):
             properties.pop(field, None)
 
         required = set(schema.get("required", []))
-        required.add("type_specific_detail")
+        required.update({"type_specific_detail", "file_justifications"})
         schema["required"] = sorted(required)
         return schema
 
@@ -217,7 +224,19 @@ class SubmitRunReportMcpTool(McpTool):
         if gate is not None:
             return gate
 
-        return self._submit_report(ticket_type, unmet_optional)
+        return self._file_justifications_gate() or self._submit_report(ticket_type, unmet_optional)
+
+    def _file_justifications_gate(self) -> McpToolResult | None:
+        """Reject missing explanations before publishing the final report."""
+        from .report_changes import changed_ticket_paths, validate_justifications
+
+        try:
+            self.file_justifications = validate_justifications(
+                self.args.file_justifications, changed_ticket_paths(self._submission_worktree())
+            )
+        except (OSError, ValueError, TicketWorkspaceError) as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"submit_run_report: {exc}")
+        return None
 
     def _submit_report(
         self,
@@ -248,6 +267,7 @@ class SubmitRunReportMcpTool(McpTool):
                 "report_path": str(report_path) if report_path else "",
                 "ticket_type": ticket_type,
                 "unmet_optional_criteria": unmet_optional,
+                "file_justifications": self.file_justifications,
             },
         )
 
@@ -520,6 +540,15 @@ class SubmitRunReportMcpTool(McpTool):
         text = " ".join(str(value).split())
         return text.replace("`", "'").replace("<", "&lt;").replace(">", "&gt;")
 
+    def _file_justifications_section(self) -> str:
+        """Render the validated explanations alongside the Developer's summary."""
+        justifications = getattr(self, "file_justifications", {})
+        rows = [
+            f"- `{self._report_text(path)}`: {self._report_text(reason)}"
+            for path, reason in justifications.items()
+        ]
+        return "\n## File justifications\n\n" + "\n".join(rows or ["- No changed files."]) + "\n"
+
     def _write_report(
         self,
         *,
@@ -548,6 +577,7 @@ class SubmitRunReportMcpTool(McpTool):
             unmet_optional, optional_criteria_justification
         )
         review_section = self._review_dispositions_section()
+        file_section = self._file_justifications_section()
         content = (
             f"# Run report: {slug}\n"
             f"\n"
@@ -567,6 +597,7 @@ class SubmitRunReportMcpTool(McpTool):
             f"{uncertainties.strip()}\n"
             f"{optional_section}"
             f"{review_section}"
+            f"{file_section}"
         )
 
         report_dir.mkdir(parents=True, exist_ok=True)

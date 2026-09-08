@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git pre-commit hook: reject out-of-scope and forbidden commits.
+"""Git pre-commit hook: reject protected bookkeeping and acceptance-input commits.
 
 Installed by the harness's setup step into worktree .git/hooks/.
 Reads scope from .scope.json in the worktree root (written by setup).
@@ -151,27 +151,10 @@ def _reject_forbidden(forbidden: list[str]) -> int:
     return 1
 
 
-def _reject_out_of_scope(out_of_scope: list[str], scope: list[str]) -> int:
-    """Block a commit that escaped the ticket's declared file scope."""
-    print("ERROR: Commit blocked — files are outside the ticket scope.", file=sys.stderr)
-    print(f"Ticket scope: {scope}", file=sys.stderr)
-    print("Outside it:", file=sys.stderr)
-    for f in out_of_scope:
-        print(f"  - {f}", file=sys.stderr)
-    print("", file=sys.stderr)
-    print(
-        "Update the ticket scope through triage, or unstage these paths and "
-        "commit only the authorized files.",
-        file=sys.stderr,
-    )
-    return 1
-
-
 def main() -> int:
     wt = Path.cwd()
     if source_checkout_policy_owner(wt):
         return 0
-    scope = _load_scope(wt)
     acceptance_controls = _load_acceptance_controls(wt)
 
     staged = _staged_files()
@@ -183,15 +166,7 @@ def main() -> int:
     if forbidden:
         return _reject_forbidden(forbidden)
 
-    if scope is None:
-        return 0
-
-    # The ["*"] unknown-scope sentinel grants no ownership: a ticket that named
-    # nothing owns nothing, so everything it touched needs human triage.
-    wildcard = scope == ["*"]
-    out_of_scope = [f for f in staged if wildcard or not _matches_scope(f, scope)]
-    if out_of_scope:
-        return _reject_out_of_scope(out_of_scope, scope)
+    # Ordinary scope deviations are reviewed after the run, never blocked here.
     return 0
 
 

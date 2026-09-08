@@ -654,6 +654,8 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise TriagePackageError(f"invalid state file: {state_path}")
     scope = _scope(ctx)
+    report_criterion = state.get("criteria", {}).get("_report_submitted", {})
+    scope["file_justifications"] = report_criterion.get("detail", {}).get("file_justifications", {})
     changes = _materialize_diffs(ctx, _changed_files(ctx))
     repositories = [
         {
@@ -1010,6 +1012,9 @@ def _render_scope(lines: list[str], package: Mapping[str, Any]) -> None:
             f"- `{_markdown_text(row['path'])}` — **{_markdown_text(row['classification'])}**: "
             f"{_markdown_text(row['reason'])}"
         )
+        justification = scope.get("file_justifications", {}).get(row["path"])
+        if justification:
+            lines.append(f"  - Developer justification: {_markdown_text(justification)}")
 
 
 def _render_commits(lines: list[str], package: Mapping[str, Any]) -> None:
@@ -1042,6 +1047,13 @@ def _render_changes(lines: list[str], package: Mapping[str, Any], failures: set[
             f"- {_markdown_link(path, str(link_path))} — "
             f"{_change_description(row, path not in failures)}"
         )
+        reasons = package.get("scope", {}).get("file_justifications", {})
+        for changed_path in dict.fromkeys([path, row.get("old_path")]):
+            if changed_path and changed_path in reasons:
+                lines.append(
+                    f"  - Developer justification (`{_markdown_text(changed_path)}`): "
+                    f"{_markdown_text(reasons[changed_path])}"
+                )
 
 
 def _render_explanation_highlights(lines: list[str], package: Mapping[str, Any]) -> None:

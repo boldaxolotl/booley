@@ -569,3 +569,16 @@ class TestBannedPhraseNote:
     def test_note_starts_with_header(self):
         note = Specialist.commit_msg_banned_phrase_note()
         assert note.startswith("## Banned Words")
+
+
+def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
+    specialist = ReviewSpecialist()
+    monkeypatch.setattr(
+        specialist, "_get_uncommitted_files", lambda: ["selected.sv", "outside.sv"]
+    )
+
+    def unexpected_revert(_):
+        pytest.fail("Outside-scope work must remain available for Developer review")
+
+    monkeypatch.setattr(specialist, "_revert_out_of_scope", unexpected_revert)
+    assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])

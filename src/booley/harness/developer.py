@@ -1273,6 +1273,25 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
 
     base_ref = ctx.acceptance_basis.outer_sha if ctx.acceptance_basis is not None else ctx.branch
     result = committed_deviations(ctx.worktree_path, base_ref, ctx.scope_raw)
+    if ctx.acceptance_basis is not None and ctx.acceptance_basis.project_sha:
+        from booley.runtime.ticket_repositories import paired_project_repository
+
+        paired = paired_project_repository(ctx.worktree_path)
+        project_result = (
+            committed_deviations(
+                paired.worktree,
+                ctx.acceptance_basis.project_sha,
+                ctx.scope_raw,
+                path_prefix=paired.path_prefix,
+            )
+            if paired is not None
+            else None
+        )
+        result = (
+            (result[0] + project_result[0], result[1] + project_result[1])
+            if result is not None and project_result is not None
+            else None
+        )
     write_deviation_report(
         ticket_runtime_file(ctx.logs_dir, DEVIATION_REPORT_NAME),
         slug=ctx.slug,
