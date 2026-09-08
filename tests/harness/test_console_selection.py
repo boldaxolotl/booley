@@ -1,63 +1,106 @@
-"""P1 parent/child display-selection agreement tests."""
+"""Ticket execution always uses the Console, independent of terminal detection."""
 
 from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from booley.harness import __main__ as child
 from booley.harness import booley as parent
+from booley.harness import developer, terminal
 
 
-@dataclass
-class _Stdout:
-    tty: bool
-
-    def isatty(self) -> bool:
-        return self.tty
-
-    def write(self, text: str) -> int:
-        return len(text)
-
-    def flush(self) -> None:
-        return None
+@pytest.mark.parametrize("flag", ["--no-console", "-L"])
+def test_run_rejects_removed_log_mode(flag):
+    with pytest.raises(SystemExit) as error:
+        parent._build_parser().parse_args(["run", flag])
+    assert error.value.code == 2
 
 
+def test_harness_rejects_removed_log_mode(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["harness", "--no-console"])
+    with pytest.raises(SystemExit) as error:
+        child._parse_args()
+    assert error.value.code == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("case", "tty", "no_console", "environment", "expected"),
-    [
-        ("SEL-01", True, False, {}, True),
-        ("SEL-02", True, True, {}, False),
-        ("SEL-03", True, False, {"BOOLEY_CONSOLE": "0"}, False),
-        ("SEL-04", True, False, {"NO_COLOR": "1"}, False),
-        ("SEL-05", True, False, {"TERM": "dumb"}, False),
-        ("SEL-06", False, False, {}, False),
-        ("SEL-07", True, True, {}, False),
-    ],
+    "environment",
+    [{}, {"BOOLEY_CONSOLE": "0"}, {"NO_COLOR": "1"}, {"TERM": "dumb"}],
 )
-def test_parent_and_child_make_identical_selection(
-    case: str,
-    tty: bool,
-    no_console: bool,
-    environment: dict[str, str],
-    expected: bool,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The parent chrome and child TUI must never disagree."""
+@pytest.mark.parametrize("tty", [True, False])
+async def test_ticket_execution_always_uses_console(environment, tty, tmp_path, monkeypatch):
     for name in ("BOOLEY_CONSOLE", "NO_COLOR", "TERM"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("TERM", "xterm-256color")
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(sys, "stdout", _Stdout(tty))
-    args = argparse.Namespace(no_console=no_console)
+    monkeypatch.setattr(sys, "stdout", Mock(isatty=Mock(return_value=tty)))
+    console_run = AsyncMock(return_value=None)
+    monkeypatch.setattr(developer, "_run_with_console", console_run)
 
-    parent_choice = parent._will_use_console(args)
-    child_choice = child._detect_console(args)
+    assert parent._will_use_console(argparse.Namespace()) is True
+    await developer.run_ticket("demo", tmp_path)
+    console_run.assert_awaited_once_with("demo", tmp_path, True)
 
-    assert parent_choice == expected, case
-    assert child_choice == expected, case
-    assert parent_choice == child_choice, case
+
+@pytest.mark.asyncio
+async def test_console_startup_failure_propagates_without_executing_ticket(tmp_path, monkeypatch):
+    from booley.harness.console import app as console
+
+    app = Mock(run_async=AsyncMock(side_effect=RuntimeError("Console failed")))
+    monkeypatch.setattr(console, "ConsoleApp", Mock(return_value=app))
+    prepare = AsyncMock()
+    monkeypatch.setattr(developer, "_prepare_ticket", prepare)
+
+    with pytest.raises(RuntimeError, match="Console failed"):
+        await developer.run_ticket("demo", tmp_path)
+
+    prepare.assert_not_awaited()
+    assert terminal.get_console_app() is None
+
+
+@pytest.mark.asyncio
+async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
+    from booley.harness.console.app import ConsoleApp
+    from booley.harness.preflight import PreflightError
+
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    prepare = AsyncMock(side_effect=PreflightError(["missing toolchain"]))
+    monkeypatch.setattr(developer, "_prepare_ticket", prepare)
+
+    with pytest.raises(PreflightError, match="missing toolchain"):
+        await developer.run_ticket("demo", tmp_path)
+
+    prepare.assert_awaited_once_with("demo", tmp_path, True)
+    assert terminal.get_console_app() is None
+
+
+def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):
+    from booley.harness.console.app import ConsoleApp
+
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    def fail_mount(app):
+        raise RuntimeError("Console mount failed")
+
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr(ConsoleApp, "on_mount", fail_mount)
+    prepare = AsyncMock()
+    monkeypatch.setattr(developer, "_prepare_ticket", prepare)
+    args = argparse.Namespace(ticket="demo", no_transcripts=True)
+
+    assert child._run_harness(args, tmp_path) == 1
+    prepare.assert_not_awaited()
+    assert terminal.get_console_app() is None

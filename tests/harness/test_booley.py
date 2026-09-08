@@ -2246,16 +2246,12 @@ class TestDryRunImplications:
     def test_dry_run_implies_one_shot(self):
         assert self._parse(["run", "--dry-run"]).count == 1
 
-    def test_dry_run_implies_no_console(self):
-        assert self._parse(["run", "--dry-run"]).no_console is True
-
     def test_explicit_count_wins(self):
         assert self._parse(["run", "--dry-run", "-n", "3"]).count == 3
 
     def test_plain_run_still_polls_forever(self):
         args = self._parse(["run"])
         assert args.count == 0
-        assert args.no_console is False
 
     def test_dry_run_never_starts_the_console(self):
         assert tlr._will_use_console(self._parse(["run", "--dry-run"])) is False

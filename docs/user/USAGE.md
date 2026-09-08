@@ -759,8 +759,8 @@ editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
 
-After a ticket enters review, `booley run` emits one stable JSON record even
-when the full-screen Console was used:
+After a ticket enters review, `booley run` emits one stable JSON record
+after the full-screen Console closes:
 
 ```text
 BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
@@ -968,8 +968,14 @@ Missing and uninitialized roots remain visible so their host administration can
 be cleaned up. Use the exact absolute path printed by `booley projects` to
 revoke a grant even after its directory has been deleted.
 
+Ticket execution uses the full-screen Console. The former `--no-console` / `-L`
+options and `BOOLEY_CONSOLE` override have been removed. Redirected output,
+`NO_COLOR`, and `TERM=dumb` do not select a separate log mode. Persistent run
+logs remain available, and `--dry-run` / `--check-ready` print validation results
+without opening the Console.
+
 ```bash
-# Execute a single ticket end-to-end
+# Execute a single ticket end-to-end in the full-screen Console
 booley run --ticket <slug>
 
 # Validate the setup without executing anything (one-shot, no TUI)

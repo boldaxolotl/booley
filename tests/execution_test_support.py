@@ -73,7 +73,10 @@ def start_supervisor_with_detached_descendant(
         "import os,signal,time\n"
         "from pathlib import Path\n"
         "signal.signal(signal.SIGINT,signal.SIG_IGN)\n"
-        f"Path({str(descendant_pid_file)!r}).write_text(str(os.getpid()),encoding='utf-8')\n"
+        f"pid_file = Path({str(descendant_pid_file)!r})\n"
+        "pending = pid_file.with_suffix('.tmp')\n"
+        "pending.write_text(str(os.getpid()),encoding='utf-8')\n"
+        "pending.replace(pid_file)\n"
         "time.sleep(120)\n"
     )
     leader_script = (
