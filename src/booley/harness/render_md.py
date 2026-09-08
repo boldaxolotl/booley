@@ -5,7 +5,7 @@ No external dependencies for ANSI mode.
 
 Rich-mode rendering (``inline_rich``) emits Rich ``Text`` objects with
 click metadata on resolved backticked path/ticket tokens. The Console
-uses this; log mode keeps the ANSI string path unchanged.
+uses this; plain terminal output uses the ANSI string path.
 """
 
 from __future__ import annotations

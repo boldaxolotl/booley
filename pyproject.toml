@@ -130,7 +130,7 @@ booley = [
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
     # blocks at runtime: worktree_create.sh (ticket setup), pre-commit-ruff.sh
-    # (git hook), and console.tcss (Console TUI — the default, non --no-console run).
+    # (git hook), and console.tcss (Console TUI).
     "dev_support/*.sh",
     "harness/console/*.tcss",
 ]
