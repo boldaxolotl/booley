@@ -454,7 +454,7 @@ Coverage collection remains hidden until the issue #213 release gate. For
 internal Campaign testing, report retention is explicit: native-only pruning
 keeps normalized `coverage.json`, `simulation.json`, and hook evidence; full
 invocation pruning removes all reports and prevents re-analysis. See the
-[exact retention commands](../internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
+[exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
 
 An `availability.json` status of `pruning` means cleanup was interrupted. Retry
 the same exact maintenance command after resolving the filesystem error. A lock
