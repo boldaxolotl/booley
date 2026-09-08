@@ -116,7 +116,10 @@ any optional criteria remain unmet, pass `optional_criteria_justification` \
 explaining why each one could not be completed. If code changes after the \
 report, submit a fresh report. Commit every intended change and leave every \
 ticket repository clean before calling `submit_run_report`; the report is a \
-finalization gate and rejects staged, modified, deleted, or untracked files.
+finalization gate and rejects staged, modified, deleted, or untracked files. \
+Pass `file_justifications` as a JSON object mapping every path in the final diff \
+to a nonblank explanation (including in-scope files, additions, deletions, and \
+both paths of a rename); use `{}` for no changes. Missing explanations reject submission.
 
 """
 
@@ -133,7 +136,8 @@ calling it. For unmet optional criteria, pass \
 completed. The report is required in that case even though routine reports \
 are disabled. Commit every intended change and leave every ticket repository \
 clean before stopping or calling `submit_run_report`; the Harness rejects a \
-dirty handoff.
+dirty handoff. When submitting, provide `file_justifications`, a JSON object \
+mapping every changed path to its explanation, including both paths of renames.
 
 """
 

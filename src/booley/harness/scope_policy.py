@@ -1,7 +1,7 @@
-"""Ticket Scope policy -- the single owner of "what may this ticket commit?".
+"""Ticket Scope policy -- classification of planned work, deviations, and protected paths.
 
-A Ticket's ``scope:`` list is the authorization boundary for Developer Agent
-commits. The Developer owns those commits; the Harness records committed Scope
+A Ticket's ``scope:`` list describes planned files; ordinary deviations are allowed.
+The Developer owns those commits; the Harness records committed Scope
 deviations and rejects a dirty handoff instead of creating a commit itself.
 
 Three tiers, in increasing severity:
@@ -19,7 +19,7 @@ Three tiers, in increasing severity:
 
 The forbidden set is deliberately narrow.  Everything an agent could plausibly
 need in order to *do hardware work* -- RTL, testbenches, firmware, constraints,
-``.core`` files, docs -- is advisory no matter how far outside Scope it sits.
+docs -- is advisory unless it is a protected acceptance input.
 """
 
 from __future__ import annotations
@@ -159,7 +159,7 @@ def is_restore_artifact(scope: list[str], path: str, status: str) -> bool:
 
 
 def committed_deviations(
-    worktree: Path, base_branch: str, scope: list[str]
+    worktree: Path, base_branch: str, scope: list[str], *, path_prefix: str = ""
 ) -> tuple[list[str], list[str]] | None:
     """Return ``(deviations, harness_paths)`` committed on the branch, or ``None``.
 
@@ -181,7 +181,9 @@ def committed_deviations(
     """
     # ``-z`` because the default output C-quotes any path with a space or a
     # non-ASCII byte, and a quoted path defeats every prefix test below.
-    result = git_run(worktree, ["diff", "--name-only", "-z", f"{base_branch}...HEAD"], timeout=30)
+    result = git_run(
+        worktree, ["diff", "--no-renames", "--name-only", "-z", base_branch, "HEAD"], timeout=30
+    )
     if result.returncode != 0:
         logger.warning(
             "Cannot diff %s...HEAD for the Scope deviation report: %s",
@@ -191,7 +193,8 @@ def committed_deviations(
         return None
     deviations: list[str] = []
     harness_paths: list[str] = []
-    for path in (p for p in result.stdout.split("\0") if p):
+    for local_path in (p for p in result.stdout.split("\0") if p):
+        path = f"{path_prefix}/{local_path}" if path_prefix else local_path
         tier = classify_path(scope, path)
         if tier is ScopeTier.ADVISORY:
             deviations.append(path)

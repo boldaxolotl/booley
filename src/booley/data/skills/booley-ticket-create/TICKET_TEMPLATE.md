@@ -3,7 +3,7 @@
 summary: <one-line description, becomes branch name slug>
 type: feature | bugfix | refactor | verification
 branch: <development branch to branch from and merge into>
-scope:                           # files in scope (Booley commits only listed paths)
+scope:                           # planned files (outside changes are allowed and highlighted in review)
   - <rtl/file1.sv>               # existing file — must exist at creation time
   - <tb/file1_tb.sv>             # glob patterns supported: rtl/*.sv, tb/*.sv
   - <rtl/new_file.sv [new]>      # [new] tag = file will be created (must NOT exist yet)

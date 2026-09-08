@@ -214,6 +214,11 @@ class McpDriver:
 
 def _report_args(optional_reason: str | None = None) -> dict[str, str]:
     args = {
+        "file_justifications": json.dumps(
+            {"tb/tb_dut.sv": "Exercise stale verification detection after a source edit."}
+            if optional_reason is not None
+            else {}
+        ),
         "summary": "Exercised the production-image Ticket Mode smoke Project.",
         "uncertainties": "This is a deliberately tiny design, not representative QoR coverage.",
         "type_specific_detail": "Covered real Flow, MCP, Criteria, and Ticket Board behavior.",
