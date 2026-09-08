@@ -8,9 +8,9 @@ import pytest
 from booley.harness.scope_policy import committed_deviations
 from booley.mcp.report_changes import changed_ticket_paths, validate_justifications
 from booley.runtime.project_dir import PROJECT_DIR_NAME
-from booley.runtime.ticket_repositories import TicketWorkspaceError
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
 
 def git(repo, *args):

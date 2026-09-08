@@ -7,9 +7,9 @@ import os
 from pathlib import Path
 
 from booley.runtime.git import git_run
-from booley.runtime.ticket_repositories import TicketWorkspaceError, ticket_repositories
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.ticket_repositories import TicketWorkspaceError, ticket_repositories
 
 
 def changed_ticket_paths(worktree: Path) -> list[str]:
@@ -42,7 +42,7 @@ def changed_ticket_paths(worktree: Path) -> list[str]:
             raise TicketWorkspaceError(
                 f"Cannot determine changed files in {repository.worktree}: {result.stderr.strip()}"
             )
-        paths.update(repository.ticket_path(path) for path in result.stdout.split("\0") if path)
+        paths.update(repository.prefixed_path(path) for path in result.stdout.split("\0") if path)
     return sorted(paths)
 
 
