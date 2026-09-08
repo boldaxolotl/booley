@@ -13,7 +13,7 @@ Run exactly once:
 booley board review-briefing $SLUG
 ```
 
-This command performs a fast freshness check, opens every prepared diff, and
+This command performs a fast freshness check, opens eligible source diffs, and
 prints the fixed review briefing. Present that output without rebuilding its
 tables or rereading its underlying evidence. Do not run `prepare-review` during
 interactive triage and do not poll the manifest.

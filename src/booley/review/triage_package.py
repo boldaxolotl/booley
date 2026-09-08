@@ -834,11 +834,51 @@ def load_triage_package(path: Path) -> ReviewPackage:
         raise TriagePackageError(f"invalid or unsupported triage package {path}: {exc}") from exc
 
 
+# Text-encoded memory images are build outputs too; binary detection alone misses them.
+_COMPILED_SUFFIXES = frozenset(
+    {
+        ".bin",
+        ".elf",
+        ".o",
+        ".obj",
+        ".a",
+        ".so",
+        ".dll",
+        ".exe",
+        ".pyc",
+        ".hex",
+        ".ihex",
+        ".srec",
+        ".s19",
+        ".s28",
+        ".s37",
+        ".mem",
+        ".mif",
+        ".coe",
+        ".uf2",
+        ".bit",
+        ".bitstream",
+        ".rbf",
+        ".sof",
+        ".pof",
+    }
+)
+
+
+def _diff_omission(row: Mapping[str, Any]) -> str | None:
+    for key in ("path", "old_path"):
+        if PurePosixPath(str(row.get(key) or "")).suffix.lower() in _COMPILED_SUFFIXES:
+            return "compiled artifact"
+    if row.get("presentation") == "binary":
+        return "binary file"
+    return None
+
+
 def open_package_diffs(package: Mapping[str, Any]) -> list[str]:
-    """Open every prepared diff and return paths whose launch failed."""
+    """Open source diffs and return paths whose launch failed, excluding artifacts."""
     from booley.config.editor import resolve_editor
 
-    rows = package.get("changed_files", [])
+    rows = [row for row in package.get("changed_files", []) if not _diff_omission(row)]
     editor = resolve_editor()
     if editor is None or editor.diff is None:
         return [str(row.get("path", "unknown")) for row in rows]
@@ -1053,6 +1093,9 @@ def _change_description(row: Mapping[str, Any], opened: bool) -> str:
     action = {"A": "added", "D": "deleted", "M": "modified"}.get(status[:1], "changed")
     if status.startswith("R"):
         action = f"renamed from {_markdown_text(row.get('old_path'))}"
+    omission = _diff_omission(row)
+    if omission:
+        return f"{action}; diff omitted ({omission})"
     return f"{action}; diff {'opened' if opened else 'unavailable'}"
 
 

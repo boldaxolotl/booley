@@ -54,7 +54,14 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
   skill verifies and captures the finding locally, then owns the separate
   preview and explicit approval gate for any external submission. Project RTL,
   ticket, configuration, and environment defects do not take this route.
-- For review tickets with submodule changes (submodules listed in project/booley.toml or .gitmodules), always show the submodule diff
+- Show diffs for human-authored source, tests, configuration, and documentation,
+  including changes inside submodules. Never show or open diffs for compiled
+  artifacts, including firmware binaries, text-encoded firmware/memory images
+  (`.hex`, `.mem`, `.mif`), object files, and FPGA bitstreams. Keep these paths
+  in the changed-file and scope summaries, marked "diff omitted (compiled
+  artifact)"; review their source/build inputs and validation evidence instead.
+  Apply this rule to automatic viewers, inline diffs, and follow-up inspection;
+  a text encoding or a tracked file does not make a build output source code.
 - Review tickets use the fixed briefing emitted by `booley board review-briefing`.
   Blocked tickets first use `booley board blocked-briefing`. Both commands are
   freshness-checking, read-only fast paths and never invoke an agent.
