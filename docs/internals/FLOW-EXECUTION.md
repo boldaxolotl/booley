@@ -10,9 +10,7 @@ from pathlib import Path
 from booley.flows.lint.flow import LintFlow
 from booley.flows.lint.request import LintRequest
 
-result = LintFlow().execute(
-    LintRequest(target="lint", work_dir=Path.cwd(), diagnostic=True)
-)
+result = LintFlow().execute(LintRequest(target="lint", work_dir=Path.cwd(), diagnostic=True))
 print(result.exit_code, result.outcome.detail)
 ```
 
