@@ -121,25 +121,23 @@ preemption ([MCP server](../../src/booley/mcp/server.py),
 Finding is resolved. I-02 continues to follow the shipped queued/running
 behavior; the running-job cancellation path must remain in coverage.
 
-### Interactive client documentation conflict; coverage already decided
+### Interactive entry points and QA client coverage
 
-The public docs do not currently name one coherent client set. The Usage guide
-documents bare `booley` launching either Claude Code or Codex CLI and recommends
-the Codex CLI for concurrent Interactive sessions; it also documents the Claude
-Code VS Code extension ([first session](../user/USAGE.md#open-your-first-agent-session)).
-The canonical glossary instead says Interactive Mode uses the Claude Code or
-Codex VS Code extension and that standalone apps are unsupported
-([glossary](../CONTEXT.md#execution)). The generated cheat sheet again says
-`booley` opens the configured CLI.
+The recommended Interactive Mode entry point is bare `booley` / `booley chat`
+in the Session Runtime. It launches the configured `claude` or `codex` command
+and leaves the user in the native CLI. The corresponding VS Code extension is
+an optional alternative ([first session](../user/USAGE.md#open-your-first-agent-session),
+[glossary](../CONTEXT.md#execution)). This resolves the earlier documentation
+conflict between the Usage guide's CLI route and the glossary's extension-only
+definition.
 
 The parent map has fixed the primary QA matrix: cover Claude and Codex as
 Interactive Mode **VS Code clients**, and cover them separately as Ticket Mode
 Developer Agent backends
 ([map standing constraints](https://github.com/boldaxolotl/booley/issues/246)).
-That constraint avoids a standalone-client cross-product, but it does not erase
-a shipped, documented entry point. I-01 therefore requires a bare-`booley`/chat
-smoke check while retaining VS Code as the distinct client-coverage dimension.
-The glossary's standalone-app wording remains a documentation Finding.
+I-01 also requires a bare-`booley`/chat smoke check for the recommended entry
+point while retaining VS Code as the distinct client-coverage dimension;
+this does not require another Cartesian client dimension.
 
 ## 4. Built-in Booley Flows and EDA tools
 
@@ -221,7 +219,7 @@ coverage to match it.
 | T-07 | `on_success` controls review/done destination, merge, cleanup, and triage report; the Target Plan separately controls derived Target disposition. Review-bound runs emit a stable `BOOLEY_RUN_RESULT` and a versioned deterministic JSON briefing; optional HTML generation may fail without failing accepted work ([on-success](../user/USAGE.md#where-the-work-lands-on_success)). | Cover review and done destinations, merge/cleanup, JSON record parsing, deterministic briefing, rich HTML success, and rich HTML regeneration/failure without altering acceptance. |
 | T-08 | Ticket Mode checkpoints completed Flow/Specialist invocations, resumes after interruption, requeues subscription limits, and can auto-retry only a configured known transient stream-stall signature ([unattended execution](../user/USAGE.md#running-unattended), [auto-retry](../user/CONFIG.md#auto-retry-on-transient-crashes-developerauto_retry)). | Interrupt after at least one completed capability, restart, prove no duplicate accepted evidence, and distinguish human blocker, subscription wait/requeue, known auto-retry, ordinary crash, and Developer timeout. |
 | T-09 | Multiple `booley run` instances claim separate Tickets/worktrees. Job Classes cap Developer, heavy EDA, and light Specialist work; excess waits, Interactive work has priority, and a full queue blocks admission ([concurrent Tickets](../user/USAGE.md#concurrent-tickets)). | Run two Tickets concurrently, observe atomic claim and isolated diffs/artifacts, force one queued Job and cancel it, and verify no cross-Ticket files or evidence. A tiny queue setting can test full-queue rejection without expensive parallel EDA. |
-| T-10 | The default Console is a full-screen live view; `--no-console` is stable log mode. Board show/briefing, run dry-run/check-ready, named-ticket and idle-loop controls are public CLI behavior ([CLI reference](../user/USAGE.md#cli-reference)). | Exercise TUI and log modes, a dry-run/check-ready with no transition, a named run, drained timeout, board human output, and machine-readable review record. Screenshot only when a visual layout claim matters. |
+| T-10 | Ticket execution uses the full-screen Console; there is no log-only mode. Board show/briefing, run dry-run/check-ready, named-ticket and idle-loop controls are public CLI behavior ([CLI reference](../user/USAGE.md#cli-reference)). | Exercise the Console, a dry-run/check-ready with no transition, a named run, drained timeout, board human output, and machine-readable review record. Screenshot only when a visual layout claim matters. |
 | T-11 | `[developer]` selects human-availability semantics, structured run-report policy, and active versus wall timeout; `[models]` supplies provider-specific heavy/standard/light tiers and per-role model pins ([Developer Agent policy](../user/CONFIG.md#developer-agent-policy-developer), [model selection](../user/CONFIG.md#model-selection-models)). | Use the map's unattended setting without manufacturing live approval, cover both run-report policies and both timeout classes, verify a tier override and one role override in durable execution metadata, and reject an unknown role or invalid limit before agent work begins. Claude and Codex remain separate backend dimensions. |
 | T-12 | The documented ntfy.sh contract is **Partial** at the evaluated baseline: Ticket `blocked` and automatic Doctor issues are documented and shipped, while documented Ticket completion is not emitted. Source also emits an undocumented `review` event. Delivery is advisory and must not change the lifecycle outcome ([push notifications](../user/USAGE.md#push-notifications)). | With a pre-authorized disposable topic and egress, observe `blocked` and Doctor notifications, prove an absent topic is a no-op, and show an unavailable notifier cannot block either transition. Run a completion probe and record the missing event as a failed documentation-contract assertion. Do not treat `review`, Claude rate-limit notification, or `notifications.events` filtering as supported behavior. |
 

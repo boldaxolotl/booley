@@ -11,11 +11,9 @@ from booley.runtime import job_records as jobrec
 
 
 @pytest.fixture()
-def _jobs_env(tmp_path: Path, monkeypatch):
+def _jobs_env(tmp_path: Path):
     """Point the runtime at a tmp tree so job records land under tmp/jobs/."""
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    return tmp_path
+    return tmp_path / "jobs"
 
 
 class TestTerminalStatus:
@@ -48,8 +46,8 @@ class TestRecordRoundTrip:
             argv=["python", "-m", "booley.flows.sim"],
             pid=4242,
         )
-        jobrec.write_record(rec)
-        got = jobrec.read_record("simulate-x-1")
+        jobrec.write_record(rec, root=_jobs_env)
+        got = jobrec.read_record("simulate-x-1", root=_jobs_env)
         assert got is not None
         assert got.endpoint == "sim"
         assert got.pid == 4242
@@ -57,14 +55,14 @@ class TestRecordRoundTrip:
         assert got.argv == ["python", "-m", "booley.flows.sim"]
 
     def test_read_missing_returns_none(self, _jobs_env):
-        assert jobrec.read_record("nope-1") is None
+        assert jobrec.read_record("nope-1", root=_jobs_env) is None
 
     def test_malformed_record_returns_none(self, _jobs_env):
-        root = jobrec.jobs_dir()
+        root = _jobs_env
         assert root is not None
         root.mkdir(parents=True, exist_ok=True)
         (root / "broken-1.json").write_text("{not json", encoding="utf-8")
-        assert jobrec.read_record("broken-1") is None
+        assert jobrec.read_record("broken-1", root=_jobs_env) is None
 
     def test_list_records(self, _jobs_env):
         for i in (1, 2):
@@ -74,9 +72,10 @@ class TestRecordRoundTrip:
                     endpoint="sim",
                     started_at="t",
                     timeout_s=60,
-                )
+                ),
+                root=_jobs_env,
             )
-        run_ids = {r.run_id for r in jobrec.list_records()}
+        run_ids = {r.run_id for r in jobrec.list_records(root=_jobs_env)}
         assert run_ids == {"simulate-x-1", "simulate-x-2"}
 
     def test_list_records_from_explicit_root(self, tmp_path: Path):
@@ -97,34 +96,23 @@ class TestRecordRoundTrip:
             started_at="t",
             timeout_s=60,
         )
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=_jobs_env)
         rec.status = jobrec.STATUS_DONE
         rec.exit_code = 0
-        jobrec.write_record(rec)
-        got = jobrec.read_record("simulate-x-1")
+        jobrec.write_record(rec, root=_jobs_env)
+        got = jobrec.read_record("simulate-x-1", root=_jobs_env)
         assert got is not None and got.status == jobrec.STATUS_DONE
-        root = jobrec.jobs_dir()
+        root = _jobs_env
         assert root is not None
         assert not list(root.glob("*.tmp"))
 
 
-class TestJobsDir:
-    def test_none_without_logs_dir(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        assert jobrec.jobs_dir() is None
-
-    def test_write_is_noop_without_runtime(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        # Best-effort: must not raise even with nowhere to write.
-        jobrec.write_record(
-            jobrec.JobRecord(
-                run_id="x",
-                endpoint="sim",
-                started_at="t",
-                timeout_s=1,
-            )
-        )
-        assert jobrec.read_record("x") is None
+class TestDisabledStorage:
+    def test_explicit_none_disables_storage(self):
+        rec = jobrec.JobRecord(run_id="x", endpoint="sim", started_at="t", timeout_s=1)
+        jobrec.write_record(rec, None)
+        assert jobrec.read_record("x", None) is None
+        assert jobrec.list_records(None) == []
 
 
 class TestDeriveStatus:
@@ -318,7 +306,7 @@ class TestDeadlineAnchorsAtRunStart:
 
     def test_run_started_at_round_trips_through_disk(self, _jobs_env):
         rec = self._rec()
-        jobrec.write_record(rec)
-        loaded = jobrec.read_record("r")
+        jobrec.write_record(rec, root=_jobs_env)
+        loaded = jobrec.read_record("r", root=_jobs_env)
         assert loaded is not None
         assert loaded.run_started_at == self._RUN_STARTED

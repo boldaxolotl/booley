@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import quote
 
-from booley.core.boundary import require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict, require_str
 from booley.review.artifact import ReviewArtifactError, ReviewPackage
 from booley.review.explanation import StructuredExplanation
 
@@ -647,6 +647,26 @@ def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
     return sorted(names)
 
 
+def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
+    """Validate saved report explanations before exposing them to review readers."""
+    try:
+        criteria = require_dict(state.get("criteria", {}), field="criteria")
+        report = require_dict(criteria.get("_report_submitted", {}), field="_report_submitted")
+        detail = require_dict(report.get("detail", {}), field="_report_submitted.detail")
+        raw = require_dict(detail.get("file_justifications", {}), field="file_justifications")
+        reasons: dict[str, str] = {}
+        for path in raw:
+            if not isinstance(path, str) or not path.strip():
+                raise BoundaryError("file justification path must be a nonblank string")
+            reason = require_str(raw, path).strip()
+            if not reason:
+                raise BoundaryError(f"file justification for {path!r} must not be blank")
+            reasons[path] = reason
+        return reasons
+    except BoundaryError as exc:
+        raise TriagePackageError(f"Invalid saved file justifications: {exc}") from exc
+
+
 def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
     """Collect and materialize exhaustive mechanical review facts once."""
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
@@ -654,6 +674,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise TriagePackageError(f"invalid state file: {state_path}")
     scope = _scope(ctx)
+    scope["file_justifications"] = _file_justifications(state)
     changes = _materialize_diffs(ctx, _changed_files(ctx))
     repositories = [
         {
@@ -1010,6 +1031,9 @@ def _render_scope(lines: list[str], package: Mapping[str, Any]) -> None:
             f"- `{_markdown_text(row['path'])}` — **{_markdown_text(row['classification'])}**: "
             f"{_markdown_text(row['reason'])}"
         )
+        justification = scope.get("file_justifications", {}).get(row["path"])
+        if justification:
+            lines.append(f"  - Developer justification: {_markdown_text(justification)}")
 
 
 def _render_commits(lines: list[str], package: Mapping[str, Any]) -> None:
@@ -1042,6 +1066,13 @@ def _render_changes(lines: list[str], package: Mapping[str, Any], failures: set[
             f"- {_markdown_link(path, str(link_path))} — "
             f"{_change_description(row, path not in failures)}"
         )
+        reasons = package.get("scope", {}).get("file_justifications", {})
+        for changed_path in dict.fromkeys([path, row.get("old_path")]):
+            if changed_path and changed_path in reasons:
+                lines.append(
+                    f"  - Developer justification (`{_markdown_text(changed_path)}`): "
+                    f"{_markdown_text(reasons[changed_path])}"
+                )
 
 
 def _render_explanation_highlights(lines: list[str], package: Mapping[str, Any]) -> None:

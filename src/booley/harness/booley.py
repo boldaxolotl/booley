@@ -423,18 +423,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate setup without executing tickets (implies -n 1 and --no-console)",
+        help="Validate setup without executing tickets (implies -n 1)",
     )
     run_p.add_argument(
         "--check-ready",
         action="store_true",
         help="Prepare and fully validate one ticket without agents or board transitions",
-    )
-    run_p.add_argument(
-        "--no-console",
-        "-L",
-        action="store_true",
-        help="Disable full-screen Console TUI (use log mode)",
     )
     run_p.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging output"
@@ -889,7 +883,6 @@ _RUN_DEFAULTS = {
     "check_ready": False,
     "verbose": False,
     "ticket": "",
-    "no_console": False,
 }
 
 
@@ -952,21 +945,11 @@ def _validate_doctor_args(
 
 
 def _apply_dry_run_implications(args: argparse.Namespace) -> None:
-    """``--dry-run`` implies one-shot and log mode (F-12).
-
-    A dry run validates setup and executes nothing, so the two behaviors that
-    make a bare `booley run` a long-lived service are wrong for it: the idle
-    poll (waits for a ticket that dry-run would refuse to execute anyway, i.e.
-    forever) and the full-screen TUI (nothing to watch, and it takes the
-    terminal from a script that just wanted the validation output). Both made
-    `booley run --dry-run` unusable headlessly without also passing
-    `--no-console -n 1`. An explicit `-n` still wins.
-    """
+    """Make validation one-shot; an explicit ticket count still wins."""
     if not getattr(args, "dry_run", False):
         return
     if not args.count:
         args.count = 1
-    args.no_console = True
 
 
 def _parse_cli() -> argparse.Namespace:
@@ -1465,6 +1448,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     import importlib
     import importlib.util
 
+    from booley.flows.base import BooleyFlow, BuiltinFlow
     from booley.mcp.base import McpTool
 
     path = Path(info.path)
@@ -1482,7 +1466,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     for obj in vars(module).values():
         if (
             isinstance(obj, type)
-            and issubclass(obj, McpTool)
+            and issubclass(obj, (McpTool, BooleyFlow, BuiltinFlow))
             and obj is not McpTool
             and getattr(obj, "name", "") == info.name
         ):
@@ -1734,21 +1718,8 @@ def _check_ticket_readiness(args: argparse.Namespace, project_root: Path) -> int
 
 
 def _will_use_console(args: argparse.Namespace) -> bool:
-    """Mirror harness `_detect_console`: would the child run the TUI?
-
-    When True, the parent suppresses its mascot/attempt chrome so the
-    Textual app can take over the terminal immediately instead of flashing
-    placeholder lines that get cleared a moment later.
-    """
-    if getattr(args, "no_console", False):
-        return False
-    if os.environ.get("BOOLEY_CONSOLE") == "0":
-        return False
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM") == "dumb":
-        return False
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    """Ticket execution owns the Console; validation only prints results."""
+    return not (getattr(args, "dry_run", False) or getattr(args, "check_ready", False))
 
 
 def _print_banner(args: argparse.Namespace) -> None:
@@ -1941,8 +1912,6 @@ def _run_harness(
             # and harness's init_ticket leaves the ticket stuck in queue/.
             _run_board(project_root, ["activate", args.slug])
             cmd.extend(["--ticket", args.slug])
-        if getattr(args, "no_console", False):
-            cmd.append("--no-console")
         if args.verbose:
             cmd.append("--verbose")
 

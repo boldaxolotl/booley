@@ -155,3 +155,51 @@ def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: s
     path.write_text(source, encoding="utf-8")
 
     assert _target_mechanics_violations(path, "consumer.py")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def schema():\n    from booley.mcp.base import McpTool\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.mcp.base\n",
+    ),
+)
+def test_flow_mcp_prohibition_includes_deferred_and_type_only_imports(tmp_path, source):
+    from tests.architecture.contract import ArchitectureContract
+
+    root = tmp_path / "booley"
+    for package in (root, root / "flows", root / "mcp"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").write_text("")
+    (root / "mcp/base.py").write_text("class McpTool: pass\n")
+    (root / "flows/rogue.py").write_text(source)
+    contract = ArchitectureContract(
+        rules=tuple(
+            rule for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules if rule.identifier == "D15"
+        ),
+    )
+    problems = evaluate_contract(analyze_imports(root), contract)
+    assert problems
+    assert "D15" in format_problems(problems)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.ticket_board.paths\n",
+        "def helper():\n    from booley.ticket_board import paths\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from booley.ticket_board.paths import value\n",
+    ],
+)
+def test_runtime_ticket_board_rule_catches_all_static_import_locations(tmp_path, statement):
+    root = tmp_path / "booley"
+    for package in (root, root / "runtime", root / "ticket_board"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "ticket_board" / "paths.py").write_text("value = 1\n")
+    (root / "runtime" / "seed.py").write_text(statement)
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+    assert "D14" in report
+    assert "booley.runtime.seed" in report
+    assert "booley.ticket_board.paths" in report

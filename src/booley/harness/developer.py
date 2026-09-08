@@ -36,6 +36,7 @@ from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 from booley.runtime.timefmt import compact_utc_now
+from booley.ticket_board.agent_execution import configure_agent_call, resolve_agent_artifacts
 from booley.ticket_board.paths import (
     existing_ticket_runtime_file,
     migrate_runtime_file,
@@ -186,7 +187,6 @@ async def run_ticket(
     project_root: Path | None = None,
     *,
     save_transcripts: bool = True,
-    use_console: bool = False,
 ) -> TicketRunResult | None:
     """Execute the full developer flow for a ticket.
 
@@ -194,18 +194,15 @@ async def run_ticket(
         ticket_path_or_slug: Path to ticket .md file, or slug for resume.
         project_root: Project root directory. Defaults to cwd.
         save_transcripts: Write per-agent JSONL transcripts to logs dir.
-        use_console: Use full-screen Console TUI instead of log mode.
 
-    In console mode the TUI is launched first and preflight/parse-validate
+    The Console TUI is launched first and preflight/parse-validate
     run inside its worker (with SetupProgress events for visibility) so the
     user never sees pre-TUI chrome flash by.
     """
     if project_root is None:
         project_root = Path.cwd()
 
-    if use_console:
-        return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
-    return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
+    return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
 
 
 async def _prepare_ticket(
@@ -213,11 +210,7 @@ async def _prepare_ticket(
     project_root: Path,
     save_transcripts: bool,
 ) -> TicketContext:
-    """Run config-load, preflight, and parse-validate. Returns the ready ctx.
-
-    Shared by log-mode and console-mode entry paths so the bring-up sequence
-    stays identical.
-    """
+    """Run config-load, preflight, and parse-validate. Returns the ready ctx."""
     from booley.config.settings import load_models_config
 
     from .setup.intake import run as parse_validate
@@ -233,23 +226,6 @@ async def _prepare_ticket(
         raise
     ctx.save_transcripts = save_transcripts
     return ctx
-
-
-async def _run_log_mode(
-    ticket_path_or_slug: str,
-    project_root: Path,
-    save_transcripts: bool,
-) -> TicketRunResult | None:
-    """Original (no-TUI) flow: prepare, then run the ticket body inline."""
-    exec_start = time.monotonic()
-    ctx = await _prepare_ticket(ticket_path_or_slug, project_root, save_transcripts)
-    setup_file_logging(ticket_human_log_file(ctx.logs_dir, "harness.log"))
-    open_log(ticket_human_log_file(ctx.logs_dir, "run.log"))
-    try:
-        return await _run_ticket_body(ctx, project_root, exec_start)
-    finally:
-        close_log()
-        teardown_file_logging()
 
 
 def _invalidate_missing_worktree(ctx: TicketContext, project_root: Path) -> None:
@@ -442,33 +418,25 @@ async def _run_with_console(
     sees pre-TUI INFO logs flash before the screen takeover. The header
     is filled in once parse-validate has produced a ticket context.
 
-    On Textual ImportError, falls back to log mode. Errors raised inside
-    the worker are captured and re-raised after the app exits, so the
-    outer entry point can map them to the right exit code (preflight=2,
+    Errors raised inside the worker are captured and re-raised after the
+    app exits, so the outer entry point can map them to the right exit code (preflight=2,
     user-quit=EXIT_USER_QUIT, etc.).
     """
-    try:
-        from .console.app import ConsoleApp, ConsolePhase
-        from .console.events import SetupProgress
-        from .console.widgets import TicketHeader
-    except ImportError:
-        logger.warning("Textual not available, falling back to log mode")
-        return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-
     from .blocking import UserQuitError
+    from .console.app import ConsoleApp, ConsolePhase
+    from .console.events import SetupProgress
+    from .console.widgets import TicketHeader
 
     # Empty/placeholder header -- TicketHeader renders blank until
     # parse-validate succeeds and set_ticket_info() is called below.
     app = ConsoleApp()
 
     worker_error: list[BaseException] = []
-    harness_started = False
     harness_completed = False
     ticket_result: TicketRunResult | None = None
 
     async def harness_work() -> None:
-        nonlocal harness_started, harness_completed, ticket_result
-        harness_started = True
+        nonlocal harness_completed, ticket_result
         exec_start = time.monotonic()
         try:
             app.post_message(SetupProgress("loading model/backend config..."))
@@ -512,21 +480,15 @@ async def _run_with_console(
 
     try:
         await app.run_async()
-    except Exception:
-        logger.exception("Console crashed")
-        terminal.set_console_active(False)
-        app.transition_to(ConsolePhase.EXITED)
-        # If the worker never started, we can still retry in log mode.
-        if not harness_started:
-            return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-        if not harness_completed:
-            logger.error("Console crashed mid-run -- harness was in progress, cannot safely retry")
     finally:
         terminal.set_console_active(False)
         app.transition_to(ConsolePhase.EXITED)
 
     if worker_error:
         raise worker_error[0]
+    # Textual handles lifecycle errors internally instead of raising from run_async.
+    if app.return_code != 0:
+        raise RuntimeError(f"Console failed with exit code {app.return_code}")
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")
@@ -1173,7 +1135,7 @@ def _check_ticket_dirty_statuses(ctx: TicketContext) -> list[DirtyFile]:
 
 def _commit_ticket_paths(ctx: TicketContext, paths: list[str], message: str) -> None:
     """Commit authorized paths through the Ticket Workspace."""
-    from booley.runtime.ticket_repositories import TicketWorkspaceError
+    from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
     from .blocking import BlockingError
     from .setup.project_worktree import ticket_workspace
@@ -1190,7 +1152,7 @@ def _run_post_guardrails(
     run_index: int,
 ) -> bool:
     """Run post-developer guardrails. Returns True if ticket was blocked."""
-    from booley.runtime.ticket_repositories import TicketWorkspaceError
+    from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
     from .colors import yellow
     from .scope_policy import is_restore_artifact
@@ -1273,6 +1235,25 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
 
     base_ref = ctx.acceptance_basis.outer_sha if ctx.acceptance_basis is not None else ctx.branch
     result = committed_deviations(ctx.worktree_path, base_ref, ctx.scope_raw)
+    if ctx.acceptance_basis is not None and ctx.acceptance_basis.project_sha:
+        from booley.runtime.project_repositories import paired_project_repository
+
+        paired = paired_project_repository(ctx.worktree_path)
+        project_result = (
+            committed_deviations(
+                paired.worktree,
+                ctx.acceptance_basis.project_sha,
+                ctx.scope_raw,
+                path_prefix=paired.path_prefix,
+            )
+            if paired is not None
+            else None
+        )
+        result = (
+            (result[0] + project_result[0], result[1] + project_result[1])
+            if result is not None and project_result is not None
+            else None
+        )
     write_deviation_report(
         ticket_runtime_file(ctx.logs_dir, DEVIATION_REPORT_NAME),
         slug=ctx.slug,
@@ -1552,7 +1533,7 @@ def _write_developer_prompt_snapshot(
         )
 
     write_prompt_artifacts(
-        transcript_path,
+        resolve_agent_artifacts(transcript_path, label="developer"),
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         metadata={
@@ -1739,7 +1720,7 @@ def _resolve_booley_project_dir(project_root: Path) -> Path:
 def _ticket_project_dir(ctx: TicketContext) -> Path:
     """Return ticket-authored project content, falling back to control-plane data."""
     if ctx.worktree_path is not None:
-        from booley.runtime.ticket_repositories import TicketWorkspaceError
+        from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
         from .setup.project_worktree import ticket_workspace
 
@@ -1981,12 +1962,12 @@ async def _launch_developer_agent(
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
     with scoped_environment(endpoint_env):
-        return await cfg.active_backend.call(params, **backend_kwargs)
+        return await cfg.active_backend.call(configure_agent_call(params), **backend_kwargs)
 
 
 def _paired_project_repository_required(cwd: Path, project_root: Path | None) -> bool:
     """Whether this Developer session must retain a paired project checkout."""
-    from booley.runtime.ticket_repositories import (
+    from booley.ticket_board.ticket_repositories import (
         paired_project_repository,
         resolve_inner_project_repo,
     )

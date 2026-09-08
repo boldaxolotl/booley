@@ -19,7 +19,6 @@ Mode as well as Ticket Mode (ADR 0012).
 
 from __future__ import annotations
 
-import argparse
 import copy
 import logging
 import os
@@ -34,6 +33,8 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.flows.fpga.cli import FpgaArguments
+from booley.flows.fpga.request import FpgaRequest
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -43,8 +44,8 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -111,6 +112,7 @@ from .backends.vivado.metrics import (
 from .implementation_report import (
     build_fpga_implementation_report,
 )
+from .profiles import VIVADO_PROFILES, VivadoProfile, resolve_fpga_profile
 from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,7 @@ class _PreparedFpgaCommand:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
+    ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
@@ -149,6 +152,7 @@ class _ResolvedFpgaRecipe:
     defines: tuple[str, ...]
     vlogparams: dict[str, Any]
     out_of_context: bool
+    ppa_profile: VivadoProfile
     recipe_snapshot: dict[str, Any]
     recipe_fingerprint: str
     source_evidence: run_evidence.FlowSourceEvidence
@@ -202,7 +206,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BuiltinFlow):
+class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -210,6 +214,9 @@ class FpgaImplFlow(BuiltinFlow):
     identity, and the supported set moves (SUPPORTED-EDA-TOOLS.md owns that list).
     ``asic_synthesize`` reads the same way.
     """
+
+    request_type = FpgaRequest
+    argument_adapter = FpgaArguments
 
     name: str = "fpga"
     description: str = (
@@ -228,21 +235,13 @@ class FpgaImplFlow(BuiltinFlow):
         """FPGA implementation is a heavy Session Runtime workload."""
         return job_slots.CLASS_HEAVY
 
-    def _add_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--baseline", default=None, help="Baseline git ref for comparison")
-        parser.add_argument(
-            "--no-cache",
-            action="store_true",
-            help="Bypass reusable implementation results and run the recipe again",
-        )
-
     def _build_command(self) -> list[str]:
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
-        return McpToolResult()
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+        return EndpointOutcome()
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0911 — linear aggregate orchestration
+    def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear aggregate orchestration
         # The initially selected worktree, captured before any baseline run
         # swaps ``self.args.work_dir`` to a throwaway worktree.  It distinguishes
         # primary-run artifacts from temporary baseline artifacts.
@@ -255,7 +254,7 @@ class FpgaImplFlow(BuiltinFlow):
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "fpga: no Target selected. Pass --target <name> "
@@ -267,7 +266,7 @@ class FpgaImplFlow(BuiltinFlow):
         if comparison_error is not None:
             return comparison_error
         if not self._flow_enabled():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="fpga is disabled ([flows.fpga].enabled = false).",
             )
@@ -276,7 +275,7 @@ class FpgaImplFlow(BuiltinFlow):
         if self.args.dry_run:
             return self._dry_run_result(plan)
         if plan.aggregate_errors:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "fpga: infrastructure error during planning: "
@@ -290,7 +289,7 @@ class FpgaImplFlow(BuiltinFlow):
         self.reserve_invocation_dir()
         self._write_progress_report(targets, {}, {}, phase="starting")
         baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, McpToolResult):
+        if isinstance(baseline_results, EndpointOutcome):
             return baseline_results
         current_results = self._run_current_targets(targets, baseline_results, short_sha)
         result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
@@ -333,7 +332,7 @@ class FpgaImplFlow(BuiltinFlow):
                 )
         return current_results
 
-    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> McpToolResult | None:
+    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> EndpointOutcome | None:
         baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
@@ -348,7 +347,7 @@ class FpgaImplFlow(BuiltinFlow):
         except ImplementationComparisonError as exc:
             comparison_error = f"fpga: {exc}"
         if baseline_error is not None or comparison_error is not None:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=baseline_error or comparison_error or "fpga comparison error",
             )
@@ -526,18 +525,7 @@ class FpgaImplFlow(BuiltinFlow):
     ) -> _ResolvedFpgaRecipe:
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
-        selected_root = build_root or edam_layer.work_root_for(
-            work_dir,
-            self.name,
-            target,
-            variant="fusesoc",
-        )
-        handle = self._target_handle(target)
-        ref = getattr(self, "_target_execution_refs", {}).get(target)
-        if ref is not None:
-            resolved = resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        else:
-            resolved = fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
+        resolved = self._resolve_fpga_target(target, build_root=build_root)
         validate_top_parameter_intent(resolved, flow="fpga")
         part = self._resolve_part(resolved.flow_options)
         xdc_files = tuple(self._resolve_xdc_files(resolved, target))
@@ -552,9 +540,12 @@ class FpgaImplFlow(BuiltinFlow):
             "out_of_context",
             field=f"Target {target!r} flow_options.out_of_context",
         )
-        snapshot = fpga_recipe_snapshot(resolved, target=target)
-        fingerprint = fpga_recipe_snapshot_fingerprint(snapshot)
-        source = run_evidence.capture_flow_source_evidence(work_dir, target)
+        ppa_profile = resolve_fpga_profile(
+            resolved.flow_options,
+            override=getattr(self.args, "ppa_profile", None),
+            target=target,
+        )
+        snapshot = fpga_recipe_snapshot(resolved, target=target, profile=ppa_profile)
         return _ResolvedFpgaRecipe(
             target=target,
             resolved=resolved,
@@ -567,10 +558,26 @@ class FpgaImplFlow(BuiltinFlow):
             defines=tuple(_unique_strings(_vlogdefine_args(resolved.parameters))),
             vlogparams=vlogparam_values(resolved.parameters),
             out_of_context=out_of_context,
+            ppa_profile=ppa_profile,
             recipe_snapshot=snapshot,
-            recipe_fingerprint=fingerprint,
-            source_evidence=source,
+            recipe_fingerprint=fpga_recipe_snapshot_fingerprint(snapshot),
+            source_evidence=run_evidence.capture_flow_source_evidence(work_dir, target),
         )
+
+    def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:
+        """Resolve one Target at the selected candidate or baseline revision."""
+        work_dir = Path(self.args.work_dir)
+        selected_root = build_root or edam_layer.work_root_for(
+            work_dir,
+            self.name,
+            target,
+            variant="fusesoc",
+        )
+        handle = self._target_handle(target)
+        ref = getattr(self, "_target_execution_refs", {}).get(target)
+        if ref is not None:
+            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
@@ -594,38 +601,51 @@ class FpgaImplFlow(BuiltinFlow):
         self,
         target: str,
     ) -> _PreparedFpgaCommand:
-        """Materialize the Edalize vivado project and return (run_cmd, work_root).
-
-        The single seam between EDAM generation / in-process ``configure()`` and
-        execution (mirrors ``simulate._prepare_sim_command``). Per ADR 0022
-        (decision 4) FuseSoC owns *design-description*: ``resolve_target`` runs
-        ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing the RTL
-        sources, top module, and typed parameters. Only this **resolution half**
-        is swapped — the vivado boundary crossing (ADR 0019/0037) and the
-        EDAM-builder command-gen exception are preserved: the resolved
-        sources/top/defines are
-        fed *into* ``build_fpga_edam`` (whose ``configure()`` materializes the
-        vivado project) instead of the legacy-registry-derived ones.
-
-        The Target owns Vivado's part, constraints, defines, and out-of-context
-        setting. A ``--baseline`` re-resolve runs against a throwaway worktree
-        (``self.args.work_dir``
-        points at it), so its build dir is physically separate from the current
-        run's and cannot clobber it.
-
-        Raises ``ValueError`` / ``EdamSecurityError`` on bad inputs and
-        ``TargetResolutionError`` on FuseSoC setup failure (the caller records
-        all three as infra errors).
-        """
+        """Materialize the validated Vivado recipe and return its executable command."""
         work_dir = Path(self.args.work_dir)
-        recipe = None
-        if getattr(self, "_execution_role", "candidate") == "candidate":
-            recipe = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
-        if recipe is None:
-            recipe = self._resolve_fpga_recipe(target)
+        recipe = self._fpga_recipe_for_execution(target)
         work_root = edam_layer.work_root_for(work_dir, "fpga", target)
+        edam = self._materialize_fpga_project(recipe, work_root)
+        fingerprint = fpga_cache.input_fingerprint(
+            recipe.resolved,
+            edam,
+            out_of_context=recipe.out_of_context,
+            recipe_sha256=recipe.recipe_fingerprint,
+        )
+        dispatch_evidence = run_evidence.build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe.recipe_fingerprint,
+            work_dir=work_dir,
+            source_evidence=recipe.source_evidence,
+        )
+        return _PreparedFpgaCommand(
+            run_cmd=fpga_edam.fpga_run_command(work_root, work_dir),
+            work_root=work_root,
+            fingerprint=fingerprint,
+            require_bitstream=not recipe.out_of_context,
+            recipe_snapshot=recipe.recipe_snapshot,
+            recipe_fingerprint=recipe.recipe_fingerprint,
+            run_evidence=dispatch_evidence.as_dict(),
+            ppa_profile=recipe.ppa_profile,
+        )
+
+    def _fpga_recipe_for_execution(self, target: str) -> _ResolvedFpgaRecipe:
+        """Reuse a planned candidate recipe or resolve the active execution revision."""
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            planned = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
+            if planned is not None:
+                return planned
+        return self._resolve_fpga_recipe(target)
+
+    def _materialize_fpga_project(
+        self,
+        recipe: _ResolvedFpgaRecipe,
+        work_root: Path,
+    ) -> dict[str, Any]:
+        """Generate Vivado Tcl, then apply profile and out-of-context patches in order."""
         edam = fpga_edam.build_fpga_edam(
-            name=f"fpga_{target}",
+            name=f"fpga_{recipe.target}",
             toplevel=recipe.top,
             part=recipe.part,
             sv_files=list(recipe.sv_files),
@@ -644,6 +664,9 @@ class FpgaImplFlow(BuiltinFlow):
             project_name,
             recipe.vlogparams,
         )
+        # Vivado resets synthesis step properties when a strategy is assigned.
+        # Apply the profile first so the OOC patch below remains authoritative.
+        fpga_edam.apply_ppa_profile(work_root, project_name, recipe.ppa_profile)
         # QoR-gate targets whose bare toplevel out-ports the package (e.g. an
         # engine block never meant for pin mapping) opt into OOC synthesis so
         # placement does not fail on IO-buffer overutilization. Strictly typed:
@@ -651,28 +674,7 @@ class FpgaImplFlow(BuiltinFlow):
         # non-bool raises (BoundaryError is a ValueError → infra error upstream).
         if recipe.out_of_context:
             fpga_edam.enable_out_of_context(work_root, project_name)
-        run_cmd = fpga_edam.fpga_run_command(work_root, Path(self.args.work_dir))
-        fingerprint = fpga_cache.input_fingerprint(
-            recipe.resolved,
-            edam,
-            out_of_context=recipe.out_of_context,
-        )
-        dispatch_evidence = run_evidence.build_flow_run_evidence(
-            flow=self.name,
-            target=target,
-            recipe_sha256=recipe.recipe_fingerprint,
-            work_dir=work_dir,
-            source_evidence=recipe.source_evidence,
-        )
-        return _PreparedFpgaCommand(
-            run_cmd=run_cmd,
-            work_root=work_root,
-            fingerprint=fingerprint,
-            require_bitstream=not recipe.out_of_context,
-            recipe_snapshot=recipe.recipe_snapshot,
-            recipe_fingerprint=recipe.recipe_fingerprint,
-            run_evidence=dispatch_evidence.as_dict(),
-        )
+        return edam
 
     def _resolve_part(self, flow_options: Any) -> str:
         """Validate and resolve the FPGA part from Target ``flow_options``."""
@@ -764,17 +766,24 @@ class FpgaImplFlow(BuiltinFlow):
             log_text + "\n" + report_text if report_text else log_text
         )
 
-        # QoR flow stops at route_design: a boardless soft IP cannot write a
+        # A boardless soft IP cannot write a
         # bitstream (write_bitstream's NSTD-1/UCIO-1 DRC precondition fails with
         # no pinout), so ``make`` exits non-zero even when synth+place+route fully
         # succeed. fpga_impl is a QoR Flow — route completion (the report files +
         # the route-done marker parse_fpga_reports keys ``status`` on) defines
         # success, NOT the bitstream/make exit code. Only when route did *not*
         # complete do we surface the boundary command's exit code as the failure.
+        # Profiles requiring post-route work must also pass the completion gate below.
         route_completed = metric_dict.get("status") in ("pass", "success")
         metric_dict["exit_code"] = 0 if route_completed else result.returncode
         metrics = self._metrics_from_parsed_reports(metric_dict, result.duration_s)
         metrics.cache_fingerprint = fingerprint
+        completion_error = fpga_edam.profile_completion_error(
+            log_text + "\n" + report_text, prepared.ppa_profile
+        )
+        if completion_error:
+            metrics.returncode = result.returncode or 1
+            metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
         if metrics.returncode != 0 and not metrics.infra_error:
@@ -996,10 +1005,10 @@ class FpgaImplFlow(BuiltinFlow):
     def _run_baseline_configs(
         self,
         pairs: tuple[TargetPairPlan, ...],
-    ) -> tuple[dict[str, FpgaMetrics] | McpToolResult, str | None]:
+    ) -> tuple[dict[str, FpgaMetrics] | EndpointOutcome, str | None]:
         """Implement *configs* at ``--baseline`` in a throwaway worktree.
 
-        Returns ``(results_dict, short_sha)``, or ``(McpToolResult, None)`` when the
+        Returns ``(results_dict, short_sha)``, or ``(EndpointOutcome, None)`` when the
         worktree could not be created. The baseline ref is materialized in an
         ephemeral ``git worktree`` under the project (inside the Session
         Runtime workspace) rather than checked out in
@@ -1036,7 +1045,7 @@ class FpgaImplFlow(BuiltinFlow):
                     self._execution_role = current_role
                     self.args.work_dir = project_root
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"fpga: {exc}",
             ), None
@@ -1168,7 +1177,7 @@ class FpgaImplFlow(BuiltinFlow):
         current_results: dict[str, FpgaMetrics],
         baseline_results: dict[str, FpgaMetrics],
         short_sha: str | None,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         implementation_reports = {
             target: getattr(self, "_implementation_reports", {}).get(target)
             or self._implementation_report(
@@ -1187,7 +1196,7 @@ class FpgaImplFlow(BuiltinFlow):
         self._append_target_results(lines, failures, configs, current_results, baseline_results)
         lines.append("")
         lines.append("RESULT: PASS" if not failures else f"RESULT: FAIL ({'; '.join(failures)})")
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
             report_text="\n".join(lines),
             display_lines=_first_valid_display(configs, current_results),

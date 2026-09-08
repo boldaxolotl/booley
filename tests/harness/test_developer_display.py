@@ -444,7 +444,7 @@ class TestAgentEventHandler:
             mock_at.assert_not_called()
 
     def test_ignores_usage_events(self):
-        """usage is a Console-only counter signal — nothing to print in log mode."""
+        """usage is a Console-only counter signal — nothing to print in the text log."""
         with patch("booley.harness.terminal.agent_text") as mock_at:
             agent_event_handler({"type": "usage", "tokens": 1200, "cost_usd": 0.4})
             mock_at.assert_not_called()

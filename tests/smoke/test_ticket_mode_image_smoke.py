@@ -25,6 +25,7 @@ from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.paths import session_jobs_dir
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_TICKET_MODE_SMOKE") != "1",
@@ -213,6 +214,11 @@ class McpDriver:
 
 def _report_args(optional_reason: str | None = None) -> dict[str, str]:
     args = {
+        "file_justifications": json.dumps(
+            {"tb/tb_dut.sv": "Exercise stale verification detection after a source edit."}
+            if optional_reason is not None
+            else {}
+        ),
         "summary": "Exercised the production-image Ticket Mode smoke Project.",
         "uncertainties": "This is a deliberately tiny design, not representative QoR coverage.",
         "type_specific_detail": "Covered real Flow, MCP, Criteria, and Ticket Board behavior.",
@@ -337,10 +343,10 @@ def _run_through_runner(monkeypatch: pytest.MonkeyPatch, project: Path, slug: st
     def in_process_child(cmd: list[str], _cwd: str, child_project: Path) -> int:
         ticket = cmd[cmd.index("--ticket") + 1]
         args = argparse.Namespace(ticket=ticket, no_transcripts=True)
-        return harness_main._run_harness(args, Path(child_project), use_console=False)
+        return harness_main._run_harness(args, Path(child_project))
 
     monkeypatch.setattr(runner, "_run_with_heartbeat", in_process_child)
-    args = argparse.Namespace(slug=slug, no_console=True, verbose=False)
+    args = argparse.Namespace(slug=slug, verbose=False)
     return runner._run_harness(args, project, sys.executable)[0]
 
 
@@ -370,7 +376,8 @@ def _assert_installed_runner_guard(project: Path, slug: str) -> None:
 
 def _assert_no_live_jobs() -> None:
     assert all(
-        record.status != job_records.STATUS_RUNNING for record in job_records.list_records()
+        record.status != job_records.STATUS_RUNNING
+        for record in job_records.list_records(root=session_jobs_dir())
     )
     slots_root = job_slots.slots_dir()
     assert slots_root is not None

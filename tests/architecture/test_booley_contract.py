@@ -30,6 +30,9 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
+        ("D15", "booley.flows", "booley.mcp", "flows/__init__.py"),
+        ("D15", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
+        ("D15", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),
         ("D1", "booley.audit.policy", "booley.mcp.registry", "seed.py"),
         ("D1", "booley.config.settings", "booley.harness.cli", "seed.py"),
         ("D1", "booley.fusesoc.target", "booley.specialists.reviewer", "seed.py"),
@@ -44,6 +47,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D5", "booley.runtime.agent", "booley.mcp.registry", "seed.py"),
         ("D5", "booley.runtime.agent", "booley.specialists.reviewer", "seed.py"),
         ("D6", "booley.runtime.agent", "booley.harness.cli", "seed.py"),
+        ("D14", "booley.runtime.agent", "booley.ticket_board.paths", "seed.py"),
         ("D7", "booley.flows.target_campaign", "booley.harness.cli", "seed.py"),
         ("D7", "booley.flows.target_criteria", "booley.mcp.registry", "seed.py"),
         (

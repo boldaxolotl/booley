@@ -139,8 +139,7 @@ class MainPane(VerticalScroll):
         # once, the first time non-setup content lands.
         self._had_setup: bool = False
         self._setup_divider_drawn: bool = False
-        # Click-link wiring — attached by the app at startup; None in tests
-        # and log mode so the legacy plain-text path stays untouched.
+        # Click-link wiring — attached by the app at startup; None in tests.
         self._link_ctx: LinkContext | None = None
         self._editor: ResolvedEditor | None = None
 
@@ -187,7 +186,7 @@ class MainPane(VerticalScroll):
         """Wrap raw paths in backticks, then render with click spans.
 
         Returns a Rich ``Text`` carrying ``meta`` on resolvable spans.
-        When no link context is attached (tests, log-mode fallback), the
+        When no link context is attached (for example, in tests), the
         result is a plain ``Text`` with ``base_style`` applied.
         """
         if self._link_ctx is None:

@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.runtime.ticket_repositories import TicketWorkspace, TicketWorkspaceError
+from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
     from .acceptance_basis import AcceptanceBasis
@@ -655,7 +655,9 @@ class TicketIO:
         if ticket is None or not (self._project_root / ".git").exists():
             return
         try:
-            worktrees = TicketWorkspace.ensure_authoring(self._project_root, ticket, slug)
+            from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+            worktrees = ensure_ticket_workspace(self._project_root, ticket, slug)
             print(f"Ticket workspace: {worktrees.outer}")
             if worktrees.project is not None:
                 print(f"Project workspace: {worktrees.project}")
@@ -902,7 +904,9 @@ class TicketIO:
     ) -> bool:
         if (self._project_root / ".git").exists():
             try:
-                TicketWorkspace.ensure_authoring(self._project_root, ticket_path, slug)
+                from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+
+                ensure_ticket_workspace(self._project_root, ticket_path, slug)
             except (RuntimeError, ValueError, OSError) as exc:
                 self._print_enqueue_errors("Ticket workspace preparation failed", [str(exc)])
                 return False

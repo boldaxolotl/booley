@@ -20,13 +20,13 @@ from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
-    materialize_ticket_submodules,
+    materialize_project_submodules,
 )
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.git_status import parse_porcelain_v1_z
+from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     project_repository_scope,
 )
-from booley.ticket_board.git_status import parse_porcelain_v1_z
 
 from ..models import StepResult, TicketContext
 from ..worktree_health import check_worktree_health
@@ -509,7 +509,7 @@ def _materialize_worktree_submodules(
 ) -> StepResult | None:
     """Populate the selected branch's gitlinks from local Project objects."""
     try:
-        materialize_ticket_submodules(project_root, worktree_path)
+        materialize_project_submodules(project_root, worktree_path)
     except SubmoduleMaterializationError as exc:
         return StepResult(block_reason=f"Submodule setup failed: {exc}")
     return None

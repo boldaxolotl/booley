@@ -15,8 +15,6 @@ import json
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .prompt_artifacts import human_readable_sidecar_path
-
 
 def _is_structured_only_agent_text(text: str) -> bool:
     """Return true for bare structured-output JSON chatter."""
@@ -184,13 +182,14 @@ def _codex_write_markdown(
     events: list[dict],
     transcript_path: Path | None,
     *,
+    markdown_path: Path | None = None,
     system_prompt: str | None = None,
     user_prompt: str | None = None,
 ) -> None:
     """Write a human-readable Markdown transcript in the human log tree."""
     if transcript_path is None or not events:
         return
-    md_path = human_readable_sidecar_path(transcript_path, ".md")
+    md_path = markdown_path or transcript_path.with_suffix(".md")
 
     lines: list[str] = []
 

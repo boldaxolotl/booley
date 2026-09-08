@@ -582,3 +582,45 @@ def test_changed_symlink_link_does_not_follow_target(tmp_path: Path):
     rendered = "\n".join(lines)
     assert quote(str(link.absolute()), safe="/:") in rendered
     assert quote(str(outside), safe="/:") not in rendered
+
+
+def test_review_shows_developer_justifications_in_scope_and_file_sections(tmp_path, monkeypatch):
+    ctx = _context(tmp_path)
+    reason = "The shared module also needs the new interface."
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text())
+    state["criteria"]["_report_submitted"] = {
+        "met": True,
+        "detail": {"file_justifications": {"rtl/new.sv": reason}},
+    }
+    state_path.write_text(json.dumps(state))
+    monkeypatch.setattr(tp, "_usage_summary", lambda _: "unavailable")
+    facts = tp.build_review_facts(ctx)
+    facts["assessment"] = {
+        "scope_deviations": [
+            {"path": "rtl/new.sv", "classification": "Needs review", "reason": "Outside scope"}
+        ]
+    }
+    lines = []
+    tp._render_scope(lines, facts)
+    tp._render_changes(lines, facts, set())
+    assert "\n".join(lines).count(reason) == 2
+
+
+def test_review_rejects_malformed_persisted_justifications(tmp_path):
+    import pytest
+
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    malformed = [
+        {"criteria": None},
+        {"criteria": {"_report_submitted": []}},
+        {"criteria": {"_report_submitted": {"detail": None}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": []}}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": {"a": 1}}}}},
+        {"criteria": {"_report_submitted": {"detail": {"file_justifications": {"a": " "}}}}},
+    ]
+    for state in malformed:
+        state_path.write_text(json.dumps(state))
+        with pytest.raises(tp.TriagePackageError, match="file justifications"):
+            tp.build_review_facts(ctx)

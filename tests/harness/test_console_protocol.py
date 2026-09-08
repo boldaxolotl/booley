@@ -82,9 +82,9 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        # _write_display_event moved to MCP endpoint events (SRP); patch it at its home,
+        # _write_display_event lives in endpoint events; patch it at its home,
         # where _emit_criteria_update now resolves the name.
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             mock_write.assert_called_once()
             event = mock_write.call_args[0][0]
@@ -104,8 +104,8 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        # _write_display_event moved to MCP endpoint events (SRP); patch it at its home.
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        # _write_display_event lives in endpoint events; patch it at its home.
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             event = mock_write.call_args[0][0]
             assert "sim_pass" in event["criteria"]
@@ -127,7 +127,7 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
 
         entry = mock_write.call_args[0][0]["criteria"]["sim_pass"]
@@ -292,8 +292,8 @@ class TestDisplayWatcherNewEvents:
             watcher._poll_events()
         callback.assert_called_once()
 
-    def test_log_mode_ignores_new_events(self, tmp_path: Path):
-        """Log mode (no callbacks) processes new events without errors."""
+    def test_unwired_watcher_ignores_new_events(self, tmp_path: Path):
+        """A watcher without callbacks processes new events without errors."""
         display = tmp_path / "display.jsonl"
         display.touch()
         watcher = DisplayWatcher(display)

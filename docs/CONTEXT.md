@@ -51,7 +51,7 @@ The ticket-driven execution mode: a `booley run` invocation, issued from inside 
 _Avoid_: batch mode, automated mode, host mode
 
 **Interactive Mode**:
-Execution mode in which a human uses the Claude Code or Codex VS Code extension in a VS Code window attached to a Session Runtime; the standalone Claude Code and Codex apps are not supported clients. The extension's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; there is no Ticket, Scope, Developer Agent, Harness-managed state file, or Criteria tracking.
+Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; there is no Ticket, Scope, Developer Agent, Harness-managed state file, or Criteria tracking.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Preflight**:
@@ -266,7 +266,7 @@ The active deep module and recoverable record for accepting a basis-bound Ticket
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:
-The set of files a ticket is authorized to commit. The Developer Agent owns its commits and must leave every repository in its Ticket Workspace clean before submitting its run report or stopping; `submit_run_report` rejects staged, modified, deleted, or untracked files, and the Harness blocks a dirty handoff rather than creating a commit for the agent. A per-run deviation report (`.runtime/scope_deviations.json`) records any outside paths that nevertheless reached branch history. The per-worktree pre-commit hook hard-rejects out-of-Scope files and Harness bookkeeping (development state, Criteria, ticket files, `booley.toml`). The `["*"]` sentinel grants no ownership.
+The files a Ticket plans to change; ordinary changes outside this set are allowed and highlighted during review. The Developer Agent must justify every file in the final change set before submitting its run report; acceptance inputs and Harness bookkeeping remain protected independently of Scope.
 _Avoid_: allowlist
 
 **Escalation**:
@@ -298,7 +298,7 @@ _Avoid_: waveform renderer, waveform GUI, wave window, B-Wave display
 ### Presentation
 
 **Console**:
-The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the default display for `booley run`; disable it with `--no-console` (`-L`) to fall back to plain scrolling log output.
+The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
 _Avoid_: flashy mode, monitor, dashboard
 
 ### Feedback

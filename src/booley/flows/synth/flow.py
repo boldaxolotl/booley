@@ -15,7 +15,6 @@ the make run left in the build directory.
 
 from __future__ import annotations
 
-import argparse
 import copy
 import logging
 import os
@@ -40,15 +39,16 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.synth.backends.yosys.core import (
-    FRONTEND_CHOICES,
     NAND2_AREA_UM2,
 )
+from booley.flows.synth.cli import SynthArguments
 from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -103,7 +103,6 @@ from ..target_parameters import vlogparam_args as _vlogparam_args
 from .implementation_report import (
     build_synth_implementation_report,
 )
-from .ppa_config import add_ppa_arguments
 from .recipe import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -975,8 +974,11 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-class AsicSynthesizeFlow(BuiltinFlow):
+class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
+
+    request_type = SynthRequest
+    argument_adapter = SynthArguments
 
     def _resolve_job_class(self) -> str:
         """Synthesis is a heavy Session Runtime workload."""
@@ -1010,43 +1012,6 @@ class AsicSynthesizeFlow(BuiltinFlow):
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.
-    def _add_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--baseline",
-            default=None,
-            help="Baseline git ref (SHA/branch/tag) for comparison",
-        )
-        # ADR 0029 decision 7: flatten is an A/B experiment toggle, so it lives
-        # on the Flow CLI. Tri-state: unset (None) means "use the selected
-        # Target's flow_options.flatten"; the explicit flag
-        # wins over it. --no-flatten shares the dest so the two are exclusive.
-        parser.add_argument(
-            "--flatten",
-            dest="flatten",
-            action="store_true",
-            default=None,
-            help="Flatten the hierarchy before tech-mapping (overrides the "
-            "selected Target's flow_options.flatten).",
-        )
-        parser.add_argument(
-            "--no-flatten",
-            dest="flatten",
-            action="store_false",
-            default=None,
-            help="Preserve hierarchy through synthesis (overrides the selected Target).",
-        )
-        # RTL frontend A/B toggle (like --flatten): sv2v transpile vs Yosys
-        # 0.67 native read_slang. Tri-state — unset (None) uses the selected
-        # Target's flow_options.frontend (else sv2v).
-        parser.add_argument(
-            "--frontend",
-            choices=list(FRONTEND_CHOICES),
-            default=None,
-            help="RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' "
-            "(native Yosys read_slang, requires the Yosys>=0.67 sandbox image). "
-            "Overrides the selected Target's flow_options.frontend (default sv2v).",
-        )
-        add_ppa_arguments(parser)
 
     # -- BooleyFlow abstract methods (unused — we override _run) ----------
 
@@ -1054,9 +1019,9 @@ class AsicSynthesizeFlow(BuiltinFlow):
         """Not used — _run handles multi-config orchestration directly."""
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         """Not used — _run handles interpretation directly."""
-        return McpToolResult()
+        return EndpointOutcome()
 
     # -- Command builder for a single config ----------------------------------
 
@@ -1995,7 +1960,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
             self._recipe_evidence = candidate_evidence
         return units, errors
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         """Execute synthesis for all targets, optionally comparing to baseline."""
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
         # detected; read by _aggregate_results. Reset per run so a stale value
@@ -2012,7 +1977,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         self._target_handles = {handle.selector: handle for handle in handles}
         targets = [handle.selector for handle in handles]
         if not targets:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "synth: no Target selected. Pass --target <name> "
@@ -2040,7 +2005,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
                 )
                 if message is not None:
                     detail[target] = {"infra_error": message}
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "synth: infrastructure error during planning: "
@@ -2051,7 +2016,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         self.reserve_invocation_dir()
         self._write_progress_report(targets, {}, {}, phase="starting")
         baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, McpToolResult):
+        if isinstance(baseline_results, EndpointOutcome):
             return baseline_results
         current_results = self._run_current_targets(targets, baseline_results, short_sha)
         self._discard_stale_selfcompare(targets, current_results, baseline_results)
@@ -2066,7 +2031,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         )
         return result
 
-    def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> McpToolResult | None:
+    def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
         baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
@@ -2081,7 +2046,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
         if baseline_error is not None or comparison_error is not None:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=baseline_error or comparison_error or "synth comparison error",
             )
@@ -2089,7 +2054,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         # dry-run report.
         config_error = self._resolve_run_policy(self._flow_enabled())
         if config_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=config_error)
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=config_error)
         return None
 
     def _run_current_targets(
@@ -2178,7 +2143,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
     def _run_baseline_configs(
         self,
         pairs: Sequence[TargetPairPlan],
-    ) -> tuple[dict[str, SynthMetrics] | McpToolResult, str | None]:
+    ) -> tuple[dict[str, SynthMetrics] | EndpointOutcome, str | None]:
         """Synthesize paired baseline Targets in an ephemeral worktree."""
         baseline_ref = self.args.baseline
         if not baseline_ref:
@@ -2213,7 +2178,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
                     self.args.work_dir = project_root
                     self._project_root = None
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"synth: {exc}",
             ), None
@@ -2351,7 +2316,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
         current_results: dict[str, SynthMetrics],
         baseline_results: dict[str, SynthMetrics],
         short_sha: str | None,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Build the final synthesis report from policy-resolved target evidence."""
         implementation_reports = {
             target: getattr(self, "_implementation_reports", {}).get(target)
@@ -2388,7 +2353,7 @@ class AsicSynthesizeFlow(BuiltinFlow):
             implementation_reports,
             implementation_aggregate,
         )
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
             report_text=report_text,
             display_lines=_first_valid_display(targets, current_results),

@@ -13,13 +13,14 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
-from booley.flows.synth.backends.yosys.ppa import validate_abc_recipe, validate_abc_script
-from booley.flows.synth.mode import SynthMode
-from booley.flows.synth.profiles import (
+from booley.flows.implementation_profiles import (
     DEFAULT_PPA_PROFILE,
     PPA_PROFILE_CHOICES,
     validate_ppa_profile,
 )
+from booley.flows.synth.backends.yosys.ppa import validate_abc_recipe, validate_abc_script
+from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.request import SynthRequest
 
 _YOSYS_KEYS = {
     "abc_recipe",
@@ -88,7 +89,7 @@ def _add_bool_pair(parser: argparse.ArgumentParser, option: str) -> None:
 def append_ppa_args(
     cmd: list[str],
     recipe: Mapping[str, Any],
-    args: argparse.Namespace,
+    args: SynthRequest | argparse.Namespace,
     *,
     synth_mode: SynthMode,
     field_prefix: str = "Target flow_options",
@@ -153,7 +154,7 @@ def _subtable(
 def _append_yosys_config(
     cmd: list[str],
     cfg: Mapping[str, Any],
-    args: argparse.Namespace,
+    args: SynthRequest | argparse.Namespace,
     *,
     section: str = "Target flow_options.advanced_settings_yosys",
 ) -> None:
@@ -259,13 +260,13 @@ def _append_cli_overrides(cmd: list[str], args: argparse.Namespace) -> None:
         _append_cli_value(cmd, args, name)
 
 
-def _append_cli_value(cmd: list[str], args: argparse.Namespace, name: str) -> None:
+def _append_cli_value(cmd: list[str], args: SynthRequest | argparse.Namespace, name: str) -> None:
     value = getattr(args, name, None)
     if value is not None:
         cmd.extend([f"--{name.replace('_', '-')}", str(value)])
 
 
-def _append_cli_bool(cmd: list[str], args: argparse.Namespace, name: str) -> None:
+def _append_cli_bool(cmd: list[str], args: SynthRequest | argparse.Namespace, name: str) -> None:
     value = getattr(args, name, None)
     if value is not None:
         option = name.replace("_", "-")
