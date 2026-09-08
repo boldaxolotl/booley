@@ -5,22 +5,14 @@ description: Prepare sanitized Booley feedback for manual submission from an off
 
 # Prepare Booley feedback
 
-Close out the feedback session with a sanitized report the user can send and a
-concrete next step for the blocked task: an implementable workaround, or a clear
-statement that no verified workaround was found. For a confirmed Booley defect
-that still blocks progress, explain that the blocked operation needs a Booley
-fix before retrying; do not promise a release date or that reporting schedules a
-fix. For unresolved attribution, state what remains unknown and what diagnosis
-or external action is needed.
+Deliver an inspected sanitized report for manual submission and the blocked
+task's next step (see §5). This skill runs offline in the Session Runtime: use
+local commands, not `submit`, authentication probes, confirmation tokens,
+browser launches, or mail sending. Generate the report by default without a
+separate approval question or publication decision.
 
-This skill runs in the Session Runtime without internet access. Prepare files
-locally and let the user submit them outside the container. Do not run `submit`,
-probe authentication, request confirmation tokens, launch a browser, or send mail.
-Generating the sanitized report is the default deliverable and needs no separate
-approval question. A generated file is not a submitted report.
-
-Use `booley feedback --help` to check the installed CLI. Run its local commands
-for the user; do not make them choose subcommands.
+Check the installed CLI with `booley feedback --help`; run its commands for the
+user rather than asking them to choose subcommands.
 
 ## 1. Capture and classify
 
@@ -39,10 +31,8 @@ booley feedback add --origin bug \
   --expected "a simulation result or an actionable diagnostic"
 ```
 
-Keep the printed `F-N` IDs. Record distinct problems separately; this
-interaction's selected findings form the report batch, excluding older pending
-entries. Use `--origin bug` for bugs and friction captured in this flow;
-`say` supplies its own impression origin.
+Record distinct problems separately and keep their printed `F-N` IDs for this
+interaction's batch. Use the origins below; `say` supplies its impression origin.
 
 | Feedback | Local command | CLI evidence required for export |
 | --- | --- | --- |
@@ -62,10 +52,9 @@ booley feedback say "I want per-Target coverage in the run report" --sentiment w
 ```
 
 For impressions, use `praise`, `gripe`, `wish`, or `mixed`, preserve the user's
-wording, and acknowledge capture briefly. A passing remark needs no diagnostic
-investigation. If the user says "not now" or declines further feedback work,
-leave captured findings local and stop; do not interpret that as a file request
-or repeat the submission offer. An explicit request for a file proceeds to export.
+words, and acknowledge capture briefly. If the user says "not now" or declines
+further feedback work, leave findings local and stop without exporting or
+repeating the offer. An explicit file request proceeds to export.
 
 ## 2. Investigate the failure and find a workaround
 
@@ -76,10 +65,9 @@ for the behavior when available:
 python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent)"
 ```
 
-Distinguish observed facts, suspected causes, and verified conclusions. Source
-inspection can establish a failure path without proving its root cause. If source
-is unavailable or diagnosis is incomplete, report that limitation; a useful
-observation does not require a proven root cause.
+Separate observed facts, suspected causes, and verified conclusions. A verified
+source path need not prove a root cause. Report unavailable source or incomplete
+diagnosis as limitations; neither prevents reporting useful observations.
 
 | Bucket | Evidence supports |
 | --- | --- |
@@ -92,39 +80,35 @@ A workaround changes impact, not ownership. A misunderstood document alone does
 not establish a documentation defect. Update the bucket using evidence and set
 `--verified-against-source` only when the claim was actually checked in source.
 
-For a blocked task, investigate a safe practical workaround using the authority
-already granted. Deliver the exact command, configuration change, or alternate
-workflow the user can implement, what it bypasses, its limitations, how to undo
-it, and verification using the original reproduction or closest safe check.
-Apply it when already within scope; otherwise provide the concrete steps.
-Label untested suggestions as unverified, not as successful workarounds.
+For blocked tasks, investigate a safe practical workaround within existing
+authority. Apply it when authorized; otherwise provide implementable steps.
+Verify with the original reproduction or closest safe check, and label untested
+suggestions unverified. Record the exact command/configuration/alternate workflow,
+what it bypasses, limitations, verification, and reversal steps for the handoff.
 
-If no verified workaround was found, say so and identify the remaining blocked
-operation. Preserve the blocker severity. If a verified workaround provides a
-usable but degraded path, retain the evidence-based bucket and record the result:
+Retain the evidence-based bucket. Preserve blocker severity unless a verified
+workaround provides a usable but degraded path; then record:
 
 ```console
 booley feedback triage F-1 --severity workaround \
   --notes "Workaround: …. Verified by: …. Limitation: …. Revert by: …."
 ```
 
-`--notes` replaces existing notes; retain any still-relevant evidence when updating.
-Complete this step with either a verified workaround or an explicit unresolved
-blocker and next action. Keep reporting possible even when diagnosis is incomplete.
+`--notes` replaces existing notes; preserve still-relevant evidence. Finish this
+step with a verified workaround or an unresolved blocker and next action.
 
 ## 3. Prepare safe outbound evidence
 
 For a Booley bug depending on private RTL, testbench, configuration, or logs,
-read [minimal-reproducer.md](minimal-reproducer.md). It defines how to build and
-verify a synthetic reproducer. Skip that guide for opinions, friction,
-documentation contradictions, and bugs reproducible with public Booley fixtures.
-If no safe equivalent reproducer is practical, keep private evidence local and
-report only independently actionable non-project facts, with the limitation stated.
+follow [minimal-reproducer.md](minimal-reproducer.md) to build a verified synthetic
+case. Skip it for opinions, friction, documentation contradictions, and bugs
+reproducible with public Booley fixtures. If a safe equivalent case is impractical,
+keep private evidence local and report only independently actionable non-project
+facts, stating the limitation.
 
 Audit every outbound field: title, component, exposed-by, step, reproduction,
-observed and expected behavior, notes, and every attachment's content and path.
-Review workaround notes as carefully as the reproducer. The identifier redactor
-is a denylist; it cannot establish that arbitrary text is safe to disclose.
+observed/expected behavior, notes (including workarounds), and attachment contents
+and paths. The identifier redactor is a denylist, not proof of safe disclosure.
 
 Use `triage` to replace editable fields with sanitized text. It cannot change a
 title, exposed-by, or step, or remove attachments. If any uneditable field or
@@ -135,8 +119,8 @@ the replacement, mark the original `--bucket unknown` so later bulk exports
 exclude it, and select only the replacement ID for this report. Preserve the
 original evidence locally; do not mark it filed or edit the log by hand.
 
-The result of this step is an explicit list of safe finding IDs and an account
-of any evidence withheld, without disclosing that evidence in the account.
+Finish with safe finding IDs and reasons for withholding evidence, without
+exposing the withheld material.
 
 ## 4. Write and inspect the reports
 
@@ -158,15 +142,14 @@ reproducers, and unsupported claims. Correct source findings or create clean
 replacements, then re-export and inspect again. Deliver only the inspected file.
 Call synthetic evidence synthetic and sanitized, never guaranteed anonymous.
 
-The CLI withholds `unknown`, `project`, and findings missing required evidence.
-Name omissions and reasons. Do not invent evidence or change ownership merely to
-pass export. If nothing exports, or a useful unresolved observation is withheld,
-write a separate sanitized Markdown report in the resolved project data directory
-using only reviewed facts, expected behavior, available versions, workaround
-status, and explicit unknowns. Identify it as a manually prepared report and
-include no private reproduction. Inspect it by the same standard. A project-only
-configuration mistake belongs in the local report unless there is distinct
-Booley feedback to send.
+The CLI withholds `unknown`, `project`, and findings missing required evidence;
+explain omissions without inventing evidence or changing ownership to pass export.
+If nothing exports or a useful unresolved observation is withheld, write a separate
+sanitized Markdown report in the resolved project data directory. Label it manually
+prepared; include only reviewed facts, expectations, available versions, workaround
+status, and explicit unknowns, with no private reproduction. Inspect it as above.
+Project-only configuration mistakes stay local unless there is distinct Booley
+feedback to send.
 
 ## 5. Hand off the report and the next step
 
@@ -187,17 +170,19 @@ source of truth. Current destinations are:
   the sanitized report in their mail client. Explain that this sends it privately
   to the maintainer and exposes the sender's email address to them.
 
-Use a normal issue link and separate file; keep the report out of URL query
-strings. An email link may prefill the subject only. These are alternative manual
-routes, not actions performed by the agent. Offer both unless the user has
-already chosen one. Honor `[feedback] mode = "off"` or `"file-only"` and a prior
-refusal by omitting unsolicited submission options; an explicit request for
-submission instructions takes precedence. Do not ask permission to generate the
-file or require a publication decision to finish the session.
+Keep report bodies out of URLs; use a normal issue link and separate file, with
+at most a subject prefilled in the email link. Offer both routes unless one is
+already chosen. Omit unsolicited options after refusal or when `[feedback] mode`
+is `"off"` or `"file-only"`; explicit requests for submission instructions take precedence.
 
-Finish with the implementable workaround and verification, or "No verified
-workaround was found" plus the blocked operation and required next action.
-For non-blocking feedback, state that no workaround is needed. State that the
-report is ready to send, not submitted. Mark findings filed only if the user
-later confirms actual submission and provides its issue URL or email confirmation;
-file creation and presenting links are not evidence of submission.
+End with the report ready to send, not submitted, and the task outcome:
+
+- **Verified workaround:** provide the implementable steps and evidence from §2.
+- **Still blocked:** say "No verified workaround was found", identify the blocked
+  operation, and give the next action. A confirmed Booley defect needs a Booley
+  fix before retrying; promise neither a release date nor that reporting schedules
+  a fix. For unresolved ownership, state unknowns and needed diagnosis/external action.
+- **Non-blocking feedback:** state that no workaround is needed.
+
+Mark findings filed only after the user confirms actual submission with an issue
+URL or email confirmation. File creation and handoff links do not prove submission.

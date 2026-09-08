@@ -1,38 +1,26 @@
 # Build a safe minimal reproducer
 
-Use this guide only for a suspected Booley defect whose evidence depends on
-private RTL, testbench code, project configuration, logs, or design structure.
-The goal is not to disguise the original project. The goal is to produce a new,
-standalone toy project that exercises the same Booley failure without containing
-the original project.
-
-The original material and every intermediate reduction remain private and
-local. Only the final synthetic capsule may be attached to a finding, and it is
-included in the sanitized export for inspection before the user sends it.
+For suspected Booley defects depending on private RTL, testbench, configuration,
+logs, or design structure, build a standalone synthetic toy exercising the same
+failure. Original material and intermediate reductions remain private and local;
+only the accepted capsule may be attached and exported for inspection.
 
 ## The acceptance contract
 
-A reproducer is ready only when all of these are true:
+Every gate must pass:
 
-1. **Standalone:** it runs without the original repository, project data
-   directory, source files, generated artifacts, or environment variables.
-2. **Synthetic:** its identifiers, comments, constants, test vectors, hierarchy,
-   and logic were written for the toy case. Renaming a reduced copy of private
-   RTL does not make it synthetic.
-3. **Equivalent:** it reaches the same Booley component and failure path, with
-   the same stable diagnostic fingerprint. A different failure with similar
-   wording is not equivalent.
-4. **Repeatable:** the final command fails again from a clean toy workspace. Run
-   it twice when practical; disclose nondeterminism rather than hiding it.
-5. **Minimal enough to inspect:** every relevant file fits in the capsule. No
-   waveform, netlist, database, binary, vendor model, or full raw log is needed.
-6. **Reviewed for disclosure:** assume every byte in the capsule will become
-   public. The normal feedback redactor and complete export inspection remain
-   mandatory.
+| Gate | Required result |
+| --- | --- |
+| Standalone | Runs without the original repository, project data, source, generated artifacts, or environment variables. |
+| Synthetic | Identifiers, comments, constants, test vectors, hierarchy, and logic are written for the toy; renaming reduced private RTL does not qualify. |
+| Equivalent | Same Booley component, source path, and stable diagnostic fingerprint (§3). |
+| Repeatable | Fails again in a clean toy workspace; run twice when practical and disclose nondeterminism. |
+| Inspectable | All relevant files fit the capsule; no waveform, netlist, database, binary, vendor model, or full raw log is needed. |
+| Reviewed | Treat every byte as public; apply the redactor and inspect the complete export. |
 
-If any gate fails, there is no publishable reproducer. Keep the original finding
-local or file only non-project metadata that is independently actionable. Never
-weaken a gate or invent observed output to make the report filable.
+If any gate fails, keep the original finding local or report only independently
+actionable non-project metadata; the reproducer remains local. State limitations without weakening gates or
+inventing observed output to make a report filable.
 
 ## 1. Fingerprint the original failure locally
 
@@ -45,25 +33,19 @@ Before changing anything, record a compact fingerprint:
 - expected artifact or behavior that was missing or wrong;
 - whether a clean rerun fails the same way.
 
-Keep project names, paths, module/signal names, raw source, and arbitrary log text
-out of the fingerprint used upstream. The initially logged finding may retain
-project-specific text temporarily in its replaceable evidence fields while the
-reproducer is built; replace those fields before export. Do not attach the
-original log or source to the finding because `triage` cannot remove an
-attachment later.
+Exclude project names, paths, module/signal names, raw source, and arbitrary log
+text from the upstream fingerprint. Private text may temporarily occupy local
+replaceable evidence fields; sanitize them before export using the parent skill's
+field audit. Original logs and source remain unattached.
 
-Read the Booley source responsible for the failure and identify the branch that
-emits the diagnostic or incorrect result. That code path is part of the
-equivalence test. If the toy reaches another branch, reject it even if its final
-message looks similar.
+Identify the Booley source branch producing the failure for the equivalence
+check in §3; similar final messages alone do not establish equivalence.
 
 ## 2. Work in a private scratch area
 
-Create a scratch directory outside the tracked RTL repository and outside its
-project data directory. Do not modify project submodules. Treat the scratch area
-as private because early reductions may still contain copied project material.
-Do not attach anything from it until a final synthetic capsule has passed every
-gate below.
+Use a private scratch directory outside both the tracked RTL repository and its
+project data directory; leave project submodules unchanged. Early reductions may
+contain copied material. Only the final capsule passing every gate is attachable.
 
 Prefer constructing the trigger from scratch with generic modules such as
 `toy_top`, `toy_dut`, and `toy_tb`. Preserve only the language/EDA-tool property that
@@ -79,9 +61,8 @@ When the trigger is not yet understood, a private copy may be reduced locally:
 - rerun after each accepted reduction and restore any change that loses the
   original fingerprint.
 
-Reduction is a discovery technique, not the deliverable. Once the trigger is
-known, rewrite it as a fresh toy case. Do not submit the mechanically reduced
-copy.
+Use reductions to discover the trigger, then rewrite a fresh toy case. The
+mechanically reduced copy is not the deliverable.
 
 ## 3. Prove equivalence and causality
 
@@ -95,10 +76,9 @@ project. Record this table locally:
 | Clean synthetic rerun | Fails again with fingerprint A |
 | Trigger removed or changed | Passes, or fails in the documented expected way |
 
-The counterfactual final row is required whenever the report names a trigger or
-root cause. It distinguishes a causal reproducer from an unrelated broken toy.
-If a counterfactual cannot sensibly exist, do not claim causality; describe only
-the behavior that was verified.
+The counterfactual final row is required for trigger/root-cause claims to exclude
+an unrelated broken toy. If no sensible counterfactual exists, report verified
+behavior without claiming causality.
 
 Exact paths, generated filenames, line numbers, and temporary identifiers may
 differ. The component, source branch, exit behavior, exception/error class, and
@@ -117,10 +97,9 @@ Make one compact Markdown file containing only:
 - the counterfactual command/change and its result, when applicable;
 - every required text file in full, in labelled code fences.
 
-Keep it below 120 lines and 8,000 characters because feedback attachments inline
-only that much; a clipped reproducer is not self-contained. If the necessary case
-does not fit, describe the limitation and keep it local instead of silently
-submitting a partial example.
+Keep the capsule below 120 lines and 8,000 characters, the attachment inline
+limits. If it cannot fit, explain why and keep it local; clipping breaks
+self-containment.
 
 Audit the capsule for semantic as well as textual leakage. Remove or replace:
 
@@ -133,19 +112,16 @@ Audit the capsule for semantic as well as textual leakage. Remove or replace:
   databases, and vendor models;
 - copied error context that contains project-only names or source excerpts.
 
-Search explicitly for every known project term, including `[feedback]
-redact_extra` and project-specific `[stealth] banned_words`. Then run the
-capsule through `booley feedback redact --file <capsule>` as an additional check.
-That redactor is a denylist, not proof of anonymity; inspect its complete output
-and the original capsule yourself.
+Search for every known project term, including `[feedback] redact_extra` and
+project-specific `[stealth] banned_words`. Run
+`booley feedback redact --file <capsule>` and inspect both the original and complete
+redacted output; the parent skill's disclosure audit still applies.
 
 ## 5. Attach only the verified capsule
 
-Follow the parent skill’s audit of every outbound field, including titles and
-workaround notes. Create a clean replacement finding when an unsafe field or
-attachment cannot be replaced by `triage`; exclude the original from export.
-Update the safe finding so its `--repro`, `--observed`, and `--expected` describe
-the synthetic case, and add only the final capsule:
+Apply the parent skill's field audit and replacement procedure, including titles
+and workaround notes. Update the safe finding with the synthetic evidence and
+attach only the final capsule:
 
 ```console
 booley feedback triage F-N \
@@ -156,13 +132,10 @@ booley feedback triage F-N \
   --verified-against-source
 ```
 
-Use `--verified-against-source` only when source inspection actually established
-the matching Booley path. Do not attach the scratch tree, an original log, or a
-mapping between original and synthetic names.
+Set `--verified-against-source` only after establishing the matching source path.
+Keep scratch trees, original logs, and original-to-synthetic name mappings unattached.
 
-Return the safe finding ID to the parent skill for export with the rest of this
-interaction's reviewed batch. Inspect the entire exported capsule to verify that
-redaction and attachment limits have not removed necessary files or changed the
-reproducer's meaning. Call the result **synthetic, minimized, and sanitized**,
-never anonymous or guaranteed safe. The parent skill delivers the report and
-manual GitHub/email options; no submission occurs in the container.
+Return the safe ID to the parent skill for batch export, inspection, and manual
+GitHub/email handoff. In the export, verify that redaction and attachment limits
+preserve every required file and the reproducer's meaning. Call the result
+**synthetic, minimized, and sanitized**, never anonymous or guaranteed safe.
