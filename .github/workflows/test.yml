@@ -911,7 +911,7 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy openroad verible isolation fifo native-fst simulator cocotb ticket-mode; do
+          for validation in agent-policy openroad verible isolation fifo native-fst verilator simulator cocotb ticket-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
@@ -1034,6 +1034,19 @@ jobs:
               python -m pytest /work/tests/flows/sim/backends/test_bwave_fifo_pipeline.py
               -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
 
+          - name: Run Verilator compiler and native coverage acceptance
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verilator
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verilator
+              docker run --rm --init --network none
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verilator
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              booley-test python /work/tests/docker/verilator_acceptance.py
+              --work-dir /validation-tmp
+
           - name: Run native FST/Verilator cross-validation
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/native-fst
@@ -1138,6 +1151,18 @@ jobs:
         with:
           name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/riscv-image-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Verilator acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verilator-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bwave-smoke/verilator/**/commands.log
+            ${{ runner.temp }}/bwave-smoke/verilator/**/*.dat
+            ${{ runner.temp }}/bwave-smoke/verilator/**/*.xml
           if-no-files-found: warn
           retention-days: 14
 

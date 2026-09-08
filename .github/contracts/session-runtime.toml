@@ -53,6 +53,8 @@ required_paths = [
   "/usr/local/share/doc/openroad/source-manifest.json",
   "/usr/local/include/iverilog/vpi_user.h",
   "/usr/include/zlib.h",
+  "/usr/include/lz4.h",
+  "/usr/local/share/verilator/BOOLEY-SOURCE.txt",
   "/usr/local/lib/ivl/blif-s.conf",
   "/usr/local/lib/ivl/blif.conf",
   "/usr/local/lib/ivl/blif.tgt",
@@ -172,7 +174,8 @@ g++ "$work/main.cc" -o "$work/main-cpp"
 name = "EDA command diagnostics"
 command = '''
 iverilog -V >/dev/null 2>&1
-verilator --version >/dev/null
+test "$(verilator --version | awk '{print $2}')" = "5.052"
+grep -Fx 'Verilator source revision: ea338be98e1e838d3518809ce8899f85a009963c' /usr/local/share/verilator/BOOLEY-SOURCE.txt
 yosys -V >/dev/null
 openroad -version >/dev/null
 sv2v --version >/dev/null
