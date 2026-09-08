@@ -82,3 +82,25 @@ async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
 
     prepare.assert_awaited_once_with("demo", tmp_path, True)
     assert terminal.get_console_app() is None
+
+
+def test_console_lifecycle_failure_returns_cli_error(tmp_path, monkeypatch):
+    from booley.harness.console.app import ConsoleApp
+
+    run_async = ConsoleApp.run_async
+
+    async def run_headless(app):
+        await run_async(app, headless=True)
+
+    def fail_mount(app):
+        raise RuntimeError("Console mount failed")
+
+    monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
+    monkeypatch.setattr(ConsoleApp, "on_mount", fail_mount)
+    prepare = AsyncMock()
+    monkeypatch.setattr(developer, "_prepare_ticket", prepare)
+    args = argparse.Namespace(ticket="demo", no_transcripts=True)
+
+    assert child._run_harness(args, tmp_path) == 1
+    prepare.assert_not_awaited()
+    assert terminal.get_console_app() is None

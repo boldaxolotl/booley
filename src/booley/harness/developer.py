@@ -485,6 +485,9 @@ async def _run_with_console(
 
     if worker_error:
         raise worker_error[0]
+    # Textual handles lifecycle errors internally instead of raising from run_async.
+    if app.return_code != 0:
+        raise RuntimeError(f"Console failed with exit code {app.return_code}")
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")
