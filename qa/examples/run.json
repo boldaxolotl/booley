@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "illustrative_only": true,
+  "run_id": "example-run",
+  "scenario_id": "example-wishbone",
+  "profiles": ["example-core", "example-gui"],
+  "suite_commit": "EXAMPLE_ONLY",
+  "booley_release": "EXAMPLE_ONLY",
+  "package_identity": "EXAMPLE_ONLY",
+  "ip_commit": "EXAMPLE_ONLY",
+  "image_identity": "EXAMPLE_ONLY",
+  "platform": "Ubuntu 24.04 x86-64",
+  "provider": "Codex",
+  "deadline": "2026-09-08T20:00:00Z",
+  "authority": ["disposable fault injection", "restore and clean owned resources"],
+  "capabilities": {
+    "qualified_visual_observer": {
+      "available": false,
+      "probe_evidence": "evidence/preflight/observer.json"
+    }
+  }
+}

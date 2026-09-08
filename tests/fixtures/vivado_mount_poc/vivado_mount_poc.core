@@ -18,6 +18,7 @@ targets:
     flow_options:
       tool: vivado
       part: xc7a35tcpg236-1
+      ppa_profile: balanced
       out_of_context: true
     filesets: [rtl, constraints]
     toplevel: top

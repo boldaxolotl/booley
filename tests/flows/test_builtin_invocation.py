@@ -49,6 +49,14 @@ def test_builtin_schema_exposes_one_canonical_timeout(
     assert properties["dry_run"]["type"] == "boolean"
 
 
+def test_fpga_schema_exposes_portable_profile_vocabulary() -> None:
+    properties = flow_schema(FpgaImplFlow())["properties"]
+
+    assert properties["ppa_profile"]["enum"] == ["compact", "balanced", "max_frequency"]
+    assert "synth" not in properties
+    assert "pnr" not in properties
+
+
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
 def test_builtin_parsers_accept_canonical_timeout(
     flow_type: type[BooleyFlow],
