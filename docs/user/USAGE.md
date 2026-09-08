@@ -1011,10 +1011,21 @@ its own terminal. Each run claims a Developer Agent slot, capped by
 runs beyond the cap wait in FIFO order and the Console narrates the wait
 ("waiting for slot (position N)"). The same admission applies to the Jobs the
 tickets dispatch (sim/synth runs, Specialists; each Job Class has its own
-cap): interactive work has priority over ticket work, a running Job is never
-preempted, and a queued Job can be cancelled with the `booley_cancel` MCP tool
-(queued Jobs only). A submit is refused (`BLOCKED`) only when a class queue
+cap): interactive work has priority over ticket work, but the scheduler never
+preempts a running Job. A submit is refused (`BLOCKED`) only when a class queue
 itself is full (`queue_max`, default 8).
+
+Explicit cancellation is available for both queued and running Jobs through
+the `booley_cancel` MCP tool, using the `run_id` returned by submit or poll:
+
+- **Queued:** withdraw the Job before execution starts.
+- **Running:** request graceful termination with SIGTERM, then force termination
+  with SIGKILL after a bounded grace period if needed.
+- **Finished:** report that the Job already finished without changing its outcome.
+
+Polling a cancelled Job returns the distinct `CANCELLED` terminal outcome.
+If a queued Job starts before cancellation takes effect, it is cancelled as a
+running Job.
 
 > **Tip: scale out once Booley feels familiar.** The whole system is built to
 > be driven many-at-once: run several Claude Code tabs or parallel Codex CLI
