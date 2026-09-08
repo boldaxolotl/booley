@@ -182,3 +182,104 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     target = result.outcome.detail["targets"]["sim_0"]
     assert target["simulation"] == "inconclusive"
     assert (tmp_path / target["coverage_campaign"]).is_file()
+
+
+def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    reports = tmp_path / "reports"
+
+    class Interrupted(NativeExecution):
+        def run(self, request):
+            super().run(request)
+            raise KeyboardInterrupt("simulated process interruption")
+
+    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    with pytest.raises(KeyboardInterrupt):
+        SimulateFlow(coverage_execution=lambda handle, options: Interrupted()).execute(request)
+    original = (reports / "sim/1/targets/sim_0/native/raw/001-reset.dat").read_bytes()
+    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+        request
+    )
+    assert result.exit_code == 0
+    assert (reports / "sim/2/targets/sim_0/coverage.json").is_file()
+    assert (reports / "sim/1/targets/sim_0/native/raw/001-reset.dat").read_bytes() == original
+    prune_invocation(reports, 2)
+    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+        request
+    )
+    assert result.exit_code == 0
+    assert (reports / "sim/3/targets/sim_0/coverage.json").is_file()
+    prune_invocation(reports, 1)
+
+
+def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.runtime.file_lock import LockContentionError
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    write = Path.write_text
+    checked = []
+
+    def check_lock(path, *args, **kwargs):
+        if path.name == "report.json":
+            with pytest.raises(LockContentionError):
+                prune_invocation(tmp_path / "reports", 1)
+            checked.append(True)
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", check_lock)
+    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+    assert result.exit_code == 0
+    assert checked == [True]
+    prune_invocation(tmp_path / "reports", 1)
+
+
+def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.flows.sim.campaign_retention import prune_invocation
+    from tests.flows.sim.test_campaign_retention import campaign
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    campaign(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    sim = tmp_path / "reports/sim"
+    original = Path.iterdir
+    triggered = False
+
+    def interleaved(directory):
+        nonlocal triggered
+        entries = list(original(directory))
+        if directory == sim and not triggered:
+            triggered = True
+            prune_invocation(tmp_path / "reports", 1)
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", interleaved)
+    result = SimulateFlow(coverage_execution=lambda handle, options: NativeExecution()).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+    assert result.exit_code == 0
+    assert (sim / "2/targets/sim_0/coverage.json").is_file()
+    assert not (sim / "1").exists()
+    assert (sim / ".pruned-1").is_dir()

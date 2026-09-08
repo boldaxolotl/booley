@@ -919,7 +919,7 @@ The Criteria detail includes:
 - `_metric_map` and `_min_allowed` for threshold/acceptance display
 
 
-### Coverage Campaign orchestration (internal, issue #213 Phase 4)
+### Coverage Campaign orchestration (internal, issue #213 Phases 4–5)
 
 `SimulateFlow` accepts internal `SimRequest.coverage=True` and hidden CLI aliases
 `--coverage` / `--cov`. Neither CLI help nor the MCP schema exposes collection
@@ -954,6 +954,70 @@ The canonical Target directory holds `coverage.json`, `simulation.json`,
 `native/raw/`, `native/merged/`, and hook sidecars. Native paths in the Campaign
 are relative to that Target directory; Flow artifact pointers are relative to
 the producing work directory. No flat per-Target compatibility report is
-written in any Simulation mode. Both pruning modes, full persistence fault
-injection/recovery, Analyst replacement, and public exposure remain later
-phases of #213.
+written in any Simulation mode. Analyst replacement and public exposure remain
+later phases of #213.
+
+#### Persistence and recovery
+
+Campaign and Simulation publication precede Acceptance Evidence. Coverage
+observations use transaction-qualified ledger sequence directories. Their
+transaction identity is included in `acceptance_transactions` in the same atomic
+Harness state save as the updated Criteria. Acceptance readers ignore evidence
+from transactions absent from the saved state, including partially written
+sequences. Thus an interrupted evidence append or failed state save preserves
+the prior authoritative projection without deleting historical observations.
+Ordinary nontransactional ledger observations retain their existing semantics.
+
+Terminal progress follows the state save. If its write fails, the committed
+Campaign and Criteria remain valid and the command returns 2. Persistence errors
+retain the independently measured simulation, collection, and evaluation truths
+in the structured result; an error does not turn a measured verdict into a
+policy `blocked` verdict. Report paths are usable only when their publication
+succeeded. No later stage runs after an earlier publication failure, except for
+an observational error checkpoint.
+
+The Flow holds an OS file lock outside the invocation directory while producing
+coverage. Pruning takes the same nonblocking lock, so active invocations cannot
+be removed. Process exit releases ownership; `progress.json` is never lock or
+resume authority. Every subsequent Flow invocation allocates a fresh number,
+and the Target transaction rejects previously started native state.
+
+#### Exact report retention
+
+The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
+root explicitly; callers obtain project-data roots through
+`booley.runtime.project_dir.resolve_project_dir()`. They never discover a
+“latest” Campaign or apply age/size rules:
+
+- `prune_native_payload(reports_root, invocation, target)` requires an exact
+  positive invocation number and one exact manifest Target selector. It validates
+  the Campaign and Simulation identities, every native path and recorded digest,
+  and the full deletion set before mutation. Symlinks, unknown payloads, changed
+  databases, unexplained missing databases, and ambiguous selections are errors.
+- `prune_invocation(reports_root, invocation)` validates every existing Target
+  before atomically moving that invocation to `.pruned-N` and removing its
+  contents. Interrupted attempts may be removed after their process releases the
+  lock. A pruning journal permits retry after partial cleanup. The empty
+  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
+  or native evidence. Other invocations remain untouched.
+
+Native pruning first writes Target-local `availability.json` with schema
+`booley.coverage-availability/v1`, the Campaign identity and file digest, and
+native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
+and native availability must not be assumed. Renaming `native/` to
+`.native-pruned/` removes all native databases from their canonical paths in one
+operation; cleanup then removes that quarantine and records `pruned`. Retrying
+the same exact selection completes interrupted cleanup. Campaign bytes,
+Simulation bytes, and hook evidence never change. Normalized Campaign evidence
+remains analyzable after native pruning; full pruning prevents re-analysis.
+
+Internal maintenance entry points (the public coverage release gate is unchanged):
+
+```bash
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
+```
+
+Selection, locking, validation, and filesystem failures exit 2. Both operations
+are retryable for their exact selections. Do not manually remove journals,
+quarantines, invocation locks, or number tombstones.

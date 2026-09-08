@@ -310,3 +310,168 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     assert outcome.abort_remaining is True
     assert outcome.detail["simulation"] == "inconclusive"
     assert outcome.campaign_path.is_file()
+
+
+def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch):
+    from booley.criteria.state import CriterionEntry, DevelopmentState
+    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.ticket_board.acceptance_ledger import freeze_acceptance
+
+    context = project(tmp_path)
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.strict_criteria = True
+    state.criteria = {"sim_pass_sim_0": CriterionEntry(met=True, detail={"prior": "valid"})}
+    state.save()
+    before = state_path.read_bytes()
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(
+        prepared.plan.targets[0],
+        invocation_dir=tmp_path / "reports/sim/1",
+        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+    )
+    original = Path.replace
+
+    def fail_state(source, destination):
+        if destination == state_path:
+            raise OSError("injected state commit failure")
+        return original(source, destination)
+
+    # Fault the filesystem boundary, leaving every Booley collaborator real.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_state)
+        outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
+    assert outcome.exit_code == 2
+    assert state_path.read_bytes() == before
+    saved = DevelopmentState.load(state_path)
+    snapshot = freeze_acceptance(
+        tmp_path / "logs",
+        saved,
+        execution_id="prior",
+        acceptance_basis={},
+        participant_heads={"outer": "a" * 40},
+    )
+    assert snapshot.criteria["sim_pass_sim_0"]["met"] is True
+    assert snapshot.evidence == ()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["campaign", "simulation", "first_evidence", "second_evidence", "state", "progress"],
+)
+def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
+    tmp_path, monkeypatch, boundary
+):
+    import os
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.coverage_progress import CoverageProgress
+    from booley.ticket_board.acceptance_ledger import freeze_acceptance
+
+    plan, state, state_path = gated_ticket_plan(tmp_path)
+    prior = run_coverage_target(plan, NativeExecution(), Progress())
+    assert prior.exit_code == 0
+    invocation = tmp_path / "reports/sim/2"
+    plan = replace(plan, invocation_dir=invocation)
+    replace_file, link_file = persistence_fault(boundary)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", replace_file)
+        patch.setattr(os, "link", link_file)
+        outcome = run_coverage_target(
+            plan, NativeExecution(verdict="fail", hits=0), CoverageProgress(invocation, ("sim_0",))
+        )
+    assert outcome.exit_code == 2
+    assert outcome.abort_remaining
+    saved = DevelopmentState.load(state_path)
+    snapshot = freeze_acceptance(
+        tmp_path / "logs",
+        saved,
+        execution_id="test",
+        acceptance_basis={},
+        participant_heads={"outer": "a" * 40},
+    )
+    committed = boundary == "progress"
+    assert {entry["met"] for entry in snapshot.criteria.values()} == {not committed}
+    assert len(snapshot.evidence) == (4 if committed else 2)
+    assert {entry.met for entry in state.criteria.values()} == {not committed}
+    assert outcome.campaign_path.exists() == (boundary != "campaign")
+    assert outcome.simulation_path.exists() == (boundary not in {"campaign", "simulation"})
+    assert outcome.detail["evaluation"] == "fail"
+    assert outcome.detail["simulation"] == "fail"
+
+
+def test_target_transaction_never_resumes_existing_native_state(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    original = run_coverage_target(plan, NativeExecution(), Progress())
+    before = original.campaign_path.read_bytes()
+    second = NativeExecution(verdict="fail")
+    outcome = run_coverage_target(plan, second, Progress())
+    assert outcome.exit_code == 2
+    assert second.runs == []
+    assert original.campaign_path.read_bytes() == before
+
+
+def persistence_fault(boundary):
+    import os
+
+    original_replace, original_link = Path.replace, os.link
+    evidence_count = 0
+    filenames = {
+        "campaign": "coverage.json",
+        "simulation": "simulation.json",
+        "state": "state.json",
+        "progress": "progress.json",
+    }
+
+    def replace_file(source, destination):
+        if Path(destination).name == filenames.get(boundary):
+            raise OSError(f"injected {boundary} failure")
+        return original_replace(source, destination)
+
+    def link_file(source, destination, **kwargs):
+        nonlocal evidence_count
+        if Path(destination).name == "record.json":
+            evidence_count += 1
+            if (boundary == "first_evidence" and evidence_count == 1) or (
+                boundary == "second_evidence" and evidence_count == 2
+            ):
+                raise OSError("injected evidence failure")
+        return original_link(source, destination, **kwargs)
+
+    return replace_file, link_file
+
+
+def gated_ticket_plan(tmp_path):
+    from fractions import Fraction
+
+    from booley.criteria.state import CriterionEntry, DevelopmentState
+    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+
+    context = project(tmp_path)
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.strict_criteria = True
+    state.criteria = {
+        key: CriterionEntry(met=True, detail={"prior": "valid"})
+        for key in ("coverage_sim_0", "sim_pass_sim_0")
+    }
+    state.save()
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",)),
+        replace(context, criteria={"coverage_sim_0": criterion}),
+    )
+    invocation = tmp_path / "reports/sim/1"
+    plan = replace(
+        prepared.plan.targets[0],
+        invocation_dir=invocation,
+        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+    )
+    return plan, state, state_path
