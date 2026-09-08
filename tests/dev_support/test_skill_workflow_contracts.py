@@ -19,19 +19,19 @@ def test_triage_routes_confirmed_booley_bugs_to_feedback_skill_by_default():
 
 
 def test_feedback_routes_private_project_bugs_through_verified_synthetic_reproducer():
-    skill = _skill_text("booley-feedback")
-    reproducer = _skill_text("booley-feedback", "minimal-reproducer.md")
+    skill = " ".join(_skill_text("booley-feedback").split())
+    reproducer = " ".join(_skill_text("booley-feedback", "minimal-reproducer.md").split())
 
-    assert "`minimal-reproducer.md`" in skill
+    assert "[minimal-reproducer.md](minimal-reproducer.md)" in skill
     assert "private RTL, testbench, configuration, or logs" in skill
-    assert "Never attach the private scratch reduction" in skill
-    assert "Attachments cannot be removed with `triage`" in skill
+    assert "Private source, original project logs, and scratch reductions stay unattached" in skill
+    assert "cannot change a title, exposed-by, or step, or remove attachments" in skill
     for required in (
         "Standalone",
         "Synthetic",
         "Equivalent",
         "Repeatable",
-        "same Booley component and failure path",
+        "Same Booley component, source path, and stable diagnostic fingerprint",
         "counterfactual",
         "below 120 lines and 8,000 characters",
         "never anonymous or guaranteed safe",
@@ -39,18 +39,20 @@ def test_feedback_routes_private_project_bugs_through_verified_synthetic_reprodu
         assert required in reproducer
 
 
-def test_feedback_submission_uses_cli_or_a_human_browser_handoff():
-    skill = _skill_text("booley-feedback")
+def test_feedback_exports_offline_for_manual_github_or_email_submission():
+    skill = " ".join(_skill_text("booley-feedback").split())
 
     for required in (
-        "GitHub CLI (`gh issue create`)",
-        "missing or not authenticated",
-        "prefilled GitHub issue",
-        "`Start-Process` on Windows or `xdg-open` on Linux",
-        "ask the user to review it and click **Submit new issue**",
-        "The browser fallback is a human hand-off",
-        "Do not use ChatGPT browser tools",
-        "browser automation",
+        "runs offline in the Session Runtime",
+        "local commands, not `submit`",
+        "booley feedback export F-8 F-9",
+        "Read the entire exported file",
+        "**Submit on GitHub:**",
+        "https://github.com/boldaxolotl/Booley/issues/new",
+        "**Email the maintainer:**",
+        "mailto:boldaxolotl@proton.me",
+        "report ready to send, not submitted",
+        "No verified workaround was found",
     ):
         assert required in skill
 

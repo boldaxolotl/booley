@@ -1,268 +1,188 @@
 ---
 name: booley-feedback
-description: Capture and optionally submit any feedback about Booley — bugs, misleading docs, confusing experiences, gripes, praise, and feature wishes — from a normal working session or after setup. For problems that block progress, finds and verifies a safe workaround where practical. Chooses the appropriate feedback mechanism, gathers only the evidence that kind of feedback needs, checks bug claims against Booley's source, redacts project identifiers, shows the user the exact outgoing text, and sends it upstream only with explicit approval. Use when Booley crashes, misbehaves, contradicts its docs, or when the user says "report this", "file a bug", "that was confusing", "tell the maintainers", "I wish Booley could…", "this part is great", or "this was not worth the setup".
+description: Prepare sanitized Booley feedback for manual submission from an offline container. Use for bugs, documentation contradictions, confusing behavior, opinions, or feature wishes. Investigate failures, provide a verified workaround where practical, and deliver a report with GitHub and maintainer email handoff options.
 ---
 
-# Give feedback to Booley
+# Prepare Booley feedback
 
-The user found a bug, hit confusing behavior, or simply said what they think of
-Booley. Turn that into feedback a maintainer can act on — and, only with the
-user's explicit yes, into a public GitHub issue (or a private mail to the
-maintainer, when the project sets `[feedback] mode = "email"`).
+Deliver an inspected sanitized report for manual submission and the blocked
+task's next step (see §5). This skill runs offline in the Session Runtime: use
+local commands, not `submit`, authentication probes, confirmation tokens,
+browser launches, or mail sending. Generate the report by default without a
+separate approval question or publication decision.
 
-**Private-project bug reproductions:** `minimal-reproducer.md` sits beside this
-file. Read and follow it after source triage when a Booley bug depends on the
-user's private RTL, testbench, configuration, or logs. It defines how to replace
-that material with a verified synthetic reproducer before anything is offered
-upstream. Do not read or run it for friction, impressions, documentation
-contradictions, or bugs already reproducible with public Booley fixtures.
+Check the installed CLI with `booley feedback --help`; run its commands for the
+user rather than asking them to choose subcommands.
 
-**It never blocks anything.** Capture perishable evidence immediately, then
-return to whatever the user was doing. When the problem blocks progress, give
-them a safe, concrete workaround where one exists before rendering or offering
-the report. Feedback is a side effect of the failure, not a replacement for
-getting them moving again.
+## 1. Capture and classify
 
-Use `booley feedback` (`booley feedback --help`) as the internal mechanism. Do
-not ask the user to choose or run its subcommands. Your job is the judgement the
-CLI cannot provide: what kind of feedback this is, what actually happened,
-whose fault it is, and when to ask the user for approval.
-
-## 1. Capture it now, while it is still on screen
-
-The single most common way a bug report dies is being written an hour later from
-memory. Log it before you do anything else — the entry can be improved later, an
-exit code you no longer have cannot.
+Capture perishable evidence first: the command, exit status, diagnostic output,
+expected behavior, and relevant versions. Keep private evidence local. Use a
+generic title and component from the start; inspect files before attaching them.
+Attachments become potential outbound content and cannot be removed by `triage`.
+Private source, original project logs, and scratch reductions stay unattached.
 
 ```console
 booley feedback add --origin bug \
-  --title "simulate exits 2 with no error text" \
-  --severity blocker \
-  --bucket booley \
-  --component simulate \
+  --title "simulate exits 2 with no diagnostic" \
+  --severity blocker --bucket unknown --component simulate \
   --repro "booley flow sim --target sim_smoke" \
   --observed "exit code 2, empty stderr, no run.log written" \
-  --expected "either a sim result or an error saying what failed"
+  --expected "a simulation result or an actionable diagnostic"
 ```
 
-- Always pass `--origin bug`; it records where this finding came from.
-- `--repro`, `--observed`, `--expected` are the filable bar. Without all three
-  the report stays local — a maintainer cannot act on a vague recollection.
-- `--attach` makes the tail of a file part of both the local and potential
-  outbound report. Attachments cannot be removed with `triage`. Inspect a file
-  before attaching it and attach the real evidence rather than a transcription,
-  but **never attach original project RTL, arbitrary private-project logs, or a
-  private reduction**. For a private-project-dependent bug, follow
-  `minimal-reproducer.md` and attach only its final synthetic capsule.
-- Repeat `add` per distinct problem. One issue is filed for the batch.
-- Keep the printed `F-N` IDs. They define this interaction's outbound batch;
-  older unfiled findings in the project log are not part of this conversation.
+Record distinct problems separately and keep their printed `F-N` IDs for this
+interaction's batch. Use the origins below; `say` supplies its impression origin.
 
-**Nothing broke, it was just confusing?** That is a report too, and a different
-subcommand — it does not need a reproduction:
+| Feedback | Local command | CLI evidence required for export |
+| --- | --- | --- |
+| Bug | `add --origin bug` | `repro`, `observed`, `expected` |
+| Documentation contradiction | `add --origin bug --bucket docs` | `observed` describing the contradiction, `component` identifying the document |
+| Friction | `friction --origin bug` | `component` or `exposed-by`, plus `expected` or explanatory `notes` |
+| Opinion or wish | `say` | The user's words; no reproduction |
 
 ```console
+booley feedback add --origin bug --bucket docs --severity note \
+  --title "Documented option differs from CLI" --component "<document path>" \
+  --observed "<document says X; installed CLI accepts Y>"
 booley feedback friction --origin bug \
-  --title "\"0 targets matched\" reads like a crash" \
-  --component targets \
-  --expected "a line saying the filter matched nothing and how to list them all"
-```
-
-Friction needs somewhere to aim the fix (`--component` or `--exposed-by`) and
-what the user expected instead. Those two are what make "this was confusing"
-actionable instead of a shrug.
-
-**Nothing is wrong at all — they just said what they think?** Log that too:
-
-```console
-booley feedback say "the waveform flow is the best part of this" --sentiment praise
+  --title '"0 targets matched" is confusing' --component targets \
+  --expected "Explain the empty result and how to list targets"
 booley feedback say "I want per-Target coverage in the run report" --sentiment wish
 ```
 
-`--sentiment` is `praise`, `gripe`, `wish`, or `mixed`. Nothing else is required
-— an opinion has no reproduction and you must not ask for one. Catch these as
-they fall out of ordinary conversation ("this saved me days", "the setup grill is
-exhausting", "I wish it could…", "honestly not worth the effort"), log them in
-the user's own words, and tell them you did. Do not editorialize, do not soften a
-complaint, and do not turn a passing remark into a bug report they never made.
-If they were venting rather than reporting, one line is enough: *"logged that as
-feedback — you can send it with the rest later, or not at all."*
+For impressions, use `praise`, `gripe`, `wish`, or `mixed`, preserve the user's
+words, and acknowledge capture briefly. If the user says "not now" or declines
+further feedback work, leave findings local and stop without exporting or
+repeating the offer. An explicit file request proceeds to export.
 
-## 2. Produce a workaround when progress is blocked
+## 2. Investigate the failure and find a workaround
 
-This branch applies to a bug, documentation contradiction, or confusing
-behavior that prevents the user's original goal. Skip it for non-blocking
-observations and impressions.
-
-After capturing the perishable evidence, resume the original task and find the
-safest practical path around the problem. Use only the authority already
-granted for that task; invoking feedback does not expand the scope. A complete
-workaround gives the user:
-
-- the exact command, configuration change, or alternate workflow to use;
-- what it bypasses, its limitations or risks, and how to undo it;
-- verification with the original reproduction or the closest safe check, when
-  practical. Label an unverified suggestion as such.
-
-Apply the workaround when it is already within scope. If every available route
-would be destructive, weaken security or correctness, or require a meaningful
-new user choice, say that no safe workaround was found and give the concrete
-decision or external action needed next. Never invent a workaround merely to
-claim the user is unblocked.
-
-When a workaround changes a blocker into a usable but degraded path, preserve
-the underlying `booley` or `docs` bucket and update the finding with the outcome:
-
-```console
-booley feedback triage F-1 --severity workaround \
-  --notes "Workaround: use …. Verified by …. Limitation: …. Revert by …."
-```
-
-## 3. Decide whose problem it is — and check before you blame Booley
-
-| Bucket | Means |
-| --- | --- |
-| `project` | Their repo, their config, their environment. Stays local. |
-| `booley` | Booley behaved wrongly. Includes anything you had to work around. |
-| `docs` | Booley's docs say one thing, its code does another. |
-
-Booley is installed and its source is readable:
+Skip diagnosis for opinions. For bugs, inspect the installed source responsible
+for the behavior when available:
 
 ```console
 python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent)"
 ```
 
-**Read the code that produced the message before filing it as a Booley bug.**
-Most "Booley bugs" turn out to be a misread doc (→ `docs`) or a config gap (→
-`project`), and a maintainer queue full of those buries the real ones. When you
-have confirmed it in the source, say so — it is the difference between "I saw
-this" and "I read the code and it is wrong":
+Separate observed facts, suspected causes, and verified conclusions. A verified
+source path need not prove a root cause. Report unavailable source or incomplete
+diagnosis as limitations; neither prevents reporting useful observations.
+
+| Bucket | Evidence supports |
+| --- | --- |
+| `project` | Project configuration or environment explains the failure; stays local. |
+| `booley` | Observed Booley behavior violates its expected behavior. |
+| `docs` | A specific documentation statement contradicts behavior. |
+| `unknown` | Ownership remains unresolved; stays local under CLI export rules. |
+
+A workaround changes impact, not ownership. A misunderstood document alone does
+not establish a documentation defect. Update the bucket using evidence and set
+`--verified-against-source` only when the claim was actually checked in source.
+
+For blocked tasks, investigate a safe practical workaround within existing
+authority. Apply it when authorized; otherwise provide implementable steps.
+Verify with the original reproduction or closest safe check, and label untested
+suggestions unverified. Record the exact command/configuration/alternate workflow,
+what it bypasses, limitations, verification, and reversal steps for the handoff.
+
+Retain the evidence-based bucket. Preserve blocker severity unless a verified
+workaround provides a usable but degraded path; then record:
 
 ```console
-booley feedback triage F-1 --bucket booley --verified-against-source
+booley feedback triage F-1 --severity workaround \
+  --notes "Workaround: …. Verified by: …. Limitation: …. Revert by: …."
 ```
 
-`triage` is also how you fill in evidence you got later (`--repro`, `--observed`,
-`--expected`, `--attach`).
+`--notes` replaces existing notes; preserve still-relevant evidence. Finish this
+step with a verified workaround or an unresolved blocker and next action.
 
-Before rendering a private-project-dependent Booley bug, follow
-`minimal-reproducer.md`. Keep the initially captured evidence local while doing
-so. If the synthetic case passes that guide's equivalence and disclosure gates,
-replace the outbound reproduction with the synthetic command and attach only
-its compact reproducer capsule. Never attach the private scratch reduction or
-describe a renamed/minimized copy of project RTL as anonymous. If no safe,
-equivalent reproducer can be made, say so and keep the project-specific evidence
-local; do not fabricate a toy example merely to clear the filing bar.
+## 3. Prepare safe outbound evidence
 
-## 4. Render the report
+For a Booley bug depending on private RTL, testbench, configuration, or logs,
+follow [minimal-reproducer.md](minimal-reproducer.md) to build a verified synthetic
+case. Skip it for opinions, friction, documentation contradictions, and bugs
+reproducible with public Booley fixtures. If a safe equivalent case is impractical,
+keep private evidence local and report only independently actionable non-project
+facts, stating the limitation.
+
+Audit every outbound field: title, component, exposed-by, step, reproduction,
+observed/expected behavior, notes (including workarounds), and attachment contents
+and paths. The identifier redactor is a denylist, not proof of safe disclosure.
+
+Use `triage` to replace editable fields with sanitized text. It cannot change a
+title, exposed-by, or step, or remove attachments. If any uneditable field or
+attachment is unsafe, create a new finding of the same kind with a generic title
+and only reviewed fields and attachments. Carry over the evidence-based bucket,
+severity, and verification status. Add a local note to the original identifying
+the replacement, mark the original `--bucket unknown` so later bulk exports
+exclude it, and select only the replacement ID for this report. Preserve the
+original evidence locally; do not mark it filed or edit the log by hand.
+
+Finish with safe finding IDs and reasons for withholding evidence, without
+exposing the withheld material.
+
+## 4. Write and inspect the reports
 
 ```console
 booley feedback report
-booley feedback list          # what is logged, what still needs evidence
+booley feedback list
+booley feedback export F-8 F-9
 ```
 
-One file lands in `.booley_project/`: the **local** report, unredacted, never
-published, and theirs either way. It is named `SETUP-REPORT.md` on a project that
-ran setup and `FEEDBACK-REPORT.md` otherwise. The redacted maintainer view is
-rendered transiently by `preview` and `submit`; only `booley feedback export`
-writes `BOOLEY-FEEDBACK.md`, when the user explicitly wants a sanitized file.
+Use exactly this interaction's safe IDs; `--all` includes unrelated pending
+findings. The local unredacted report is `SETUP-REPORT.md` for a setup-origin log
+or `FEEDBACK-REPORT.md` otherwise. Export writes `BOOLEY-FEEDBACK.md`. Use the
+paths printed by the CLI in the directory resolved by `booley.runtime.project_dir`;
+keep reports and reproducer scratch work outside the RTL repository's tracked tree.
 
-Anything withheld is named, with the reason. If a withheld finding is one you can
-still reproduce, reproduce it now and `triage` the evidence in. If you cannot,
-leave it: the local report is the right home for "this felt rough".
+Read the entire exported file, including its environment section and attachment
+blocks. Check for private identifiers, semantic disclosure, stale notes, clipped
+reproducers, and unsupported claims. Correct source findings or create clean
+replacements, then re-export and inspect again. Deliver only the inspected file.
+Call synthetic evidence synthetic and sanitized, never guaranteed anonymous.
 
-The report and any explicit export stay out of the RTL repo's tracked tree.
-That is the footprint guardrail, and a bug report is not an exception to it.
+The CLI withholds `unknown`, `project`, and findings missing required evidence;
+explain omissions without inventing evidence or changing ownership to pass export.
+If nothing exports or a useful unresolved observation is withheld, write a separate
+sanitized Markdown report in the resolved project data directory. Label it manually
+prepared; include only reviewed facts, expectations, available versions, workaround
+status, and explicit unknowns, with no private reproduction. Inspect it as above.
+Project-only configuration mistakes stay local unless there is distinct Booley
+feedback to send.
 
-## 5. Ask — once, honestly, and take no for an answer
+## 5. Hand off the report and the next step
 
-Skip this section entirely and silently when `[feedback] mode` is `off` or
-`file-only`, or when nothing is filable.
+Link the sanitized report with a host-accessible path when available. If the
+container path is not directly accessible, explain how to retrieve it using the
+session's supported artifact transfer. Keep the unredacted local report clearly
+separate from the file intended for sharing.
 
-```console
-booley feedback preview F-8 F-9
-```
+Present two clean, highlighted submission options, using the installed source's
+`NEW_ISSUE_URL` and `INTAKE_EMAIL` in `booley.feedback.submit` as the destination
+source of truth. Current destinations are:
 
-Pass exactly the IDs discussed in this interaction. Bare `preview` is refused;
-`--all` intentionally selects every pending finding and is not for this flow.
+- **Submit on GitHub:** [Open a Booley issue](https://github.com/boldaxolotl/Booley/issues/new).
+  Paste the sanitized report, review it, and submit. Explain briefly that the
+  issue is public and associated with the user's GitHub account.
+- **Email the maintainer:** [boldaxolotl@proton.me](mailto:boldaxolotl@proton.me).
+  Supply a concise subject based on the report title and ask the user to attach
+  the sanitized report in their mail client. Explain that this sends it privately
+  to the maintainer and exposes the sender's email address to them.
 
-Show the user **the entire preview output, verbatim.** Do not summarize it, do
-not paraphrase the redaction warnings, and do not sell the contribution. It
-already contains everything the decision needs: the exact text, what was
-substituted, what redaction structurally cannot catch, and who ends up seeing it
-under whose name — a public issue carrying their GitHub name, or, under
-`[feedback] mode = "email"`, a mail to the maintainer carrying their return
-address. The preview says which; do not assert one when it says the other.
+Keep report bodies out of URLs; use a normal issue link and separate file, with
+at most a subject prefilled in the email link. Offer both routes unless one is
+already chosen. Omit unsolicited options after refusal or when `[feedback] mode`
+is `"off"` or `"file-only"`; explicit requests for submission instructions take precedence.
 
-Then ask plainly. Three answers, all fine:
+End with the report ready to send, not submitted, and the task outcome:
 
-1. **Yes** → pass the token the preview printed:
-   ```console
-   booley feedback submit F-8 F-9 --yes --confirm <token>
-   ```
-   Use the same IDs as `preview`; a different selection invalidates the token.
-   `--yes` without the token is refused by design; the token proves the approval
-   covers the exact text they read. **Never invent, guess, or scrape a token from
-   an error message** — if you did not just show the user the preview, you have no
-   business submitting.
+- **Verified workaround:** provide the implementable steps and evidence from §2.
+- **Still blocked:** say "No verified workaround was found", identify the blocked
+  operation, and give the next action. A confirmed Booley defect needs a Booley
+  fix before retrying; promise neither a release date nor that reporting schedules
+  a fix. For unresolved ownership, state unknowns and needed diagnosis/external action.
+- **Non-blocking feedback:** state that no workaround is needed.
 
-   For the GitHub route, this command is the submission mechanism. It uses the
-   authenticated GitHub CLI (`gh issue create`) when available. If `gh` is
-   missing or not authenticated, the command prints a prefilled GitHub issue
-   URL instead. Open that URL with the host's normal external-link launcher
-   (`Start-Process` on Windows or `xdg-open` on Linux), stop at the filled issue
-   form, and ask the user to review it and click **Submit new issue**. If no
-   external-link launcher is available, give the user the clickable URL.
-
-   The browser fallback is a human hand-off. Do not use ChatGPT browser tools,
-   web search, or browser automation to navigate GitHub or submit the issue.
-
-   Under `mode = "email"` this prints a `mailto:` link and stops — **you** cannot
-   send it and must not pretend it went anywhere. Give the user the link, and the
-   `booley feedback filed … --url email` command it prints, for after they send.
-2. **Not now / just give me the file** → run `booley feedback export F-8 F-9`,
-   tell them the path, and stop. They can post it whenever, from any account.
-3. **No** → stop. Do not re-ask, do not re-frame it as a smaller ask, do not
-   raise it again later in the session. Offer `[feedback] mode = "off"` if they
-   would rather never be asked again.
-
-If they want the redaction changed — a module name they would rather keep, a term
-that got missed — add it to `[feedback] redact_extra` (or set
-`redact_identifiers = false` for an open-source design whose names are already
-public), and preview the same IDs again. The token changes with the text, which
-is the point.
-
-## 6. Submission is host-only
-
-Day-to-day work happens inside the Session Runtime, whose egress proxy allowlists
-model APIs and not github.com — and holds no mail client either, so the `email`
-route is host-only for the same reason. `submit` will tell you so rather than
-fail mysteriously. When that happens: finish the user report here, then either
-hand the user the host command or run `booley feedback export F-8 F-9` for the
-same batch.
-
-A user who sends it by hand should say so, so the entry is never sent twice:
-
-```console
-booley feedback filed F-1 F-2 --url https://github.com/boldaxolotl/Booley/issues/123
-booley feedback filed F-1 F-2 --url email     # after sending the mailto: hand-off
-```
-
-`submit` does this automatically when it files an issue, and never on the email
-route — it has no way of knowing whether the mail was actually sent. Filed
-entries are excluded from every later report — which is what stops a bug filed
-in July from re-publishing a setup run's findings from March.
-
-## What not to do
-
-- **Do not file without asking.** Ever. Irreversible either way — a public issue
-  or a mail already in someone's inbox.
-- **Do not report a workaround as a success.** If you worked around Booley to get
-  the user moving, that workaround is a `booley` finding — and it is the one that
-  will confuse them in three months.
-- **Do not pad the batch.** Three real findings beat eleven with eight
-  impressions in them.
-- **Do not attach a file you have not looked at.** Redaction is a denylist over
-  identifiers scraped from `booley.toml` and the `.core` files — it does not know
-  what is in an arbitrary log line. Read the tail you are attaching; the preview
-  shows the user the same text, but you saw it first.
+Mark findings filed only after the user confirms actual submission with an issue
+URL or email confirmation. File creation and handoff links do not prove submission.
