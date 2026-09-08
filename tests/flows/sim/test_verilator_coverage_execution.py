@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -205,7 +207,8 @@ def _fake_invoke(captured, raw_path: Path):
         )
         write_adapter_result(
             identity,
-            AdapterResult(
+            captured.get("result")
+            or AdapterResult(
                 passed=True,
                 inconclusive=False,
                 sva_errors=0,
@@ -216,7 +219,9 @@ def _fake_invoke(captured, raw_path: Path):
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         raw_path.write_text("# SystemC::Coverage-3\n", encoding="utf-8")
         captured["run_script"] = script
-        return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
+        return captured.get("process") or SubprocessResult(
+            returncode=0, stdout="[SIM_RESULT] PASSED\n"
+        )
 
     return fake_invoke
 
@@ -232,3 +237,56 @@ def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest
         argv_suffix=(f"+verilator+coverage+file+{raw_path}",),
         environment={"BOOLEY_COVERAGE_RUN_ID": "run:001:wrap"},
     )
+
+
+@pytest.mark.parametrize("verdict", ["pass", "fail", "timeout", "inconclusive"])
+def test_batch_timeout_preserves_authoritative_per_test_verdict(
+    tmp_path: Path, monkeypatch, verdict: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    ).success
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=True,
+        sva_errors=0,
+        tests=("wrap",),
+        failure_kind="timeout",
+        test_results=(AdapterTestResult("wrap", verdict),),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == verdict
+
+
+@pytest.mark.parametrize("process_timeout", [False, True])
+def test_missing_per_test_evidence_is_rejected_without_losing_process_timeout(
+    tmp_path: Path, monkeypatch, process_timeout: bool
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    ).success
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=True,
+        sva_errors=0,
+        tests=("wrap",),
+        failure_kind="" if process_timeout else "timeout",
+    )
+    captured["process"] = SubprocessResult(returncode=1, timed_out=process_timeout)
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == ("timeout" if process_timeout else "inconclusive")
+    assert "omits required per-test verdicts" in result.output

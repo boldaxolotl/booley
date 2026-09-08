@@ -35,8 +35,9 @@ from pathlib import Path
 
 from booley.runtime import job_records as jobrec
 from booley.runtime.pid import is_pid_alive
-from booley.runtime.ticket_repositories import TicketWorkspaceError, pending_ticket_changes
 from booley.runtime.timefmt import format_human_datetime, format_human_datetime_safe
+from booley.ticket_board.paths import session_jobs_dir
+from booley.ticket_board.ticket_repositories import TicketWorkspaceError, pending_ticket_changes
 
 from .base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from .events import _emit_criteria_update
@@ -80,7 +81,11 @@ class SubmitRunReportMcpTool(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Refuse the final report until every detached ticket job is terminal."""
-        active = [rec for rec in jobrec.list_records() if jobrec.is_active(rec, is_pid_alive)]
+        active = [
+            rec
+            for rec in jobrec.list_records(root=session_jobs_dir())
+            if jobrec.is_active(rec, is_pid_alive)
+        ]
         if not active:
             return None
         jobs = ", ".join(f"{rec.endpoint} ({rec.run_id})" for rec in active)

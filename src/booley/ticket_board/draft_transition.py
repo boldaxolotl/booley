@@ -26,12 +26,15 @@ from booley.runtime.project_dir import (
     resolve_project_dir,
     runtime_dir,
 )
-from booley.runtime.ticket_repositories import resolve_inner_project_repo, ticket_project_worktree
 from booley.runtime.worktree_relocation import (
     WorktreeMove,
     WorktreeRelocationError,
     preflight_worktree_moves,
     relocate_worktree,
+)
+from booley.ticket_board.ticket_repositories import (
+    resolve_inner_project_repo,
+    ticket_project_worktree,
 )
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis

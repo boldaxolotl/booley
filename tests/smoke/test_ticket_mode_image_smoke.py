@@ -25,6 +25,7 @@ from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.paths import session_jobs_dir
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_TICKET_MODE_SMOKE") != "1",
@@ -375,7 +376,8 @@ def _assert_installed_runner_guard(project: Path, slug: str) -> None:
 
 def _assert_no_live_jobs() -> None:
     assert all(
-        record.status != job_records.STATUS_RUNNING for record in job_records.list_records()
+        record.status != job_records.STATUS_RUNNING
+        for record in job_records.list_records(root=session_jobs_dir())
     )
     slots_root = job_slots.slots_dir()
     assert slots_root is not None

@@ -63,8 +63,7 @@ def test_validate_ticket_accepts_verilator_timescale(
     )
     monkeypatch.setattr(cli_handlers, "detect_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        cli_handlers.TicketWorkspace,
-        "ensure_authoring",
+        "booley.ticket_board.workspace_ops.ensure_ticket_workspace",
         lambda *_args: SimpleNamespace(outer=tmp_path),
     )
     monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])
@@ -101,8 +100,7 @@ def test_validate_ticket_reports_missing_program_without_traceback(
     )
     monkeypatch.setattr(cli_handlers, "detect_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        cli_handlers.TicketWorkspace,
-        "ensure_authoring",
+        "booley.ticket_board.workspace_ops.ensure_ticket_workspace",
         lambda *_args: SimpleNamespace(outer=tmp_path),
     )
     monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])

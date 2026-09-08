@@ -19,7 +19,7 @@ from booley.runtime.project_dir import (
     runtime_dir,
 )
 from booley.runtime.project_prepare import prepare_project
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.ticket_repositories import (
     TicketRepository,
     paired_project_repository,
     resolve_inner_project_repo,
@@ -839,11 +839,11 @@ def _prepare_workspace_project(root: Path, outer: Path, ticket: Path, slug: str)
     from booley.flows.execution import flow_enabled
     from booley.runtime.submodule_materialization import (
         SubmoduleMaterializationError,
-        materialize_ticket_submodules,
+        materialize_project_submodules,
     )
 
     try:
-        materialize_ticket_submodules(root, outer)
+        materialize_project_submodules(root, outer)
     except SubmoduleMaterializationError as exc:
         raise AcceptanceBasisOperationError(f"Submodule setup failed offline: {exc}") from exc
     result = prepare_project(

@@ -39,6 +39,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
+from booley.ticket_board.agent_execution import configure_agent_call
 
 from .specialist_workspace import (
     WorkspaceAccess,
@@ -844,7 +845,7 @@ def _call_agent_sync(
     from booley.runtime.agent import call_agent
 
     async def _invoke() -> Any:
-        return await call_agent(params, on_event=on_event)
+        return await call_agent(configure_agent_call(params), on_event=on_event)
 
     try:
         loop = asyncio.get_running_loop()

@@ -18,7 +18,7 @@ from booley.harness.developer_guardrails import (
     check_uncommitted_code_statuses,
 )
 from booley.harness.models import TicketContext
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.ticket_repositories import (
     TicketRepository,
     TicketWorkspace,
     TicketWorkspaceError,
@@ -148,7 +148,7 @@ def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
             return_value=workspace,
         ),
         patch(
-            "booley.runtime.ticket_repositories.ticket_repositories",
+            "booley.ticket_board.ticket_repositories.ticket_repositories",
             return_value=repositories,
         ),
         patch(

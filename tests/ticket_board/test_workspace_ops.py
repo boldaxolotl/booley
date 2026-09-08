@@ -81,7 +81,7 @@ def _authoring_workspace(
         lambda *_args, **_kwargs: SimpleNamespace(ok=True, error=""),
     )
     monkeypatch.setattr(
-        "booley.runtime.submodule_materialization.materialize_ticket_submodules",
+        "booley.runtime.submodule_materialization.materialize_project_submodules",
         lambda *_args: None,
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
@@ -250,7 +250,7 @@ def test_authoring_preparation_materializes_submodules_first(
     ticket = tmp_path / "ticket.md"
     calls: list[str] = []
     monkeypatch.setattr(
-        "booley.runtime.submodule_materialization.materialize_ticket_submodules",
+        "booley.runtime.submodule_materialization.materialize_project_submodules",
         lambda source, destination: calls.append(f"materialize:{source}:{destination}"),
     )
 
