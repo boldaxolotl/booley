@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
+from booley.flows.implementation_profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.openroad import ppa as openroad_ppa_options
 from booley.flows.synth.backends.yosys import ppa as yosys_ppa_options
@@ -24,7 +25,6 @@ from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
     synth_timing_config,
 )
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
-from booley.flows.synth.profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.flows.synth.timing import StaTimingConfig
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.shared_infra import (

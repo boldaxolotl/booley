@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from booley.flows.synth.profiles import validate_ppa_profile
+from booley.flows.implementation_profiles import validate_ppa_profile
 
 
 @dataclass(frozen=True)
