@@ -52,7 +52,7 @@ Booley has three agent-facing implementation families:
 
 | Family | Built-in examples | Responsibility |
 |--------|-------------------|----------------|
-| `BooleyFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
+| `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
 | Direct `McpTool` subclass | `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist |
 
@@ -74,9 +74,11 @@ Every agent-facing call follows the same shape:
 7. The coordinator calls the explicit acceptance-recorder interface before
    mutable state/report persistence, then releases admission. In Ticket Mode,
    normalized Criterion changes are appended before state is saved; Interactive
-   Mode has no persistent acceptance evidence. If acceptance recording fails,
-   mutable persistence is skipped while terminal reporting and admission cleanup
-   still run.
+   Mode has no persistent acceptance evidence. If final acceptance recording
+   fails, final mutable persistence is skipped while terminal reporting and
+   admission cleanup still run. An append failure during an in-run Criterion
+   update instead follows the invocation error path; see the failure distinctions
+   in [Built-in Flow execution](FLOW-EXECUTION.md).
 
 Interactive Mode uses the same registry and implementations, but it has no Ticket state. The result is returned to the current session without persisting Criteria.
 
@@ -182,11 +184,12 @@ Chapter 3 covers any project Criteria named by `satisfies`.
 
 ## Chapter 2: The Shared Python Contract
 
-All MCP tool implementations inherit from `McpTool`. For agent-facing calls,
-their Python orchestration runs inside the Session Runtime. The base classes
-provide common argument parsing, report creation, Ticket-state integration,
-change accounting, and exit-code handling. Built-in and custom implementations
-use the same hooks.
+Built-in Flows compose a transport-independent execution session and accept
+typed requests. CLI and MCP adapters expose them through the existing commands
+and schemas; see [Built-in Flow execution](FLOW-EXECUTION.md). Custom Flows retain
+`BooleyFlow`, while Specialists and direct MCP endpoints retain their existing
+`McpTool` extension contract. All paths use the same execution coordinator and
+acceptance/reporting services inside the Session Runtime.
 
 Criterion-aware MCP endpoints can produce verdicts against *Criteria* (the named
 pass/fail conditions a ticket gates on). This chapter explains how an
@@ -197,7 +200,8 @@ Criteria themselves are defined and expanded.
 
 | Class | Contract | Built-in examples |
 |-------|----------|-------------------|
-| `BooleyFlow` | Run deterministic work and interpret its completed result | `sim`, `lint`, `synth`, `fpga` |
+| `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
+| `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits | `submit_run_report` |
 

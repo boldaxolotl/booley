@@ -743,6 +743,10 @@ def test_cleanup_refuses_moved_ticket_ref_and_retry_uses_recorded_identity(
         base,
     )
     tio = _TicketIO(root, _contract(root, (participant,)))
+    from booley.ticket_board import operations
+
+    notifications: list[str] = []
+    monkeypatch.setattr(operations, "ntfy_send", lambda title, *_a: notifications.append(title))
     validate_surface = acceptance_impl._validate_source_surface
 
     def move_ref(*args: Any, **kwargs: Any) -> None:
@@ -752,12 +756,15 @@ def test_cleanup_refuses_moved_ticket_ref_and_retry_uses_recorded_identity(
     monkeypatch.setattr(acceptance_impl, "_validate_source_surface", move_ref)
 
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert tio.entry["status"] == "done"
+    assert notifications == ["DONE: change-target"]
     assert _git(root, "rev-parse", "change-target") == late_sha
     assert "acceptance recovery is blocked" in capsys.readouterr().err
 
     monkeypatch.setattr(acceptance_impl, "_validate_source_surface", validate_surface)
     _git(root, "branch", "-f", "change-target", ticket_sha)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert notifications == ["DONE: change-target"]
     assert (
         subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/change-target"],

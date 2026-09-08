@@ -8,7 +8,6 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -42,12 +41,19 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
+from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+    EndpointOutcome,
+)
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -93,7 +99,7 @@ from .execution import (
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.failures import find_missing_executable
-from .mode import SimulationMode, normalize_simulation_mode, parse_simulation_mode
+from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
     NoRunnableTestsError,
@@ -1131,6 +1137,9 @@ def _append_batch_output_lines(
 class SimulateFlow(StandaloneMixin, BuiltinFlow):
     """Run RTL simulation for one or more Targets."""
 
+    request_type = SimRequest
+    argument_adapter = SimArguments
+
     name: str = "sim"
     description: str = (
         "Run RTL simulation for one or more Targets. Set mode=elab_only to "
@@ -1181,117 +1190,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return format_flow_display_label(targets, tests=None)
         return format_flow_display_label(targets, tests=(str(test) for test in selected))
 
-    def _add_args(self, parser: Any) -> None:
-        # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
-        # TB top, so it comes from the resolved Target (tb_top_for_target), not
-        # a per-call arg.
-        self._add_elaboration_args(parser)
-        parser.add_argument(
-            "--test",
-            default=None,
-            help="Run specific test by name (substring match)",
-        )
-        parser.add_argument(
-            "--skip",
-            default=None,
-            help="Comma-separated test names to exclude (exact match). Adds to "
-            "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
-            "known-hanging tests that burn the full wall-clock budget.",
-        )
-        self._add_run_control_args(parser)
-
-    @staticmethod
-    def _add_elaboration_args(parser: Any) -> None:
-        """Add the canonical mode plus CLI-only compatibility aliases."""
-        parser.add_argument(
-            "--mode",
-            type=parse_simulation_mode,
-            choices=list(SimulationMode),
-            default=None,
-            metavar="{simulate,elab-only,elab-only-standalone}",
-            help="Execution mode: run tests, elaborate only, or elaborate then "
-            "perform the standalone module sweep",
-        )
-        parser.add_argument(
-            "--elab-only",
-            "--build-only",
-            dest="_legacy_elab_only",
-            action="store_true",
-            help=argparse.SUPPRESS,
-        )
-        parser.add_argument(
-            "--standalone",
-            dest="_legacy_standalone",
-            action="store_true",
-            help=argparse.SUPPRESS,
-        )
-
-    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
-        """Normalize legacy mode flags into the single canonical selector."""
-        args = super().parse_args(argv)
-        legacy_requested = args._legacy_elab_only or args._legacy_standalone
-        if args.mode is not None and legacy_requested:
-            self._parser.error("--mode cannot be combined with legacy mode flags")
-        args._legacy_standalone_without_elab = (
-            args._legacy_standalone and not args._legacy_elab_only
-        )
-        if legacy_requested:
-            logger.warning(
-                "--elab-only, --build-only, and --standalone are deprecated; use --mode"
-            )
-        if args._legacy_elab_only and args._legacy_standalone:
-            args.mode = SimulationMode.ELAB_ONLY_STANDALONE
-        elif args._legacy_elab_only:
-            args.mode = SimulationMode.ELAB_ONLY
-        elif args.mode is None:
-            args.mode = SimulationMode.SIMULATE
-        vars(args).pop("_legacy_elab_only")
-        vars(args).pop("_legacy_standalone")
-        return args
-
-    def mcp_schema(self) -> dict[str, object]:
-        """Advertise one mode field and hide all compatibility flags."""
-        schema = super().mcp_schema()
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            properties.pop("_legacy_elab_only", None)
-            properties.pop("_legacy_standalone", None)
-            mode = properties.get("mode")
-            if isinstance(mode, dict):
-                mode["default"] = SimulationMode.SIMULATE.value
-        return schema
-
-    @staticmethod
-    def _add_run_control_args(parser: Any) -> None:
-        """Add run-stage tracing, reporting, cleanup, and timeout controls."""
-        parser.add_argument(
-            "--trace",
-            action="store_true",
-            help="Enable waveform trace (debugging only — do not use for pass/fail checks)",
-        )
-        parser.add_argument(
-            "--result-verbosity",
-            choices=["compact", "full"],
-            default="compact",
-            help="Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
-        )
-        # --trace-scope left the surface (ADR 0022, 2026-06-23): the --trace
-        # overlay .core traces the full hierarchy at a fixed depth, so there is no
-        # per-call scope knob. Scoping, when a specialist needs it, lives on the
-        # specialist's own surface, not the built-in simulate one.
-        parser.add_argument(
-            "--no-kill",
-            action="store_true",
-            help="Skip zombie process cleanup",
-        )
-
     def _build_command(self) -> list[str]:
         # Not used — _run() is overridden for multi-config logic
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
         # Not used — _run() handles interpretation directly
-        return McpToolResult()
+        return EndpointOutcome()
 
     def _effective_timeout_ms(self) -> int:
         """Resolve the per-test timeout in ms.
@@ -1365,7 +1270,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _validate_interactive_args(
         self,
         targets: list[str],
-    ) -> McpToolResult | None:
+    ) -> EndpointOutcome | None:
         """Interactive-Mode guard: a Target must be selected.
 
         ``tb_top`` left the surface (ADR 0021) — a sim Target's ``toplevel`` is
@@ -1375,7 +1280,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         clear error if a selected Target is malformed.
         """
         if not targets:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "sim: --target is required when multiple or zero "
@@ -1387,20 +1292,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _resolve_run_targets(
         self,
-    ) -> McpToolResult | tuple[list[str], dict[str, list[str]]]:
+    ) -> EndpointOutcome | tuple[list[str], dict[str, list[str]]]:
         """Resolve the execution selection and requested Targets for this run.
 
-        Returns a terminal ``McpToolResult`` on the first validation error;
+        Returns a terminal ``EndpointOutcome`` on the first validation error;
         otherwise ``(targets, test_names_map)`` for the caller to continue with.
         """
         # The Target owns its top and trace hierarchy; validate selection here.
         if not self._flow_enabled():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
             )
         targets_or_error = self._resolve_requested_targets()
-        if isinstance(targets_or_error, McpToolResult):
+        if isinstance(targets_or_error, EndpointOutcome):
             return targets_or_error
         targets = targets_or_error
         err = self._validate_interactive_args(targets)
@@ -1412,7 +1317,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> McpToolResult | None:
+    ) -> EndpointOutcome | None:
         """Handle validation + the dry-run path; ``None`` means "continue".
 
         Validates ``--test`` the way ``--target`` is already validated
@@ -1437,7 +1342,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if self.args.dry_run:
             return self._handle_dry_run(targets, test_names_map)
         if plan.aggregate_errors:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
                 detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
@@ -1594,13 +1499,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         finally:
             self.args.work_dir = project_root
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
         result = self._run_selected_mode()
         result.detail["mode"] = self.args.mode.value
         return result
 
-    def _run_selected_mode(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run_selected_mode(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
@@ -1610,7 +1515,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         total_start = time.monotonic()
         resolution_started = total_start
         resolved = self._resolve_run_targets()
-        if isinstance(resolved, McpToolResult):
+        if isinstance(resolved, EndpointOutcome):
             return resolved
         targets, test_names_map = resolved
         resolution_s = time.monotonic() - resolution_started
@@ -1633,7 +1538,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._write_progress_report(targets, all_results, phase="starting")
 
         baseline_result = self._run_cycle_count_baselines(targets, test_names_map)
-        if isinstance(baseline_result, McpToolResult):
+        if isinstance(baseline_result, EndpointOutcome):
             return baseline_result
         self._baseline_results = baseline_result
 
@@ -1726,7 +1631,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             phase="complete",
             complete=True,
         )
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_SUCCESS if overall_pass else EXIT_FAILURE,
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
             criterion_met=overall_pass,
@@ -1735,10 +1640,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text=report_text,
         )
 
-    def _validate_mode_args(self) -> McpToolResult | None:
+    def _validate_mode_args(self) -> EndpointOutcome | None:
         """Reject run-stage arguments that have no meaning in elab-only mode."""
         if self.args._legacy_standalone_without_elab:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
                     "sim: --standalone alone is invalid; use --mode elab-only-standalone"
@@ -1755,7 +1660,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         for argument, active in conflicts:
             if active:
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
                         f"sim: {argument} conflicts with --mode {self.args.mode.value}; "
@@ -1764,10 +1669,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
         return None
 
-    def _run_elab_only(self) -> McpToolResult:
+    def _run_elab_only(self) -> EndpointOutcome:
         """Compile, elaborate, and link selected Simulation Targets without tests."""
         preflight = self._elab_only_preflight()
-        if isinstance(preflight, McpToolResult):
+        if isinstance(preflight, EndpointOutcome):
             return preflight
         targets = preflight
         results = self._run_elab_only_campaign(targets)
@@ -1807,16 +1712,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
         return None
 
-    def _elab_only_preflight(self) -> list[str] | McpToolResult:
+    def _elab_only_preflight(self) -> list[str] | EndpointOutcome:
         """Validate compile-only mode and return its selected Targets."""
         if not self._flow_enabled():
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
                 detail={"mode": self.args.mode.value},
             )
         targets_or_error = self._resolve_requested_targets()
-        if isinstance(targets_or_error, McpToolResult):
+        if isinstance(targets_or_error, EndpointOutcome):
             targets_or_error.detail["mode"] = self.args.mode.value
             return targets_or_error
         targets = targets_or_error
@@ -1829,7 +1734,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if self.args.dry_run:
             return self._handle_elab_only_dry_run(targets)
         if plan.aggregate_errors:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(plan.aggregate_errors),
                 detail={"mode": self.args.mode.value, "plan": plan.as_dict()},
@@ -2008,7 +1913,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         results: list[ElabOnlyTargetResult],
         exit_code: int,
         standalone: _StandaloneOutcome | None,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Compose the final compile-only report and MCP result."""
         passed = sum(result.outcome.passed for result in results)
         verdict = {EXIT_SUCCESS: "PASS", EXIT_FAILURE: "FAIL", EXIT_ERROR: "ERROR"}[exit_code]
@@ -2037,7 +1942,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail["standalone"] = standalone.detail
             display_lines.append(standalone.display)
         self._write_elab_only_progress(targets, results, phase="complete", complete=True)
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=exit_code,
             criterion_key=(f"elab_pass_{targets[0]}" if len(targets) == 1 else ""),
             criterion_met=len(results) == 1 and results[0].outcome.passed,
@@ -2242,7 +2147,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         }
         _atomic_write_json(invocation_dir / "progress.json", payload)
 
-    def _handle_elab_only_dry_run(self, targets: list[str]) -> McpToolResult:
+    def _handle_elab_only_dry_run(self, targets: list[str]) -> EndpointOutcome:
         del targets
         return self._dry_run_result(self._flow_plan)
 
@@ -2317,12 +2222,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> dict[str, TargetResult] | McpToolResult:
+    ) -> dict[str, TargetResult] | EndpointOutcome:
         """Run each relative Cycle Count Target once in a throwaway baseline tree."""
         del targets  # Selection is frozen in the FlowPlan before execution.
         baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
         if error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=error)
         if baseline_ref is None:
             return {}
         project_root = Path(self.args.work_dir)
@@ -2394,15 +2299,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             | fusesoc_registry.FuseSocError
         ),
         targets: list[str],
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Translate baseline setup and execution failures into Flow results."""
         if isinstance(exc, MissingExecutableError):
             return self._missing_executable_result(exc, targets[0])
         if isinstance(exc, SimulationBuildInfrastructureError):
             return self._build_infrastructure_result(exc)
         if isinstance(exc, BaselineWorktreeError):
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
-        return McpToolResult(
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
+        return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=f"sim: Cycle Count baseline Target selection failed: {exc}",
         )
@@ -2411,7 +2316,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         exc: MissingExecutableError,
         target: str,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Grade an absent EDA binary as a Flow error (exit 2), not a failure.
 
         The verdict channel must not say "test FAIL" when no test ever ran
@@ -2432,7 +2337,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         tail = "\n".join(exc.context.strip().splitlines()[-15:])
         report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
         print(report_text)
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_ERROR,
             display_lines=[f"Flow error: {exc.binary} not found"],
             detail={
@@ -2446,7 +2351,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     @staticmethod
     def _build_infrastructure_result(
         exc: SimulationBuildInfrastructureError,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Report a no-verdict build outcome without changing Criteria."""
         outcome = exc.outcome
         message = (
@@ -2457,7 +2362,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         tail = "\n".join(outcome.output.strip().splitlines()[-15:])
         report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
         print(report_text)
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_ERROR,
             display_lines=[f"Flow error: {exc.target} build infrastructure failed"],
             detail={
@@ -2468,7 +2373,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text=report_text,
         )
 
-    def _resolve_requested_targets(self) -> list[str] | McpToolResult:
+    def _resolve_requested_targets(self) -> list[str] | EndpointOutcome:
         handles = TargetCatalog.build(self.args.work_dir).select_many(
             self.args.target,
             for_flow="sim",
@@ -2477,7 +2382,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets = [handle.selector for handle in handles]
         if targets:
             return targets
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
                 "sim: --target is required. Pass --target <name> (or a "
@@ -3072,7 +2977,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> McpToolResult | None:
+    ) -> EndpointOutcome | None:
         """Reject an unknown ``--test`` before any sim runs (built-in path).
 
         A target that declares a test list (tests.toml ``tests``) but whose list
@@ -3084,7 +2989,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         Skipped for a target with no declared test list: there the ``--test``
         value is a raw passthrough the TB owns (matching
         ``resolve_target_selection``'s transitional skip when the Target list is
-        unknown). Returns an ``EXIT_ERROR`` McpToolResult on the first offending
+        unknown). Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending
         target, else ``None``.
         """
         selector = self.args.test
@@ -3093,7 +2998,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for target in targets:
             available = lookup_target_section(test_names_map, target) or []
             if available and not _filter_tests(available, selector):
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
                         f"sim: --test {selector!r} matched no test for "
@@ -3105,14 +3010,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
         return None
 
-    def _validate_cocotb_targets(self, targets: list[str]) -> McpToolResult | None:
+    def _validate_cocotb_targets(self, targets: list[str]) -> EndpointOutcome | None:
         """Reject a plusarg ``select`` template on a Cocotb Target (A2).
 
         On a Cocotb Target test selection is the ``COCOTB_TEST_FILTER`` env var
         Booley builds from the ``tests`` list — a plusarg ``select`` template is
         a config contradiction, rejected up front (a setup-time error, ADR 0034
         decision 5) rather than silently ignored. ``skip`` works unchanged.
-        Returns an ``EXIT_ERROR`` McpToolResult on the first offending target,
+        Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending target,
         else ``None``.
         """
         selects = _get_test_selects(self.args.work_dir)
@@ -3120,7 +3025,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if lookup_target_section(selects, target) is not None and self.is_cocotb_target(
                 target
             ):
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
                         f"sim: tests.toml [{target}] declares a `select` "
@@ -3137,7 +3042,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> McpToolResult | None:
+    ) -> EndpointOutcome | None:
         """Reject Targets whose skip policy excludes every declared test."""
         if self.args.test:
             return None  # an explicit selector deliberately overrides skips
@@ -3150,7 +3055,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     test_skips={target: list(self._effective_skips(target))},
                 )
             except NoRunnableTestsError as exc:
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
                         f"sim: {exc}. Tests are excluded by tests.toml `skip` or "
@@ -3229,7 +3134,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         """Render the normalized plan resolved by preflight."""
         del targets, test_names_map
         return self._dry_run_result(self._flow_plan)
