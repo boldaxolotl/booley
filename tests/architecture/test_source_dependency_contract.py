@@ -155,3 +155,25 @@ def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: s
     path.write_text(source, encoding="utf-8")
 
     assert _target_mechanics_violations(path, "consumer.py")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.ticket_board.paths\n",
+        "def helper():\n    from booley.ticket_board import paths\n",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from booley.ticket_board.paths import value\n",
+    ],
+)
+def test_runtime_ticket_board_rule_catches_all_static_import_locations(tmp_path, statement):
+    root = tmp_path / "booley"
+    for package in (root, root / "runtime", root / "ticket_board"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "ticket_board" / "paths.py").write_text("value = 1\n")
+    (root / "runtime" / "seed.py").write_text(statement)
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+    assert "D14" in report
+    assert "booley.runtime.seed" in report
+    assert "booley.ticket_board.paths" in report

@@ -28,7 +28,7 @@ from booley.runtime.project_dir import (
     checkout_runtime_dir,
     resolve_checkout_project_dir,
 )
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     resolve_inner_project_repo,
 )
@@ -1392,11 +1392,11 @@ def _materialize_participant_commits(
         _clone_commit(source, checkout / project_relative, commits["project"])
     from booley.runtime.submodule_materialization import (
         SubmoduleMaterializationError,
-        materialize_ticket_submodules,
+        materialize_project_submodules,
     )
 
     try:
-        materialize_ticket_submodules(root, checkout)
+        materialize_project_submodules(root, checkout)
     except SubmoduleMaterializationError as exc:
         raise AcceptanceBasisError(
             f"could not materialize Acceptance Basis submodules offline: {exc}"

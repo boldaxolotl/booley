@@ -8,6 +8,7 @@ re-exports them for backward compatibility.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -184,6 +185,19 @@ class OnSuccess:
         return errors
 
 
+@dataclass(frozen=True)
+class AgentArtifactPaths:
+    """Resolved output destinations for one backend attempt."""
+
+    prompt_json: Path | None = None
+    prompt_markdown: Path | None = None
+    transcript_markdown: Path | None = None
+
+
+ArtifactPathResolver = Callable[[Path | None], AgentArtifactPaths]
+RateLimitNotifier = Callable[[str | None, float, int | None], None]
+
+
 @dataclass
 class AgentCallParams:
     """Parameters for invoking an agent, shared across all backends."""
@@ -200,6 +214,9 @@ class AgentCallParams:
     max_budget_usd: float | None = None
     needs_skills: bool = False
     transcript_path: Path | None = None
+    # Composition resolves paths after the backend selects its attempt transcript.
+    artifact_paths: ArtifactPathResolver | None = None
+    notify_rate_limit: RateLimitNotifier | None = None
     label: str | None = None
     reasoning_effort: str | None = None
     session_id: str | None = None

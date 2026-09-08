@@ -91,7 +91,7 @@ def _require_participant_owned_target(
     handle: TargetHandle,
     canonical: str,
 ) -> None:
-    from booley.runtime.ticket_repositories import (
+    from booley.ticket_board.ticket_repositories import (
         TicketWorkspaceError,
         ticket_repositories,
     )

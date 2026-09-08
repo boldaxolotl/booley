@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
+from booley.ticket_board.agent_execution import resolve_agent_artifacts
 
 
 def test_write_prompt_artifacts_json_and_markdown(tmp_path):
     transcript = tmp_path / "coder.jsonl"
 
     write_prompt_artifacts(
-        transcript,
+        resolve_agent_artifacts(transcript),
         system_prompt="system rules",
         user_prompt="do the work",
         full_prompt="system rules\n\n---\n\ndo the work",
@@ -34,7 +35,7 @@ def test_write_prompt_artifacts_runtime_markdown_goes_to_human_logs(tmp_path):
     transcript = tmp_path / ".runtime" / "transcripts" / "coder" / "1" / "coder.jsonl"
 
     write_prompt_artifacts(
-        transcript,
+        resolve_agent_artifacts(transcript),
         system_prompt=None,
         user_prompt="do the work",
         metadata={"label": "coder", "model": "test-model"},
@@ -50,7 +51,7 @@ def test_write_prompt_artifacts_falls_back_to_logs_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
 
     write_prompt_artifacts(
-        None,
+        resolve_agent_artifacts(None, label="reviewer/quality"),
         system_prompt=None,
         user_prompt="specialist prompt",
         metadata={"label": "reviewer/quality"},

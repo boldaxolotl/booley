@@ -49,6 +49,8 @@ from mcp.types import (
 )
 from mcp.types import Tool as McpSdkTool
 
+from booley.ticket_board.paths import session_jobs_dir
+
 if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
@@ -456,7 +458,7 @@ def _reconcile_orphaned_jobs() -> None:
 
     if not should_run_outer_bookkeeping():
         return
-    for rec in jobrec.list_records():
+    for rec in jobrec.list_records(root=session_jobs_dir()):
         if rec.status != jobrec.STATUS_RUNNING:
             continue
         if jobrec.derive_status(rec, is_pid_alive) == jobrec.STATUS_RUNNING:
@@ -473,7 +475,7 @@ def _reconcile_orphaned_jobs() -> None:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=session_jobs_dir())
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
 
@@ -2387,7 +2389,7 @@ def _job_phase(run_id: str) -> str:
     is 1-based for humans. Falls back to RUNNING when the store or claim is
     unreadable — over-claiming "queued" would stall agents that should poll.
     """
-    rec = jobrec.read_record(run_id)
+    rec = jobrec.read_record(run_id, root=session_jobs_dir())
     root = job_slots.slots_dir()
     if rec is None or rec.pid is None or root is None:
         return "RUNNING"
@@ -2451,7 +2453,7 @@ def _format_job_running_poll(run_id: str) -> str:
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
     """Return only this live job's run-scoped nonterminal checkpoint."""
-    rec = jobrec.read_record(run_id)
+    rec = jobrec.read_record(run_id, root=session_jobs_dir())
     if rec is None:
         return None
     progress = _progress_for_run_id(rec.endpoint, rec.run_id)
@@ -2580,6 +2582,7 @@ class _JobManager:
 
     def __init__(self, lifetime: _McpLifetime) -> None:
         self._lifetime = lifetime
+        self._jobs_root = session_jobs_dir()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_requested: set[str] = set()
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
@@ -2605,7 +2608,7 @@ class _JobManager:
             timeout_s=timeout,
             argv=cmd,
         )
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=self._jobs_root)
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
@@ -2627,7 +2630,7 @@ class _JobManager:
 
             def _stamp_pid(pid: int) -> None:
                 rec.pid = pid
-                jobrec.write_record(rec)
+                jobrec.write_record(rec, root=self._jobs_root)
 
             def _child_is_queued() -> bool:
                 # The child's own slot-store claim is the admission truth
@@ -2650,7 +2653,7 @@ class _JobManager:
                 # the record's only writer, so no read-modify-write races
                 # with the child.
                 rec.run_started_at = utc_now_rfc3339()
-                jobrec.write_record(rec)
+                jobrec.write_record(rec, root=self._jobs_root)
 
             exit_code, stdout, stderr, timed_out = await _run_subprocess(
                 cmd,
@@ -2673,7 +2676,7 @@ class _JobManager:
             self._results[run_id] = (exit_code, stdout, stderr, timed_out)
             rec.status = jobrec.terminal_status(exit_code, timed_out)
             rec.exit_code = exit_code
-            jobrec.write_record(rec)
+            jobrec.write_record(rec, root=self._jobs_root)
         except asyncio.CancelledError:
             # Only booley_cancel owns this terminal state. Server shutdown also
             # cancels supervisor tasks, but those records intentionally remain
@@ -2688,7 +2691,7 @@ class _JobManager:
                 f"CANCELLED: job {run_id} was stopped by request.",
                 False,
             )
-            jobrec.write_record(rec)
+            jobrec.write_record(rec, root=self._jobs_root)
         finally:
             # Release the lifetime hold. On server shutdown this runs during
             # cancellation; the record stays non-terminal and the next
@@ -2704,7 +2707,7 @@ class _JobManager:
         TERM/grace/KILL process-tree shutdown); adopted jobs use the durable
         PID and the same policy directly.
         """
-        rec = jobrec.read_record(run_id)
+        rec = jobrec.read_record(run_id, root=self._jobs_root)
         if rec is None:
             return None
 
@@ -2731,7 +2734,7 @@ class _JobManager:
         else:
             rec.status = jobrec.STATUS_CANCELLED
             rec.exit_code = 130
-            jobrec.write_record(rec)
+            jobrec.write_record(rec, root=self._jobs_root)
         if task is None and rec.pid is not None:
             await _cancel_adopted_process_group(rec.pid)
         return "queued" if was_queued else "running"
@@ -2753,7 +2756,7 @@ class _JobManager:
 
     def result_text(self, run_id: str) -> str:
         """Render a finished job's result exactly like the synchronous path."""
-        rec = jobrec.read_record(run_id)
+        rec = jobrec.read_record(run_id, root=self._jobs_root)
         report, report_fresh = _job_report(rec)
         finished = self._results.get(run_id)
         if finished is not None:
@@ -2788,7 +2791,7 @@ class _JobManager:
         report with its caveats spelled out.
         """
         content = [TextContent(type="text", text=self.result_text(run_id))]
-        rec = jobrec.read_record(run_id)
+        rec = jobrec.read_record(run_id, root=self._jobs_root)
         report, report_fresh = _job_report(rec)
         return _with_structured_report(content, report if report_fresh else None)
 
@@ -2810,7 +2813,7 @@ async def _poll_from_disk(run_id: str, jobs: _JobManager, wait_seconds: float = 
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
     while True:
-        rec = jobrec.read_record(run_id)
+        rec = jobrec.read_record(run_id, root=session_jobs_dir())
         if rec is None:
             return (
                 f"Unknown run_id {run_id!r}. It may belong to a different project "
@@ -2939,7 +2942,7 @@ async def _dispatch_cancel(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
-    rec = jobrec.read_record(run_id)
+    rec = jobrec.read_record(run_id, root=session_jobs_dir())
     if rec is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
 
@@ -3041,7 +3044,7 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
     """
     wanted = _strip_transcript_dir(cmd)
     newest: jobrec.JobRecord | None = None
-    for rec in jobrec.list_records():
+    for rec in jobrec.list_records(root=session_jobs_dir()):
         if rec.endpoint != name or _strip_transcript_dir(rec.argv) != wanted:
             continue
         if rec.status != jobrec.STATUS_RUNNING:
