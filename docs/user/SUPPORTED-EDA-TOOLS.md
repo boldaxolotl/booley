@@ -165,6 +165,12 @@ may override the Python rows (see
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley bootstrap`, mounted read-only at `/opt/pdk/cell/lib` |
 
+Verilator 5.052 includes the nested-shift compiler fix required for native
+coverage. The image includes LZ4 development headers for native FST model
+builds and retains the system allocator. See the
+[upgrade acceptance record](../internals/verilator-5052-acceptance.md) for
+validated harnesses, waveform checks, and per-instance coverage requirements.
+
 Check what your image actually has rather than trusting the table after an
 upgrade:
 

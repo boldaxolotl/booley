@@ -208,14 +208,12 @@ class TestHandleRateLimitEvent:
         )
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
-        with (
-            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
-            patch("booley.runtime._claude_backend._notify_rate_limit") as mock_notify,
-        ):
+        mock_notify = MagicMock()
+        with patch("booley.runtime._claude_backend.anyio") as mock_anyio:
             mock_anyio.sleep = AsyncMock()
 
             with pytest.raises(TransientAPIError) as exc_info:
-                await _handle_rate_limit_event(event)
+                await _handle_rate_limit_event(event, notify_rate_limit=mock_notify)
 
             # Should have slept (5s + 60s buffer = ~65s)
             mock_anyio.sleep.assert_awaited_once()
@@ -239,7 +237,6 @@ class TestHandleRateLimitEvent:
 
         with (
             patch("booley.runtime._claude_backend.anyio") as mock_anyio,
-            patch("booley.runtime._claude_backend._notify_rate_limit"),
         ):
             mock_anyio.sleep = AsyncMock()
 
@@ -281,7 +278,6 @@ class TestHandleRateLimitEvent:
                 "booley.runtime._claude_backend.run_with_developer_budget",
                 side_effect=complete_wait,
             ),
-            patch("booley.runtime._claude_backend._notify_rate_limit"),
             pytest.raises(TransientAPIError),
         ):
             await _handle_rate_limit_event(event, budget)
@@ -318,38 +314,25 @@ class TestTransientAPIError:
 
 
 class TestNotifyRateLimit:
-    """Verify notification helper is a silent no-op when ntfy unavailable."""
+    """Notification preferences and delivery live at execution composition."""
 
-    def test_no_crash_on_missing_ntfy(self):
-        """Should silently return if ticket_board.notifications not importable."""
-        from booley.runtime.agent_backend import _notify_rate_limit
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_event_preferences_and_payload(self, enabled):
+        from booley.ticket_board.notifications import notify_rate_limit
 
-        with patch.dict(
-            sys.modules, {"booley.ticket_board": None, "booley.ticket_board.notifications": None}
+        with (
+            patch(
+                "booley.ticket_board.notifications.is_event_enabled", return_value=enabled
+            ) as pref,
+            patch("booley.ticket_board.notifications.ntfy_send") as send,
         ):
-            # Should not raise
-            _notify_rate_limit("five_hour", 300.0, int(time.time()) + 300)
-
-    def test_calls_ntfy_send(self):
-        """Should call ntfy_send with appropriate title/body."""
-        from booley.runtime.agent_backend import _notify_rate_limit
-
-        mock_ntfy = MagicMock()
-        mock_ntfy.ntfy_send = MagicMock()
-        mock_tb = MagicMock()
-        mock_tb.notifications = mock_ntfy
-
-        with patch.dict(
-            sys.modules,
-            {
-                "booley.ticket_board": mock_tb,
-                "booley.ticket_board.notifications": mock_ntfy,
-            },
-        ):
-            _notify_rate_limit("five_hour", 300.0, int(time.time()) + 300)
-            mock_ntfy.ntfy_send.assert_called_once()
-            call_kwargs = mock_ntfy.ntfy_send.call_args
-            assert (
-                "rate-limited" in call_kwargs[1]["title"].lower()
-                or "rate-limited" in call_kwargs[0][0].lower()
+            notify_rate_limit("five_hour", 300.0, None)
+        pref.assert_called_once_with("rate_limit")
+        if enabled:
+            send.assert_called_once_with(
+                title="Harness rate-limited (five_hour)",
+                body="Sleeping 5min until unknown",
+                priority="3",
             )
+        else:
+            send.assert_not_called()

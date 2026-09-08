@@ -6,9 +6,11 @@ import contextlib
 import os
 import subprocess
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import as_dict, as_str_list
+from booley.runtime.timefmt import format_human_datetime
 
 from .paths import existing_runtime_file
 
@@ -178,3 +180,19 @@ def _review_digest(logs_dir: str | Path, slug: str) -> str:
             parts.append(f"${total_cost:.2f}")
 
     return " | ".join(parts) if parts else ""
+
+
+def notify_rate_limit(rate_limit_type: str | None, sleep_s: float, resets_at: int | None) -> None:
+    """Fire-and-forget ntfy notification for rate limit sleep."""
+    if not is_event_enabled("rate_limit"):
+        return
+    reset_str = (
+        format_human_datetime(datetime.fromtimestamp(resets_at, tz=UTC))
+        if resets_at
+        else "unknown"
+    )
+    ntfy_send(
+        title=f"Harness rate-limited ({rate_limit_type or 'unknown'})",
+        body=f"Sleeping {sleep_s / 60:.0f}min until {reset_str}",
+        priority="3",
+    )

@@ -65,11 +65,11 @@ def _materialize_selection(
         raise
 
 
-def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> None:
-    """Populate every repository in a composite Ticket checkout offline."""
+def materialize_project_submodules(source_root: Path, destination_root: Path) -> None:
+    """Populate every repository in a composite Project checkout offline."""
     from booley.runtime.project_dir import checkout_project_dir_relative_to
-    from booley.runtime.ticket_repositories import (
-        TicketWorkspaceError,
+    from booley.runtime.project_repositories import (
+        RepositoryCheckoutError,
         paired_project_repository,
         resolve_inner_project_repo,
     )
@@ -78,7 +78,7 @@ def materialize_ticket_submodules(source_root: Path, destination_root: Path) -> 
     destination_root = destination_root.resolve()
     try:
         paired_source = paired_project_repository(source_root)
-    except TicketWorkspaceError as exc:
+    except RepositoryCheckoutError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
     project_source = (
         paired_source.worktree

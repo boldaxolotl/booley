@@ -111,14 +111,15 @@ report that section `not runnable`, not silently skip or fail it
 | I-04 | Interactive sessions share the checked-out tree; multiple sessions may collide. Jobs share per-class limits with Interactive work ahead of Ticket work, FIFO within a class, no preemption, and bounded queues ([parallel instances](../user/FEATURES.md#parallel-instances)). | Run two non-editing Interactive calls plus concurrent Ticket work to observe safe admission and priority. Test shared-tree edit collision only in a disposable fixture; do not manufacture damage in a real port. |
 | I-05 | `booley cheat`, command help, MCP descriptions, packaged skills, and user docs are public operational surfaces. The agent is expected to derive mechanics from them rather than maintainer knowledge ([Quick Reference](../../src/booley/data/cheatsheet.md)). | Every scenario step records which public source supplied the route. Missing, contradictory, or insufficient guidance is a docs Finding before source inspection. Help output and the rendered cheat catalog should agree on command/Flow/Specialist names. |
 
-### MCP cancellation documentation conflict
+### MCP cancellation documentation conflict (resolved)
 
-The MCP schema and implementation allow `booley_cancel` to cancel queued or
-running jobs, while the Usage guide says queued jobs only
-([MCP server](../../src/booley/mcp/server.py),
-[concurrent Tickets](../user/USAGE.md#concurrent-tickets)). I-02 follows the
-shipped queued/running behavior. The documentation discrepancy is a Finding;
-the running-job cancellation path must remain in coverage.
+The Usage guide previously limited `booley_cancel` to queued jobs, contradicting
+the MCP schema and implementation. The guide now documents both queued and
+running cancellation and distinguishes explicit cancellation from scheduler
+preemption ([MCP server](../../src/booley/mcp/server.py),
+[concurrent Tickets](../user/USAGE.md#concurrent-tickets)). This documentation
+Finding is resolved. I-02 continues to follow the shipped queued/running
+behavior; the running-job cancellation path must remain in coverage.
 
 ### Interactive client documentation conflict; coverage already decided
 

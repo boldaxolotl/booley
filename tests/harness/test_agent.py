@@ -447,7 +447,14 @@ class TestCodexMarkdownTranscript:
             },
         ]
 
-        _codex_write_markdown(events, transcript, user_prompt="review tb")
+        from booley.ticket_board.agent_execution import resolve_agent_artifacts
+
+        _codex_write_markdown(
+            events,
+            transcript,
+            user_prompt="review tb",
+            markdown_path=resolve_agent_artifacts(transcript).transcript_markdown,
+        )
 
         assert not transcript.with_suffix(".md").exists()
         rendered = (

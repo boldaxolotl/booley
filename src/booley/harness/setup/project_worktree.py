@@ -1,11 +1,11 @@
-"""Compatibility adapters for the runtime-owned Ticket Workspace."""
+"""Compose Ticket Board workspaces from Harness execution context."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from booley.harness.models import TicketContext
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.ticket_repositories import (
     TicketWorkspace,
     TicketWorkspaceError,
     TicketWorkspaceRequest,
@@ -17,7 +17,7 @@ ProjectWorktreeError = TicketWorkspaceError
 
 
 def ticket_workspace(ctx: TicketContext) -> TicketWorkspace:
-    """Build the runtime workspace described by a validated harness context."""
+    """Build the Ticket Workspace described by a validated Harness context."""
     if ctx.worktree_path is None:
         raise TicketWorkspaceError("Ticket worktree is unavailable")
     expected_sha = ctx.acceptance_basis.project_sha if ctx.acceptance_basis is not None else ""

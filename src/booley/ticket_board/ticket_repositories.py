@@ -8,10 +8,6 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 from booley.runtime import git as runtime_git
 from booley.runtime.agent_errors import BlockingError
@@ -20,46 +16,36 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
 )
+from booley.runtime.project_repositories import (
+    ProjectRepositoryChange,
+    paired_project_repository,
+    resolve_inner_project_repo,
+)
+from booley.runtime.project_repositories import (
+    RepositoryCheckout as TicketRepository,
+)
+from booley.runtime.project_repositories import (
+    RepositoryCheckoutError as TicketWorkspaceError,
+)
+from booley.runtime.project_repositories import (
+    common_git_dir as _common_git_dir,
+)
+from booley.runtime.project_repositories import (
+    parse_porcelain_z as _parse_porcelain_z,
+)
+from booley.runtime.project_repositories import (
+    ref_sha as _ref_sha,
+)
+from booley.runtime.project_repositories import (
+    run_git as _git,
+)
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
 PROJECT_BOARD_PREFIX = "tickets/board/"
 
 
-@dataclass(frozen=True)
-class TicketRepository:
-    """One repository participating in a ticket handoff."""
-
-    worktree: Path
-    path_prefix: str = ""
-
-    def local_path(self, ticket_path: str) -> str:
-        """Translate a ticket-root-relative path into this repository."""
-        if not self.path_prefix:
-            return ticket_path
-        prefix = f"{self.path_prefix}/"
-        if not ticket_path.startswith(prefix):
-            raise ValueError(f"path {ticket_path!r} is outside {self.path_prefix!r}")
-        return ticket_path.removeprefix(prefix)
-
-    def ticket_path(self, local_path: str) -> str:
-        """Translate a repository-relative path into the ticket checkout."""
-        return f"{self.path_prefix}/{local_path}" if self.path_prefix else local_path
-
-
-@dataclass(frozen=True)
-class ProjectRepositoryChange:
-    """One uncommitted path routed through a Ticket Workspace."""
-
-    path: str
-    status: str
-
-
 class ProjectRepositoryStatusError(RuntimeError):
     """Raised when Git cannot report project-repository changes."""
-
-
-class TicketWorkspaceError(RuntimeError):
-    """A Ticket Workspace operation could not preserve its invariants."""
 
 
 class WorkspaceMode(Enum):
@@ -96,18 +82,6 @@ class TicketWorkspace:
 
     def __init__(self, request: TicketWorkspaceRequest) -> None:
         self.request = request
-
-    @classmethod
-    def ensure_authoring(
-        cls,
-        project_root: Path | str,
-        ticket_path: Path | str,
-        slug: str,
-    ) -> AuthoringWorkspace:
-        """Idempotently materialize the Ticket generation's authoring checkout set."""
-        from booley.ticket_board.workspace_ops import ensure_ticket_workspace
-
-        return ensure_ticket_workspace(project_root, ticket_path, slug)
 
     @staticmethod
     def project_destination_ref(
@@ -314,24 +288,6 @@ def project_repository_scope(scope: list[str]) -> list[str]:
     return translated
 
 
-def resolve_inner_project_repo(project_root: Path) -> Path | None:
-    """Return this checkout's project dir only when it is its own Git repo."""
-    try:
-        project_dir = resolve_checkout_project_dir(project_root).resolve()
-    except FileNotFoundError:
-        return None
-    if not (project_dir / ".git").is_dir():
-        return None
-    result = _git(project_dir, "rev-parse", "--show-toplevel")
-    if result.returncode != 0:
-        return None
-    try:
-        top = Path(result.stdout.strip()).resolve()
-    except OSError:
-        return None
-    return project_dir if top == project_dir else None
-
-
 def project_repository_expected(project_root: Path) -> bool:
     """Whether this checkout is configured for a standalone project repository."""
     configured = os.environ.get("BOOLEY_PROJECT_DIR")
@@ -341,31 +297,6 @@ def project_repository_expected(project_root: Path) -> bool:
             return True
     result = _git(project_root, "check-ignore", "-q", "--", PROJECT_DIR_NAME)
     return result.returncode == 0
-
-
-def paired_project_repository(ticket_worktree: Path) -> TicketRepository | None:
-    """Return the ticket's linked inner worktree, when one is installed."""
-    nested = ticket_project_worktree(ticket_worktree)
-    if not (nested / ".git").is_file():
-        return None
-    result = _git(nested, "rev-parse", "--show-toplevel")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise TicketWorkspaceError(
-            f"paired project repository is unavailable at {nested}: {detail}"
-        )
-    try:
-        top = Path(result.stdout.strip()).resolve()
-        expected = nested.resolve()
-    except OSError as exc:
-        raise TicketWorkspaceError(
-            f"paired project repository cannot be resolved at {nested}: {exc}"
-        ) from exc
-    if top != expected:
-        raise TicketWorkspaceError(
-            f"paired project repository has unexpected root {top}; expected {expected}"
-        )
-    return TicketRepository(nested, PROJECT_DIR_NAME)
 
 
 def ticket_repositories(
@@ -393,7 +324,7 @@ def pending_ticket_changes(
     changes: list[ProjectRepositoryChange] = []
     for repository in ticket_repositories(ticket_worktree, require_paired=require_paired):
         changes.extend(
-            ProjectRepositoryChange(repository.ticket_path(change.path), change.status)
+            ProjectRepositoryChange(repository.prefixed_path(change.path), change.status)
             for change in _repository_changes(repository.worktree)
         )
     return tuple(changes)
@@ -615,42 +546,6 @@ def _verify_existing_worktree(
         )
 
 
-def _common_git_dir(worktree: Path) -> Path | None:
-    result = _git(worktree, "rev-parse", "--git-common-dir")
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    path = Path(result.stdout.strip())
-    if not path.is_absolute():
-        path = worktree / path
-    try:
-        return path.resolve()
-    except OSError:
-        return None
-
-
-def _ref_sha(source: Path, ref: str) -> str:
-    result = _git(source, "rev-parse", "--verify", ref)
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _parse_porcelain_z(stdout: str) -> tuple[ProjectRepositoryChange, ...]:
-    """Parse NUL-delimited porcelain output, consuming rename origins."""
-    fields = [field for field in stdout.split("\0") if field]
-    changes: list[ProjectRepositoryChange] = []
-    index = 0
-    while index < len(fields):
-        record = fields[index]
-        index += 1
-        if len(record) < 4:
-            continue
-        status, path = record[:2], record[3:]
-        if "R" in status or "C" in status:
-            index += 1
-        if path:
-            changes.append(ProjectRepositoryChange(path, status))
-    return tuple(changes)
-
-
 def _is_unstaged_board_change(change: ProjectRepositoryChange) -> bool:
     """Whether *change* is ordinary filesystem-backed board churn."""
     normalized = change.path.replace("\\", "/").removeprefix("./")
@@ -741,17 +636,3 @@ def _git_or_raise(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             f"git {' '.join(args)} failed in {cwd} (rc={result.returncode}): {detail}"
         )
     return result
-
-
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(["git", *args], 1, "", str(exc))

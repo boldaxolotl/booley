@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.runtime.pid import is_pid_alive
-from booley.runtime.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 from booley.runtime.timefmt import format_human_datetime
+from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 
 logger = logging.getLogger(__name__)
 
