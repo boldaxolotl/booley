@@ -446,3 +446,20 @@ booley eda grant revoke --kind vivado /exact/deleted/project
 
 After every Grant for that root is gone, remove the obsolete inventory entry
 with `booley projects forget /exact/deleted/project`.
+
+
+## Coverage Campaign retention (internal preview)
+
+Coverage collection remains hidden until the issue #213 release gate. For
+internal Campaign testing, report retention is explicit: native-only pruning
+keeps normalized `coverage.json`, `simulation.json`, and hook evidence; full
+invocation pruning removes all reports and prevents re-analysis. See the
+[exact retention commands](../internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
+
+An `availability.json` status of `pruning` means cleanup was interrupted. Retry
+the same exact maintenance command after resolving the filesystem error. A lock
+contention error means the invocation is still executing or another maintenance
+operation is using it. Do not delete the lock file to bypass it. An interrupted
+Simulation starts a new numbered invocation when rerun; it never resumes old
+native databases. Empty `.pruned-N` directories reserve historical invocation
+numbers and should be retained.
