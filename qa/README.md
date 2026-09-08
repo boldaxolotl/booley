@@ -2,14 +2,16 @@
 
 This directory records the simplified shared contract for
 [Wayfinder #246](https://github.com/boldaxolotl/booley/issues/246).
-The three accepted journeys and their workloads remain unchanged.
+The handoff preserves the three accepted journeys and records explicit amendments
+for the remaining coverage and timing gaps.
 
 - [Protocol](PROTOCOL.md): executing a run and retaining trustworthy results.
 - [Qualification](QUALIFICATION.md): required runs, coverage, and scoped verdicts.
 - [Format](FORMAT.md): scenario and run files, identities, and validation.
 - [Authoring](AUTHORING.md): adding and revising checks.
-- [Handoff](HANDOFF.md): remaining work in
-  [#376](https://github.com/boldaxolotl/booley/issues/376).
+- [Handoff](HANDOFF.md): concrete check catalogues, inventory migration, profile
+  selections, budgets and production file plan for
+  [Assemble the public Booley QA suite implementation handoff](https://github.com/boldaxolotl/booley/issues/376).
 - [Worked example](examples/README.md): normal, fault/recovery, and unavailable
   GUI checks with illustrative run records.
 
