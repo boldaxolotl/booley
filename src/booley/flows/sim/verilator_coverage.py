@@ -273,6 +273,7 @@ class CoverageCollectionResult:
     native_format: NativeFormatEvidence
     coverage_window: CoverageWindowEvidence
     collector: VerilatorCollectorIdentity
+    unrecognized_records: tuple[Mapping[str, FrozenJson], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -783,23 +784,22 @@ def _capabilities_and_findings(
     capabilities: list[CoverageCapability] = []
     findings: list[CoverageFinding] = []
     for record_type in sorted(set(_RECORD_METRICS) | record_types):
-        record_class = _RECORD_METRICS.get(record_type, record_type)
+        record_class = _RECORD_METRICS.get(record_type, f"native:{record_type}")
         capabilities.append(
             CoverageCapability(
                 record_class=record_class,
                 status="reported" if record_type in record_types else "absent",
-                attributes=MappingProxyType({"native_record_type": record_type}),
+                attributes=MappingProxyType(
+                    {
+                        "native_record_type": record_type,
+                        "collection": "supported"
+                        if record_type in _RECORD_METRICS
+                        else "unsupported",
+                        "scoring": "scored_v1" if record_class in _SCORED_METRICS else "unscored",
+                    }
+                ),
             )
         )
-        if record_type in record_types and record_type not in _RECORD_METRICS:
-            findings.append(
-                CoverageFinding(
-                    severity="warning",
-                    code="COV_NATIVE_RECORD_UNKNOWN",
-                    pointer="/normalization/unrecognized_records",
-                    message=f"Native record class {record_type!r} was retained but not normalized.",
-                )
-            )
     return tuple(capabilities), tuple(findings)
 
 
@@ -904,7 +904,8 @@ def _window_evidence(
     )
 
 
-def _request_finding(request: CoverageCollectionRequest) -> CoverageFinding | None:
+def coverage_request_finding(request: CoverageCollectionRequest) -> CoverageFinding | None:
+    """Validate Target-owned hook declarations without executing or allocating paths."""
     target = request.target
     if target.harness != "custom_main":
         if target.custom_main_hooks:
@@ -994,6 +995,36 @@ def _build_error_result(
     )
 
 
+def _unknown_records(collected: tuple[_CollectedRun, ...]) -> tuple[Mapping[str, FrozenJson], ...]:
+    return tuple(
+        MappingProxyType(
+            {
+                "raw_artifact": item.run.raw_artifact,
+                "record_ordinal": ordinal,
+                "native_type": record.attributes.get("t", ""),
+                "state": "unknown_retained",
+                "native_key": record.identity,
+                "hits": record.hits,
+            }
+        )
+        for item in collected
+        for ordinal, record in enumerate(item.records, start=1)
+        if record.attributes.get("t", "") not in _RECORD_METRICS
+    )
+
+
+def _unknown_findings(collected: tuple[_CollectedRun, ...]) -> tuple[CoverageFinding, ...]:
+    return tuple(
+        CoverageFinding(
+            "warning",
+            "COV_NATIVE_RECORD_UNKNOWN",
+            f"/normalization/unrecognized_records/{index}",
+            "Unknown native record retained losslessly without V1 scoring.",
+        )
+        for index, _record in enumerate(_unknown_records(collected))
+    )
+
+
 def _result(
     request: CoverageCollectionRequest,
     build: CoverageBuildEvidence,
@@ -1011,13 +1042,14 @@ def _result(
         build=build,
         runs=tuple(item.run for item in collected),
         artifacts=(*_result_artifacts(collected), *extra_artifacts),
-        points=_normalize_points(request, collected),
+        points=() if compatibility == "incompatible" else _normalize_points(request, collected),
         capabilities=capabilities,
-        findings=findings,
+        findings=(*findings, *_unknown_findings(collected)),
         merge=merge,
         native_format=NativeFormatEvidence("verilator-coverage", compatibility),
         coverage_window=_window_evidence(request, collected),
         collector=PINNED_VERILATOR,
+        unrecognized_records=_unknown_records(collected),
     )
 
 
@@ -1027,7 +1059,7 @@ def _build_collection(
 ) -> tuple[CoverageBuildEvidence, CoverageCollectionResult | None]:
     variant = SimulationBuildVariant(trace=request.trace, coverage=True)
     build = CoverageBuildEvidence(variant, VERILATOR_COVERAGE_INSTRUMENTATION)
-    request_finding = _request_finding(request)
+    request_finding = coverage_request_finding(request)
     if request_finding is not None:
         return build, _preflight_error_result(request, build, request_finding)
     build_result = execution.build(
@@ -1134,6 +1166,7 @@ def collect(
     )
     findings = tuple(finding for item in collected for finding in item.findings)
     if findings:
+        capabilities, capability_findings = _capabilities_and_findings(collected)
         compatibility = (
             "incompatible"
             if any(item.code == "COV_NATIVE_FORMAT_INCOMPATIBLE" for item in findings)
@@ -1144,7 +1177,8 @@ def collect(
             build,
             collected,
             status="collector_error",
-            findings=findings,
+            findings=(*findings, *capability_findings),
+            capabilities=capabilities,
             merge=NativeMergeEvidence("not_run"),
             compatibility=compatibility,
         )

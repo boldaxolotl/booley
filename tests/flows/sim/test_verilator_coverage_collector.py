@@ -514,7 +514,7 @@ def _assert_rich_capabilities(result) -> None:
         "covergroup": "reported",
         "expression": "reported",
         "fsm": "reported",
-        "future_kind": "reported",
+        "native:future_kind": "reported",
         "line": "reported",
         "toggle": "reported",
     }
