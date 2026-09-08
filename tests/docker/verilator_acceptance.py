@@ -2,7 +2,7 @@
 
 No optional-tool skips. All builds/runs are bounded and native files remain in
 --work-dir for inspection. This probes the upstream format; it is not Booley's
-future coverage adapter or a scoring implementation.
+production coverage adapter or a scoring implementation.
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ REVISION = "ea338be98e1e838d3518809ce8899f85a009963c"
 WORK = Path("/tmp/verilator-acceptance")
 
 
-def run(args: list[str], cwd: Path, *, timeout: int = 300, success: bool = True):
+def run(
+    args: list[str], cwd: Path, *, timeout: int = 300, success: bool = True
+) -> subprocess.CompletedProcess[str]:
     """Run a bounded command, retaining output even when it fails."""
     result = subprocess.run(
         args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
@@ -62,12 +64,31 @@ def metadata(key: str) -> dict[str, str]:
     return dict(part.split("\x02", 1) for part in key.split("\x01") if "\x02" in part)
 
 
+def terminate_and_reap(child: subprocess.Popen, *, timeout: float = 5) -> int:
+    """Preserve a failed graceful stop while bounding forced cleanup as well."""
+    try:
+        child.terminate()
+        return child.wait(timeout=timeout)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+
+
+def assert_per_instance(points: dict[str, int]) -> None:
+    """Every harness must preserve the same complete, uncompressed identity."""
+    hierarchy = {metadata(key).get("h", "") for key in points}
+    assert not any("*" in name for name in hierarchy), hierarchy
+    for instance in ("same_a", "same_b", "different"):
+        assert any(instance in name for name in hierarchy), hierarchy
+
+
 class Acceptance(unittest.TestCase):
     def setUp(self) -> None:
         self.work = WORK / self._testMethodName
         self.work.mkdir(parents=True, exist_ok=True)
 
-    def build(self, source: str, *, main: str | None = None, coverage: bool = False):
+    def build(self, source: str, *, main: str | None = None, coverage: bool = False) -> str:
         args = ["verilator", "--top-module", "top", "--Mdir", "obj", "-Wno-fatal"]
         args += ["--cc", "--exe", "--build"] if main else ["--binary", "--timing"]
         if coverage:
@@ -132,18 +153,22 @@ class Acceptance(unittest.TestCase):
         self.assertIn("intentional failure", failed.stdout + failed.stderr)
         with self.assertRaises(subprocess.TimeoutExpired):
             run([executable, "+hang"], self.work, timeout=1)
-        with subprocess.Popen(
+        child = subprocess.Popen(
             [executable, "+hang"],
             cwd=self.work,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-        ) as child:
+        )
+        try:
             try:
                 child.wait(timeout=0.2)
                 self.fail("hang fixture exited before termination")
             except subprocess.TimeoutExpired:
-                child.terminate()
-                self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
+                self.assertEqual(terminate_and_reap(child), -signal.SIGTERM)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
 
     def test_05_native_per_instance_reset_and_merge(self) -> None:
         executable = self.build("coverage source.sv", main="coverage.cpp", coverage=True)
@@ -159,9 +184,7 @@ class Acceptance(unittest.TestCase):
         types = {point.get("t") for point, _ in points}
         self.assertTrue({"line", "branch", "expr", "toggle", "user"} <= types, types)
         self.assertFalse({"fsm_state", "fsm_arc", "covergroup"} & types)
-        hierarchy = {point.get("h", "") for point, _ in points}
-        for instance in ("same_a", "same_b", "different"):
-            self.assertTrue(any(instance in name for name in hierarchy), hierarchy)
+        assert_per_instance(first)
         properties = [(point["h"], count) for point, count in points if point.get("t") == "user"]
         self.assertTrue(any("same_a" in h and count > 0 for h, count in properties), properties)
         self.assertTrue(any("same_b" in h and count == 0 for h, count in properties), properties)
@@ -203,10 +226,7 @@ class Acceptance(unittest.TestCase):
             timeout=30,
         )
         points = records(self.work / "generated.dat")
-        hierarchy = {metadata(key).get("h", "") for key in points}
-        self.assertFalse(any("*" in name for name in hierarchy), hierarchy)
-        for instance in ("same_a", "same_b", "different"):
-            self.assertTrue(any(instance in name for name in hierarchy), hierarchy)
+        assert_per_instance(points)
 
     def test_06_cocotb_seed_and_native_destination(self) -> None:
         logs = []
@@ -225,14 +245,23 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(result.findall(".//failure"), [])
             self.assertEqual(result.findall(".//error"), [])
             points = records(self.work / f"cocotb-{index}.dat")
-            hierarchy = {metadata(key).get("h", "") for key in points}
-            self.assertFalse(any("*" in name for name in hierarchy), hierarchy)
-            for instance in ("same_a", "same_b", "different"):
-                self.assertTrue(any(instance in name for name in hierarchy), hierarchy)
+            assert_per_instance(points)
             logs.append(re.search(r"RANDOM=\[[^\n]+", output.stdout).group())
         self.assertEqual(*logs)
         self.assertEqual(records(self.work / "cocotb-1.dat"), records(self.work / "cocotb-2.dat"))
         self.assertFalse((self.work / "coverage.dat").exists())
+
+    def test_08_production_flow_verdicts(self) -> None:
+        run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("verilator_flow_acceptance.py")),
+                "--work-dir",
+                str(self.work / "flows"),
+            ],
+            self.work,
+            timeout=900,
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -205,7 +207,8 @@ def _fake_invoke(captured, raw_path: Path):
         )
         write_adapter_result(
             identity,
-            AdapterResult(
+            captured.get("result")
+            or AdapterResult(
                 passed=True,
                 inconclusive=False,
                 sva_errors=0,
@@ -232,3 +235,29 @@ def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest
         argv_suffix=(f"+verilator+coverage+file+{raw_path}",),
         environment={"BOOLEY_COVERAGE_RUN_ID": "run:001:wrap"},
     )
+
+
+@pytest.mark.parametrize("verdict", ["pass", "fail", "timeout", "inconclusive"])
+def test_batch_timeout_preserves_authoritative_per_test_verdict(
+    tmp_path: Path, monkeypatch, verdict: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert execution.build(
+        SimulationBuildRequest(
+            target,
+            SimulationBuildVariant(trace=False, coverage=True),
+            VERILATOR_COVERAGE_INSTRUMENTATION,
+        )
+    ).success
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=True,
+        sva_errors=0,
+        tests=("wrap",),
+        failure_kind="timeout",
+        test_results=(AdapterTestResult("wrap", verdict),),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.verdict == verdict

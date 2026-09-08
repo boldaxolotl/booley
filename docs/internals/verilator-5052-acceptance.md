@@ -32,7 +32,7 @@ The candidate-image CI job runs
 `python tests/docker/verilator_acceptance.py --work-dir <empty-directory>`.
 The runner uses the standard library, fails on missing prerequisites, bounds
 every compiler and simulator invocation, and retains command logs, XML results,
-and raw databases. All eight acceptance tests passed in the candidate image.
+and raw databases. The original eight acceptance tests passed in the candidate image.
 CI uploads those artifacts even on failure. The 76 Dockerfile/base-contract
 tests and `ruff check src/ tests/` also passed.
 
@@ -85,7 +85,65 @@ unsupported, along with experimental FSM and unknown records, rather than
 silently score them as properties. The fixture intentionally uses no covergroup
 or FSM instrumentation.
 
-Native B-Wave parsing is validated. No GUI viewer compatibility or new coverage
-denominator equivalence with 5.046 is claimed. Keep tool version, full source
+Native B-Wave parsing and GTKWave 3.3.116 waveform decoding are validated
+(see the review follow-up below). No coverage denominator equivalence with
+5.046 is claimed. Keep tool version, full source
 identity, instrumentation flags, seed, and elaboration identity when interpreting
 normalized artifacts.
+
+
+## Review follow-up on current main
+
+The candidate was rebuilt with the package from current main at `84b25152`.
+The required image gate now also invokes
+`tests/docker/verilator_flow_acceptance.py`. It compares ordinary
+`SimulationExecution` with `collect_target_coverage` across generated-main,
+custom-main, and Cocotb harnesses, with five outcomes each: pass, test failure,
+compile failure, timeout, and SIGTERM. These are real builds and real adapter
+processes, not substituted execution results. Each simulator gets a two-second
+runtime bound; the invoking shell gets a separate bounded compilation allowance.
+
+The rebuilt candidate passed all nine acceptance tests, including all 15
+verdict pairs matching the expected contract and each other (76 seconds).
+The follow-up host suite passed 966 tests, with 4 explicit skips and 1
+deselection; Ruff and the 104 image/workflow/helper checks passed. The
+new matrix exposed and fixed a production collector precedence bug: batch
+timeout previously overwrote an authenticated per-test verdict. Coverage now
+preserves the same per-test evidence as ordinary execution, with a focused
+regression covering pass, fail, timeout, and inconclusive terminal records. Cocotb
+signal termination and this timeout fixture are inconclusive at the individual
+test level: no complete XML or confirmed active-test record was published.
+The batch still records its timeout. Generated/custom-main signal termination
+is failure, and their timeout cases report timeout. Missing
+native databases remain explicit collection errors and never replace the
+simulation verdict. Custom-main fixtures write coverage before failing or
+hanging, also proving that successful collection cannot promote a failed test.
+
+Each pair retains `verdicts.json`; CI uploads it alongside the native artifacts.
+The signal cleanup regression starts a process that ignores SIGTERM, requires
+forced kill/reaping, and verifies the original timeout still fails the check.
+All three native harness checks share one per-instance identity assertion.
+
+GTKWave was installed only in a disposable validation container derived from
+the candidate; it is not a new runtime dependency. Reproduce with GTKWave,
+Xvfb, and xauth installed, using:
+
+```bash
+bash tests/docker/verilator_viewer_acceptance.sh /tmp/viewer-evidence
+```
+
+The script compiles the repository's `viewer.sv` with the pinned Verilator
+and `--trace-fst`, then opens the result in the actual GTKWave GUI under Xvfb.
+Its Tcl script adds both signals to the waveform view and queries decoded
+values, forcing waveform-data reading beyond hierarchy loading:
+
+- Viewer: GTKWave Analyzer v3.3.116.
+- Hierarchy: `viewer.clk`, `viewer.counter[3:0]`; two signals, no aliases.
+- Time range: 0 through 20; at time 5, clock is 1 and counter is 3.
+- Measured FST SHA-256:
+  `c9166f2518aedfd59a629629562142577ddbbe3d00aa89c612048664db4870fc`.
+
+The script retains compiler/viewer versions, compiler source identity, build
+and simulation logs, native FST, checksum, and GTKWave's successful assertion
+output. GTKWave exits with a failed check on unexpected hierarchy, range, or
+values; an outer timeout also bounds startup and reading.

@@ -347,11 +347,11 @@ def _adapter_verdict(
     test_name: str,
     process: SubprocessResult,
 ) -> SimulationVerdict:
-    if process.timed_out or result.failure_kind == "timeout":
-        return "timeout"
     test = next((item for item in result.test_results if item.name == test_name), None)
     if test is not None:
         return cast(SimulationVerdict, test.verdict)
+    if process.timed_out or result.failure_kind == "timeout":
+        return "timeout"
     if result.passed:
         return "pass"
     return "inconclusive" if result.inconclusive else "fail"

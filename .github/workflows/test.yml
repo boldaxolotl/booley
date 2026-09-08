@@ -1163,6 +1163,7 @@ jobs:
             ${{ runner.temp }}/bwave-smoke/verilator/**/commands.log
             ${{ runner.temp }}/bwave-smoke/verilator/**/*.dat
             ${{ runner.temp }}/bwave-smoke/verilator/**/*.xml
+            ${{ runner.temp }}/bwave-smoke/verilator/**/verdicts.json
           if-no-files-found: warn
           retention-days: 14
 
