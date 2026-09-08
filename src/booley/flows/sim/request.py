@@ -13,12 +13,15 @@ class SimRequest(FlowRequest):
     test: str | None = None
     skip: str | None = None
     trace: bool = False
+    coverage: bool = False
     result_verbosity: str = "compact"
     no_kill: bool = False
     _legacy_standalone_without_elab: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if not isinstance(self.coverage, bool):
+            raise ValueError("coverage must be boolean")
         self.mode = SimulationMode(self.mode)
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")

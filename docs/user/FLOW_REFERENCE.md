@@ -163,7 +163,14 @@ signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do
 not change Criteria. Multi-Target checks continue through every Target, with
 an infrastructure error taking precedence over a design failure.
 
-Structured output (`sim_<target>.json`):
+
+Simulation report migration: flat `sim_<target>.json` files and the earlier
+`targets/sim_<target>.json` copies are no longer written. Use the exact
+`artifacts[target].report` path in the numbered invocation's `report.json`.
+Qualified Target selectors are percent-encoded into one directory component.
+Old scripts should consume that pointer instead of guessing a filename.
+
+Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
 
 | Field | Contents |
 |---|---|
@@ -174,7 +181,7 @@ Structured output (`sim_<target>.json`):
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
-Elaboration Check structured output uses the same `sim_<target>.json` name and
+Elaboration Check structured output uses the same canonical `simulation.json` name and
 sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
 
 | Field | Contents |
