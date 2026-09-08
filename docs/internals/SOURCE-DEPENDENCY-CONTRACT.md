@@ -1,13 +1,13 @@
 # Source Dependency Contract
 
 This contract defines Booley's intended Python source-dependency directions. Its
-stable rules do not make the current package graph a universal allowlist. The
-test-only analyzer describes source knowledge without adding a production
-abstraction layer.
+stable rules leave other edges unclassified; the current package graph is not a
+universal allowlist. The test-only analyzer records source knowledge without adding
+a production abstraction layer.
 
 ## Source map
 
-The package layout serves the canonical concepts in [CONTEXT.md](../CONTEXT.md):
+The package layout maps to the canonical concepts in [CONTEXT.md](../CONTEXT.md):
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |
@@ -45,17 +45,17 @@ base is the dependency. Aliases do not change identity. The graph retains only
 modules discoverable below the selected `booley` source root. A source read or
 syntax failure aborts analysis.
 
-Rules and permissions operate at module granularity. A prefix selector matches a
+Rules and permissions apply at module granularity. A prefix selector matches a
 named module and its descendants; an exact selector matches only the named module.
 Fan-out counts the unique target modules imported by one source module.
 
 The cycle diagnostic projects each edge to its immediate `booley.<package>` owner
-and discards same-package edges. An approved legacy SCC specifies an exact member
-set at that projection; it does not approve every edge within the set.
+and discards same-package edges. An approved legacy SCC lists an exact member set at
+that projection. It does not approve every edge within the set.
 
 ## Direction rules
 
-Each rule states independent policy. The production-tree gate in
+Each rule has its own design justification. The production-tree gate in
 `tests/architecture/test_source_dependency_contract.py` enforces the full table,
 as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 
@@ -94,13 +94,14 @@ For each S1-S3 source, D10 forbids targets in the other S1-S3 sets. Each S4-S5
 source cannot target the other S4-S5 set. Shared backend policy and the
 experimental simulator readers remain unclassified.
 
-All other source edges remain unclassified pending design work. Their presence
-does not endorse them, and the checker must not generate permissions from them.
+Other source edges remain unclassified pending design work. They have no
+architectural endorsement, and the checker must not generate permissions from
+their presence.
 
 ## Exact composition-root permissions
 
-These are the only rule exceptions classified as enforced design. Each permission
-belongs to one named rule and gives no source module a blanket exemption.
+Only these rule exceptions are enforced design. Each permission belongs to one
+named rule and gives no source module a blanket exemption.
 
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
@@ -121,9 +122,8 @@ to a replacement edge. Both current waivers retire through
 
 ## Dynamic-import inventory
 
-The general graph excludes dynamic resolution. This inventory names each current
-production use and its existing proof so the limits of static analysis remain
-explicit:
+The general graph excludes dynamic resolution. The following production uses and
+proofs define that limit:
 
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
@@ -195,7 +195,8 @@ booley.review <-> booley.ticket_board
 booley.runtime <-> booley.ticket_board
 ```
 
-Named composition hotspots use file fan-out only as diagnostic evidence:
+The deterministic report lists named composition hotspots under a diagnostic-only
+heading. Their fan-out values do not gate changes:
 
 | Canonical role | Exact module | Unique target modules |
 | --- | --- | ---: |
@@ -210,23 +211,21 @@ Named composition hotspots use file fan-out only as diagnostic evidence:
 | Mutation Specialist | `booley.specialists.mutation_tester` | 24 |
 | Coverage Specialist | `booley.specialists.coverage_analyst` | 22 |
 
-High fan-out is diagnostic, not a violation. A change to one of these modules
-records before and after output in
-[#279](https://github.com/boldaxolotl/booley/issues/279), allowing the later fan-out
-decision to distinguish legitimate composition from unjustified knowledge growth.
+When one of these modules changes, record before-and-after output in
+[#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
+work distinguish legitimate composition from unjustified knowledge growth.
 
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
 rules, exact composition permissions, and exact legacy waivers. It rejects missing
-waiver metadata and stale waivers whose exact edge has gone. Its SCC ratchet rejects
-each current multi-package SCC that is not a subset of an approved legacy member
-set. Approved groups may split; new acyclic singletons need no baseline entry.
+waiver metadata and stale waivers whose exact edges are absent. Its SCC ratchet
+rejects any current multi-package SCC that is not a subset of an approved legacy
+member set. Approved groups may split; new acyclic singletons need no baseline
+entry.
 
 Direction failures name the source location, normalized edge, rule, and any exact
-permission or waiver for that source under the rule. The deterministic report also
-prints every named hotspot fan-out value under a diagnostic-only heading. Fan-out
-values do not gate changes.
+permission or waiver for that source under the rule.
 
 Run the complete architecture check and its report from the repository root:
 
