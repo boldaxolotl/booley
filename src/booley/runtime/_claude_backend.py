@@ -12,7 +12,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +26,14 @@ from claude_agent_sdk import (
 )
 
 from booley.config.pricing import context_limit
-from booley.core.models import AgentCallParams, AgentResult
-from booley.runtime.timefmt import format_human_datetime, rfc3339_from_epoch, utc_now_rfc3339
+from booley.core.models import (
+    AgentArtifactPaths,
+    AgentCallParams,
+    AgentResult,
+    ArtifactPathResolver,
+    RateLimitNotifier,
+)
+from booley.runtime.timefmt import rfc3339_from_epoch, utc_now_rfc3339
 
 from ._claude_transcript_md import (  # noqa: F401 — re-exported for backward compat
     _claude_md_block_lines,
@@ -54,7 +59,7 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .developer_budget import DeveloperBudget, run_with_developer_budget
-from .prompt_artifacts import write_prompt_artifacts
+from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +153,8 @@ class ClaudeSDKBackend:
                     options,
                     params.timeout_seconds,
                     transcript_path=_transcript_path_for_attempt(params.transcript_path, attempt),
+                    artifact_paths=params.artifact_paths,
+                    notify_rate_limit=params.notify_rate_limit,
                     output_format=params.output_format,
                     capture_agent_capability_calls=params.capture_agent_capability_calls,
                     attempt=attempt,
@@ -195,6 +202,7 @@ class ClaudeSDKBackend:
         transcript_file: Any,
         on_event: Any,
         state: _StreamState,
+        notify_rate_limit: RateLimitNotifier | None = None,
         budget: DeveloperBudget | None = None,
     ) -> None:
         """Stream agent messages, recording progress into ``state``.
@@ -223,6 +231,7 @@ class ClaudeSDKBackend:
                     transcript_file,
                     on_event,
                     state,
+                    notify_rate_limit=notify_rate_limit,
                     budget=budget,
                 ),
                 budget,
@@ -237,6 +246,7 @@ class ClaudeSDKBackend:
                 transcript_file,
                 on_event,
                 state,
+                notify_rate_limit=notify_rate_limit,
                 on_message=lambda: setattr(
                     idle_scope, "deadline", anyio.current_time() + timeout_seconds
                 ),
@@ -250,6 +260,8 @@ class ClaudeSDKBackend:
         *,
         transcript_path: Path | None,
         output_format: dict[str, Any] | None,
+        artifact_paths: ArtifactPathResolver | None = None,
+        notify_rate_limit: RateLimitNotifier | None = None,
         capture_agent_capability_calls: list[str] | None = None,
         attempt: int = 1,
         label: str | None = None,
@@ -257,11 +269,14 @@ class ClaudeSDKBackend:
         budget: DeveloperBudget | None = None,
     ) -> AgentResult:
         """Single attempt to call the agent."""
+        source = transcript_path_for_label(transcript_path, label)
+        paths = (artifact_paths or adjacent_artifact_paths)(source)
         transcript_path, counters, stderr_buffer = self._prepare_call(
             prompt,
             options,
             transcript_path=transcript_path,
             attempt=attempt,
+            paths=paths,
             label=label,
             capture_agent_capability_calls=capture_agent_capability_calls,
         )
@@ -283,6 +298,8 @@ class ClaudeSDKBackend:
                     )
                 try:
                     stream_kwargs = {"budget": budget} if budget is not None else {}
+                    if notify_rate_limit is not None:
+                        stream_kwargs["notify_rate_limit"] = notify_rate_limit
                     await self._process_stream(
                         prompt,
                         options,
@@ -331,7 +348,7 @@ class ClaudeSDKBackend:
                         transcript_path,
                     )
         finally:
-            _claude_write_markdown(transcript_path)
+            _claude_write_markdown(transcript_path, markdown_path=paths.transcript_markdown)
 
         return _finalize_result(
             counters,
@@ -350,6 +367,7 @@ class ClaudeSDKBackend:
         attempt: int,
         label: str | None,
         capture_agent_capability_calls: list[str] | None = None,
+        paths: AgentArtifactPaths | None = None,
     ) -> tuple[Path | None, _UsageCounters, deque[str]]:
         """Set up prompt artifacts, usage counters, and stderr capture.
 
@@ -358,7 +376,7 @@ class ClaudeSDKBackend:
         """
         transcript_path = transcript_path_for_label(transcript_path, label)
         write_prompt_artifacts(
-            transcript_path,
+            paths or adjacent_artifact_paths(transcript_path),
             system_prompt=getattr(options, "system_prompt", None),
             user_prompt=prompt,
             metadata={
@@ -688,6 +706,7 @@ async def _consume_claude_stream(
     on_event: Any,
     state: _StreamState,
     *,
+    notify_rate_limit: RateLimitNotifier | None = None,
     budget: DeveloperBudget | None = None,
     on_message: Callable[[], None] | None = None,
 ) -> None:
@@ -714,7 +733,7 @@ async def _consume_claude_stream(
             _dispatch_usage(on_event, counters, options.model)
             state.session_id = getattr(message, "session_id", None)
         elif isinstance(message, RateLimitEvent):
-            await _handle_rate_limit_event(message, budget)
+            await _handle_rate_limit_event(message, budget, notify_rate_limit=notify_rate_limit)
 
 
 def _update_budget_for_claude_message(message: object, budget: DeveloperBudget) -> None:
@@ -1017,7 +1036,10 @@ def _dump_crash_context(
 
 
 async def _handle_rate_limit_event(
-    event: RateLimitEvent, budget: DeveloperBudget | None = None
+    event: RateLimitEvent,
+    budget: DeveloperBudget | None = None,
+    *,
+    notify_rate_limit: RateLimitNotifier | None = None,
 ) -> None:
     """Handle a rate limit event from the SDK stream."""
     info = event.rate_limit_info
@@ -1035,7 +1057,11 @@ async def _handle_rate_limit_event(
             rfc3339_from_epoch(info.resets_at) if info.resets_at else "unknown",
             RATE_LIMIT_SLEEP_BUFFER_S,
         )
-        _notify_rate_limit(info.rate_limit_type, sleep_s, info.resets_at)
+        if notify_rate_limit is not None:
+            try:
+                notify_rate_limit(info.rate_limit_type, sleep_s, info.resets_at)
+            except Exception:  # A failed delivery must not interrupt provider backoff.
+                logger.warning("Rate-limit notification failed", exc_info=True)
         if budget is not None:
             budget.pause("claude-rate-limit", "provider rate limit")
         try:
@@ -1057,26 +1083,6 @@ async def _handle_rate_limit_event(
             (info.utilization or 0) * 100,
             info.rate_limit_type,
         )
-
-
-def _notify_rate_limit(rate_limit_type: str | None, sleep_s: float, resets_at: int | None) -> None:
-    """Fire-and-forget ntfy notification for rate limit sleep."""
-    try:
-        from booley.ticket_board.notifications import is_event_enabled, ntfy_send
-    except ImportError:
-        return
-    if not is_event_enabled("rate_limit"):
-        return
-    reset_str = (
-        format_human_datetime(datetime.fromtimestamp(resets_at, tz=UTC))
-        if resets_at
-        else "unknown"
-    )
-    ntfy_send(
-        title=f"Harness rate-limited ({rate_limit_type or 'unknown'})",
-        body=f"Sleeping {sleep_s / 60:.0f}min until {reset_str}",
-        priority="3",
-    )
 
 
 _transcript_path_for_attempt = transcript_path_for_attempt

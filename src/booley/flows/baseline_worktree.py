@@ -33,11 +33,11 @@ from typing import Any
 
 from booley.core.boundary import as_dict, as_str
 from booley.fusesoc.fusesoc_registry import state_cores_dir
+from booley.runtime.project_repositories import paired_project_repository
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
-    materialize_ticket_submodules,
+    materialize_project_submodules,
 )
-from booley.runtime.ticket_repositories import paired_project_repository
 from booley.targets.domain import TargetHandle
 
 from .recipe_evidence import BASELINE_REF_PARAM
@@ -166,7 +166,7 @@ def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
 
 def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: str) -> None:
     try:
-        materialize_ticket_submodules(project_root, worktree)
+        materialize_project_submodules(project_root, worktree)
     except SubmoduleMaterializationError as exc:
         raise BaselineWorktreeError(
             f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"

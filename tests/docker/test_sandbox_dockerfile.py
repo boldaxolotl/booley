@@ -679,3 +679,22 @@ def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> Non
     assert "schedule:" in workflow
     assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
     assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow
+
+
+def test_verilator_safe_release_and_fst_runtime_contract() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    assert "ARG VERILATOR_VERSION=v5.052" in base
+    assert "ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c" in base
+    assert 'test "$(git rev-parse HEAD)" = "${VERILATOR_REF}"' in base
+    assert base.count("liblz4-dev") == 2  # compiler stage and user model builds
+    assert "libjemalloc-dev" not in base
+    assert "/usr/include/lz4.h" in contract
+    assert "/usr/local/share/verilator/BOOLEY-SOURCE.txt" in contract
+
+
+def test_verilator_acceptance_is_required_in_candidate_image() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    assert "booley-test python /work/tests/docker/verilator_acceptance.py" in workflow
+    assert "--work-dir /validation-tmp" in workflow
+    assert "fifo native-fst verilator simulator" in workflow

@@ -23,6 +23,7 @@ from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, TargetResu
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.mcp.flow_adapter import flow_schema
 
 
 def _result(output: str, *, rc: int = 0, **kwargs: object) -> SubprocessResult:
@@ -127,7 +128,7 @@ def test_legacy_standalone_combination_normalizes(tmp_path: Path) -> None:
 
 def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
     flow = SimulateFlow()
-    schema = flow.mcp_schema()
+    schema = flow_schema(flow)
 
     assert schema["properties"]["mode"] == {
         "type": "string",

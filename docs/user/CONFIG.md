@@ -70,7 +70,9 @@ Project identity, Flow selection, and agent configuration live in
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about ticket file-existence checks rather than identity. `[notifications]`
-carries the ntfy.sh push topic and needs no explanation. Everything else is
+configures the ntfy.sh topic and event selection; see
+[Push Notifications](USAGE.md#push-notifications) for setup and the required
+host egress permission. Everything else is
 detailed below, starting with the shared `enabled` flow setting.
 
 ### Booley Flow execution: `enabled`

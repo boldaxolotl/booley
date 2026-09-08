@@ -20,7 +20,8 @@ from booley.criteria.state import (
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.runtime import job_records as jobrec
-from booley.runtime.ticket_repositories import (
+from booley.ticket_board.paths import session_jobs_dir
+from booley.ticket_board.ticket_repositories import (
     ProjectRepositoryChange,
     TicketWorkspaceError,
 )
@@ -252,7 +253,8 @@ def test_rejects_final_report_while_ticket_job_is_active(
             started_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             timeout_s=60,
             pid=os.getpid(),
-        )
+        ),
+        root=session_jobs_dir(),
     )
 
     exit_code, state = _run_endpoint(

@@ -31,6 +31,36 @@ dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.
 and `booley.feedback` own their named mechanisms. These descriptions create no new
 domain concepts.
 
+## Runtime execution boundary
+
+Runtime does not import Ticket Board, including under `TYPE_CHECKING` or inside
+functions. D14 has no waiver or composition exception.
+
+- `runtime.job_records` stores records at an explicit jobs root. MCP composition
+  resolves `ticket_board.paths.session_jobs_dir` after Interactive logging setup;
+  each job manager retains its root through asynchronous completion. Standalone
+  readers resolve the same session location. Explicit `None` disables persistence.
+- `core.models.AgentArtifactPaths` carries resolved output paths. An optional
+  per-call resolver receives the final labeled/retry transcript path; Booley
+  callers bind `ticket_board.agent_execution` to preserve fallback prompt names
+  and the `.runtime`/`human-logs` layout. Runtime writers and renderers accept
+  resolved locations; standalone calls use adjacent transcript sidecars.
+- The per-call rate-limit callback is supplied by execution composition, including
+  Developer, Specialist, review, blocked-report and probe callers. Claude retains
+  detection, wait/retry and budget pause/resume; `ticket_board.notifications` owns
+  preferences and delivery. Notification failure cannot abort provider backoff.
+- `ticket_board.ticket_repositories` owns Ticket Workspace requests, Scope routing,
+  branch handoff, Board-change protection and cleanup. Authoring callers invoke
+  `ticket_board.workspace_ops` directly, without a reverse workspace import.
+  `runtime.project_repositories` owns generic repository discovery, coordinate
+  translation, status parsing and bounded Git inspection. Project preparation and
+  composite submodule materialization reuse these mechanics without Ticket policy;
+  materialization preserves separate rollback for each repository selection.
+
+The dependency change and measured diagnostics for
+[#423](https://github.com/boldaxolotl/booley/issues/423) are recorded in
+[the implementation evidence](../research/runtime-ticket-board-423-evidence.md).
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -74,6 +104,9 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
 | D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | For the exact target modules: prefix `booley.fusesoc`, prefixes `booley.flows.{sim,synth,fpga,lint}`, and exact modules `booley.targets.catalog` and `booley.targets.target_surface`. For FuseSoC: the exact catalog and target-surface modules. | Forbid | Target domain values and selector policy stay independent of FuseSoC, concrete Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend back on catalog orchestration or presentation. |
 | D13 | Prefix `booley.fusesoc` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | FuseSoC mechanics remain reusable beneath concrete Flow implementations. |
+| D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations and notification behavior from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
+
+| D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
 
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file

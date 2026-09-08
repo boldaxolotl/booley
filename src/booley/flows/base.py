@@ -9,7 +9,6 @@ per-Flow execution-location selection or host command boundary.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import json
 import logging
@@ -20,15 +19,18 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
+from booley.criteria.state import DevelopmentState
 from booley.flows import execution
+from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.display import format_flow_display_label
-from booley.flows.invocation import positive_milliseconds, resolve_timeout_ms
-from booley.mcp.base import McpTool, McpToolResult
+from booley.flows.endpoint_context import EndpointContext
+from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,7 @@ class _ProcessTreeMemoryMonitor:
             self._sample()
 
 
-class BooleyFlow(McpTool):
+class FlowMechanics:
     """Base for deterministic Booley Flows that run subprocesses.
 
     Subclasses implement ``_build_command`` and ``_interpret_result``.
@@ -417,13 +419,138 @@ class BooleyFlow(McpTool):
         return not fresh
 
 
-class BuiltinFlow(BooleyFlow):
+class BooleyFlow(FlowMechanics, EndpointContext):
+    """Source-compatible Custom Flow extension with its historical CLI hooks."""
+
+
+RequestT = TypeVar("RequestT", bound=FlowRequest)
+
+
+class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     """Invocation seam shared only by Booley's four shipped Flows."""
+
+    request_type: ClassVar[type[FlowRequest]] = FlowRequest
+    argument_adapter: ClassVar[type[BuiltinArguments]] = BuiltinArguments
+
+    name: str = ""
+    description: str = ""
+    code_modifying: bool = False
+    modifies_category: str | None = None
+    config_aware: bool = True
+    accepts_target: bool = True
+    announce_success_report: bool = False
+    satisfies: ClassVar[list[str]] = []
+    satisfies_args: ClassVar[dict[str, str]] = {}
+    target_help: str = (
+        "FuseSoC .core Target name(s) this run applies to, comma-separated. "
+        "Run with --target <name> (list them with `booley targets`)."
+    )
+
+    def __init__(self) -> None:
+        from booley.flows.flow_session import FlowSession
+
+        self.context = FlowSession(self)
+
+    @property
+    def args(self) -> RequestT:
+        return cast(RequestT, self.context.args)
+
+    @property
+    def state(self) -> DevelopmentState:
+        return self.context.state
+
+    def set_criterion(
+        self,
+        key: str,
+        met: bool,
+        *,
+        detail: dict[str, Any] | None = None,
+        source_target: str | None = None,
+    ) -> None:
+        self.context.set_criterion(key, met, detail=detail, source_target=source_target)
+
+    def reserve_invocation_dir(self) -> Path | None:
+        return self.context.reserve_invocation_dir()
+
+    def emit_progress(self, line: str) -> None:
+        self.context.emit_progress(line)
+
+    def emit_completion(self, line: str, *, repeats_at_end: bool = False) -> None:
+        self.context.emit_completion(line, repeats_at_end=repeats_at_end)
+
+    def _requested_targets(self) -> list[str]:
+        return self.context._requested_targets()
+
+    def _flow_enabled(self) -> bool:
+        return self.context._flow_enabled()
+
+    def _resolve_job_class(self) -> str | None:
+        return None
+
+    @property
+    def _eda_tool(self) -> str | None:
+        return self.context._eda_tool
+
+    @_eda_tool.setter
+    def _eda_tool(self, value: str | None) -> None:
+        self.context._eda_tool = value
+
+    @property
+    def _args(self) -> FlowRequest | None:
+        return self.context._args
+
+    @_args.setter
+    def _args(self, value: FlowRequest) -> None:
+        self.context._args = value
+
+    @property
+    def _state(self) -> DevelopmentState | None:
+        return self.context._state
+
+    @_state.setter
+    def _state(self, value: DevelopmentState) -> None:
+        self.context._state = value
+
+    def read_state(self) -> DevelopmentState:
+        return self.context.read_state()
+
+    def parse_args(self, argv: list[str] | None = None) -> RequestT:
+        from booley.flows.builtin_cli import parse_request
+
+        self.context._args = parse_request(self, argv)
+        return self.args
+
+    def execute(self, request: RequestT) -> ExecutionResult:
+        """Execute typed input through a fresh, transport-independent session."""
+        from dataclasses import replace
+
+        from booley.flows.endpoint_cli import apply_environment
+        from booley.flows.flow_session import FlowSession
+
+        if not isinstance(request, self.request_type):
+            raise TypeError(f"{self.name} requires {self.request_type.__name__}")
+        self.context = FlowSession(self)
+        self.context._args = replace(request)
+        apply_environment(self.context._args, self.endpoint_kind)
+        return self.context.execute_prepared()
+
+    def execute_cli(self, argv: list[str] | None = None) -> ExecutionResult:
+        from booley.flows.builtin_cli import execute_cli
+
+        return execute_cli(self, argv)
+
+    def main(self, argv: list[str] | None = None) -> int:
+        return self.execute_cli(argv).exit_code
+
+    def cli(self) -> None:
+        from booley.flows.endpoint_cli import cli
+
+        cli(self)
 
     default_timeout: ClassVar[int] = 600
     non_persisting_dry_run = True
 
-    def _dry_run_result(self, plan: object) -> McpToolResult:
+    def _dry_run_result(self, plan: object) -> EndpointOutcome:
         """Render and optionally persist one normalized built-in Flow plan."""
         from booley.flows.plan import FlowPlan
 
@@ -457,43 +584,7 @@ class BuiltinFlow(BooleyFlow):
         else:
             summary = f"Dry run: {len(plan.work_units)} work unit(s)"
             exit_code = 0
-        return McpToolResult(exit_code=exit_code, report_text=summary, detail=payload)
-
-    def _add_common_args(self) -> None:
-        super()._add_common_args()
-        self._parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Resolve and validate the requested work without executing EDA tools",
-        )
-        self._parser.add_argument(
-            "--timeout-ms",
-            type=positive_milliseconds,
-            default=None,
-            help=(
-                "Active-time budget in milliseconds for each Flow work unit. "
-                "Overrides [flows.<name>].timeout_ms."
-            ),
-        )
-        self._parser.add_argument(
-            "--timeout",
-            dest="_legacy_timeout_ms",
-            type=positive_milliseconds,
-            default=None,
-            help=argparse.SUPPRESS,
-        )
-
-    def parse_args(self, argv: list[str] | None = None) -> argparse.Namespace:
-        """Parse and normalize the built-in-only compatibility aliases."""
-        args = super().parse_args(argv)
-        legacy = args._legacy_timeout_ms
-        if args.timeout_ms is not None and legacy is not None:
-            self._parser.error("--timeout-ms cannot be combined with deprecated --timeout")
-        if legacy is not None:
-            logger.warning("--timeout is deprecated; use --timeout-ms")
-            args.timeout_ms = legacy
-        del args._legacy_timeout_ms
-        return args
+        return EndpointOutcome(exit_code=exit_code, report_text=summary, detail=payload)
 
     def _timeout_ms(self) -> int:
         """Resolve the strict shared timeout precedence for this built-in Flow."""
@@ -516,21 +607,6 @@ class BuiltinFlow(BooleyFlow):
     def _get_timeout(self) -> int:
         """Return the active work-unit budget in whole seconds."""
         return max(1, self._timeout_ms() // 1000)
-
-    def mcp_schema(self) -> dict[str, object]:
-        """Expose the canonical timeout while hiding the CLI-only alias."""
-        from booley.mcp.schema_extractor import extract_schema
-
-        schema = extract_schema(self._parser)
-        schema["additionalProperties"] = False
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            properties.pop("_legacy_timeout_ms", None)
-            timeout = properties.get("timeout_ms")
-            if isinstance(timeout, dict):
-                timeout["type"] = "integer"
-                timeout["minimum"] = 1
-        return schema
 
 
 def _drain_after_kill(proc: subprocess.Popen) -> tuple[str, str]:

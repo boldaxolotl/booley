@@ -34,7 +34,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from booley.runtime.timefmt import parse_timestamp
-from booley.ticket_board.paths import ticket_runtime_dir
 
 logger = logging.getLogger(__name__)
 
@@ -107,27 +106,11 @@ def make_run_id(endpoint: str, started_compact: str, counter: int) -> str:
     return f"{endpoint}-{started_compact}-{counter}"
 
 
-def jobs_dir() -> Path | None:
-    """Return the ``jobs`` dir for this run, or None when no runtime is set.
-
-    Mirrors ``mcp_server._endpoint_reports_dir`` runtime resolution so job records
-    land beside ``flow-reports/`` under the same bind-mounted runtime tree,
-    readable across the host/sandbox boundary.
-    """
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-    if not logs_dir:
-        return None
-    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-    runtime_dir = Path(runtime_env) if runtime_env else ticket_runtime_dir(logs_dir)
-    return runtime_dir / "jobs"
-
-
-def _record_path(run_id: str) -> Path | None:
-    root = jobs_dir()
+def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
 
 
-def write_record(rec: JobRecord) -> None:
+def write_record(rec: JobRecord, root: Path | None) -> None:
     """Persist (or overwrite) a job record. Best-effort — never raises.
 
     Atomic (tmp + rename): the reader may be a *different* process — a
@@ -136,7 +119,7 @@ def write_record(rec: JobRecord) -> None:
     fine. The tmp name carries our PID so two processes writing the same
     run_id cannot collide on the tmp file itself.
     """
-    path = _record_path(rec.run_id)
+    path = _record_path(rec.run_id, root)
     if path is None:
         return
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -150,9 +133,9 @@ def write_record(rec: JobRecord) -> None:
             tmp.unlink(missing_ok=True)  # don't leave a stray tmp behind
 
 
-def read_record(run_id: str, root: Path | None = None) -> JobRecord | None:
+def read_record(run_id: str, root: Path | None) -> JobRecord | None:
     """Load a job record by run-id, or None if absent/unreadable."""
-    path = (root / f"{run_id}.json") if root is not None else _record_path(run_id)
+    path = _record_path(run_id, root)
     if path is None or not path.is_file():
         return None
     try:
@@ -162,9 +145,9 @@ def read_record(run_id: str, root: Path | None = None) -> JobRecord | None:
         return None
 
 
-def list_records(root: Path | None = None) -> list[JobRecord]:
+def list_records(root: Path | None) -> list[JobRecord]:
     """Return every job record on disk (unordered). Empty when none."""
-    records_root = root if root is not None else jobs_dir()
+    records_root = root
     if records_root is None or not records_root.is_dir():
         return []
     out: list[JobRecord] = []

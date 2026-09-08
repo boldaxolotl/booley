@@ -82,9 +82,9 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        # _write_display_event moved to MCP endpoint events (SRP); patch it at its home,
+        # _write_display_event lives in endpoint events; patch it at its home,
         # where _emit_criteria_update now resolves the name.
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             mock_write.assert_called_once()
             event = mock_write.call_args[0][0]
@@ -104,8 +104,8 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        # _write_display_event moved to MCP endpoint events (SRP); patch it at its home.
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        # _write_display_event lives in endpoint events; patch it at its home.
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             event = mock_write.call_args[0][0]
             assert "sim_pass" in event["criteria"]
@@ -127,7 +127,7 @@ class TestCriteriaUpdateEvent:
 
         from booley.mcp.base import _emit_criteria_update
 
-        with patch("booley.mcp.events._write_display_event") as mock_write:
+        with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
 
         entry = mock_write.call_args[0][0]["criteria"]["sim_pass"]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
-from booley.runtime.ticket_repositories import resolve_inner_project_repo
+from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
 from .acceptance_basis import (
     AcceptanceBasis,

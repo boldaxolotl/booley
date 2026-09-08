@@ -12,7 +12,6 @@ Booley Flow exit-code taxonomy.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import re
@@ -23,6 +22,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.flows import eda_parsers
+from booley.flows.lint.cli import LintArguments
+from booley.flows.lint.request import LintRequest
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -400,8 +401,11 @@ def _build_warning_details(
     return details
 
 
-class LintFlow(BuiltinFlow):
+class LintFlow(BuiltinFlow[LintRequest]):
     """Run the Target's linter for one or more Targets."""
+
+    request_type = LintRequest
+    argument_adapter = LintArguments
 
     name: str = "lint"
     description: str = (
@@ -412,12 +416,6 @@ class LintFlow(BuiltinFlow):
     satisfies: ClassVar[list[str]] = ["lint_clean"]
 
     # The built-in path is make-driven end-to-end in the Session Runtime.
-    def _add_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--scope",
-            default="",
-            help="Comma-separated file paths to filter warnings",
-        )
 
     # --- Command building ---
 

@@ -5,38 +5,35 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
+
+from booley.core.boundary import as_dict, as_str_list
+from booley.runtime.timefmt import format_human_datetime
 
 from .paths import existing_runtime_file
 
 
 def _load_notifications_config() -> dict:
     """Load the [notifications] section from booley.toml."""
-    try:
-        import tomllib
-    except ImportError:
-        return {}
-    import sys as _sys
-
-    _sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from booley.runtime.project_dir import resolve_project_dir
 
-    _proj = resolve_project_dir()
-    _new = _proj / "booley.toml"
-    toml_path = _new if _new.exists() else _proj / "pipeline.toml"
-    if not toml_path.exists():
-        return {}
     try:
-        with toml_path.open("rb") as f:
-            cfg = tomllib.load(f)
-        return cfg.get("notifications", {})
-    except (OSError, tomllib.TOMLDecodeError):
+        project = resolve_project_dir()
+        current = project / "booley.toml"
+        toml_path = current if current.exists() else project / "pipeline.toml"
+        with toml_path.open("rb") as file:
+            config = tomllib.load(file)
+        return as_dict(config.get("notifications")) or {}
+    except (OSError, ValueError):
         return {}
 
 
 def _read_ntfy_topic() -> str:
     """Read ntfy_topic from booley.toml [notifications] section."""
-    return _load_notifications_config().get("ntfy_topic", "").strip()
+    topic = _load_notifications_config().get("ntfy_topic", "")
+    return topic.strip() if isinstance(topic, str) else ""
 
 
 def is_event_enabled(event: str) -> bool:
@@ -49,7 +46,7 @@ def is_event_enabled(event: str) -> bool:
     events = cfg.get("events")
     if events is None:
         return True
-    return event in events
+    return event in as_str_list(events)
 
 
 def ntfy_send(title: str, body: str, priority: str = "3") -> None:
@@ -69,18 +66,22 @@ def ntfy_send(title: str, body: str, priority: str = "3") -> None:
     safe_title = title.replace("\r", " ").replace("\n", " ")
     safe_body = body.replace("\r", " ").replace("\n", " ")
     # Fire-and-forget: don't block the ticket run
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(OSError, ValueError):
         subprocess.Popen(
             [
                 "curl",
                 "-s",
+                "--connect-timeout",
+                "5",
+                "--max-time",
+                "15",
                 "-H",
                 f"Title: {safe_title}",
                 "-H",
                 f"Priority: {priority}",
                 "-d",
                 safe_body,
-                f"ntfy.sh/{topic}",
+                f"https://ntfy.sh/{topic}",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -133,7 +134,14 @@ def _digest_issues_part(criteria: dict) -> str | None:
 
 
 def ntfy_review_digest(logs_dir: str | Path, slug: str) -> str:
-    """Build a short digest from booley_state.json for review notifications (~120 chars)."""
+    """Build an advisory digest; malformed artifacts must never fail handoff."""
+    try:
+        return _review_digest(logs_dir, slug)
+    except (OSError, ValueError, TypeError, OverflowError):
+        return ""
+
+
+def _review_digest(logs_dir: str | Path, slug: str) -> str:
     import json
 
     state_path = existing_runtime_file(logs_dir, slug, "booley_state.json")
@@ -141,7 +149,7 @@ def ntfy_review_digest(logs_dir: str | Path, slug: str) -> str:
         return ""
     try:
         state = json.loads(state_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         return ""
     # Boundary: external JSON may decode to any type; the digest needs a dict.
     if not isinstance(state, dict):
@@ -155,9 +163,9 @@ def ntfy_review_digest(logs_dir: str | Path, slug: str) -> str:
     prep_path = existing_runtime_file(logs_dir, slug, "triage-prep/manifest.json")
     try:
         prep = json.loads(prep_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         prep = {}
-    if isinstance(prep, dict) and prep.get("status") in {"ready", "failed"}:
+    if isinstance(prep, dict) and prep.get("status") in ("ready", "failed"):
         parts.append("triage ready" if prep["status"] == "ready" else "triage report failed")
 
     # Total cost from timeline (skip non-list timelines / non-numeric costs).
@@ -172,3 +180,19 @@ def ntfy_review_digest(logs_dir: str | Path, slug: str) -> str:
             parts.append(f"${total_cost:.2f}")
 
     return " | ".join(parts) if parts else ""
+
+
+def notify_rate_limit(rate_limit_type: str | None, sleep_s: float, resets_at: int | None) -> None:
+    """Fire-and-forget ntfy notification for rate limit sleep."""
+    if not is_event_enabled("rate_limit"):
+        return
+    reset_str = (
+        format_human_datetime(datetime.fromtimestamp(resets_at, tz=UTC))
+        if resets_at
+        else "unknown"
+    )
+    ntfy_send(
+        title=f"Harness rate-limited ({rate_limit_type or 'unknown'})",
+        body=f"Sleeping {sleep_s / 60:.0f}min until {reset_str}",
+        priority="3",
+    )
