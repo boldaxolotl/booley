@@ -263,7 +263,7 @@ class TestMain:
         ):
             assert main() == 0
 
-    def test_wildcard_scope_owns_nothing_and_blocks_commit(self, tmp_path: Path, capsys):
+    def test_wildcard_scope_allows_commit_for_review(self, tmp_path: Path, capsys):
         """The unknown-scope sentinel lost its blanket-permission meaning."""
         scope_file = tmp_path / ".scope.json"
         scope_file.write_text(json.dumps({"scope": ["*"]}))
@@ -275,8 +275,8 @@ class TestMain:
                 return_value=["anything.sv"],
             ),
         ):
-            assert main() == 1
-        assert "anything.sv" in capsys.readouterr().err
+            assert main() == 0
+        assert not capsys.readouterr().err
 
     def test_in_scope_files_allowed(self, tmp_path: Path):
         scope_file = tmp_path / ".scope.json"
@@ -291,8 +291,8 @@ class TestMain:
         ):
             assert main() == 0
 
-    def test_out_of_scope_files_block_commit(self, tmp_path: Path, capsys):
-        """Scope is a hard commit boundary."""
+    def test_out_of_scope_files_allow_commit(self, tmp_path: Path, capsys):
+        """Scope deviations are allowed for review."""
         scope_file = tmp_path / ".scope.json"
         scope_file.write_text(json.dumps({"scope": ["rtl/foo.sv"]}))
 
@@ -303,8 +303,8 @@ class TestMain:
                 return_value=["rtl/foo.sv", "docs/readme.md"],
             ),
         ):
-            assert main() == 1
-        assert "docs/readme.md" in capsys.readouterr().err
+            assert main() == 0
+        assert not capsys.readouterr().err
 
     def test_harness_bookkeeping_is_rejected(self, tmp_path: Path):
         scope_file = tmp_path / ".scope.json"
@@ -380,7 +380,7 @@ class TestMain:
         ):
             assert main() == 0
 
-    def test_empty_scope_blocks_everything(self, tmp_path: Path, capsys):
+    def test_empty_scope_allows_deviations(self, tmp_path: Path, capsys):
         """An empty scope owns nothing, so every staged file is a deviation."""
         scope_file = tmp_path / ".scope.json"
         scope_file.write_text(json.dumps({"scope": []}))
@@ -392,8 +392,8 @@ class TestMain:
                 return_value=["rtl/foo.sv"],
             ),
         ):
-            assert main() == 1
-        assert "rtl/foo.sv" in capsys.readouterr().err
+            assert main() == 0
+        assert not capsys.readouterr().err
 
     def test_glob_scope_matches(self, tmp_path: Path):
         scope_file = tmp_path / ".scope.json"

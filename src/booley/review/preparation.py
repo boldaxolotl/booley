@@ -26,10 +26,6 @@ from booley.harness.job_fence import wait_for_ticket_jobs
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
-from booley.runtime.ticket_repositories import (
-    paired_project_repository,
-    project_repository_expected,
-)
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
@@ -39,9 +35,14 @@ from booley.ticket_board.acceptance_basis import (
     validate_current_basis_refs,
 )
 from booley.ticket_board.acceptance_ledger import read_acceptance
+from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
+from booley.ticket_board.ticket_repositories import (
+    paired_project_repository,
+    project_repository_expected,
+)
 
 from .artifact import ReviewPackage
 from .evidence import ReviewEvidenceError, ReviewEvidencePackage, build_review_evidence
@@ -925,7 +926,7 @@ async def _invoke_agent(
         label="triage-report",
         nested_mcp_tools=[],
     )
-    return await call_agent(params)
+    return await call_agent(configure_agent_call(params))
 
 
 def _error_summary(exc: Exception) -> str:

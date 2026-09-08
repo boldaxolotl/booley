@@ -146,7 +146,7 @@ def test_ticket_workspace_consumers_do_not_bypass_the_runtime_boundary() -> None
         _SOURCE_ROOT / "ticket_board" / "archive.py",
     )
     bypass_names = {
-        "ticket_repositories",
+        "project_repositories",
         "merge_project_ticket_branch",
         "cleanup_project_ticket_branch",
     }

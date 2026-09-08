@@ -330,11 +330,11 @@ def _materialize_surface_submodules(control_root: Path, surface: Path) -> None:
     """Populate one exact acceptance surface from local control repositories."""
     from booley.runtime.submodule_materialization import (
         SubmoduleMaterializationError,
-        materialize_ticket_submodules,
+        materialize_project_submodules,
     )
 
     try:
-        materialize_ticket_submodules(control_root, surface)
+        materialize_project_submodules(control_root, surface)
     except SubmoduleMaterializationError as exc:
         raise AcceptanceOperationError(
             f"could not materialize acceptance surface submodules offline: {exc}"

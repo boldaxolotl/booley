@@ -84,11 +84,24 @@ def _commit_all(repo: Path) -> None:
 
 def _submit_report(work_dir: Path, monkeypatch):
     monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", "-z", "report-base", "HEAD"],
+        cwd=work_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.split("\0")
+    justifications = {
+        path: "Record the reviewed UART source and fixture state." for path in changed if path
+    }
     report = SubmitRunReportMcpTool()
     report.parse_args(
         [
             "--work-dir",
             str(work_dir),
+            "--file-justifications",
+            json.dumps(justifications),
             "--summary",
             "Changed UART.",
             "--root-cause",
@@ -201,6 +214,14 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
         monkeypatch,
         "review_rtl_bugs_done",
         "_report_submitted",
+    )
+    _commit_all(tmp_path)
+    subprocess.run(["git", "branch", "report-base"], cwd=tmp_path, check=True, timeout=10)
+    subprocess.run(
+        ["git", "branch", "--set-upstream-to=report-base"],
+        cwd=tmp_path,
+        check=True,
+        timeout=10,
     )
     common = [
         "--work-dir",

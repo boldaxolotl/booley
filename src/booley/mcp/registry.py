@@ -292,7 +292,9 @@ def _build_mcp_tool_info(
 def _get_base_names(classdef: ast.ClassDef) -> set[str]:
     """Extract base class names from a ClassDef AST node."""
     names: set[str] = set()
-    for base in classdef.bases:
+    for declared_base in classdef.bases:
+        # Typed built-ins retain the same literal base name and metadata.
+        base = declared_base.value if isinstance(declared_base, ast.Subscript) else declared_base
         if isinstance(base, ast.Name):
             names.add(base.id)
         elif isinstance(base, ast.Attribute):

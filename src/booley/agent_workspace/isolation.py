@@ -16,7 +16,7 @@ Isolation is defense-in-depth across three stages:
      - Shadow packages removed  (remove_shadow_package)
 
   3. Prompt time (CATEGORY_GUARD messages)
-     - Agent instructed not to read/write out-of-scope files
+     - Agent instructed to explain changes outside planned scope
 
 All context managers are crash-safe: a ``finally`` block covers exceptions,
 a signal handler covers SIGTERM/SIGHUP/SIGINT, and a stash manifest lets the
@@ -96,8 +96,9 @@ CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
 # implementation's bugs. Those files are physically absent from the workspace.
 CATEGORY_GUARD: dict[str, str] = {
     "rtl": (
-        "Work only within the scope listed above. If another file is required, "
-        "stop and request a ticket-scope update before editing it. "
+        "Use the scope listed above as the plan. If another file is required, "
+        "you may edit it; explain each change to the Developer Agent for the final report. "
+        "Outside-scope changes are highlighted for human review. "
         "Do NOT read, create, modify, or write any testbench or verification "
         "files (anything under verif/, tb/, or similar directories). "
         "These files have been removed from your workspace and are "
@@ -105,8 +106,9 @@ CATEGORY_GUARD: dict[str, str] = {
         "or any other command."
     ),
     "tb": (
-        "Work only within the scope listed above. If another file is required, "
-        "stop and request a ticket-scope update before editing it. "
+        "Use the scope listed above as the plan. If another file is required, "
+        "you may edit it; explain each change to the Developer Agent for the final report. "
+        "Outside-scope changes are highlighted for human review. "
         "Do NOT read, create, modify, or write any RTL files "
         "(anything under rtl/, fw/, or similar directories). "
         "These files have been removed from your workspace and are "

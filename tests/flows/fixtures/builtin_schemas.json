@@ -1,0 +1,256 @@
+{
+  "lint": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+      },
+      "diagnostic": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
+        "minimum": 1
+      },
+      "scope": {
+        "type": "string",
+        "description": "Comma-separated file paths to filter warnings",
+        "default": ""
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "sim": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+      },
+      "diagnostic": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
+        "minimum": 1
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "simulate",
+          "elab_only",
+          "elab_only_standalone"
+        ],
+        "description": "Execution mode: run tests, elaborate only, or elaborate then perform the standalone module sweep",
+        "default": "simulate"
+      },
+      "test": {
+        "type": "string",
+        "description": "Run specific test by name (substring match)"
+      },
+      "skip": {
+        "type": "string",
+        "description": "Comma-separated test names to exclude (exact match). Adds to any [flows.sim] / tests.toml 'skip' list. Use to dodge known-hanging tests that burn the full wall-clock budget."
+      },
+      "trace": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable waveform trace (debugging only \u2014 do not use for pass/fail checks)"
+      },
+      "result_verbosity": {
+        "type": "string",
+        "enum": [
+          "compact",
+          "full"
+        ],
+        "description": "Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
+        "default": "compact"
+      },
+      "no_kill": {
+        "type": "boolean",
+        "default": false,
+        "description": "Skip zombie process cleanup"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "synth": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+      },
+      "diagnostic": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
+        "minimum": 1
+      },
+      "baseline": {
+        "type": "string",
+        "description": "Baseline git ref (SHA/branch/tag) for comparison"
+      },
+      "flatten": {
+        "type": "boolean",
+        "default": true,
+        "description": "Preserve hierarchy through synthesis (overrides the selected Target)."
+      },
+      "frontend": {
+        "type": "string",
+        "enum": [
+          "sv2v",
+          "slang"
+        ],
+        "description": "RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' (native Yosys read_slang, requires the Yosys>=0.67 sandbox image). Overrides the selected Target's flow_options.frontend (default sv2v)."
+      },
+      "ppa_profile": {
+        "type": "string",
+        "enum": [
+          "compact",
+          "balanced",
+          "max_frequency"
+        ],
+        "description": "Override the project PPA profile for this call"
+      },
+      "abc_recipe": {
+        "type": "string",
+        "enum": [
+          "default",
+          "balanced",
+          "fast"
+        ],
+        "description": "Expert Yosys override for the profile's ABC recipe"
+      },
+      "abc_script": {
+        "type": "string",
+        "description": "Expert raw Yosys ABC +script"
+      },
+      "generic_abc_before_mapping": {
+        "type": "boolean",
+        "default": true
+      },
+      "abc_delay_ps": {
+        "type": "integer",
+        "description": "Expert ABC delay target"
+      },
+      "utilization_pct": {
+        "type": "number",
+        "description": "Expert OpenROAD floorplan override"
+      },
+      "placement_density": {
+        "type": "number",
+        "description": "Expert OpenROAD global-placement density override"
+      },
+      "repair_setup": {
+        "type": "boolean",
+        "default": true
+      },
+      "repair_hold": {
+        "type": "boolean",
+        "default": true
+      },
+      "gate_cloning": {
+        "type": "boolean",
+        "default": true
+      },
+      "setup_margin_ns": {
+        "type": "number",
+        "description": "Expert OpenROAD setup margin"
+      },
+      "repair_tns_percent": {
+        "type": "number",
+        "description": "Expert OpenROAD violating-endpoint repair percentage"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "fpga": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "FuseSoC .core Target name(s) this run applies to, comma-separated. Run with --target <name> (list them with `booley targets`)."
+      },
+      "diagnostic": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Acceptance Basis."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
+        "minimum": 1
+      },
+      "baseline": {
+        "type": "string",
+        "description": "Baseline git ref for comparison"
+      },
+      "no_cache": {
+        "type": "boolean",
+        "default": false,
+        "description": "Bypass reusable implementation results and run the recipe again"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -111,34 +111,33 @@ report that section `not runnable`, not silently skip or fail it
 | I-04 | Interactive sessions share the checked-out tree; multiple sessions may collide. Jobs share per-class limits with Interactive work ahead of Ticket work, FIFO within a class, no preemption, and bounded queues ([parallel instances](../user/FEATURES.md#parallel-instances)). | Run two non-editing Interactive calls plus concurrent Ticket work to observe safe admission and priority. Test shared-tree edit collision only in a disposable fixture; do not manufacture damage in a real port. |
 | I-05 | `booley cheat`, command help, MCP descriptions, packaged skills, and user docs are public operational surfaces. The agent is expected to derive mechanics from them rather than maintainer knowledge ([Quick Reference](../../src/booley/data/cheatsheet.md)). | Every scenario step records which public source supplied the route. Missing, contradictory, or insufficient guidance is a docs Finding before source inspection. Help output and the rendered cheat catalog should agree on command/Flow/Specialist names. |
 
-### MCP cancellation documentation conflict
+### MCP cancellation documentation conflict (resolved)
 
-The MCP schema and implementation allow `booley_cancel` to cancel queued or
-running jobs, while the Usage guide says queued jobs only
-([MCP server](../../src/booley/mcp/server.py),
-[concurrent Tickets](../user/USAGE.md#concurrent-tickets)). I-02 follows the
-shipped queued/running behavior. The documentation discrepancy is a Finding;
-the running-job cancellation path must remain in coverage.
+The Usage guide previously limited `booley_cancel` to queued jobs, contradicting
+the MCP schema and implementation. The guide now documents both queued and
+running cancellation and distinguishes explicit cancellation from scheduler
+preemption ([MCP server](../../src/booley/mcp/server.py),
+[concurrent Tickets](../user/USAGE.md#concurrent-tickets)). This documentation
+Finding is resolved. I-02 continues to follow the shipped queued/running
+behavior; the running-job cancellation path must remain in coverage.
 
-### Interactive client documentation conflict; coverage already decided
+### Interactive entry points and QA client coverage
 
-The public docs do not currently name one coherent client set. The Usage guide
-documents bare `booley` launching either Claude Code or Codex CLI and recommends
-the Codex CLI for concurrent Interactive sessions; it also documents the Claude
-Code VS Code extension ([first session](../user/USAGE.md#open-your-first-agent-session)).
-The canonical glossary instead says Interactive Mode uses the Claude Code or
-Codex VS Code extension and that standalone apps are unsupported
-([glossary](../CONTEXT.md#execution)). The generated cheat sheet again says
-`booley` opens the configured CLI.
+The recommended Interactive Mode entry point is bare `booley` / `booley chat`
+in the Session Runtime. It launches the configured `claude` or `codex` command
+and leaves the user in the native CLI. The corresponding VS Code extension is
+an optional alternative ([first session](../user/USAGE.md#open-your-first-agent-session),
+[glossary](../CONTEXT.md#execution)). This resolves the earlier documentation
+conflict between the Usage guide's CLI route and the glossary's extension-only
+definition.
 
 The parent map has fixed the primary QA matrix: cover Claude and Codex as
 Interactive Mode **VS Code clients**, and cover them separately as Ticket Mode
 Developer Agent backends
 ([map standing constraints](https://github.com/boldaxolotl/booley/issues/246)).
-That constraint avoids a standalone-client cross-product, but it does not erase
-a shipped, documented entry point. I-01 therefore requires a bare-`booley`/chat
-smoke check while retaining VS Code as the distinct client-coverage dimension.
-The glossary's standalone-app wording remains a documentation Finding.
+I-01 also requires a bare-`booley`/chat smoke check for the recommended entry
+point while retaining VS Code as the distinct client-coverage dimension;
+this does not require another Cartesian client dimension.
 
 ## 4. Built-in Booley Flows and EDA tools
 

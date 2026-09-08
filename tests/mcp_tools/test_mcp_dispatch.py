@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.ticket_board.paths import session_jobs_dir
+
 # mcp_server.py lives at src/ root, outside the endpoints package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -1233,7 +1235,8 @@ class TestAsyncJobDispatch:
                 pid=4242,
                 status=jobrec.STATUS_DONE,
                 exit_code=0,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         _seed_report(_report_env, "sim", {"flow": "sim", "report_text": "RESULT: PASS"})
         jobs = _JobManager(_FakeLifetime())
@@ -1255,7 +1258,8 @@ class TestAsyncJobDispatch:
                 timeout_s=60,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         jobs = _JobManager(_FakeLifetime())
         out = asyncio.run(_dispatch_poll({"run_id": "simulate-x-2"}, jobs))
@@ -1275,7 +1279,8 @@ class TestAsyncJobDispatch:
                 timeout_s=600,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         _seed_report(
             _report_env,
@@ -1306,7 +1311,8 @@ class TestAsyncJobDispatch:
                 pid=4242,
                 status=jobrec.STATUS_FAILED,
                 exit_code=1,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         _seed_report(
             _report_env,
@@ -1337,7 +1343,8 @@ class TestAsyncJobDispatch:
                 timeout_s=60,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         _seed_report(
             _report_env,
@@ -1368,7 +1375,8 @@ class TestAsyncJobDispatch:
                 timeout_s=60,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         jobs = _JobManager(_FakeLifetime())
         text = _text(asyncio.run(_dispatch_poll({"run_id": "simulate-x-7"}, jobs)))
@@ -1422,7 +1430,8 @@ class TestAttachSurvivesRestart:
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
                 argv=["c"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         assert mcp_server._find_attachable_job("sim", ["c"]) == "simulate-y-5"
         # Fresh manager = restarted server: no in-memory task for the job.
@@ -1445,7 +1454,8 @@ class TestAttachSurvivesRestart:
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
                 argv=["c"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         assert mcp_server._find_attachable_job("sim", ["c"]) is None
 
@@ -1463,7 +1473,8 @@ class TestAttachSurvivesRestart:
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
                 argv=["c"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         assert mcp_server._find_attachable_job("sim", ["c"]) is None
 
@@ -1483,7 +1494,8 @@ class TestAttachSurvivesRestart:
                 status=jobrec.STATUS_DONE,
                 exit_code=0,
                 argv=["c"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         assert mcp_server._find_attachable_job("sim", ["c"]) is None
 
@@ -1538,7 +1550,8 @@ class TestCancel:
                 pid=4242,
                 status=jobrec.STATUS_DONE,
                 exit_code=0,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         out = self._cancel({"run_id": "simulate-c-1"})
         assert "already finished" in _text(out)
@@ -1559,12 +1572,13 @@ class TestCancel:
                     timeout_s=600,
                     pid=child.pid,
                     status=jobrec.STATUS_RUNNING,
-                )
+                ),
+                root=session_jobs_dir(),
             )
             out = self._cancel({"run_id": "simulate-c-2"})
             assert "CANCELLED: running job" in _text(out)
             child.wait(timeout=10)
-            got = jobrec.read_record("simulate-c-2")
+            got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
         finally:
@@ -1588,7 +1602,8 @@ class TestCancel:
                     timeout_s=600,
                     pid=child.pid,
                     status=jobrec.STATUS_RUNNING,
-                )
+                ),
+                root=session_jobs_dir(),
             )
             root = job_slots.slots_dir()
             assert root is not None
@@ -1598,7 +1613,7 @@ class TestCancel:
             out = self._cancel({"run_id": "simulate-c-4"})
             assert "CANCELLED: running job" in _text(out)
             child.wait(timeout=10)
-            got = jobrec.read_record("simulate-c-4")
+            got = jobrec.read_record("simulate-c-4", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
         finally:
             if child.poll() is None:
@@ -1626,7 +1641,8 @@ class TestCancel:
                     timeout_s=600,
                     pid=child.pid,
                     status=jobrec.STATUS_RUNNING,
-                )
+                ),
+                root=session_jobs_dir(),
             )
             root = job_slots.slots_dir()
             assert root is not None
@@ -1648,7 +1664,7 @@ class TestCancel:
                 assert returncode != 0
             else:
                 assert returncode == -_signal.SIGTERM
-            got = jobrec.read_record("simulate-c-3")
+            got = jobrec.read_record("simulate-c-3", root=session_jobs_dir())
             assert got is not None
             assert got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
@@ -1687,7 +1703,7 @@ class TestCancel:
 
         run_id, out, jobs = asyncio.run(scenario())
         assert "CANCELLED: running job" in _text(out)
-        record = jobrec.read_record(run_id)
+        record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_CANCELLED
         assert "CANCELLED" in jobs.result_text(run_id)
 
@@ -1720,7 +1736,7 @@ class TestCancel:
         import contextlib
 
         run_id = asyncio.run(scenario())
-        record = jobrec.read_record(run_id)
+        record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_RUNNING
 
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):
@@ -1749,7 +1765,8 @@ class TestJobPhase:
                 timeout_s=600,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         root = job_slots.slots_dir()
         assert root is not None
@@ -1771,7 +1788,8 @@ class TestJobPhase:
                 timeout_s=600,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         assert _job_phase("simulate-p-2") == "RUNNING"
 
@@ -1786,7 +1804,8 @@ class TestJobPhase:
                 timeout_s=600,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         root = job_slots.slots_dir()
         assert root is not None
@@ -1844,10 +1863,11 @@ class TestReconcileOrphanedJobs:
                 timeout_s=60,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         mcp_server._reconcile_orphaned_jobs()
-        got = jobrec.read_record("simulate-x-1")
+        got = jobrec.read_record("simulate-x-1", root=session_jobs_dir())
         assert got is not None
         assert got.status == jobrec.STATUS_FAILED
         assert got.exit_code == 2
@@ -1863,10 +1883,11 @@ class TestReconcileOrphanedJobs:
                 timeout_s=60,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         mcp_server._reconcile_orphaned_jobs()
-        got = jobrec.read_record("simulate-x-2")
+        got = jobrec.read_record("simulate-x-2", root=session_jobs_dir())
         assert got is not None and got.status == jobrec.STATUS_RUNNING
 
     def test_terminal_record_untouched(self, _report_env):
@@ -1879,10 +1900,11 @@ class TestReconcileOrphanedJobs:
                 pid=2_000_000_000,
                 status=jobrec.STATUS_DONE,
                 exit_code=0,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         mcp_server._reconcile_orphaned_jobs()
-        got = jobrec.read_record("simulate-x-3")
+        got = jobrec.read_record("simulate-x-3", root=session_jobs_dir())
         assert got is not None and got.status == jobrec.STATUS_DONE
         assert got.exit_code == 0
 
@@ -1898,7 +1920,8 @@ class TestReconcileOrphanedJobs:
                 timeout_s=600,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         _seed_report(
             _report_env,
@@ -1911,7 +1934,7 @@ class TestReconcileOrphanedJobs:
             },
         )
         mcp_server._reconcile_orphaned_jobs()
-        got = jobrec.read_record("simulate-x-5")
+        got = jobrec.read_record("simulate-x-5", root=session_jobs_dir())
         assert got is not None
         assert got.status == jobrec.STATUS_DONE
         assert got.exit_code == 0
@@ -1926,10 +1949,11 @@ class TestReconcileOrphanedJobs:
                 timeout_s=60,
                 pid=2_000_000_000,
                 status=jobrec.STATUS_RUNNING,
-            )
+            ),
+            root=session_jobs_dir(),
         )
         mcp_server._reconcile_orphaned_jobs()
-        got = jobrec.read_record("simulate-x-4")
+        got = jobrec.read_record("simulate-x-4", root=session_jobs_dir())
         # Left alone: a nested specialist must not adjudicate shared records.
         assert got is not None and got.status == jobrec.STATUS_RUNNING
 
@@ -2014,7 +2038,8 @@ class TestAttachStripsTranscriptDir:
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
                 argv=["python", "-m", "booley.specialists.reviewer", "--transcript-dir", "/t/1"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         cmd = ["python", "-m", "booley.specialists.reviewer", "--transcript-dir", "/t/2"]
         assert mcp_server._find_attachable_job("reviewer", cmd) == "reviewer-z-1"
@@ -2036,7 +2061,8 @@ class TestAttachStripsTranscriptDir:
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
                 argv=["python", "-m", "booley.specialists.reviewer", "--slug", "a"],
-            )
+            ),
+            root=session_jobs_dir(),
         )
         cmd = ["python", "-m", "booley.specialists.reviewer", "--slug", "b"]
         assert mcp_server._find_attachable_job("reviewer", cmd) is None
@@ -2157,7 +2183,7 @@ class TestJobReportIdentity:
         import json as _json
 
         rec = self._rec()
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=session_jobs_dir())
         reports = Path(_report_env) / "flow-reports"
         ours = reports / "sim" / "2"
         ours.mkdir(parents=True)
@@ -2222,7 +2248,7 @@ class TestDiskLongPoll:
             pid=os.getpid(),
             status=jobrec.STATUS_RUNNING,
         )
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=session_jobs_dir())
         statuses = iter([jobrec.STATUS_RUNNING, jobrec.STATUS_RUNNING, jobrec.STATUS_DONE])
         monkeypatch.setattr(
             mcp_server.jobrec,
@@ -2246,7 +2272,7 @@ class TestDiskLongPoll:
             pid=os.getpid(),
             status=jobrec.STATUS_RUNNING,
         )
-        jobrec.write_record(rec)
+        jobrec.write_record(rec, root=session_jobs_dir())
         monkeypatch.setattr(
             mcp_server.jobrec,
             "derive_status",
@@ -2281,3 +2307,41 @@ class TestSubmitEnvStamp:
         run_id = asyncio.run(scenario())
         assert captured["env"]["BOOLEY_RUN_ID"] == run_id
         assert captured["env"]["BOOLEY_SLOT_TIMEOUT_S"] == "60"
+
+
+def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_path, monkeypatch):
+    """Server import precedes Interactive setup; asynchronous writes retain its root."""
+    import asyncio
+
+    # Track the variable even when initially absent: setup writes it directly.
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".booley_project").mkdir()
+    assert session_jobs_dir() is None
+    mcp_server._maybe_configure_interactive_logs_dir()
+    root = session_jobs_dir()
+    assert root is not None
+
+    async def run(cmd, *, timeout, on_spawn, **kwargs):
+        on_spawn(4242)
+        # Another scoped invocation must not redirect this manager's completion record.
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "other-runtime"))
+        return 0, "done", "", False
+
+    monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+
+    async def scenario():
+        manager = _JobManager(_FakeLifetime())
+        run_id = manager.submit("sim", ["fake"], 60)
+        await manager._tasks[run_id]
+        return run_id
+
+    run_id = asyncio.run(scenario())
+    assert jobrec.read_record(run_id, root).status == jobrec.STATUS_DONE
+    assert not (tmp_path / "other-runtime" / "jobs").exists()
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR")
+    restarted = _JobManager(_FakeLifetime())
+    assert "EXIT_CODE: 0" in _text(
+        asyncio.run(mcp_server._dispatch_poll({"run_id": run_id}, restarted))
+    )

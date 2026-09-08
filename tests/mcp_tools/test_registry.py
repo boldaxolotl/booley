@@ -550,3 +550,17 @@ class TestPerMcpToolAvailability:
 
         names = {t.name for t in results}
         assert names == {"submit_run_report"}
+
+
+@pytest.mark.parametrize("base", ("BuiltinFlow[LintRequest]", "base.BuiltinFlow[LintRequest]"))
+def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
+    source = tmp_path / "lint.py"
+    source.write_text(
+        f"class LintFlow({base}):\n"
+        '    name = "lint"\n'
+        '    description = "Run lint"\n'
+        '    satisfies = ["lint_clean"]\n'
+    )
+    info = extract_mcp_tool_info(source, builtin=True, package="flows/lint")
+    assert info is not None
+    assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))

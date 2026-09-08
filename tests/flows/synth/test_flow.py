@@ -85,7 +85,7 @@ def _dry_run_flow(work_dir: Path, target: str = "lite") -> AsicSynthesizeFlow:
 
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
-    flow = object.__new__(AsicSynthesizeFlow)
+    flow = AsicSynthesizeFlow()
     flow._args = SimpleNamespace(work_dir=tmp_path)
     shared = tmp_path / "shared"
     timing = shared / "timing"
