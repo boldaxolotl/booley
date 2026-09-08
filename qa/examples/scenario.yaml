@@ -1,0 +1,65 @@
+format_version: 1
+scenario_id: example-wishbone
+illustrative_only: true
+source: https://github.com/boldaxolotl/booley/issues/374
+inputs:
+  project: frozen by the complete PicoRV32 journey
+  authority: disposable fault injection and restoration granted before run
+  deadline: inherited from the complete journey
+steps:
+  - id: baseline
+    action: Run the clean traced Wishbone simulation.
+    checks:
+      - id: baseline
+        capabilities: [example-simulation]
+        stimulus: Run the unchanged pinned Wishbone testbench.
+        expected: Simulation passes and yields a fresh queryable trace.
+        authority_ref: https://github.com/boldaxolotl/booley/issues/374
+        evidence: Simulation grade, trace identity, B-Wave query output.
+        capture: evidence/baseline/
+    recovery_point: Save the clean source commit and trace references.
+  - id: fault
+    requires: [baseline]
+    action: Inject the declared OR-to-AND write-enable fault in a disposable branch.
+    checks:
+      - id: detect-fault
+        capabilities: [example-simulation]
+        stimulus: Rerun Wishbone with the exact seeded fault.
+        expected: The prescribed byte-store error appears with a fresh trace.
+        authority_ref: https://github.com/boldaxolotl/booley/issues/374
+        evidence: Seed diff, failed simulation and byte-store error, fresh trace.
+        capture: evidence/fault/
+    recovery: Restore the saved source and run the restoration step even if detection fails.
+  - id: restoration
+    requires: [baseline]
+    action: Restore the clean source and rerun the Wishbone simulation.
+    checks:
+      - id: restore
+        capabilities: [example-simulation]
+        stimulus: Rerun after restoring the baseline commit.
+        expected: Original source identity is restored and simulation passes.
+        authority_ref: https://github.com/boldaxolotl/booley/issues/374
+        evidence: Restored source identity and fresh simulation artifacts.
+        capture: evidence/restored/
+  - id: viewer
+    requires: [restore]
+    capability: qualified_visual_observer
+    action: Observe the declared Waveform Viewer signals in the supported VS Code client.
+    checks:
+      - id: viewer
+        capabilities: [example-viewer]
+        stimulus: Open the prescribed trace and signal selection.
+        expected: The selected signals render in the supported client.
+        authority_ref: https://github.com/boldaxolotl/booley/issues/248
+        evidence: Timestamped screenshot with client/window/trace identity and WCP readback.
+        capture: evidence/viewer/
+  - id: cleanup
+    action: Reconcile and release all run-owned resources on every exit path.
+    checks:
+      - id: cleanup
+        capabilities: [example-cleanup]
+        stimulus: Restore or release each entry in the ownership ledger.
+        expected: All required cleanup is proven; borrowed resources remain intact.
+        authority_ref: https://github.com/boldaxolotl/booley/issues/249
+        evidence: Final ownership ledger and resource-specific cleanup proof.
+        capture: evidence/cleanup/
