@@ -524,6 +524,32 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
             "postStartCommand",
         ),
         (
+            lambda spec: spec.__setitem__("postStartCommand", dc.mcp_post_start_command()),
+            "postStartCommand",
+        ),
+        (
+            lambda spec: spec.__setitem__(
+                "postStartCommand",
+                f"{dc.git_identity_command()}; {dc.mcp_post_start_command()}",
+            ),
+            "postStartCommand",
+        ),
+        (
+            lambda spec: spec.__setitem__(
+                "postStartCommand",
+                f"{dc.mcp_post_start_command()} && {dc.git_identity_command()}",
+            ),
+            "postStartCommand",
+        ),
+        (
+            lambda spec: spec.__setitem__(
+                "postStartCommand",
+                f"{dc.git_identity_command()} && sh /work/owned.sh "
+                f"&& {dc.mcp_post_start_command()}",
+            ),
+            "postStartCommand",
+        ),
+        (
             lambda spec: spec.__setitem__("workspaceMount", "source=/,target=/work,type=bind"),
             "workspace mount",
         ),

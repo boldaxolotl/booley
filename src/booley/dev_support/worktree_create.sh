@@ -351,7 +351,7 @@ echo "Line endings normalised to LF (core.autocrlf=false)" >&2
 # would leak the product name in the metadata of every agent commit.
 GIT_NAME="Dev"
 GIT_EMAIL="dev@localhost"
-for toml in "$BOOLEY_PROJECT_DIR_RESOLVED/booley.toml" "$BOOLEY_PROJECT_DIR_RESOLVED/pipeline.toml" "$PIPELINE_DIR/booley.toml" "$PIPELINE_DIR/pipeline.toml"; do
+for toml in "$BOOLEY_PROJECT_DIR_RESOLVED/booley.toml" "$PIPELINE_DIR/booley.toml"; do
     if [ -f "$toml" ]; then
         _git_id=$("${PY[@]}" - "$toml" <<'PYEOF' 2>/dev/null
 import sys, tomllib
