@@ -64,3 +64,12 @@ Local source and package validation is green. Hosted Linux/Windows and rebuilt
 candidate-image jobs require a pushed revision and are not claimed by local
 execution. Public release remains contingent on those hosted checks; no branch,
 PR, image, or release was published by this phase's local validation.
+
+## Hosted seed-test correction
+
+The first hosted native matrix exposed a test-only nondeterminism: its
+same-seed check compared complete Verilator stdout, including wall-clock
+telemetry (`0.000` versus `0.002` seconds). The emitted random value agreed.
+The gate now requires exactly one eight-digit `RANDOM` value per run, compares
+those values for identical seeds, and requires a different value for the other
+seed. Native collection and all other release assertions remain unchanged.
