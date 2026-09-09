@@ -32,5 +32,6 @@ simulation, synthesis, linting, and ticket-based workflows.
   `docs/internals/agents/issue-tracker.md`.
 - **Triage labels:** Use the standard Matt Pocock labels. See
   `docs/internals/agents/triage-labels.md`.
-- **Domain docs:** Single-context: `docs/CONTEXT.md`; optional local ADR history
-  may exist under `docs/adr/`. See `docs/internals/agents/domain.md`.
+- **Domain docs:** Read `CONTEXT-MAP.md`, then the glossary for each context the
+  work touches. Optional ADR history may exist under `docs/adr/`. See
+  `docs/internals/agents/domain.md`.

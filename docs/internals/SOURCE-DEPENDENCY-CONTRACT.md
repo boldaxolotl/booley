@@ -7,7 +7,8 @@ a production abstraction layer.
 
 ## Source map
 
-The package layout maps to the canonical concepts in [CONTEXT.md](../CONTEXT.md):
+The package layout maps to the canonical concepts indexed by the
+[context map](../../CONTEXT-MAP.md):
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |

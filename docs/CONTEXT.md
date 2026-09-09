@@ -1,10 +1,8 @@
 # Booley glossary
 
-This is Booley's canonical vocabulary reference. Consult it when a term is
-unfamiliar; it is not an onboarding sequence. The first part defines concepts
-that users encounter in commands, configuration, reports, and normal product
-explanations. The second part defines implementation-only concepts used when
-developing Booley itself.
+This is the canonical vocabulary for concepts shared across Booley. Consult it
+when a term is unfamiliar; it is not an onboarding sequence. The
+[context map](../CONTEXT-MAP.md) points to the separately owned vocabularies.
 
 Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Session Runtime**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): framework, system, library, platform, toolkit, package, harness
@@ -143,28 +141,8 @@ A named FuseSoC `.core` build target, the single source of truth for one design-
 
 _Avoid_: Design Configuration, build config, profile, named config
 
-**Target Pair**:
-A directed baseline/candidate pair of frozen **Targets** used by a baseline-relative Criterion. A single Target name denotes the equal pair whose baseline and candidate are that Target.
-_Avoid_: mutable Target, recipe patch, before/after config
-
-**Target Plan**:
-An optional, machine-readable **Ticket** transition plan that classifies every Target authored during Ticket creation as persistent, replacement, or ephemeral. Its absence means the Ticket authors no Target changes of its own; the dispositions published in the Ticket's **Acceptance Basis** determine which Targets remain in the accepted Project.
-_Avoid_: Target removal list, Target metadata, build migration
-
-**Persistent Target**:
-A Target authored by a **Target Plan** as an additional supported build that remains independently selectable after Ticket acceptance.
-_Avoid_: permanent Target, default Target
-
-**Replacement Target**:
-A Target authored by a **Target Plan** to supersede one runnable baseline Target. Both recipes remain available while the Ticket runs; acceptance removes the baseline and retains the replacement exactly as approved.
-_Avoid_: modified Target, in-place Target edit, temporary Target
-
-**Ephemeral Target**:
-A Target authored by a **Target Plan** solely to collect one Ticket's evidence and removed during acceptance.
-_Avoid_: disposable config, temporary persistent Target
-
 **Cocotb Target**:
-A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Waveform analysis).
+A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite
 
 **Pre-Run Commands**:
@@ -196,7 +174,7 @@ A passing criterion-family-specific Booley Flow run required after an RTL or tes
 _Avoid_: review gate, planner approval
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and Coverage Analyst (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/CONTEXT.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -207,151 +185,23 @@ _Avoid_: optional blindness, reviewer independence
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley_project/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may update project Criteria. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
-### Work management
-
-**Ticket**:
-A self-contained unit of hardware development work that carries its own acceptance criteria and lifecycle state, expressed as a Markdown file with YAML frontmatter.
-_Avoid_: task, issue, story
-
-**Ticket Creation Guidance**:
-Project-authored prose that guides the Criteria, optional **Target Plan**, and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
-_Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defaults
-
-**Criterion**:
-A named boolean condition that must be satisfied for ticket completion, bound to a **Target** by name, automatically invalidated when its dependency category (RTL, TB) changes. Tracks whether it was ever met across resets; any Flow requirement not enforced by the Harness itself must be expressed as an explicit Criterion.
-_Avoid_: check, gate, acceptance test
-
-**Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
-_Avoid_: booley_state entry, raw Flow result, execution identity
-
-**Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
-_Avoid_: final booley_state, cached status, review report
-
-**Simulation Criterion**:
-A Criterion satisfied by a passing simulation Booley Flow run. Any Ticket that authorizes RTL or testbench edits must include at least one Simulation Criterion; otherwise the Ticket shape is invalid before development. The required testbench may already exist or be created during ticket execution when Scope permits it.
-_Avoid_: optional sim, smoke test
-
-**Cycle Count**:
-A non-negative integer emitted by one named test for one execution of its declared workload on a Target. It is a performance measurement whose desired direction is supplied by a Criterion; lower is not inherently better.
-_Avoid_: cycle time, runtime, performance score
-
-**Cycle Count Criterion**:
-A specialized Simulation Criterion for one Target and named test, satisfied only when the test passes and its Cycle Count meets every declared threshold. A mandatory Cycle Count Criterion fulfills the simulation requirement for that test without requiring a duplicate Simulation Criterion.
-_Avoid_: cycle budget, synthesis criterion, benchmark score
-
-**Unaccepted Review**:
-Human inspection of a Ticket whose work has not passed acceptance. It retains outstanding Criteria and supports human-directed verification before first acceptance; entering review alone never permits completion.
-_Avoid_: forced acceptance, accepted hold
-
-**Ticket Board**:
-The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as execution pauses; blocked work may explicitly enter unaccepted human review while retaining outstanding gates; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
-_Avoid_: bare "Board", kanban, tracker, backlog
-
-**Acceptance Basis**:
-The immutable authored Ticket inputs and repository identities for one executable Ticket generation, published automatically when that Ticket is enqueued. It includes the canonicalized **Target Plan** and derived Target dispositions, and is the authority for execution, baseline comparison, protected acceptance controls, and completion.
-
-**Basis Refresh**:
-
-A recoverable, automatic replacement of an untouched waiting Ticket's **Acceptance Basis** after its dependencies are accepted. It rebases the unchanged approved authoring inputs onto current destinations, retains the old basis as evidence, and promotes the Ticket only when publication and the Board transition complete together. Drift requires a new **Authoring Generation** through `return-to-draft`.
-_Avoid_: Target Contract, target snapshot, config patch, mutable recipe
-
-**Authoring Generation**:
-One draft period that ends when enqueue publishes an Acceptance Basis. Retry preserves the generation; returning a blocked Ticket to draft starts a new generation while retaining the old basis and evidence.
-_Avoid_: seal generation, execution attempt, retry
-
-**Ticket Workspace**:
-The disposable checkout set materialized from a Ticket generation's repository refs for authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
-_Avoid_: permanent worktree, ticket sandbox, integration checkout
-
-**Acceptance Journal**:
-The active deep module and recoverable record for accepting a basis-bound Ticket. It owns source preservation, candidate preparation and finalization, multi-repository publication, post-approval destination verification, and identity-checked cleanup, while the Ticket Board owns approval policy and the review-to-done transition. Its journal lets acceptance roll forward after interruption, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose recovery or cleanup is still pending.
-_Avoid_: merge log, rollback record, transaction database
-
-**Scope**:
-The files a Ticket plans to change; ordinary changes outside this set are allowed and highlighted during review. The Developer Agent must justify every file in the final change set before submitting its run report; acceptance inputs and Harness bookkeeping remain protected independently of Scope.
-_Avoid_: allowlist
-
-**Escalation**:
-A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.
-_Avoid_: spec gap, blocker, impediment
-
-### Coverage
-
-**Coverage Campaign**:
-One indivisible, durable coverage document for exactly one Target and one Simulation Flow invocation, preserving independent simulation, collection, and evaluation truths.
-_Avoid_: latest coverage, waveform score
-
-**Coverage Point**:
-One losslessly identified native measurement point, including source span, elaborated instance, metric-specific subject, and native record identity.
-_Avoid_: signal score, source-line identity
-
-**Coverage Window**:
-The interval in which native counters contribute to a Campaign, including reset activity unless the Target declares a delayed start.
-_Avoid_: waveform slice
-
-**Coverage Criterion**:
-One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND, satisfied only by a durably persisted passing Campaign; it never starts collection implicitly.
-_Avoid_: Analyst score, inferred coverage goal
-
-**Approved Waiver Set**:
-The immutable, transactionally validated project-wide set of human-approved exact Target-and-point exclusions used by coverage evaluators.
-_Avoid_: cached LLM waivers
-
-**Waiver Candidate**:
-Advisory Coverage Analyst output for human investigation or review, with no approval or evaluation authority.
-_Avoid_: approved waiver, automatic exclusion
-
-**Coverage Analyst**:
-A read-only Specialist that explains one exact Coverage Campaign and may propose Waiver Candidates, using verified Target sources when available.
-_Avoid_: coverage scorer, waveform coverage engine
-
-### Waveform analysis
-
-**B-Wave**:
-The agent-facing query surface for FST trace stores. It reads native FST output directly and ingests VCD output into FST before exposing signal queries, virtual signals, and text-mode waveforms.
-_Avoid_: waveform viewer, VCD parser, `.bwave` format
+### Simulation evidence
 
 **Trace Artifact**:
-Fresh waveform evidence produced by a traced simulation and proven queryable by B-Wave. A Trace Artifact is an FST store; VCD is an input or intermediate, not successful trace evidence.
+Fresh waveform evidence produced by a traced simulation and proven queryable by
+[B-Wave](../crates/bwave/CONTEXT.md). A Trace Artifact is an FST store; VCD is
+an input or intermediate, not successful trace evidence.
 _Avoid_: sim output, log, no-sim
 
 **Simulation Sentinel**:
 A configured output string that Booley scans to determine a simulation verdict. Fail sentinels take priority over pass sentinels; when no sentinel is found after a clean run, the result is inconclusive. Applies to HDL-testbench Targets only: a **Cocotb Target**'s verdict comes from cocotb's result file, with assertion-output scanning retained; a missing or truncated result file is inconclusive, never a pass.
 _Avoid_: regex, marker, exit-code-only verdict
 
-**Virtual Signal**:
-A named 1-bit boolean predicate defined over existing waveform signals using Verilog-subset expressions. Evaluated per-timepoint against cached waveform data. Supports composition (virtuals referencing other virtuals).
-_Avoid_: computed signal, derived signal, expression
-
-**Waveform Viewer**:
-The human-facing GUI for visually exploring a Trace Artifact, opened via `bwave gui`. Booley launches an off-the-shelf viewer and never implements waveform rendering itself; B-Wave stays the agent-facing query surface. The VaporView VS Code extension is the default implementation, not the domain concept.
-_Avoid_: waveform renderer, waveform GUI, wave window, B-Wave display
-
 ### Presentation
 
 **Console**:
 The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
 _Avoid_: flashy mode, monitor, dashboard
-
-### Feedback
-
-**Finding**:
-One logged observation about a Booley run, held in the **Findings Log** and rendered into the user report and outbound view. Every entry is one of four kinds — a *finding* proper (something malfunctioned; needs a reproduction, an observed and an expected), a **Friction Report**, an **Impression**, or a *win* (a check that passed first try, recorded so the finding count has a denominator). Each carries a bucket saying whose problem it is: `project` (the user's repo/config/environment), `booley`, `docs`, or `unknown` until triaged. Only `booley`/`docs` entries with enough evidence, not already filed, are eligible to go upstream. The `/booley-feedback` skill classifies and records ad-hoc feedback.
-_Avoid_: issue, ticket (that is Booley's unit of *work*), defect report
-
-**Friction Report**:
-A Finding that records confusion rather than malfunction — nothing broke, but Booley was hard to follow. Held to its own evidence bar: where it happened (component or the check that surfaced it) and what the reporter expected instead, never a reproduction.
-_Avoid_: minor bug, nitpick, UX bug
-
-**Impression**:
-A Finding carrying what a user *thinks* of Booley — praise, a gripe, a feature wish, whether it earned its keep on a real project — with a `sentiment` of `praise`, `gripe`, `wish` or `mixed`. The one kind with no evidence bar at all: a single sentence is a complete report, because there is nothing to reproduce. Reported and redacted through the same path as everything else, but framed apart from defects in both the user report and outbound view so an opinion is never counted as a bug.
-_Avoid_: feature request, review, rating, testimonial
-
-**Findings Log**:
-The append-only `findings.jsonl` in local feedback state, one JSON entry per line, written concurrently by setup steps, sub-agents and ad-hoc reports. A Project keeps that state in its project state directory; a Booley Source Checkout keeps dogfood feedback outside the checkout in shared Git metadata. The log outlives the run that started it: a project set up in March and hit by a bug in July appends to the same file, which is why entries carry an origin and a `filed` stamp. Rendered into one persistent, local, unredacted **user report** (`SETUP-REPORT.md`, or `FEEDBACK-REPORT.md` on a project that never ran setup). The maintainer-facing view is filtered and redacted transiently for preview/submission; outbound commands require explicit Finding IDs (or an intentional `--all`) so one conversation cannot pull in the unfiled backlog. The `/booley-feedback` skill persists the selected view as `BOOLEY-FEEDBACK.md` only when the user explicitly requests an export.
-_Avoid_: bug database, feedback queue, telemetry (nothing here is automatic or silent)
 
 ## Inside Booley
 
@@ -367,25 +217,9 @@ _Avoid_: image version, pulled tag, freshness label
 The connection method by which a human-facing app or autonomous driver uses a Session Runtime. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
 _Avoid_: remote, tunnel, app bridge
 
-**Runner**:
-The CLI entry point (`booley run`) that drives Ticket execution inside the Session Runtime it is invoked from, launching a Developer Agent within the Harness for each selected Ticket. It works only inside a Session Runtime. Specific to Ticket Mode.
-_Avoid_: launcher, executor
-
-**Execution Rationale**:
-A concise final-summary explanation of the Booley Flows and Specialists the Developer Agent used and the code edits it made, and why. It accounts for actions taken rather than requiring justification for every unused capability.
-_Avoid_: skipped-Flow audit, mandatory route log
-
 **MCP tool**:
 Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are implementation details rather than Booley's product taxonomy: describe the invoked capability as a **Booley Flow** or **Specialist** unless the protocol boundary itself is the subject.
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
-
-**Acceptance Evidence**:
-An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Acceptance Basis data as provenance; mutable runtime state is only a projection of these observations.
-_Avoid_: booley_state entry, raw Flow result, execution identity
-
-**Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
-_Avoid_: final booley_state, cached status, review report
 
 ## Retired and ambiguous terminology
 
@@ -395,8 +229,6 @@ You will not need these unless you are reading older tickets, code, or docs; the
 - **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents, **Developer Agent** for the agent that executes Tickets.
 - **"stage"**, and lowercase **"harness"** used as a synonym for Booley's architecture as a whole: legacy framing: the system is a Developer Agent choosing capabilities, not a fixed pipeline. Do not use them that way. (The capitalized **Harness** *is* canonical: the Ticket Mode runtime infrastructure the Developer Agent runs within; see its entry above. What to avoid is "harness" as a loose synonym for the overall system.)
 - **"engine" / "core"**: Legacy synonyms for Harness. Do not use.
-- **"abandoned" / "failed"**: Removed ticket states. Use **archived** for tickets that won't be completed.
-- **"effort"**: Deprecated ticket/resource hint. Do not use it to decide Workflow Regions, Specialist requirements, or Developer Agent routing.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
 - **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-runtime identity to refer to.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.

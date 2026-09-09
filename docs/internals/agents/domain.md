@@ -1,10 +1,12 @@
 # Domain docs
 
-Booley is a single-context repository.
+Booley is a multiple-context repository. `CONTEXT-MAP.md` is the authoritative
+index of context ownership.
 
 ## Before exploring
 
-- Read `docs/CONTEXT.md` for the canonical domain vocabulary.
+- Read `CONTEXT-MAP.md`, then `docs/CONTEXT.md` and every context glossary whose
+  owned concepts the work touches.
 - Read relevant ADRs under `docs/adr/` when that directory exists.
 - If an expected document does not exist, proceed silently. Domain-modeling
   creates documentation lazily when terminology or durable decisions are
@@ -12,8 +14,9 @@ Booley is a single-context repository.
 
 ## Use the glossary vocabulary
 
-Use terms exactly as defined in `docs/CONTEXT.md` when naming domain concepts in
-issues, specifications, code, tests, hypotheses, and architectural proposals.
+Use terms exactly as defined by the owning glossary in `CONTEXT-MAP.md` when
+naming domain concepts in issues, specifications, code, tests, hypotheses, and
+architectural proposals.
 
 Do not substitute words listed in an entry's `_Avoid_` field.
 

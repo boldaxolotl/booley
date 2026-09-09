@@ -2,7 +2,8 @@
 
 Signal-query CLI over FST waveform stores (`.fst`) built
 from VCD waveforms. Read this when you need to understand a B-Wave
-concept before running queries.
+concept before running queries. Canonical terms are defined in the
+[B-Wave glossary](../../CONTEXT.md).
 
 ## What it is
 

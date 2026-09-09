@@ -4,6 +4,10 @@ The `qa/` directory defines Booley's public release qualification suite. It cont
 three production scenarios, the profiles that select their checks, the capability
 coverage map, format validation, and the rules for running and reporting QA.
 
+Canonical suite terminology is defined in the [Public QA glossary](CONTEXT.md).
+The repository-wide [context map](../CONTEXT-MAP.md) separates it from shared
+Booley, Ticket Board, and B-Wave vocabulary.
+
 ## Why this exists
 
 Booley has one maintainer and no human QA team. Release QA therefore has to be work

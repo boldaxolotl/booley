@@ -67,7 +67,8 @@ file is high leverage: do not auto-write, pad, or invent facts.
 - Existing canonical `<project_dir>/AGENTS.md`, if present (and any legacy
   `AGENTS.md` at the repo root, to migrate its content into the canonical file)
 - `README.md`
-- `docs/CONTEXT.md`, if present
+- `CONTEXT-MAP.md`, if present, followed by the relevant context glossaries
+- `docs/CONTEXT.md`, if present when no context map exists
 - `.booley_project/booley.toml`
 - the `.core` design-description and `.booley_project/tests.toml`
 - Top-level directory names, only when docs/config mention source/spec roots
