@@ -68,9 +68,10 @@ the runtime.
 The FPGA Flow's portable `compact`, `balanced`, and `max_frequency` profiles
 were characterized on this exact lane. They map to supported Vivado run
 strategies; `balanced` preserves the vendor defaults without patching generated
-Tcl. The checked-in characterization fixture records the reproducible
-compatibility evidence. These names express optimization intent, not guaranteed
-QoR, and FPGA power is not currently a normalized metric.
+Tcl. The reproducible compatibility results are preserved in the checked-in
+[Vivado characterization fixture](../../tests/fixtures/vivado_profile_characterization/evidence.json).
+These names express optimization intent, not guaranteed QoR, and FPGA power is
+not currently a normalized metric.
 
 The Project requests host provisioning under `[eda.vivado]`; the administrator
 selects the exact Installation Registration in the Grant for one canonical
@@ -188,9 +189,9 @@ booley session enter -- python -m pip list        # the Python side
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
 and a tested official-master Spike snapshot at
 `c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
-Spike's snapshot policy follows the validated release channel used to build the
-image. See also
-[CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+Upstream has no maintained stable release suitable for Ubuntu 24.04, so Booley
+moves this exact official-master pin only after its image and RISC-V acceptance
+gates pass. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this
