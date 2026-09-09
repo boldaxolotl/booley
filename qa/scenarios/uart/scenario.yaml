@@ -1337,6 +1337,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-defaults
   phase: prepare
   action: |-
@@ -1362,6 +1395,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-denied-egress
   phase: prepare
   action: |-
@@ -1387,6 +1453,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-egress
   phase: prepare
   action: |-
@@ -1412,6 +1511,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-idle
   phase: prepare
   action: |-
@@ -1437,6 +1569,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-ip
   phase: prepare
   action: |-
@@ -1462,6 +1627,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-key
   phase: prepare
   action: |-
@@ -1487,6 +1685,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-path
   phase: prepare
   action: |-
@@ -1512,6 +1743,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-port
   phase: prepare
   action: |-
@@ -1537,6 +1801,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-scheme
   phase: prepare
   action: |-
@@ -1562,6 +1859,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-invalid-wildcard
   phase: prepare
   action: |-
@@ -1587,6 +1917,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-preserve
   phase: prepare
   action: |-
@@ -1612,6 +1975,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-12.config-recovery
   phase: prepare
   action: |-
@@ -1637,6 +2033,39 @@ steps:
   - path: probes/H-12.md
     audience: coordinator
     sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+  - path: probes/host-policy/README.md
+    audience: coordinator
+    sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
+  - path: probes/host-policy/cap.toml
+    audience: coordinator
+    sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
+  - path: probes/host-policy/egress.toml
+    audience: coordinator
+    sha256: bf4c5a9e5bfb960cb69d903031415e22591e555a95b350f8943b3a82456a5ac3
+  - path: probes/host-policy/idle.toml
+    audience: coordinator
+    sha256: 8e0173981fd9fbe9aeb164ea0d37ee7a49c9bc12cd0b4da3dda624b9271fae6a
+  - path: probes/host-policy/invalid-ip.toml
+    audience: coordinator
+    sha256: 94da6737a70e3a5930d71b29001845ee8e5f5fec4d0db8356daab82211f7ed53
+  - path: probes/host-policy/invalid-key.toml
+    audience: coordinator
+    sha256: 451c6ae68c6e585cfa906e9008c4d40bf0d4652cf0c781529344f7a866f211a0
+  - path: probes/host-policy/invalid-path.toml
+    audience: coordinator
+    sha256: 891abf10cba0e78112e7bdc49bb0abdea7bf6fa4173ee9de20765993de993320
+  - path: probes/host-policy/invalid-port.toml
+    audience: coordinator
+    sha256: fe9da86f4b16f3060dd51ed61af715dd5559f5c62922aa6d2c7445cf8eea8f9c
+  - path: probes/host-policy/invalid-scheme.toml
+    audience: coordinator
+    sha256: dd0de630a5028fa540c5017b39c8235f4e39363b7381dc888988d7544f05095a
+  - path: probes/host-policy/invalid-wildcard.toml
+    audience: coordinator
+    sha256: c6da32e842c368714195d3425c7b860463b97296d65224b791168555cdcf877d
+  - path: probes/host-policy/recovery.toml
+    audience: coordinator
+    sha256: fbc6a45315215da693fc617a6bec55a8e4041443033daf765251bc43b0a6e55d
 - id: inventory.H-13.license-locality
   phase: prepare
   action: |-
@@ -1912,6 +2341,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-refuse-ambiguous
   phase: prepare
   action: |-
@@ -1937,6 +2372,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-refuse-foreign
   phase: prepare
   action: |-
@@ -1962,6 +2403,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-refuse-headless
   phase: prepare
   action: |-
@@ -1987,6 +2434,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-refuse-multiple
   phase: prepare
   action: |-
@@ -2012,6 +2465,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-replace
   phase: prepare
   action: |-
@@ -2037,6 +2496,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.legacy-restart
   phase: prepare
   action: |-
@@ -2062,6 +2527,12 @@ steps:
   - path: probes/H-06.md
     audience: coordinator
     sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+  - path: probes/legacy-client/README.md
+    audience: coordinator
+    sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
+  - path: probes/legacy-client/docker_fixture.py
+    audience: coordinator
+    sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
 - id: inventory.H-06.refresh-vscode
   phase: prepare
   action: |-
@@ -4395,16 +4866,16 @@ steps:
     sha256: 6d27a4bffc3fddf6804c7c3333ae19eb16ad3f2ad91f625d10bfa001fdb279b2
   - path: evaluator/driver.py
     audience: independent evaluator
-    sha256: 429495a6b9766c28af5a35d6dc1637ceb95ba37b35ba6ca1af355b03f4cac9d7
+    sha256: d245e83299e8b84bd4c3438c201999b3a022247256607bb1dbbf12240838643a
   - path: evaluator/exercises.py
     audience: independent evaluator
-    sha256: f112fe60ad6323ae27e5cf4dbecde82d0271a8a7ea10a7ae2d2a088b6d6ae3f7
+    sha256: 03c8b6d5c5a09238fc07cd2022a5342edbf8263f065a1e768eb899fce3f841c4
   - path: evaluator/observe.py
     audience: independent evaluator
     sha256: 38efe264b78db70ba051c275cf4160a03d01cb9b815e361fe70354ba1da8488e
   - path: evaluator/oracles.py
     audience: independent evaluator
-    sha256: 5a2e9fd37002ed2c611c20e54bfdb84218f731f3bbf00508167ab8e2b136fc3c
+    sha256: 0e11e0a05ab67a87d190af87434cd90f77f769dc2f9ade3879fc7866dd5da907
   - path: evaluator/run.py
     audience: independent evaluator
     sha256: 1b4bf4b731fbd206be607f3a2259edaa7bc5f20296d031a60bc07426dc86864e
@@ -4413,13 +4884,16 @@ steps:
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: 2e622d46889b29cc0c28c58e46c999ae8317c674f47206825b45e797a16cf82c
+    sha256: 5f73e95760e608e128edab232d544142e041f8470ce9f6acf186111b360793d0
   - path: evaluator/inputs.py
     audience: independent evaluator
     sha256: fafed8139d6b95a72c536b48ebc4ac54ea1de4dde9baf8039e4c2e95603897ef
   - path: evaluator/publication.py
     audience: independent evaluator
     sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
+  - path: evaluator/CONTRACT.md
+    audience: independent evaluator
+    sha256: d093204b661162b2d29d283b0a997e550826676669fa9767e8a140d44a555f40
 - id: evaluator-candidate
   phase: evaluate
   action: Build accepted commit in disposable operator checkout.

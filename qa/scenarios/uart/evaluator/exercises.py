@@ -71,11 +71,27 @@ async def event_field(driver: Driver, parameters: dict, mask: int) -> None:
 
 
 async def invalid(driver: Driver, parameters: dict) -> None:
-    before = await driver.read(0x10)
+    await driver.configure(control=2)
+    await driver.receive([0x55, 0xAA])
+    await driver.write(0x1C, 0x33)
+    await driver.write(0x20, (2 << 5) | (2 << 2))
+    await driver.write(0x28, 2)
+    await driver.write(0x30, 0x55AA)
+    await driver.write(4, 0xFF)
+    await driver.write(8, 0x54)
+    await driver.wait(128)
+    # Every non-destructive CSR is stable in this epoch: TX disabled, RX idle,
+    # timeout disabled, no loopback, and VAL settled to the constant input.
+    before = {
+        name: await driver.read(fields[0]) for name, fields in REGISTERS.items() if name != "RDATA"
+    }
     value, error = await driver.transfer(parameters["address"], parameters["write"], 0xFFFFFFFF)
     driver.expect((value, error), (0, 1), "Invalid full-width byte address returns error/zero")
-    await driver.read(0x10, before)
-    await driver.read(0x24, 0, 0x00FF00FF)
+    for name, value in before.items():
+        await driver.read(REGISTERS[name][0], value, REGISTERS[name][1])
+    await driver.read(0x18, 0x55, 0xFF)
+    await driver.read(0x18, 0xAA, 0xFF)
+    await driver.read(0x24, 0, 0xFF0000)
 
 
 async def bus(driver: Driver, parameters: dict) -> None:

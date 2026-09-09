@@ -69,6 +69,7 @@ def test_serial_oracle_rejects_unrequested_extra_frame():
 
 def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
     import hashlib
+    import os
     import subprocess
 
     import pytest
@@ -78,6 +79,19 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
     root.mkdir()
     (root / "uart.sv").write_text('`include "constants.svh"\nmodule qa_uart; endmodule\n')
     (root / "constants.svh").write_text("`define CONSTANT 1\n")
+    git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    git_env.update(
+        {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TEMPLATE_DIR": ""}
+    )
+    git_command = [
+        "git",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "init.templateDir=",
+        "-C",
+        str(root),
+    ]
     for args in [
         ["init"],
         ["add", "."],
@@ -93,9 +107,16 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
             "accepted",
         ],
     ]:
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+        subprocess.run(
+            [*git_command, *args], check=True, capture_output=True, timeout=10, env=git_env
+        )
     commit = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        [*git_command, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=git_env,
     ).stdout.strip()
     entries = [
         {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}
@@ -126,3 +147,22 @@ def test_manifest_publication_retains_existing_and_never_leaves_partial_json(tmp
     with pytest.raises(FileExistsError):
         publish_new(path, {"seed": "second"})
     assert path.read_bytes() == original
+
+
+def test_fractional_tx_keeps_global_phase_across_legal_idle():
+    from qa.scenarios.uart.evaluator.oracles import check_tx, serial_bits
+
+    cadence = (85, 85, 86)
+    bits = [*serial_bits(0x55), 1, *serial_bits(0xAA)]
+    trace = [bit for index, bit in enumerate(bits) for _ in range(cadence[index % 3])]
+    assert check_tx(trace + [1] * 200, [0x55, 0xAA], 0x3000)["status"] == "pass"
+
+
+def test_fractional_tx_rejects_restarted_phase_after_idle():
+    from qa.scenarios.uart.evaluator.oracles import check_tx, serial_bits
+
+    cadence = (85, 85, 86)
+    first = [bit for i, bit in enumerate(serial_bits(0x55)) for _ in range(cadence[i % 3])]
+    # This second frame ignores the elapsed idle bit and repeats the old bug's phase.
+    wrong = [bit for i, bit in enumerate(serial_bits(0xAA)) for _ in range(cadence[(i + 10) % 3])]
+    assert check_tx(first + [1] * 85 + wrong + [1] * 200, [0x55, 0xAA], 0x3000)["status"] == "fail"

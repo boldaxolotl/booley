@@ -1,6 +1,6 @@
 # UART public oracle derivation
 
-This is factual derivation and agreed test-vector selection for the [UART handoff](uart.md), not evaluator implementation or qualification. Only the seven permitted documents at `lowRISC/opentitan@615d3c74fadbbf674c8ca05a70f91094989849fb` were retrieved. No implementation, generated register source, tests, DIFs, HJSON or reference model was consulted. Concrete stimuli below are encoding choices within the agreed scope; scenario-defined observation bounds are explicitly separated from documented facts.
+This is the public-contract derivation used by the independent evaluator. It does not establish qualification. Only the seven permitted documents at `lowRISC/opentitan@615d3c74fadbbf674c8ca05a70f91094989849fb` were retrieved. No implementation, generated register source, tests, DIFs, HJSON or reference model was consulted. Concrete stimuli below are encoding choices within the agreed scope; scenario-defined observation bounds are explicitly separated from documented facts.
 
 All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain operator-held and inaccessible from the Developer's Project/runtime.
 

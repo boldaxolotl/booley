@@ -28,10 +28,17 @@ The authoring filter cannot produce a whole-suite coverage index.
 
 Read [Protocol](PROTOCOL.md), [Qualification](QUALIFICATION.md),
 [Format](FORMAT.md), [Authoring](AUTHORING.md) and the [worked example](examples/README.md).
-The [reviewed handoff](HANDOFF.md) and its migration records retain decision history.
-The [implementation status](IMPLEMENTATION.md) lists tested changes and unfinished
-work. In particular, supplemental fault injection infrastructure and parts of the
-[UART evaluator](scenarios/uart/evaluator/README.md) remain incomplete.
+The [published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
+preserves historical decisions. Current contracts live in the scenario assets,
+[format](FORMAT.md), [profiles](profiles.yaml), and
+[UART oracle derivation](scenarios/uart/evaluator/CONTRACT.md). Regression tests
+retain compact checksums of the reviewed profile membership and exclusions.
+
+The validator and fixture controls pass locally. The suite remains unqualified:
+provider-limit and legacy-client fault infrastructure must be provisioned,
+prerequisite/evidence semantics need further review, and UART paired timeout
+comparisons remain blocked where the public timing contract cannot establish a
+verdict. No full scenario, GUI profile, or eight-hour feasibility run has passed.
 
 Execution requires the exact released Booley package/image and matching docs,
 reference native hosts, authorized disposable resources, provider access, declared

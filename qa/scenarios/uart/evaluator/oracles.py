@@ -21,64 +21,77 @@ def serial_bits(byte: int, parity: str = "disabled") -> list[int]:
     return [*bits, 1]
 
 
-def _match_frame(
-    trace: Sequence[int], start: int, bits: list[int], lengths: tuple, phases: set[int]
-) -> tuple[set[int], int]:
-    matched = set()
-    last = start
-    for phase in phases:
-        position = start
-        good = True
-        for index, bit in enumerate(bits):
-            stop = position + lengths[(phase + index) % len(lengths)]
-            if stop > len(trace) or any(value != bit for value in trace[position:stop]):
-                good = False
-                break
-            position = stop
-        if good:
-            matched.add(phase)
-            last = position
-    return matched, last
+def _frame_end(trace: Sequence[int], start: int, bits: list[int], nco: int, residue: int) -> int:
+    position = start
+    for index, bit in enumerate(bits):
+        stop = start + math.ceil(((index + 1) * 1048576 - residue) / nco)
+        if stop > len(trace) or any(value != bit for value in trace[position:stop]):
+            return -1
+        position = stop
+    return position
 
 
-def check_tx(
-    trace: Sequence[int], payload: Sequence[int], nco: int, parity: str = "disabled"
+def _tx_phase(
+    trace: Sequence[int], payload: Sequence[int], nco: int, parity: str, initial: int
 ) -> dict:
-    """Check serial bits and one consistent cadence phase, with bounded launch."""
-    if nco not in RATES or not payload or any(value not in (0, 1) for value in trace):
-        raise ValueError("Expected nonempty payload, binary source-clock trace and selected NCO")
-    lengths = RATES[nco]
-    longest = max(lengths)
-    cursor = 0
-    phases = set(range(len(lengths)))
+    cursor, origin = 0, None
+    longest = max(RATES[nco])
     for byte in payload:
-        limit = min(len(trace), cursor + 2 * longest + 1)
-        start = next((index for index in range(cursor, limit) if trace[index] == 0), None)
+        start = next(
+            (i for i in range(cursor, min(len(trace), cursor + 2 * longest + 1)) if trace[i] == 0),
+            None,
+        )
         if start is None:
             return {
                 "status": "fail" if len(trace) >= cursor + 2 * longest else "blocked",
                 "reason": "TX first/next START liveness",
                 "cycle": cursor,
             }
+        if origin is None:
+            origin = start
+        residue = (initial + (start - origin) * nco) % 65536
+        if residue >= nco:
+            return {
+                "status": "fail",
+                "reason": "START is inconsistent with the shared NCO phase",
+                "cycle": start,
+            }
         bits = serial_bits(byte, parity)
-        if len(trace) - start < sum(lengths[i % len(lengths)] for i in range(len(bits))):
+        needed = math.ceil((len(bits) * 1048576 - residue) / nco)
+        if len(trace) - start < needed:
             return {"status": "blocked", "reason": "Incomplete serial observation", "cycle": start}
-        phases, cursor = _match_frame(trace, start, bits, lengths, phases)
-        if not phases:
+        cursor = _frame_end(trace, start, bits, nco, residue)
+        if cursor < 0:
             return {
                 "status": "fail",
                 "reason": "Serial payload/parity/stop or cadence mismatch",
                 "cycle": start,
             }
-        phases = {(phase + len(bits)) % len(lengths) for phase in phases}
     if any(value != 1 for value in trace[cursor:]):
         return {"status": "fail", "reason": "Unrequested serial activity after complete payload"}
     return {
         "status": "pass",
         "reason": "Complete independent serial decode and cadence",
         "cycles": cursor,
-        "legal_phases": sorted(phases),
+        "initial_accumulator_residue": initial,
     }
+
+
+def check_tx(
+    trace: Sequence[int], payload: Sequence[int], nco: int, parity: str = "disabled"
+) -> dict:
+    """Keep one accumulator phase over frame bits and all elapsed idle clocks."""
+    if nco not in RATES or not payload or any(value not in (0, 1) for value in trace):
+        raise ValueError("Expected nonempty payload, binary source-clock trace and selected NCO")
+    outcomes = [
+        _tx_phase(trace, payload, nco, parity, residue)
+        for residue in range(0, nco, math.gcd(nco, 65536))
+    ]
+    for status in ["pass", "blocked", "fail"]:
+        for outcome in outcomes:
+            if outcome["status"] == status:
+                return outcome
+    raise AssertionError("Selected rates must have accumulator phases")
 
 
 def check_val(rx: Sequence[int], reads: Sequence[tuple[int, int]], nco: int) -> bool:

@@ -9623,6 +9623,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-08.checkpoint-resume
   phase: ticket2
   action: |-
@@ -9648,6 +9654,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-08.developer-timeout
   phase: ticket2
   action: |-
@@ -9673,6 +9685,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-08.known-transient-retry
   phase: ticket2
   action: |-
@@ -9698,6 +9716,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-08.ordinary-crash
   phase: ticket2
   action: |-
@@ -9723,6 +9747,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-08.subscription-requeue
   phase: ticket2
   action: |-
@@ -9748,6 +9778,12 @@ steps:
   - path: probes/T-08.md
     audience: coordinator
     sha256: 7fe046513041650b7d46edc65936e0b3054451f831db678351229975088b5cdb
+  - path: probes/provider-fault/README.md
+    audience: coordinator
+    sha256: a28253c96fa464628c71623f95b9f4ae7b0f8083127e7a5dc7c8b6548e595b49
+  - path: probes/provider-fault/codex_fixture.py
+    audience: coordinator
+    sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
 - id: inventory.T-09.artifact-isolation
   phase: ticket2
   action: |-

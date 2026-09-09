@@ -1,0 +1,4 @@
+[interactive]
+idle_timeout_seconds = 7200
+max_sessions = 4
+egress_allowlist = []

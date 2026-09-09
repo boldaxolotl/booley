@@ -52,6 +52,10 @@ control attempts alongside successful corrections.
 Depth/event-reset timeout cases retain paired stimuli and timestamps but remain
 blocked: the public text does not supply a universal phase-comparison tolerance.
 Natural interrupt sources and both active/inactive level injection are exercised.
-Full RX sampling phase coverage, complete invalid-address side-effect observations,
-and behavioral controls for these additional oracles still require qualification.
+Invalid-address cases now retain occupied FIFO data and every stable CSR across
+the rejected operation. Full RX sampling phase coverage and real hardware controls
+for these additional oracles still require qualification.
 No production UART candidate has been evaluated here.
+
+The active derivation is [CONTRACT.md](CONTRACT.md); historical handoff notes stay
+at their published design commit.

@@ -3,7 +3,6 @@
 import math
 from pathlib import Path
 
-from cocotb.triggers import Timer
 from oracles import RATES, check_tx, compare_mmio, serial_bits
 
 
@@ -68,6 +67,8 @@ class Driver:
             )
 
     async def tick(self) -> dict:
+        from cocotb.triggers import Timer
+
         if self.cycle >= 1048576:
             raise ObservationBlockedError("Operational source-clock ceiling exhausted")
         if self.cycle in self.rx_schedule:
@@ -95,6 +96,8 @@ class Driver:
             await self.tick()
 
     async def reset(self) -> None:
+        from cocotb.triggers import Timer
+
         for name in [
             "clk_i",
             "rst_ni",
