@@ -115,7 +115,7 @@ that previously leaked into Config; they are not new cyclic dependencies.
 
 - The architecture report identifies zero normalized `booley.config →
   booley.runtime` edges.
-- D16 forbids the direction with no waiver or composition exception. Seed tests
+- D17 forbids the direction with no waiver or composition exception. Seed tests
   prove that ordinary, function-local, and `TYPE_CHECKING` imports are caught.
 - `pytest -q tests/architecture`: 91 passed.
 - Focused review-regression and architecture selection: 862 passed.

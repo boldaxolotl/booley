@@ -3369,13 +3369,21 @@ class TestWcpServerCheck:
         attached: bool | None = True,
         in_container: bool = False,
         probe=None,
+        extension_state=None,
+        extension_probe=None,
     ) -> _Rec:
         from booley.runtime import runtime_context, session_runtime
+        from booley.runtime.vaporview import ExtensionState
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
         monkeypatch.setattr(doctor, "_wcp_port_listening", probe or (lambda argv, port: listening))
         monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda argv: attached)
+        monkeypatch.setattr(
+            doctor,
+            "_vaporview_extension_state",
+            extension_probe or (lambda argv: extension_state or ExtensionState.INSTALLED),
+        )
         rec = _Rec()
 
         def fail(message, fix=""):
@@ -3396,6 +3404,47 @@ class TestWcpServerCheck:
         assert "Reload Window" in failure
         assert "do not run 'WCP: Start Server'" in failure
         assert "vsc-proj-abc-uid" in failure
+
+    def test_dark_port_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(
+            tmp_path,
+            monkeypatch,
+            listening=False,
+            extension_state=ExtensionState.MISSING,
+        )
+
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "VaporView extension is not installed" in failure
+        assert "Install from VSIX" in failure
+        assert "postAttach VaporView patch only takes effect" not in failure
+
+    def test_dark_port_with_unknown_extension_state_reports_uncertainty(
+        self, tmp_path, monkeypatch
+    ):
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(
+            tmp_path,
+            monkeypatch,
+            listening=False,
+            extension_state=ExtensionState.UNKNOWN,
+        )
+
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "could not determine whether VaporView is installed" in failure
+        assert "VaporView extension is not installed" not in failure
+
+    def test_listening_port_does_not_probe_extension_state(self, tmp_path, monkeypatch):
+        rec = self._run(
+            tmp_path,
+            monkeypatch,
+            listening=True,
+            extension_probe=lambda argv: pytest.fail("extension state must not be probed"),
+        )
+
+        assert rec.kinds() == {"pass"}
 
     def test_skips_without_runtime(self, tmp_path, monkeypatch):
         rec = self._run(tmp_path, monkeypatch, docker=None)
@@ -3429,6 +3478,34 @@ class TestWcpServerCheck:
         rec = self._run(tmp_path, monkeypatch, docker=None, in_container=True, probe=probe)
         assert seen == [[]]  # no `docker exec` prefix
         assert rec.kinds() == {"fail"}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected"),
+    [
+        (0, "INSTALLED"),
+        (3, "MISSING"),
+        (4, "UNKNOWN"),
+        (1, "UNKNOWN"),
+    ],
+)
+def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, returncode, expected):
+    from booley.runtime.vaporview import ExtensionState
+
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    state = doctor._vaporview_extension_state(["docker", "exec", "session"])
+
+    assert state is getattr(ExtensionState, expected)
+    assert seen == [
+        ["docker", "exec", "session", "python3", "-c", doctor._VAPORVIEW_STATE_PROBE_SOURCE]
+    ]
 
 
 class TestWcpPortProbe:

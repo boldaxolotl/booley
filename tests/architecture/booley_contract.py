@@ -45,6 +45,9 @@ _D12_REASON = (
     "back on catalog orchestration or presentation"
 )
 _D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implementations"
+_D16_REASON = (
+    "Criteria evaluates shared evidence without depending on Flow production or execution"
+)
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -80,7 +83,7 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
-        "D16",
+        "D17",
         (prefix("booley.config"),),
         (prefix("booley.runtime"),),
         "configuration returns validated values and does not own Runtime construction or setup",
@@ -96,6 +99,12 @@ DIRECTION_RULES = (
         (prefix("booley.flows"),),
         (prefix("booley.mcp"),),
         "Deterministic Flow execution and its shared services do not depend on MCP exposure.",
+    ),
+    DirectionRule(
+        "D16",
+        (prefix("booley.criteria"),),
+        (prefix("booley.flows"),),
+        _D16_REASON,
     ),
     DirectionRule(
         "D1",

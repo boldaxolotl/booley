@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from booley.flows.clock_timing import CLOCK_TIMING_FIELDS, make_clock_timing
+from booley.evidence.timing import CLOCK_TIMING_FIELDS, make_clock_timing
 from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
 
 logger = logging.getLogger(__name__)

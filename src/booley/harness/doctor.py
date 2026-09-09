@@ -96,7 +96,7 @@ from booley.harness.setup.line_endings import (
     line_ending_repository_display,
     reconcile_project_line_endings,
 )
-from booley.runtime import auth_token, runtime_context, session_runtime
+from booley.runtime import auth_token, runtime_context, session_runtime, vaporview
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -3445,6 +3445,19 @@ _WCP_RELOAD_FIX = (
     "report EADDRINUSE from a second start"
 )
 
+_WCP_MISSING_EXTENSION_FIX = vaporview.install_guidance()
+_WCP_UNKNOWN_EXTENSION_FIX = (
+    "could not determine whether VaporView is installed; verify it in the attached "
+    "remote window, then install it if absent or run 'Developer: Reload Window' if present"
+)
+
+_VAPORVIEW_STATE_PROBE_SOURCE = (
+    "import sys;from pathlib import Path;"
+    "from booley.runtime.vaporview import ExtensionState,probe_home;"
+    "s=probe_home(Path.home());"
+    "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
+)
+
 # Probe body: a bare TCP connect, run by whichever interpreter is at hand. Kept
 # to connect_ex so a refused port is an exit code, never a traceback.
 _WCP_PROBE_SOURCE = (
@@ -3496,6 +3509,35 @@ def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
     return result.returncode == 0
 
 
+def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
+    """Probe the remote extension registry; unexpected failures remain unknown."""
+    try:
+        result = subprocess.run(
+            [*argv_prefix, "python3", "-c", _VAPORVIEW_STATE_PROBE_SOURCE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return vaporview.ExtensionState.UNKNOWN
+    if result.returncode == 0:
+        return vaporview.ExtensionState.INSTALLED
+    if result.returncode == 3:
+        return vaporview.ExtensionState.MISSING
+    return vaporview.ExtensionState.UNKNOWN
+
+
+def _wcp_dark_fix(argv_prefix: list[str]) -> str:
+    """Choose recovery from an authoritative remote extension observation."""
+    state = _vaporview_extension_state(argv_prefix)
+    if state is vaporview.ExtensionState.MISSING:
+        return "VaporView extension is not installed. " + _WCP_MISSING_EXTENSION_FIX
+    if state is vaporview.ExtensionState.UNKNOWN:
+        return _WCP_UNKNOWN_EXTENSION_FIX
+    return _WCP_RELOAD_FIX
+
+
 def _check_wcp_server(
     project: ProjectAudit,
     docker_exe: str | None,
@@ -3538,7 +3580,7 @@ def _check_wcp_server(
         elif listening:
             _pass(description)
         else:
-            _fail(f"{description}: nothing is listening", _WCP_RELOAD_FIX)
+            _fail(f"{description}: nothing is listening", _wcp_dark_fix([]))
         return
 
     if not docker_exe:
@@ -3559,7 +3601,7 @@ def _check_wcp_server(
     elif listening:
         _pass(description)
     else:
-        _fail(f"{description}: nothing is listening in '{container}'", _WCP_RELOAD_FIX)
+        _fail(f"{description}: nothing is listening in '{container}'", _wcp_dark_fix(argv_prefix))
 
 
 def _check_interactive_state_volumes(

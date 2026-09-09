@@ -14,10 +14,10 @@ import pytest
 from booley.criteria.state import (
     CATEGORY_RTL,
     CATEGORY_TB,
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    as_str_list,
 )
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import as_str_list
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,

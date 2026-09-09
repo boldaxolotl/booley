@@ -9,10 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.criteria.categories import verification_fingerprint_categories
-from booley.criteria.state import (
-    SOURCE_FINGERPRINT_DETAIL_KEY,
-    CriterionChange,
-)
+from booley.criteria.state import CriterionChange
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.endpoint_diff import (
     _classify_files,

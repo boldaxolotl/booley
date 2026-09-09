@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from booley.criteria.actions import planned_invocation
-from booley.flows.clock_timing import worst_fmax_from_json
+from booley.evidence.timing import worst_fmax_from_json
 
 if TYPE_CHECKING:
     from pathlib import Path

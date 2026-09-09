@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
+from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
 APP_CLAUDE = "claude"
@@ -88,8 +89,6 @@ _APP_EXTENSION = {
 # Waveform Viewer (ADR 0035): VaporView is installed for every app so
 # `bwave gui` and the agent's scoped-view WCP calls work in the attached
 # window.
-_VAPORVIEW_EXTENSION = "lramseyer.vaporview"
-
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting

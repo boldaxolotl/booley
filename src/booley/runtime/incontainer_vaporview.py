@@ -69,10 +69,8 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-# Marketplace id of the extension we patch (matches
-# ``devcontainer._VAPORVIEW_EXTENSION``). Installed under
-# ``extensions/<id>-<version>/`` — the version varies, so we glob.
-_VAPORVIEW_EXTENSION = "lramseyer.vaporview"
+from booley.runtime import vaporview
+from booley.runtime.vaporview import find_manifests
 
 # Activation event that fires once per window after startup finishes, without
 # needing an open waveform document — the trigger for the extension's own
@@ -110,18 +108,7 @@ _WAIT_ENV = "BOOLEY_VAPORVIEW_WAIT_SECONDS"
 
 
 def _agent_home() -> Path:
-    return Path(os.environ.get("HOME", "/home/agent"))
-
-
-def find_manifests(home: Path) -> list[Path]:
-    """VaporView ``package.json`` manifests under the container's server dir.
-
-    Globbed because the install path carries the version
-    (``lramseyer.vaporview-1.5.4``); a mid-upgrade home can briefly hold two.
-    Returns an empty list when the extension is not yet installed.
-    """
-    ext_root = home / ".vscode-server" / "extensions"
-    return sorted(ext_root.glob(f"{_VAPORVIEW_EXTENSION}-*/package.json"))
+    return vaporview.session_home()
 
 
 def _patch_wcp_setting_scopes(contributes: dict) -> bool:

@@ -32,9 +32,6 @@ from booley.targets.declared_inputs import project_config_program_paths
 logger = logging.getLogger(__name__)
 
 
-SOURCE_FINGERPRINT_DETAIL_KEY = "_source_fingerprint"
-
-
 def as_str_list(value: Any, default: list[str]) -> list[str]:
     """Coerce a TOML ``source_dirs`` value to ``list[str]``.
 
