@@ -19,3 +19,10 @@ def _set_project_dir(tmp_path, monkeypatch):
     reset_cache()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    # Legacy callers retain the root selected at import time, before fixtures run.
+    # Keep discovery inside this test's Project even when collection imported it
+    # from the framework checkout (which contains operator-owned QA .core files).
+    from booley.runtime import shared_infra
+
+    monkeypatch.setattr(shared_infra, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)

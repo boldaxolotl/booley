@@ -116,3 +116,14 @@ Finalize missing checks as blocked, list owned-resource disposition, and report
 operational completion as `completed`, `deadline reached`, or `operator error`.
 Calculate qualification using [Qualification](QUALIFICATION.md). Incomplete
 mandatory cleanup prevents a pass without concealing trustworthy product failures.
+
+Taxi additionally owns the explicitly authorized [disposable submodule companion](scenarios/taxi/fixtures/submodules.md).
+Construct it separately from the authentic pinned Taxi checkout; preserve both
+required RTL dependencies and the prescribed warm/cold failure and restoration
+observations. Fixture-construction tests and root-only synthesis are not functional
+Simulation Flow credit.
+
+The inventory's D-01/D-02 probes exercise Booley Feedback using disposable file-only
+fixtures. Their outputs are scenario evidence, not the suite's reporting channel.
+They authorize no submission, email or issue. Keep suite results/findings separate
+and directly usable by Consolidate Findings.

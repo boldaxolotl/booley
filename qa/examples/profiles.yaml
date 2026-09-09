@@ -1,16 +1,55 @@
 format_version: 1
-illustrative_only: true
 profiles:
-  - id: example-core
-    required_runs:
-      - scenario_id: example-wishbone
-        platform: Ubuntu 24.04 x86-64
-        provider: Codex
-        checks: [baseline, detect-fault, restore, cleanup]
-  - id: example-gui
-    required_runs:
-      - scenario_id: example-wishbone
-        platform: Ubuntu 24.04 x86-64
-        provider: Codex
-        checks: [baseline, detect-fault, restore, viewer, cleanup]
-        capabilities: [qualified_visual_observer]
+- id: example-core
+  required: true
+  claim: Illustrative only; no execution authority or qualification credit
+  runs:
+  - id: example-run
+    scenario_id: example-wishbone
+    os: Ubuntu 24.04
+    architecture: x86-64
+    native_host: true
+    provider: Codex
+    interactive_client: native CLI
+    ticket_backend: Codex
+    capability_probes:
+    - Disposable approved Project and operator artifact root
+    checks:
+    - example-wishbone.baseline
+    - example-wishbone.detect-fault
+    - example-wishbone.restore
+    - example-wishbone.cleanup
+    supporting_steps:
+    - baseline
+    - fault
+    - restoration
+    - cleanup
+    exclusions: []
+- id: example-gui
+  required: true
+  claim: Illustrative only; no execution authority or qualification credit
+  runs:
+  - id: example-run
+    scenario_id: example-wishbone
+    os: Ubuntu 24.04
+    architecture: x86-64
+    native_host: true
+    provider: Codex
+    interactive_client: supported VS Code client
+    ticket_backend: Codex
+    capability_probes:
+    - Disposable approved Project and operator artifact root
+    - Qualified visual observer
+    checks:
+    - example-wishbone.baseline
+    - example-wishbone.detect-fault
+    - example-wishbone.restore
+    - example-wishbone.viewer
+    - example-wishbone.cleanup
+    supporting_steps:
+    - baseline
+    - fault
+    - restoration
+    - viewer
+    - cleanup
+    exclusions: []

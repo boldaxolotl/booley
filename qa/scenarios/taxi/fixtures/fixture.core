@@ -1,0 +1,38 @@
+CAPI=2:
+name: booley:qa:submodule_fixture:1.0
+filesets:
+  dependencies:
+    files:
+      - deps/data/nested/leaf/rtl/leaf.sv
+      - deps/data/rtl/data.sv
+      - tb/fixture_tb.sv
+    file_type: systemVerilogSource
+  transport:
+    files: [rtl/transport.sv]
+    file_type: systemVerilogSource
+parameters:
+  EXPECT_DATA:
+    datatype: int
+    paramtype: vlogparam
+    default: 9320
+  EXPECT_LEAF:
+    datatype: int
+    paramtype: vlogparam
+    default: 52
+targets:
+  sim_submodule_fixture_a:
+    default_tool: icarus
+    filesets: [dependencies]
+    toplevel: fixture_tb
+    parameters: [EXPECT_DATA=4951, EXPECT_LEAF=18]
+  sim_submodule_fixture_b:
+    default_tool: icarus
+    filesets: [dependencies]
+    toplevel: fixture_tb
+    parameters: [EXPECT_DATA=9320, EXPECT_LEAF=52]
+  synth_submodule_transport:
+    default_tool: yosys
+    filesets: [transport]
+    toplevel: qa_transport
+    flow_options:
+      synth_mode: logical

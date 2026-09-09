@@ -1,0 +1,4 @@
+# Reviewed release metadata: https://pypi.org/project/PyYAML/6.0.3/
+PyYAML==6.0.3
+# https://pypi.org/project/jsonschema/4.26.0/
+jsonschema==4.26.0

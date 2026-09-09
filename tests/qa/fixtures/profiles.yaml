@@ -1,0 +1,27 @@
+format_version: 1
+profiles:
+- id: core
+  required: true
+  claim: Released package
+  runs:
+  - id: sample-linux
+    scenario_id: sample
+    os: Ubuntu 24.04
+    architecture: x86-64
+    native_host: true
+    provider: Codex
+    interactive_client: native CLI
+    ticket_backend: Codex
+    capability_probes:
+    - Docker ready
+    checks:
+    - sample.baseline
+    - sample.negative
+    - sample.restored
+    - sample.removed
+    supporting_steps:
+    - prepare
+    - detect
+    - restore
+    - cleanup
+    exclusions: []

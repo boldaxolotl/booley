@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "format_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "scenario_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "git",
+              "sha256",
+              "literal",
+              "pre-run"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verification": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "source",
+          "verification"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "authority": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "deadline_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        },
+        "cleanup_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        },
+        "contingency_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 480
+        },
+        "cleanup_start_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        },
+        "final_regression_start_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480
+        }
+      },
+      "required": [
+        "deadline_minutes",
+        "cleanup_minutes",
+        "contingency_minutes",
+        "cleanup_start_minutes"
+      ],
+      "additionalProperties": false
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 480
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "minutes"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "stimulus": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "authority_ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "capture": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "navigation_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "id",
+                "capabilities",
+                "stimulus",
+                "expected",
+                "authority_ref",
+                "evidence",
+                "capture"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "authority": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "timeout_minutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 480
+          },
+          "retry": {
+            "type": "object",
+            "properties": {
+              "max_attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "signature": {
+                "const": "API Error: Response stalled mid-stream"
+              }
+            },
+            "required": [
+              "max_attempts",
+              "signature"
+            ],
+            "additionalProperties": false
+          },
+          "recovery": {
+            "type": "object",
+            "properties": {
+              "baseline": {
+                "type": "string",
+                "minLength": 1
+              },
+              "detection": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "instruction": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "baseline",
+              "detection",
+              "instruction"
+            ],
+            "additionalProperties": false
+          },
+          "recovery_point": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "audience": {
+                  "enum": [
+                    "coordinator",
+                    "setup delegate",
+                    "Interactive Mode delegate",
+                    "Developer Agent",
+                    "independent evaluator"
+                  ]
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "substitutions": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "run_root",
+                      "artifact_root",
+                      "ticket_id",
+                      "commit_id",
+                      "release",
+                      "provider"
+                    ]
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                },
+                "base": {
+                  "enum": [
+                    "scenario",
+                    "shared"
+                  ],
+                  "default": "scenario",
+                  "description": "Resolve path within the owning scenario or qa/shared."
+                }
+              },
+              "required": [
+                "path",
+                "audience"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "id",
+          "phase",
+          "action",
+          "checks"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "format_version",
+    "scenario_id",
+    "title",
+    "source",
+    "inputs",
+    "authority",
+    "budget",
+    "phases",
+    "steps"
+  ],
+  "additionalProperties": false
+}
