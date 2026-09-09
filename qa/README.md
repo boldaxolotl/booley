@@ -1,5 +1,9 @@
 # Public Booley QA suite
 
+Canonical suite terminology is defined in the [Public QA glossary](CONTEXT.md).
+The repository-wide [context map](../CONTEXT-MAP.md) separates it from shared
+Booley, Ticket Board, and B-Wave vocabulary.
+
 The production assets encode the accepted three journeys and explicit qualification
 profiles. Qualification requires recorded execution evidence for the selected profiles.
 

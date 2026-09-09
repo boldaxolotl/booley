@@ -26,7 +26,8 @@ built-in flows. Follow the links above for those references.
 
 This is an implementation-level guide. It assumes the vocabulary and whole-system model from:
 
-- **[CONTEXT.md](../CONTEXT.md)** — the controlled vocabulary. This guide leans on *Booley Flow*, *Target*, *Criterion*, *Developer Agent*, *Specialist*, *Session Runtime*, *Ticket Mode*, and *Workflow Region* as already-defined terms.
+- **[CONTEXT-MAP.md](../../CONTEXT-MAP.md)** — the controlled-vocabulary
+  index. This guide uses both the shared Booley and Ticket Board glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Developer Agent, Specialists, and the Booley Flow contract fit together at run time.
 - **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Run Commands.
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.

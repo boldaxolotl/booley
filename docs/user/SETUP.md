@@ -33,8 +33,8 @@ verdict—and `enabled`/EDA provisioning), see [CONFIG.md](CONFIG.md).
 > This guide is written for a person setting up a project. An agent can follow
 > it too: point it at this file. After the bootstrap it hands off to the
 > `booley-setup` skill. It assumes you've skimmed the
-> [README](../../README.md); [CONTEXT.md](../CONTEXT.md) defines any Booley-specific
-> term you hit here (Booley Flow, Specialist, Ticket/Interactive Mode).
+> [README](../../README.md); the [context map](../../CONTEXT-MAP.md) locates the
+> canonical definition of any Booley-specific term you hit here.
 
 ## Ports
 
