@@ -175,9 +175,7 @@ may override the Python rows (see
 
 Verilator 5.052 includes the nested-shift compiler fix required for native
 coverage. The image includes LZ4 development headers for native FST model
-builds and retains the system allocator. See the
-[upgrade acceptance record](../internals/verilator-5052-acceptance.md) for
-validated harnesses, waveform checks, and per-instance coverage requirements.
+builds and retains the system allocator.
 
 Check what your image actually has rather than trusting the table after an
 upgrade:
@@ -191,8 +189,7 @@ booley session enter -- python -m pip list        # the Python side
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
 and a tested official-master Spike snapshot at
 `c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
-Spike's snapshot policy and validation record are documented in
-[Spike release-channel research](../research/spike-release-channel.md). See also
+See also
 [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,
