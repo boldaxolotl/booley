@@ -107,7 +107,9 @@ def test_ticket_runtime_configuration_derives_runtime_and_report_directory(
 ) -> None:
     logs_dir = tmp_path / "logs"
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs_dir))
-    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    # Track the variable even when the process started without it so the
+    # adapter's direct environment write is reliably undone after this test.
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", "")
     request = FlowRequest(target="demo", work_dir=tmp_path)
 
     TicketBoardFlowExecution._configure_runtime(request)
