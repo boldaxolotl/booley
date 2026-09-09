@@ -59,7 +59,7 @@ product and native-host combinations. Show exclusions in the report with their r
 
 ## Verdicts
 
-Evaluate a profile against all its required runs and checks for the declared release
+Evaluate a profile against all its required runs and checks for the declared Booley build
 and suite revision. Existing profiles cannot be narrowed after seeing results.
 
 1. Any trustworthy required-check failure or unresolved trustworthy Booley/docs
@@ -96,20 +96,21 @@ while GUI is unavailable; an unqualified “suite passed” is not.
 
 ## Revision and currency
 
-Bind every result to exact run inputs. For a new released Booley version, run the
-required profiles afresh; evidence does not carry forward automatically. For a
+Bind every result to exact run inputs. For a different Booley build identity, whether
+published or unreleased, run the required profiles afresh; evidence does not carry
+forward automatically. For a
 behavioral scenario revision, rerun affected whole scenarios in their required
 profiles. A shared behavioral protocol change reruns every affected scenario.
 Editorial changes need no rerun; record that classification. Reports identify the
 actual tested commits and any reviewed editorial-only equivalence.
 
 When only some scenarios change, a qualification report may use prior completed
-runs of unchanged whole scenarios from the same Booley release. Review must confirm
+runs of unchanged whole scenarios from the same Booley build. Review must confirm
 that their scenario inputs, selected checks/profile requirements, shared protocol,
 referenced prompts/evaluator assets, and relevant environment identities are unchanged
 or editorially equivalent. Record the source run and actual tested suite commit;
 otherwise rerun the scenario. This assembles a report from complete runs, not skipped
-checks in a new run. A new Booley release always requires fresh runs. No per-cell
+checks in a new run. A different Booley build always requires fresh runs. No per-cell
 invalidation database is required.
 
 The exact named definitions live in [profiles.yaml](../profiles.yaml):

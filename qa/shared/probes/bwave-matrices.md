@@ -19,7 +19,7 @@ for list/value/find/stats: request JSON on known trace → parse documented enve
 and exact result. Define `json-<command>-rejected` for signal/wave/sample/diff/
 distance/stuck: request JSON → documented unsupported-output rejection. Merely
 having --format in help does not establish JSON support. Capture each output,
-exit and release-matched command page.
+exit and build-matched command page.
 
 Current [public marker reference](../../../crates/bwave/docs/public/reference/markers.md)
 and [overview](../../../crates/bwave/docs/public/commands/overview.md) agree:

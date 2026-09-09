@@ -120,10 +120,14 @@ changing QA assets, also run `python -m pytest tests/qa/` as required by the
 ## Current status
 
 The repository contains the production definitions and validation tooling, but no
-full qualification results. Execution still requires the reference native hosts,
+full qualification results. The exact, immutable Booley build under test may be a
+published release or an unreleased candidate, with package/image provenance and a
+matching documentation snapshot. Execution also requires the reference native hosts,
 provider access, authorized disposable resources, declared EDA provisioning, and
-independent evidence storage. Record implementation progress in the relevant pull
-request or issue, and put execution results in run records.
+independent evidence storage. GUI profiles require actual supported VS Code clients,
+WCP and a qualified screenshot observer; no headless substitute or smaller profile is
+implied. Record implementation progress in the relevant pull request or issue, and put
+execution results in run records.
 
 For the UART scenario, exact-a/VAL=32 timeout comparisons use the approved public
 30 to 34 bit-time window in the [timing addendum](scenarios/uart/spec/timing-addendum.md).
