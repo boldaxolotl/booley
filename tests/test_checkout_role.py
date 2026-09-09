@@ -29,9 +29,9 @@ def _write_source_checkout(root: Path, *, marker: bool = True) -> None:
 def test_module_imports_vendored_boundary_helper(monkeypatch) -> None:
     """The standalone classifier resolves boundary.py from beside the hook."""
     module_path = (
-        Path(__file__).resolve().parents[1] / "src" / "booley" / "runtime" / "checkout_role.py"
+        Path(__file__).resolve().parents[1] / "src" / "booley" / "core" / "checkout_role.py"
     )
-    boundary_dir = module_path.parents[1] / "core"
+    boundary_dir = module_path.parent
     monkeypatch.syspath_prepend(str(boundary_dir))
     real_import = __import__
 

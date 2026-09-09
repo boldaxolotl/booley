@@ -189,9 +189,9 @@ class Specialist(McpTool):
         """
         tier = self._resolve_tier(self.args.model)
         try:
-            from booley.config.settings import get_backend_config
+            from booley.config.settings import get_agent_settings
 
-            cfg = get_backend_config()
+            cfg = get_agent_settings()
             return cfg.model_for_role(self.name, tier)
         except (ImportError, AttributeError):
             return _DEFAULT_TIER_MODELS.get(tier, "claude-opus-4-8")
@@ -200,9 +200,9 @@ class Specialist(McpTool):
         """Resolve reasoning effort for the active tier."""
         tier = self._resolve_tier(self.args.model)
         try:
-            from booley.config.settings import get_backend_config
+            from booley.config.settings import get_agent_settings
 
-            cfg = get_backend_config()
+            cfg = get_agent_settings()
             return cfg.effort_for_tier(tier)
         except (ImportError, AttributeError):
             return None

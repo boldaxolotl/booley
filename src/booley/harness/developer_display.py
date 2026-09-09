@@ -314,7 +314,7 @@ def _console_activity(activity: str) -> None:
 
 def _display_ticket_banner(ctx: TicketContext) -> None:
     """Print the styled ticket info box to the terminal."""
-    from booley.config.settings import get_backend_config
+    from booley.runtime.agent_config import get_backend_config
 
     terminal.raw()
     _DISPLAY = {"claude": ("Claude", chrome), "codex": ("ChatGPT", chrome)}

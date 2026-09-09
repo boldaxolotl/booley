@@ -18,12 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from booley.config.settings import get_backend_config, load_models_config
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.harness.job_fence import wait_for_ticket_jobs
 from booley.runtime.agent import call_agent
+from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -1327,7 +1327,7 @@ async def prepare_review_command(
 ) -> ReviewPrepOutcome:
     """Prepare a review package for a review or blocked ticket."""
     try:
-        load_models_config(project_root)
+        load_backend_config(project_root)
         _resolve_context(
             project_root.resolve(),
             slug,

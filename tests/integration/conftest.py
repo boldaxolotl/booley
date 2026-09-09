@@ -207,12 +207,9 @@ def _patch_project_configs():
 @pytest.fixture(autouse=True)
 def _disable_docker_sandbox():
     """Disable Docker sandbox so E2E tests route through mocked ClaudeSDKBackend."""
-    from booley.config.agent import (
-        BackendConfig,
-        SandboxConfig,
-        set_backend_config,
-    )
+    from booley.config.agent import SandboxConfig
     from booley.runtime.agent_backend import ClaudeSDKBackend
+    from booley.runtime.agent_config import BackendConfig, set_backend_config
 
     cfg = BackendConfig(
         active_backend=ClaudeSDKBackend(),

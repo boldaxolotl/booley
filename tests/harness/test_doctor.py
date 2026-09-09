@@ -6348,11 +6348,11 @@ class TestDeveloperProbe:
         assert "every ticket agent will fail" in rec.events[0][1]
 
     def test_measure_uses_child_rusage(self, tmp_path, monkeypatch):
-        from booley.config import settings as config_mod
         from booley.harness.models import AgentResult
         from booley.runtime import agent as agent_mod
+        from booley.runtime import agent_config as config_mod
 
-        monkeypatch.setattr(config_mod, "load_models_config", lambda root: None)
+        monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
 
         class _Cfg:
             def model_for_tier(self, tier):
@@ -6384,11 +6384,11 @@ class TestDeveloperProbe:
         assert seen[0].allowed_agent_capabilities == []
 
     def test_measure_flags_upper_bound_without_delta(self, tmp_path, monkeypatch):
-        from booley.config import settings as config_mod
         from booley.harness.models import AgentResult
         from booley.runtime import agent as agent_mod
+        from booley.runtime import agent_config as config_mod
 
-        monkeypatch.setattr(config_mod, "load_models_config", lambda root: None)
+        monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
 
         class _Cfg:
             def model_for_tier(self, tier):
@@ -6414,12 +6414,12 @@ class TestDeveloperProbe:
         assert exact is False
 
     def test_measure_wraps_agent_failure_in_probe_error(self, tmp_path, monkeypatch):
-        from booley.config import settings as config_mod
+        from booley.runtime import agent_config as config_mod
 
         def boom(_root):
             raise RuntimeError("no backend configured")
 
-        monkeypatch.setattr(config_mod, "load_models_config", boom)
+        monkeypatch.setattr(config_mod, "load_backend_config", boom)
         with pytest.raises(developer_probe.ProbeError, match="no backend"):
             developer_probe.measure_developer_rss(tmp_path)
 

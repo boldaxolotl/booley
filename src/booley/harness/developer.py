@@ -211,11 +211,11 @@ async def _prepare_ticket(
     save_transcripts: bool,
 ) -> TicketContext:
     """Run config-load, preflight, and parse-validate. Returns the ready ctx."""
-    from booley.config.settings import load_models_config
+    from booley.runtime.agent_config import load_backend_config
 
     from .setup.intake import run as parse_validate
 
-    load_models_config(project_root)
+    load_backend_config(project_root)
     run_preflight(project_root)
     try:
         ctx = await parse_validate(ticket_path_or_slug, project_root)
@@ -877,7 +877,7 @@ def _iter_criteria_keys(criteria: dict) -> list[str]:
 
 def _detect_backend_key() -> str:
     """Return 'codex' or 'claude' based on active backend config."""
-    from booley.config.settings import get_backend_config as _get_cfg
+    from booley.runtime.agent_config import get_backend_config as _get_cfg
 
     _cfg = _get_cfg()
     _backend_name = getattr(_cfg.active_backend, "name", "").lower()
@@ -1522,7 +1522,7 @@ def _write_developer_prompt_snapshot(
     mcp_tool_names: list[str],
 ) -> None:
     """Persist the exact developer prompt before launching the agent."""
-    from booley.config.settings import get_backend_config
+    from booley.runtime.agent_config import get_backend_config
 
     cfg = get_backend_config()
     attempt = os.environ.get("BOOLEY_ORACLE_FEEDBACK_ATTEMPT")
@@ -1899,14 +1899,13 @@ async def _launch_developer_agent(
     post-agent Ticket Board transitions must return to the control-plane
     project directory.
     """
-    from booley.config.settings import get_backend_config
+    from booley.runtime.agent_config import get_backend_config
 
     from .models import AgentCallParams
 
     cfg = get_backend_config()
-    # Resolve off the live config rather than MODEL_MAP: the map is a module
-    # global only refreshed by load_models_config(), so reading the config
-    # directly is what makes a [models.roles] developer pin authoritative here.
+    # Resolve from the validated settings paired with the live backend so a
+    # [models.roles] developer pin is authoritative here.
     model = cfg.model_for_role("developer", "heavy")
 
     endpoint_env = {

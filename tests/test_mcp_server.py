@@ -1372,16 +1372,15 @@ class TestBwaveDispatch:
 
 
 # ---------------------------------------------------------------------------
-# _load_backend_config_from_toml (Interactive Mode honors [agent] in booley.toml)
+# _load_agent_settings_from_toml (Interactive Mode honors [agent] in booley.toml)
 # ---------------------------------------------------------------------------
 
 
-class TestLoadBackendConfigFromToml:
-    """Interactive Mode must read [agent] primary/secondary from booley.toml.
+class TestLoadAgentSettingsFromToml:
+    """Interactive Mode must preload agent settings from booley.toml.
 
-    Regression guard: without this, get_backend_config() lazily defaults to
-    codex-primary, so specialists ran on Codex even when the project selected
-    primary = "claude" — the exact bug this fix addresses.
+    Regression guard: without this, Runtime may lazily use defaults even when
+    the Project selected another provider.
     """
 
     @pytest.fixture(autouse=True)
@@ -1394,10 +1393,10 @@ class TestLoadBackendConfigFromToml:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.config.settings import get_backend_config, set_backend_config
-            from booley.mcp.server import _load_backend_config_from_toml
+            from booley.mcp.server import _load_agent_settings_from_toml
+            from booley.runtime.agent_config import get_backend_config, set_backend_config
 
-            self._load = _load_backend_config_from_toml
+            self._load = _load_agent_settings_from_toml
             self._get = get_backend_config
             self._set = set_backend_config
             # Start from a clean global so we exercise the real load path.

@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.config.settings import get_backend_config
 from booley.core.boundary import require_dict, require_str
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.runtime.agent import call_agent
+from booley.runtime.agent_config import get_backend_config
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root

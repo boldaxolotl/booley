@@ -237,7 +237,7 @@ class TestMain:
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
             shutil.copy2(support / name, hooks / name)
         package = support.parent
-        shutil.copy2(package / "runtime" / "checkout_role.py", hooks / "checkout_role.py")
+        shutil.copy2(package / "core" / "checkout_role.py", hooks / "checkout_role.py")
         shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
         message = root / "COMMIT_EDITMSG"
         original = "docs: explain Booley architecture\n"

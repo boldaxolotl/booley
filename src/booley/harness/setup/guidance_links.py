@@ -1,4 +1,4 @@
-"""Root guidance links for the project guidance file.
+"""Project Initialization ownership of root guidance links.
 
 The canonical project guidance file (``AGENTS.md``) lives in the project data
 directory (``.booley_project/``), so it is versioned alongside the rest of the

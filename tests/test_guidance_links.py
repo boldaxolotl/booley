@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.config.guidance_links import (
+from booley.harness import init_cmd
+from booley.harness.setup.common import InitContext
+from booley.harness.setup.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,
     plan_guidance_links,
 )
-from booley.harness import init_cmd
-from booley.harness.setup.common import InitContext
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:

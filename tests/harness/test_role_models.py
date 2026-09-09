@@ -1,7 +1,7 @@
 """Tests for [models.roles] — per-agent model pins.
 
 Covers the knob end to end: parsing/validation, resolution precedence in
-BackendConfig, the two consumer paths (harness steps via MODEL_MAP, specialist
+AgentSettings and the specialist subprocess consumer path,
 subprocesses via the lazy config), and doctor's schema checks.
 """
 
@@ -17,20 +17,18 @@ from booley.config import agent as bc
 from booley.config.agent import (
     _KNOWN_ROLES,
     _MODEL_TIERS,
-    BackendConfig,
+    AgentSettings,
     BackendConfigError,
     _parse_role_models,
     _parse_tier_models,
     _resolve_tier_models,
-    load_models_config,
+    load_agent_settings,
 )
-from booley.config.settings import MODEL_MAP
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Isolate from ambient harness hand-offs and any installed global config."""
-    saved_model_map = dict(MODEL_MAP)
     for var in (
         "BOOLEY_PRIMARY_PROVIDER",
         "BOOLEY_PRIMARY_AUTH",
@@ -38,11 +36,9 @@ def _clean_env(monkeypatch):
         "BOOLEY_AGENT_APP",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(bc, "_backend_config", None)
+    monkeypatch.setattr(bc, "_agent_settings", None)
     monkeypatch.setattr(bc, "_inside_container", lambda: False)
     yield
-    MODEL_MAP.clear()
-    MODEL_MAP.update(saved_model_map)
 
 
 def _write_toml(root: Path, body: str) -> Path:
@@ -108,7 +104,7 @@ class TestParseTierModels:
 
 class TestModelForRole:
     def _cfg(self, roles):
-        return BackendConfig(
+        return AgentSettings(
             tier_models={"heavy": "big", "standard": "mid", "light": "small"},
             role_models=roles,
         )
@@ -139,44 +135,44 @@ class TestModelForRole:
 # --- load path ---------------------------------------------------------------
 
 
-class TestLoadModelsConfig:
+class TestLoadAgentSettings:
     def test_roles_land_in_backend_config(self, tmp_path):
         _write_toml(
             tmp_path,
             '[agent]\nprovider = "claude"\n\n'
             '[models.roles]\nreviewer = "claude-sonnet-4-6"\nmutation_tester = "light"\n',
         )
-        load_models_config(tmp_path)
-        cfg = bc.get_backend_config()
+        load_agent_settings(tmp_path)
+        cfg = bc.get_agent_settings()
         assert cfg.model_for_role("reviewer", "heavy") == "claude-sonnet-4-6"
         assert cfg.model_for_role("mutation_tester", "heavy") == cfg.model_for_tier("light")
 
-    def test_developer_pin_reaches_model_map(self, tmp_path):
+    def test_developer_pin_reaches_settings(self, tmp_path):
         _write_toml(tmp_path, '[models.roles]\ndeveloper = "claude-sonnet-4-6"\n')
-        load_models_config(tmp_path)
-        assert MODEL_MAP["developer"] == "claude-sonnet-4-6"
+        settings = load_agent_settings(tmp_path)
+        assert settings.model_for_role("developer", "heavy") == "claude-sonnet-4-6"
 
     def test_models_honored_without_an_agent_table(self, tmp_path):
         # Regression: [models] used to be read only when [agent] existed, so
         # every model setting in an [agent]-less project was silently inert.
         _write_toml(tmp_path, '[models]\nheavy = "custom-heavy"\n')
-        load_models_config(tmp_path)
-        assert bc.get_backend_config().model_for_tier("heavy") == "custom-heavy"
+        load_agent_settings(tmp_path)
+        assert bc.get_agent_settings().model_for_tier("heavy") == "custom-heavy"
 
     def test_tier_override_is_sparse(self, tmp_path):
         _write_toml(tmp_path, '[models]\nheavy = "custom-heavy"\n')
-        load_models_config(tmp_path)
-        cfg = bc.get_backend_config()
+        load_agent_settings(tmp_path)
+        cfg = bc.get_agent_settings()
         assert cfg.model_for_tier("light") == bc._PROVIDER_TIER_MODELS["claude"]["light"]
 
     def test_unknown_role_refuses_to_load(self, tmp_path):
         _write_toml(tmp_path, '[models.roles]\nnope = "claude-opus-4-8"\n')
         with pytest.raises(BackendConfigError, match="unknown role"):
-            load_models_config(tmp_path)
+            load_agent_settings(tmp_path)
 
 
 class TestSpecialistSubprocessPath:
-    """A specialist subprocess never calls load_models_config.
+    """A specialist subprocess resolves settings lazily.
 
     It resolves through _lazy_backend_config → _project_config_from_env, so the
     project's pins have to survive that path or the knob silently does nothing
@@ -186,7 +182,7 @@ class TestSpecialistSubprocessPath:
     def test_lazy_config_picks_up_role_pins(self, tmp_path, monkeypatch):
         _write_toml(tmp_path, '[models.roles]\nreviewer = "claude-opus-4-8"\n')
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
-        cfg = bc.get_backend_config()
+        cfg = bc.get_agent_settings()
         assert cfg.model_for_role("reviewer", "standard") == "claude-opus-4-8"
 
     def test_env_provider_handoff_still_applies_project_models(self, tmp_path, monkeypatch):
@@ -198,23 +194,23 @@ class TestSpecialistSubprocessPath:
         )
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
         monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
-        cfg = bc.get_backend_config()
+        cfg = bc.get_agent_settings()
         assert cfg.provider == "claude"
         assert cfg.model_for_role("reviewer", "light") == "custom-heavy"
 
     def test_no_project_dir_leaves_roles_empty(self):
-        assert bc.get_backend_config().role_models == {}
+        assert bc.get_agent_settings().role_models == {}
 
 
 class TestSpecialistResolvesRolePin:
     def test_resolve_model_consults_role_pin(self, monkeypatch):
         from booley.specialists.reviewer import ReviewerSpecialist
 
-        cfg = BackendConfig(
+        cfg = AgentSettings(
             tier_models=dict(bc._DEFAULT_TIER_MODELS),
             role_models={"reviewer": "claude-haiku-4-5"},
         )
-        monkeypatch.setattr(bc, "_backend_config", cfg)
+        monkeypatch.setattr(bc, "_agent_settings", cfg)
 
         specialist = ReviewerSpecialist()
         specialist._args = SimpleNamespace(model=None)
@@ -223,8 +219,8 @@ class TestSpecialistResolvesRolePin:
     def test_unpinned_specialist_uses_floor_tier(self, monkeypatch):
         from booley.specialists.reviewer import ReviewerSpecialist
 
-        cfg = BackendConfig(tier_models=dict(bc._DEFAULT_TIER_MODELS))
-        monkeypatch.setattr(bc, "_backend_config", cfg)
+        cfg = AgentSettings(tier_models=dict(bc._DEFAULT_TIER_MODELS))
+        monkeypatch.setattr(bc, "_agent_settings", cfg)
 
         specialist = ReviewerSpecialist()
         specialist._args = SimpleNamespace(model=None)

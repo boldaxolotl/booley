@@ -47,7 +47,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley import __version__
-from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
 from booley.config.host_config import retired_project_policy_message
 from booley.core.boundary import require_dict
 from booley.fusesoc.core_projection import (
@@ -118,6 +117,7 @@ from booley.harness.setup.git_hooks import (
     _step_project_git_hooks,
     _step_worktree_prune_guard,
 )
+from booley.harness.setup.guidance_links import ensure_guidance_links, plan_guidance_links
 from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills

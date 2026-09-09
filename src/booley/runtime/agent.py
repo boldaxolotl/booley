@@ -14,12 +14,10 @@ import logging
 import re
 from typing import Any
 
-from booley.config.settings import (
-    STEP_TIERS,
-    get_backend_config,
-)
+from booley.config.settings import STEP_TIERS
 from booley.core.models import AgentCallParams, AgentResult
 
+from .agent_config import get_backend_config
 from .agent_errors import TransientAPIError  # noqa: F401 (re-export for importers)
 
 logger = logging.getLogger(__name__)

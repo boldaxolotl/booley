@@ -127,7 +127,7 @@ _PROJECT_HOOK_SCRIPTS = (
 
 _PROJECT_HOOK_HELPERS = {
     "boundary.py": Path("core") / "boundary.py",
-    "checkout_role.py": Path("runtime") / "checkout_role.py",
+    "checkout_role.py": Path("core") / "checkout_role.py",
     "run_command.py": Path("core") / "run_command.py",
 }
 

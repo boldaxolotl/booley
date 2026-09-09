@@ -3426,7 +3426,7 @@ def _build_mcp_catalog(
 def build_mcp_probe_payload() -> dict[str, Any]:
     """Build the real Interactive Mode catalog and return Doctor's payload."""
     _maybe_configure_interactive_logs_dir()
-    _load_backend_config_from_toml()
+    _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
     logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
     return {
@@ -3563,36 +3563,35 @@ def _maybe_configure_interactive_logs_dir() -> None:
     )
 
 
-def _load_backend_config_from_toml() -> None:
+def _load_agent_settings_from_toml() -> None:
     """Honor ``[agent]``/``[sandbox]``/``[models]`` from the project's booley.toml.
 
-    Interactive Mode has no developer to configure backends, so without this
-    the module-global ``BackendConfig`` stays unset in *this* server process.
-    Loading here makes the server honor booley.toml exactly like Ticket Mode
+    Interactive Mode has no developer to preload configuration. Loading here
+    makes the server honor booley.toml exactly like Ticket Mode
     (the developer) and ``booley doctor`` already do. (Specialist endpoint
     subprocesses resolve the provider independently — ``get_backend_config()``
     reads ``BOOLEY_PROJECT_DIR/booley.toml`` when the env hand-off is absent —
     so they no longer silently fall back to a default provider either.)
 
     ``BOOLEY_PROJECT_DIR`` points at the ``.booley_project`` dir when set, but
-    ``load_models_config`` wants the repo root that *contains* it, so use the
+    ``load_agent_settings`` wants the repo root that *contains* it, so use the
     parent (else CWD). A missing/unparseable booley.toml is handled inside
-    ``load_models_config`` (defaults preserved); the broad guard only covers
+    ``load_agent_settings`` (defaults preserved); the broad guard only covers
     import-time surprises so a config hiccup never blocks server startup.
     """
     try:
-        from booley.config.settings import load_models_config
+        from booley.config.settings import load_agent_settings
 
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
-        load_models_config(project_root)
-    except Exception:  # config preload must not block server startup
-        logger.debug("Failed to load backend config from booley.toml", exc_info=True)
+        load_agent_settings(project_root)
+    except Exception:
+        logger.debug("Failed to load agent settings from booley.toml", exc_info=True)
 
 
 async def _main() -> None:
     _maybe_configure_interactive_logs_dir()
-    _load_backend_config_from_toml()
+    _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
     async with stdio_server() as (read_stream, write_stream):
@@ -3635,7 +3634,7 @@ def _run_http(port: int) -> None:
     import uvicorn
 
     _maybe_configure_interactive_logs_dir()
-    _load_backend_config_from_toml()
+    _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
     app = _streamable_http_app(server)

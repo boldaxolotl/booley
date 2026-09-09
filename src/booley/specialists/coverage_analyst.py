@@ -1176,9 +1176,9 @@ class CoverageAnalystSpecialist(Specialist):
     def _resolve_light_model(self) -> str:
         """Resolve to the light (Sonnet-class) model for cheap specialist calls."""
         try:
-            from booley.config.settings import get_backend_config
+            from booley.config.settings import get_agent_settings
 
-            cfg = get_backend_config()
+            cfg = get_agent_settings()
             return cfg.model_for_tier("light")
         except (ImportError, AttributeError):
             return "claude-sonnet-5"

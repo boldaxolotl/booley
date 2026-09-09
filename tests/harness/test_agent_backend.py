@@ -17,11 +17,7 @@ from booley.config.settings import (
     _DEFAULT_TIER_MODELS,
     MODEL_MAP,
     STEP_TIERS,
-    BackendConfig,
     BackendConfigError,
-    get_backend_config,
-    load_models_config,
-    set_backend_config,
 )
 from booley.runtime.agent_backend import (
     AgentBackend,
@@ -33,6 +29,12 @@ from booley.runtime.agent_backend import (
     _codex_write_transcript,
     _is_transient_error,
     _transcript_path_for_attempt,
+)
+from booley.runtime.agent_config import (
+    BackendConfig,
+    get_backend_config,
+    load_backend_config,
+    set_backend_config,
 )
 
 
@@ -188,7 +190,7 @@ class TestStepTiers:
 
 
 # ===========================================================================
-# load_models_config (reads [agent] from harness config)
+# load_backend_config (reads [agent] from harness config)
 # ===========================================================================
 
 
@@ -206,12 +208,27 @@ class TestLoadModelsConfig:
 
     def test_missing_file_uses_defaults(self, tmp_path):
         """No toml → default (claude) provider, never a silent codex."""
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg is not None
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
         assert cfg.provider == "claude"
         assert cfg.tier_models == _PROVIDER_TIER_MODELS["claude"]
+
+    def test_direct_settings_reload_refreshes_runtime_backend(self, tmp_path):
+        """Runtime notices a Config reload performed by a config-only caller."""
+        from booley.config.agent import load_agent_settings
+
+        assert isinstance(get_backend_config().active_backend, ClaudeSDKBackend)
+        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir.mkdir(parents=True)
+        (toml_dir / "booley.toml").write_text('[agent]\nprovider = "codex"\n')
+
+        load_agent_settings(tmp_path)
+
+        cfg = get_backend_config()
+        assert isinstance(cfg.active_backend, CodexBackend)
+        assert cfg.provider == "codex"
 
     def test_explicit_models_override_defaults(self, tmp_path):
         """[models] section overrides the hardcoded codex tier models."""
@@ -228,7 +245,7 @@ class TestLoadModelsConfig:
             light = "gpt-5.4-mini"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg.tier_models["heavy"] == "gpt-5.5-turbo"
         assert cfg.tier_models["light"] == "gpt-5.4-mini"
@@ -246,7 +263,7 @@ class TestLoadModelsConfig:
             auth = "subscription"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
         assert cfg.provider == "claude"
@@ -264,7 +281,7 @@ class TestLoadModelsConfig:
             secondary = false
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
         assert cfg.provider == "claude"
@@ -280,14 +297,14 @@ class TestLoadModelsConfig:
         """)
         )
         with pytest.raises(BackendConfigError, match="gpt4all"):
-            load_models_config(tmp_path)
+            load_backend_config(tmp_path)
 
     def test_malformed_toml_uses_defaults(self, tmp_path):
         """Unparseable toml can't declare a provider → default (claude)."""
         toml_dir = tmp_path / ".booley" / "project"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text("this is not valid toml {{{")
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg is not None
         assert cfg.provider == "claude"
@@ -303,7 +320,7 @@ class TestLoadModelsConfig:
             auth = "subscription"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
         assert cfg.provider == "claude"
@@ -318,7 +335,7 @@ class TestLoadModelsConfig:
             auth = "subscription"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg.auth == "subscription"
 
@@ -331,7 +348,7 @@ class TestLoadModelsConfig:
             primary_auth = "api_key"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg.auth == "auto"
 
@@ -496,7 +513,7 @@ class TestLoadModelsConfig:
             auth = "subscription"
         """)
         )
-        load_models_config(tmp_path)
+        load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg.auth == "subscription"
 
