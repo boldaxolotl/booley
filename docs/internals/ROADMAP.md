@@ -24,7 +24,7 @@ regression matrix and report it consistently in local and CI environments
 without a second collection of project-specific scripts.
 
 The three highest-value capabilities are [coverage
-measurement](#coverage-measurement), regression management, and failure
+measurement](#native-coverage-campaigns), regression management, and failure
 triage. Regression management should run and retain test/Target/seed matrices,
 support parallel and nightly campaigns, and make every failure exactly
 reproducible. Failure triage should cluster related failures, distinguish
