@@ -1,7 +1,11 @@
 # Authoring QA scenarios
 
+Read [Protocol](../agents/PROTOCOL.md) for execution, [Qualification](QUALIFICATION.md)
+for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
+[worked example](../examples/README.md) shows how they fit together.
+
 1. Identify the public behavior and its contract source. Consult the
-   [capability inventory](coverage.yaml), then extend the journey that covers it.
+   [capability inventory](../coverage.yaml), then extend the journey that covers it.
    Keep independently observable requirements in separate checks. A
    specification-backed check becomes mandatory once review introduces it; it need
    not pass a reference run first. Treat an expectation without an authoritative
@@ -51,12 +55,12 @@ through a VS Code Runtime Attachment. The `viewer.visual-capture` check separate
 proves that the Waveform Viewer shows the expected signals, markers, and cursor. Its
 authoring follows the five steps above:
 
-1. Start with capability [W-05](coverage.yaml), whose public contract requires
+1. Start with capability [W-05](../coverage.yaml), whose public contract requires
    Waveform Control Protocol (WCP) readback and a rendered screenshot. Keep this check
    separate from `viewer.actual-client-open`: the Waveform Viewer can open without
    showing the correct state.
 2. Add the check to the existing Viewer sequence in
-   [the Taxi scenario](scenarios/taxi/scenario.yaml). Record the stimulus, expected
+   [the Taxi scenario](../scenarios/taxi/scenario.yaml). Record the stimulus, expected
    visible state, evidence, and capture point:
 
    ```yaml
@@ -72,17 +76,17 @@ authoring follows the five steps above:
 
    The containing step requires the pinned inputs and clean baseline outputs. It uses
    the scenario's authority and budget; it needs no check-specific timeout or recovery.
-3. Add the scenario-qualified check ID and its step to each applicable run in
-   [profiles.yaml](profiles.yaml):
+3. Add the scenario-qualified check ID to the applicable named check set in
+   [profiles.yaml](../profiles.yaml):
 
    ```yaml
-   checks:
-   - taxi-10g-mac-port-evolution.viewer.visual-capture
-   supporting_steps:
-   - viewer.visual-capture
+   - id: taxi-gui
+     scenario_id: taxi-10g-mac-port-evolution
+     checks:
+     - taxi-10g-mac-port-evolution.viewer.visual-capture
    ```
 
-   Only `gui-ubuntu-codex` and `gui-windows-codex` select it. Their pre-run probes
+   Only GUI profiles select `taxi-gui`. Their pre-run probes
    require a VS Code Runtime Attachment, WCP access to the Waveform Viewer, and a
    qualified screenshot observer. Core profiles cannot earn credit for this visual
    claim.

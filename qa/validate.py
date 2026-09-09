@@ -74,6 +74,18 @@ def metadata(root: Path, filename: str, field: str) -> dict:
 
 
 def profile_shape(data: dict) -> None:
+    for check_set in data["check_sets"]:
+        record(
+            check_set,
+            {"id": str, "scenario_id": str, "checks": list},
+            "profiles.yaml check set",
+        )
+        strings(check_set["checks"], f"profiles.yaml: {check_set['id']}.checks")
+    unique(data["check_sets"], "profiles.yaml check sets")
+    strings(
+        [check for check_set in data["check_sets"] for check in check_set["checks"]],
+        "profiles.yaml checks across check sets",
+    )
     for profile in data["profiles"]:
         record(profile, {"id": str, "required": bool, "claim": str, "runs": list}, "profiles.yaml")
         if not profile["runs"]:
@@ -91,18 +103,52 @@ def profile_shape(data: dict) -> None:
                     "interactive_client": str,
                     "ticket_backend": str,
                     "capability_probes": list,
-                    "checks": list,
-                    "supporting_steps": list,
+                    "check_sets": list,
                     "exclusions": list,
                 },
                 "profiles.yaml run",
             )
-            for field in ["capability_probes", "checks", "supporting_steps"]:
+            for field in ["capability_probes", "check_sets"]:
                 strings(run[field], f"profiles.yaml: {run['id']}.{field}")
             for exclusion in run["exclusions"]:
                 record(exclusion, {"check": str, "reason": str}, "profiles.yaml exclusion")
         unique(profile["runs"], "profiles.yaml runs")
     unique(data["profiles"], "profiles.yaml profiles")
+
+
+def load_profiles(root: Path) -> list[dict]:
+    """Load profile intent and expand its named check sets."""
+    data = read_yaml(root / "profiles.yaml")
+    record(data, {"format_version": int, "check_sets": list, "profiles": list}, "profiles.yaml")
+    if data["format_version"] != 1 or not data["check_sets"] or not data["profiles"]:
+        raise ValueError("profiles.yaml: expected format_version 1, check sets and profiles")
+    profile_shape(data)
+    check_sets = {item["id"]: item for item in data["check_sets"]}
+    used = set()
+    resolved = []
+    for profile in data["profiles"]:
+        resolved_profile = {key: value for key, value in profile.items() if key != "runs"}
+        resolved_profile["runs"] = []
+        for run in profile["runs"]:
+            checks = []
+            for set_id in run["check_sets"]:
+                if set_id not in check_sets:
+                    raise ValueError(f"profiles.yaml: unknown check set {set_id}")
+                check_set = check_sets[set_id]
+                if check_set["scenario_id"] != run["scenario_id"]:
+                    raise ValueError(
+                        f"profiles.yaml: {run['id']}: cross-scenario check set {set_id}"
+                    )
+                used.add(set_id)
+                checks.extend(check_set["checks"])
+            strings(checks, f"profiles.yaml: {run['id']}.resolved checks")
+            resolved_run = {key: value for key, value in run.items() if key != "check_sets"}
+            resolved_run["checks"] = checks
+            resolved_profile["runs"].append(resolved_run)
+        resolved.append(resolved_profile)
+    if unused := check_sets.keys() - used:
+        raise ValueError(f"profiles.yaml: unused check sets {sorted(unused)}")
+    return resolved
 
 
 def contained(base: Path, name: str) -> Path:
@@ -224,10 +270,9 @@ def validate_budget(scenario: dict, path: Path) -> None:
 
 
 def validate_profiles(root: Path, scenarios: dict) -> None:
-    """Require explicit same-run prerequisites and supporting steps."""
+    """Require complete, explicit same-run check selections."""
     path = root / "profiles.yaml"
-    data = metadata(root, "profiles.yaml", "profiles")
-    profile_shape(data)
+    profiles = load_profiles(root)
     all_checks = {
         scenario["scenario_id"] + "." + check["id"]
         for scenario in scenarios.values()
@@ -235,11 +280,11 @@ def validate_profiles(root: Path, scenarios: dict) -> None:
         for check in step["checks"]
     }
     selected_checks = {
-        check for profile in data["profiles"] for run in profile["runs"] for check in run["checks"]
+        check for profile in profiles for run in profile["runs"] for check in run["checks"]
     }
     if missing := all_checks - selected_checks:
         raise ValueError(f"profiles.yaml: checks selected nowhere: {sorted(missing)}")
-    for profile in data["profiles"]:
+    for profile in profiles:
         for run in profile["runs"]:
             validate_run(run, scenarios, path)
 
@@ -258,16 +303,11 @@ def validate_run(run: dict, scenarios: dict, path: Path) -> None:
         raise ValueError(f"{path}: duplicate or unknown exclusion")
     if selected.intersection(excluded):
         raise ValueError(f"{path}: a check cannot be both selected and excluded")
-    step_ids = {step["id"] for step in scenario["steps"]}
-    if set(run["supporting_steps"]) - step_ids:
-        raise ValueError(f"{path}: unknown supporting step")
     for check_id in selected:
         step = known[check_id]
         missing = {prefix + r for r in step.get("requires", [])} - selected
         if missing:
             raise ValueError(f"{path}: {check_id}: missing supporting checks {sorted(missing)}")
-        if step["id"] not in run["supporting_steps"]:
-            raise ValueError(f"{path}: {check_id}: missing supporting step {step['id']}")
 
 
 def validate(root: Path, scenario_id: str | None = None) -> dict:
@@ -325,7 +365,7 @@ def load_scenarios(root: Path) -> dict:
 
 
 def coverage_index(root: Path, scenarios: dict, declared: set[str]) -> dict:
-    profile_data = metadata(root, "profiles.yaml", "profiles")
+    profiles_data = load_profiles(root)
     index = {}
     for capability in sorted(declared):
         checks = {
@@ -337,7 +377,7 @@ def coverage_index(root: Path, scenarios: dict, declared: set[str]) -> dict:
         }
         profiles = [
             profile["id"]
-            for profile in profile_data["profiles"]
+            for profile in profiles_data
             if any(checks.intersection(run["checks"]) for run in profile["runs"])
         ]
         index[capability] = {"checks": sorted(checks), "profiles": sorted(profiles)}

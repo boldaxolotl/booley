@@ -116,10 +116,10 @@ Preserve borrowed installations, credentials, caches, and other pre-existing sta
 
 Finalize missing checks as blocked, list owned-resource disposition, and report
 operational completion as `completed`, `deadline reached`, or `operator error`.
-Calculate qualification using [Qualification](QUALIFICATION.md). Incomplete
+Calculate qualification using [Qualification](../user/QUALIFICATION.md). Incomplete
 mandatory cleanup prevents a pass without concealing trustworthy product failures.
 
-Taxi additionally owns the explicitly authorized [disposable submodule companion](scenarios/taxi/fixtures/submodules.md).
+Taxi additionally owns the explicitly authorized [disposable submodule companion](../scenarios/taxi/fixtures/submodules.md).
 Construct it separately from the authentic pinned Taxi checkout; preserve both
 required RTL dependencies and the prescribed warm/cold failure and restoration
 observations. Fixture-construction tests and root-only synthesis are not functional

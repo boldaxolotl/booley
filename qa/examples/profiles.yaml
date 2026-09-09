@@ -1,4 +1,16 @@
 format_version: 1
+check_sets:
+- id: example-core
+  scenario_id: example-wishbone
+  checks:
+  - example-wishbone.baseline
+  - example-wishbone.detect-fault
+  - example-wishbone.restore
+  - example-wishbone.cleanup
+- id: example-gui
+  scenario_id: example-wishbone
+  checks:
+  - example-wishbone.viewer
 profiles:
 - id: example-core
   required: true
@@ -14,16 +26,8 @@ profiles:
     ticket_backend: Codex
     capability_probes:
     - Disposable approved Project and operator artifact root
-    checks:
-    - example-wishbone.baseline
-    - example-wishbone.detect-fault
-    - example-wishbone.restore
-    - example-wishbone.cleanup
-    supporting_steps:
-    - baseline
-    - fault
-    - restoration
-    - cleanup
+    check_sets:
+    - example-core
     exclusions: []
 - id: example-gui
   required: true
@@ -40,16 +44,7 @@ profiles:
     capability_probes:
     - Disposable approved Project and operator artifact root
     - Qualified visual observer
-    checks:
-    - example-wishbone.baseline
-    - example-wishbone.detect-fault
-    - example-wishbone.restore
-    - example-wishbone.viewer
-    - example-wishbone.cleanup
-    supporting_steps:
-    - baseline
-    - fault
-    - restoration
-    - viewer
-    - cleanup
+    check_sets:
+    - example-core
+    - example-gui
     exclusions: []
