@@ -24,12 +24,14 @@ localparam CORRUPT_LEVEL_INJECTION = 0;
 localparam CORRUPT_INVALID = 0;
 localparam CORRUPT_LOOP = 0;
 localparam CORRUPT_OVERRIDE = 0;
+localparam CORRUPT_RELEASE = 0;
 localparam CORRUPT_RESET = 0;
 
 reg [31:0] control, timeout_control;
 reg [7:0] fifo_control;
 reg [1:0] override_control;
 reg [8:0] enabled, events, force_level;
+reg [8:0] corrupt_level_mask;
 reg [7:0] rx_fifo [0:63];
 reg [7:0] tx_fifo [0:31];
 reg [7:0] received;
@@ -63,8 +65,7 @@ wire [8:0] visible_levels = CORRUPT_WATERMARK ? levels ^ 9'h103 : levels;
 wire loop_tx = CORRUPT_LOOP ? 1'b1 : rx_i;
 wire override_tx = CORRUPT_OVERRIDE ? ~override_control[1] : override_control[1];
 assign tx_o = override_control[0] ? override_tx : (control[5] ? loop_tx : tx_serial);
-assign irq_o = (events | visible_levels | force_level) & enabled &
-    (CORRUPT_LEVEL_INJECTION ? 9'h0fc : 9'h1ff);
+assign irq_o = (events | visible_levels | force_level) & enabled & ~corrupt_level_mask;
 assign req_ready_o = !rsp_valid_o;
 
 function integer bit_period;
@@ -110,6 +111,7 @@ always @(posedge clk_i) begin
             override_control <= 0;
             enabled <= 0;
             events <= 0;
+            corrupt_level_mask <= 0;
             rx_depth = 0;
             rx_head = 0;
             rx_tail = 0;
@@ -118,6 +120,7 @@ always @(posedge clk_i) begin
             tx_tail = 0;
         end
         force_level <= 0;
+        corrupt_level_mask <= 0;
         received <= 0;
         history <= 0;
         filter_samples <= 7;
@@ -176,6 +179,7 @@ always @(posedge clk_i) begin
                 32'h08: if (req_write_i && req_wstrb_i[0]) begin
                     events <= events | (req_wdata_i[8:0] & 9'h0fc);
                     if (!CORRUPT_LEVEL_INJECTION) force_level <= req_wdata_i[8:0] & 9'h103;
+                    else corrupt_level_mask <= req_wdata_i[8:0] & visible_levels & 9'h103;
                 end
                 32'h0c: rsp_rdata_o <= 0;
                 32'h10: if (req_write_i) begin
@@ -212,8 +216,10 @@ always @(posedge clk_i) begin
                     end
                 end else rsp_rdata_o <= fifo_control;
                 32'h24: rsp_rdata_o <= (rx_depth << 16) | tx_depth;
-                32'h28: if (req_write_i && req_wstrb_i[0])
-                    override_control <= req_wdata_i[1:0];
+                32'h28: if (req_write_i && req_wstrb_i[0]) begin
+                    if (!(CORRUPT_RELEASE && req_wdata_i[0] == 0))
+                        override_control <= req_wdata_i[1:0];
+                end
                 else rsp_rdata_o <= override_control;
                 32'h2c: rsp_rdata_o <= history;
                 32'h30: if (req_write_i) begin

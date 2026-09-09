@@ -1,9 +1,20 @@
 """Public-contract UART stimuli, independent of candidate RTL and testbench."""
 
+from collections.abc import Awaitable, Callable
+from typing import NamedTuple
+
 from cases import REGISTERS
 from driver import CircuitMismatchError, Driver, ObservationBlockedError
 from oracles import check_tx, check_val
 from timeout_checks import timed_event, timeout
+
+
+class ControlStep(NamedTuple):
+    """One named evaluator exercise within an independent hardware control."""
+
+    name: str
+    exercise: Callable[[Driver, dict[str, object]], Awaitable[None]]
+    parameters: dict[str, object]
 
 
 async def register(driver: Driver, parameters: dict) -> None:
@@ -351,6 +362,12 @@ async def injected_irq(driver: Driver, bit: int, active: bool | None = None) -> 
             True,
             "Injection visible to independent per-clock monitor",
         )
+        if state_active:
+            driver.expect(
+                all(value & mask for value in driver.irqs[start:]),
+                True,
+                "Injection preserves an already active level source",
+            )
         driver.expect(
             any(value & ~mask for value in driver.irqs[start:]),
             False,
@@ -528,7 +545,7 @@ async def reset_case(driver: Driver, parameters: dict) -> None:
     await parity(driver, {**parameters, "parity": "disabled"})
 
 
-async def control_sweep(driver: Driver, steps: list[tuple[str, object, dict]]) -> None:
+async def control_sweep(driver: Driver, steps: list[ControlStep]) -> None:
     """Run every control subcase, retaining all targeted circuit mismatches."""
     failures = []
     for name, exercise, parameters in steps:
@@ -545,7 +562,7 @@ async def control_rx_rates(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            (f"nco-{nco:04x}", rx, {"payload": [0x55, 0xAA], "nco": nco})
+            ControlStep(f"nco-{nco:04x}", rx, {"payload": [0x55, 0xAA], "nco": nco})
             for nco in [0x2000, 0x3000]
         ],
     )
@@ -555,7 +572,7 @@ async def control_parity_errors(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            (parity_mode, error, {"parity": parity_mode, "payload": [0x55]})
+            ControlStep(parity_mode, error, {"parity": parity_mode, "payload": [0x55]})
             for parity_mode in ["even", "odd"]
         ],
     )
@@ -575,7 +592,7 @@ async def control_breaks(driver: Driver, _: dict) -> None:
                 "parity": parity_mode,
                 "payload": [0x55],
             }
-            steps.append((f"e{encoding}-{parity_mode}", break_error, parameters))
+            steps.append(ControlStep(f"e{encoding}-{parity_mode}", break_error, parameters))
     await control_sweep(driver, steps)
 
 
@@ -590,7 +607,7 @@ async def control_watermarks(driver: Driver, _: dict) -> None:
                 "expected": direction == "rx",
                 "payload": list(range(threshold)),
             }
-            steps.append((f"{direction}-e{encoding}", watermark, parameters))
+            steps.append(ControlStep(f"{direction}-e{encoding}", watermark, parameters))
     await control_sweep(driver, steps)
 
 
@@ -598,7 +615,7 @@ async def control_level_injection(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            (
+            ControlStep(
                 f"bit{bit}-active{int(active)}",
                 irq,
                 {"bit": bit, "mode": "inject", "active": active},
@@ -617,7 +634,11 @@ async def control_invalid_addresses(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            (f"a{address:08x}-w{int(write)}", invalid, {"address": address, "write": write})
+            ControlStep(
+                f"a{address:08x}-w{int(write)}",
+                invalid,
+                {"address": address, "write": write},
+            )
             for address in sorted(addresses)
             for write in [False, True]
         ],
@@ -628,18 +649,12 @@ async def control_loopback(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            (mode, loop, {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000})
+            ControlStep(
+                mode,
+                loop,
+                {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000},
+            )
             for mode in ["system", "line"]
-        ],
-    )
-
-
-async def control_override(driver: Driver, _: dict) -> None:
-    await control_sweep(
-        driver,
-        [
-            (mode, override, {"mode": mode, "payload": [0x55, 0xAA]})
-            for mode in ["low", "high", "release"]
         ],
     )
 
@@ -675,5 +690,4 @@ EXERCISES = {
     "control-level-injection": control_level_injection,
     "control-invalid-addresses": control_invalid_addresses,
     "control-loopback": control_loopback,
-    "control-override": control_override,
 }
