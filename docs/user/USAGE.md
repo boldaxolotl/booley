@@ -282,7 +282,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a 
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -341,6 +341,26 @@ atomic campaign manifest with a durable baseline log, every mutant log, each
 source variant, and the first public test that killed each detected mutant.
 
 The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `tb_coder` also exists but is hidden until it matures (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
+
+#### Coverage collection workflows
+
+In Interactive Mode, explicitly request collection, then pass its exact Campaign
+path to the Analyst:
+
+```bash
+booley flow sim --target sim_counter --coverage
+booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_counter/coverage.json
+```
+
+MCP uses `sim` with `target: "sim_counter", coverage: true`, followed by
+`coverage_analyst` with the returned exact `campaign` path. Ungated collection
+runs the full runnable suite, stores `not_requested`, and does not load waivers.
+
+In Ticket Mode, author the [Coverage Criterion](CONFIG.md#native-coverage-configuration)
+for each required Target and explicitly invoke `sim --coverage`. Only a durable
+Campaign `pass` satisfies the Criterion. `fail` and `blocked` do not satisfy it;
+Simulation Criteria retain their independent measured truth. The Analyst only
+advises and never changes Criteria or approves Waiver Candidates.
 
 ### Running a Booley Flow directly
 
@@ -584,6 +604,12 @@ review criterion so its suggested invocation is immediately callable.
 |-----------|-------------|--------|-------|
 | `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
 | `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
+
+#### Coverage
+
+| Criterion | Description | Set by | Workflow Region |
+|-----------|-------------|--------|-------|
+| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim --coverage` | post-sim |
 
 #### Verification Quality
 

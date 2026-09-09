@@ -464,10 +464,10 @@ After every Grant for that root is gone, remove the obsolete inventory entry
 with `booley projects forget /exact/deleted/project`.
 
 
-## Coverage Campaign retention (internal preview)
+## Coverage Campaign diagnostics and retention
 
-Coverage collection remains hidden until the issue #213 release gate. For
-internal Campaign testing, report retention is explicit: native-only pruning
+Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
+`coverage: true`. Report retention is explicit: native-only pruning
 keeps normalized `coverage.json`, `simulation.json`, and hook evidence; full
 invocation pruning removes all reports and prevents re-analysis. See the
 [exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
@@ -499,3 +499,25 @@ Codex analysis requires cached metadata for the exact configured model. If that
 metadata is missing, start the configured Codex CLI to refresh model discovery,
 then retry. Analysis fails closed instead of starting an agent with execution
 capabilities. Claude analysis disables built-in tools and MCP servers as well.
+
+### Coverage collection and evaluation failures
+
+- Preflight errors: select only Verilator Simulation Targets, use simulation
+  mode, and place reset/hook controls in `flow_options.booley.coverage`.
+- Hook errors: each process must prove the required exactly-once calls. With
+  reset excluded, start after reset and before write. A missing, duplicate,
+  failed, or out-of-order hook invalidates collection.
+- Native errors: inspect per-run raw paths and query/merge evidence in the exact
+  Target directory. Missing, stale, malformed, incompatible, or non-equivalent
+  merged evidence is a command error. Re-run to create a new invocation.
+- `blocked` evaluation: inspect structured findings for suite mismatch, zero
+  eligible denominator, unavailable metrics, or an invalid/stale/unmatched
+  Approved Waiver Set. No subset of an invalid waiver set is applied.
+- Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
+  `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
+  Replace them with the `coverage` record in CONFIG.md; no silent translation
+  or waveform scoring remains.
+- Missing `sim_<target>.json`: flat Simulation projections were removed. Follow
+  the exact numbered report pointer. Missing `coverage_report.json` or mutable
+  `coverage_waivers.json` is expected; use a canonical Campaign and the configured
+  human-approved waiver directory.
