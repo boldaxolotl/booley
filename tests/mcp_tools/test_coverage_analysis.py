@@ -94,6 +94,7 @@ def test_unusable_campaign_rejects_before_model_invocation(change):
             "waiver_candidates": [],
         },
         {"hypotheses": [], "recommendations": "write tests", "waiver_candidates": []},
+        {"hypotheses": [{}], "recommendations": [], "waiver_candidates": []},
     ],
 )
 def test_model_cannot_overwrite_observations_or_invent_references(response):
@@ -136,6 +137,44 @@ def test_candidates_are_screened_and_never_approved(point, reason, evidence, pro
     assert screened["screening"] == expected
     assert screened["approval"] == "not_approved"
     assert report["observed_evidence"]["points"][0]["disposition"] == {"kind": "eligible"}
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [None, {}, {"point_id": 1, "reason": "excluded", "evidence": "", "proof_reference": ""}],
+)
+def test_malformed_candidate_rejects_the_model_response(candidate):
+    document = _valid_document()
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    response = {"hypotheses": [], "recommendations": [], "waiver_candidates": [candidate]}
+    with pytest.raises(CoverageAnalysisError, match=r"candidate|Candidate"):
+        CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+
+
+def test_duplicate_exact_point_candidates_are_forbidden():
+    document = _valid_document()
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    candidate = {
+        "point_id": document["points"][0]["id"],
+        "reason": "excluded",
+        "evidence": "Project excludes this hardware",
+        "proof_reference": "",
+    }
+    response = {
+        "hypotheses": [],
+        "recommendations": [],
+        "waiver_candidates": [candidate, candidate],
+    }
+    report = CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(
+        campaign, None, ""
+    )
+    duplicate = report.to_dict()["waiver_candidates"][1]
+    assert duplicate["screening"] == "forbidden"
+    assert duplicate["approval"] == "not_approved"
 
 
 def test_forged_source_snapshot_cannot_be_supplied_to_model():

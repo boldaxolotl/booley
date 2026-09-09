@@ -222,6 +222,15 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
     assert result.outcome.criterion_key == ""
 
 
+@pytest.mark.parametrize("failure", ["timed_out", "max_turns_exhausted"])
+def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
+    path = persist_campaign(tmp_path)
+    analyst = CoverageAnalystSpecialist(model=lambda params: AgentResult(**{failure: True}))
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    assert result.exit_code == 2
+    assert "model did not finish" in result.outcome.report_text
+
+
 def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
     from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
     from tests.flows.sim.test_campaign_retention import campaign
