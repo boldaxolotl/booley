@@ -629,3 +629,72 @@ def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
         assert prep.review_briefing_command(root, "demo", open_diffs=False).status == "ready"
         assert (log_dir / "acceptance" / "accepted.json").read_bytes() == frozen
         outcome = repaired
+
+
+@pytest.mark.parametrize(
+    ("keys", "value"),
+    [
+        (("disposition",), "unknown"),
+        (("source_status",), "done"),
+        (("generation",), "../../invalid"),
+        (("capture_sha",), "invalid"),
+        (("heads",), {"project": "abc"}),
+        (("basis_receipt", "schema"), 2),
+        (("basis_receipt", "basis_id"), "wrong-basis"),
+        (("state", "criteria", "review_rtl_bugs_done", "availability"), "unknown"),
+        (("state", "criteria", "review_rtl_bugs_done", "transition_evidence"), ["invalid"]),
+    ],
+)
+def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, value):
+    from booley.review.entry import ReviewEntryError, criteria_projection, digest, entry_path
+
+    root, tio, _ = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    log_dir = tio.logs_dir / "demo"
+    row = read_entry(log_dir)
+    node = row
+    for key in keys[:-1]:
+        node = node[key]
+    node[keys[-1]] = value
+    entry_path(log_dir).write_text(json.dumps({"entry": row, "sha256": digest(row)}))
+    with pytest.raises(ReviewEntryError):
+        criteria_projection(log_dir)
+
+
+def test_invalid_json_and_checksum_fail_before_reading_criteria(tmp_path):
+    from booley.review.entry import ReviewEntryError, criteria_projection, entry_path
+
+    path = entry_path(tmp_path)
+    path.parent.mkdir()
+    for contents in ("not json", '{"entry": {}, "sha256": "wrong"}'):
+        path.write_text(contents)
+        with pytest.raises(ReviewEntryError):
+            criteria_projection(tmp_path)
+
+
+@pytest.mark.parametrize("damage", ["schema", "approval"])
+def test_unaccepted_package_rejects_invalid_schema_or_approval(blocked, damage):
+    from booley.review.artifact import ReviewArtifactError, ReviewPackage
+
+    root, _, _ = blocked
+    result = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+    assert result.ready
+    package = json.loads(result.package_path.read_text())
+    if damage == "schema":
+        package["inspection"]["schema"] = 99
+    else:
+        package["assessment"]["recommendation"] = "approve"
+    with pytest.raises(ReviewArtifactError):
+        ReviewPackage.parse(package)
+
+
+def test_interrupted_publication_blocks_completion(blocked, capsys):
+    from booley.review.entry import operation_path
+    from booley.ticket_board.operations import _completion_acceptance_valid
+
+    _, tio, _ = blocked
+    path = operation_path(tio.logs_dir / "demo")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"phase": "publishing", "pid": 99999999}))
+    assert _completion_acceptance_valid(tio, "demo") is None
+    assert "publication was interrupted" in capsys.readouterr().err
