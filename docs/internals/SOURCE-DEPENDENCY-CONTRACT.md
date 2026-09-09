@@ -17,6 +17,7 @@ The package layout maps to the canonical concepts in [CONTEXT.md](../CONTEXT.md)
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint. |
+| Acceptance evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
 | Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, and execution records. |
@@ -107,6 +108,21 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations and notification behavior from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
 
 | D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
+| D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
+| D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
+
+## Acceptance evidence ownership
+
+`booley.evidence` is the dependency-neutral owner of values that cross from an
+evidence producer into Criteria policy. `evidence.fields` owns the persisted key
+spellings, `evidence.recipe` owns deterministic recipe normalization, identity,
+and comparison, and `evidence.timing` owns per-clock timing values and their JSON
+round trip. Both Criteria and Flows depend on these modules.
+
+Flow-specific production remains in `booley.flows`: in particular,
+`flows.source_fingerprint` discovers Targets and Project files and computes source
+fingerprints. Moving shared field names below both packages does not move source
+scanning or execution responsibility out of Flows.
 
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file
@@ -215,7 +231,6 @@ booley.feedback <-> booley.harness
 booley.flows <-> booley.fusesoc
 booley.flows <-> booley.mcp
 booley.flows <-> booley.targets
-booley.flows <-> booley.ticket_board
 booley.fusesoc <-> booley.runtime
 booley.fusesoc <-> booley.targets
 booley.harness <-> booley.mcp

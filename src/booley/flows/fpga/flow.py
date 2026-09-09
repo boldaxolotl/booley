@@ -33,6 +33,16 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.evidence.fields import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_TARGET_DETAIL,
+    CANDIDATE_TARGET_DETAIL,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_SNAPSHOT_DETAIL,
+)
+from booley.evidence.timing import per_clock_from_json, worst_clock
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
 from booley.flows.plan import (
@@ -63,7 +73,6 @@ from ..baseline_worktree import (
     git_short_sha,
     resolve_ticket_baseline,
 )
-from ..clock_timing import per_clock_from_json, worst_clock
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
@@ -85,15 +94,6 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
-from ..recipe_evidence import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    BASELINE_TARGET_DETAIL,
-    CANDIDATE_TARGET_DETAIL,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_SNAPSHOT_DETAIL,
-)
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -340,7 +340,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 self.state.criteria,
                 "fpga_impl_ok_",
                 handles,
-                basis=getattr(self, "_acceptance_basis", None),
+                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
                 flow="fpga",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -485,7 +485,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         candidate_handles = self._target_handles
         candidate_refs = self._target_execution_refs
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     self._target_pairs,
@@ -594,7 +598,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            basis_bound=getattr(self, "_acceptance_basis", None) is not None,
+            basis_bound=self._flow_acceptance.basis_bound,
         )
 
     def _prepare_fpga_command(
@@ -1028,7 +1032,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         if full_sha is not None:
             self._baseline_full_sha = full_sha
         try:
-            with baseline_worktree(project_root, baseline_ref) as wt:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as wt:
                 self.args.work_dir = wt
                 current_handles = self._target_handles
                 current_refs = getattr(self, "_target_execution_refs", {})

@@ -17,19 +17,19 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import (
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_PARAM,
+)
+from booley.evidence.timing import ClockTiming
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
-from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
 from booley.flows.implementation_comparison import (
     TargetExecutionRef,
     target_pair_plans_for_handles,
-)
-from booley.flows.recipe_evidence import (
-    BASELINE_REF_PARAM,
-    RECIPE_FINGERPRINT_PARAM,
-    RECIPE_SNAPSHOT_PARAM,
 )
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
@@ -165,7 +165,8 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
     metrics = FpgaMetrics(lut_count=10, ff_count=20)
 
     @contextmanager
-    def fake_worktree(_project_root, _ref):
+    def fake_worktree(_project_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         baseline = tmp_path / ".booley_project" / ".baseline-wt-test"
         baseline.mkdir(parents=True, exist_ok=True)
         yield baseline
@@ -223,7 +224,8 @@ def test_baseline_plan_restores_candidate_execution_context(
     planned_unit = SimpleNamespace(role="baseline", selector="baseline")
 
     @contextmanager
-    def fake_worktree(_project_root, _ref):
+    def fake_worktree(_project_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         worktree = tmp_path / ".booley_project" / ".baseline-plan"
         worktree.mkdir(parents=True)
         yield worktree

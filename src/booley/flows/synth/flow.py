@@ -29,6 +29,13 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
+from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
+from booley.evidence.timing import (
+    ClockTiming,
+    make_clock_timing,
+    per_clock_to_json,
+    worst_clock,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -64,12 +71,6 @@ from ..baseline_worktree import (
     git_short_sha,
     resolve_ticket_baseline,
 )
-from ..clock_timing import (
-    ClockTiming,
-    make_clock_timing,
-    per_clock_to_json,
-    worst_clock,
-)
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
@@ -91,7 +92,6 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
-from ..recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -438,7 +438,7 @@ def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
     """Build the per-clock timing map from ``STA_PERCLOCK`` markers.
 
     Each clock's ``critical_path_ps``/``fmax_mhz`` is derived from its period and
-    worst setup slack by the shared :mod:`booley.flows.clock_timing` helper, so
+    worst setup slack by the shared :mod:`booley.evidence.timing` helper, so
     the STA and Vivado flows share one ns→ps→MHz derivation. ``critical_path_ps``
     intentionally means STA timing — ABC ``delay =`` mapper estimates are never
     a source here.
@@ -1140,7 +1140,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="synth",
-            basis_bound=getattr(self, "_acceptance_basis", None) is not None,
+            basis_bound=self._flow_acceptance.basis_bound,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -1922,7 +1922,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         candidate_refs = self._target_execution_refs
         candidate_evidence = dict(getattr(self, "_recipe_evidence", {}))
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     self._target_pairs,
@@ -2039,7 +2043,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 self.state.criteria,
                 "synthesis_ok_",
                 handles,
-                basis=getattr(self, "_acceptance_basis", None),
+                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
                 flow="synth",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -2155,7 +2159,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if full_sha is not None:
             self._baseline_full_sha = full_sha
         try:
-            with baseline_worktree(project_root, baseline_ref) as wt:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as wt:
                 self.args.work_dir = wt
                 self._project_root = project_root
                 current_handles = getattr(self, "_target_handles", {})

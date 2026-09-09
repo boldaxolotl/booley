@@ -411,7 +411,12 @@ def test_flow_entry_uses_real_generated_projection_validation(
     monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: root)
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
     flow = _AcceptanceFlow()
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    flow.execution_adapter = TicketBoardFlowExecution()
     flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
 
     assert flow._pre_state_gate() is None
@@ -422,6 +427,61 @@ def test_flow_entry_uses_real_generated_projection_validation(
     assert blocked is not None
     assert blocked.exit_code != 0
     assert blocked.report_text.count("acceptance-input-change-required") == 1
+
+
+@pytest.mark.parametrize("ledger_fails", (False, True))
+def test_ticket_flow_composes_admission_and_durable_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ledger_fails: bool,
+) -> None:
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board import acceptance_ledger
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    log_dir = tmp_path / "ticket-logs"
+    state_path = log_dir / ".runtime/booley_state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"review_rtl_bugs": True}, strict=True)
+    state.save()
+
+    class EvidenceFlow(_AcceptanceFlow):
+        def _run(self) -> McpToolResult:
+            self.set_criterion("review_rtl_bugs", True, detail={"source": "real adapter"})
+            return McpToolResult(
+                criterion_key="review_rtl_bugs",
+                criterion_met=True,
+            )
+
+    if ledger_fails:
+        monkeypatch.setattr(
+            acceptance_ledger,
+            "record_changes",
+            MagicMock(side_effect=acceptance_ledger.AcceptanceLedgerError("ledger unavailable")),
+        )
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: root)
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(log_dir / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(log_dir))
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+
+    flow = EvidenceFlow()
+    flow.configure_flow_execution(TicketBoardFlowExecution())
+    exit_code = flow.main(["--target", "demo", "--work-dir", str(workspace)])
+
+    evidence = list((log_dir / "acceptance/evidence").glob("*/record.json"))
+    if ledger_fails:
+        assert exit_code != 0
+        assert not evidence
+    else:
+        assert exit_code == 0
+        assert evidence
+        assert DevelopmentState.load(state_path).criteria["review_rtl_bugs"].met is True
 
 
 def test_developer_handoff_uses_real_generated_projection_validation(

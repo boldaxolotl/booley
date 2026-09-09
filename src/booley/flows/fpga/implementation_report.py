@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from booley.flows.clock_timing import per_clock_to_json
+from booley.evidence.timing import per_clock_to_json
 from booley.flows.implementation_report import (
     ImplementationContext,
     ImplementationReport,

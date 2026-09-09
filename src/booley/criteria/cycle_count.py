@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+from booley.evidence.fields import BASELINE_REF_PARAM
 
 PROVENANCE_LIMITATION = (
     "Booley fingerprints declared Target inputs and captured controls. It cannot prove "

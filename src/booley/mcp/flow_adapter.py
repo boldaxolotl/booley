@@ -18,7 +18,6 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
     properties.pop("_legacy_timeout_ms", None)
     properties["timeout_ms"].update(type="integer", minimum=1)
     if endpoint.name == "sim":
-        properties.pop("coverage", None)  # #213: keep collection hidden until release gate
         properties.pop("_legacy_elab_only", None)
         properties.pop("_legacy_standalone", None)
         properties["mode"]["default"] = "simulate"

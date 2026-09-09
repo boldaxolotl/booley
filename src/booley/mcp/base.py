@@ -82,6 +82,12 @@ def _as_mcp_tool_result(outcome: EndpointOutcome) -> McpToolResult:
 class McpTool(EndpointContext):
     """Legacy MCP endpoint extension; execution services are transport independent."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+
+        self._acceptance_recorder = TicketAcceptanceRecorder()
+
     def _adapt_outcome(self, outcome: EndpointOutcome) -> McpToolResult:
         return _as_mcp_tool_result(outcome)
 

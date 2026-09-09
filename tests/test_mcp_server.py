@@ -667,8 +667,8 @@ class TestTryReadReport:
         assert self._try_read_report() is None
 
     def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch):
-        async def fake_run(_cmd, timeout=600):
-            del timeout
+        async def fake_run(_cmd, timeout=600, env=None):
+            del timeout, env
             return 0, '{"flow": "lint", "schema_version": 1}', "", False
 
         monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)

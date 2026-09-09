@@ -785,7 +785,18 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
 
-### Report-driven Coverage Analyst
+### Simulation coverage input
+
+The public `sim` schema exposes optional boolean `coverage` (default false).
+CLI `--coverage` and permanent alias `--cov` map to the same request. Criteria
+never activate it implicitly. All-Target Preflight precedes report allocation;
+Icarus selection rejects atomically. Structured Target results preserve
+simulation, collection, and evaluation independently and point to exact canonical
+reports. The Coverage Analyst accepts the returned Campaign path in a separate
+call. See [Flow contracts](FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration)
+for the ordered persistence and Acceptance Evidence transaction.
+
+## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
 path) and optional `instruction`. It returns advisory `booley.coverage-analysis/v1`

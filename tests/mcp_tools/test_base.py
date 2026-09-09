@@ -14,10 +14,10 @@ import pytest
 from booley.criteria.state import (
     CATEGORY_RTL,
     CATEGORY_TB,
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    as_str_list,
 )
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import as_str_list
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -361,6 +361,7 @@ class TestMcpToolArgparse:
         logs_dir = tmp_path / "logs"
         env = os.environ.copy()
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = ConcreteMcpTool()
         with mock.patch.dict(os.environ, env):
             args = endpoint.parse_args([])
@@ -1133,7 +1134,7 @@ class TestCriteriaInvalidation:
 class TestWriteDisplayEvent:
     def test_writes_jsonl_when_env_set(self, tmp_path: Path, monkeypatch):
         """Event appended to $BOOLEY_RUNTIME_DIR/display.jsonl."""
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
         event = {"type": "endpoint_start", "endpoint": "lint"}
         _write_display_event(event)
 
@@ -1144,7 +1145,7 @@ class TestWriteDisplayEvent:
         assert json.loads(lines[0]) == event
 
     def test_appends_multiple_events(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
         _write_display_event({"type": "endpoint_start"})
         _write_display_event({"type": "endpoint_end"})
 
@@ -1157,14 +1158,14 @@ class TestWriteDisplayEvent:
         assert len(lines) == 2
 
     def test_noop_when_env_unset(self, tmp_path: Path, monkeypatch):
-        """No file created when BOOLEY_LOGS_DIR is absent."""
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+        """No file created when BOOLEY_RUNTIME_DIR is absent."""
+        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
         _write_display_event({"type": "endpoint_start"})
 
         assert not (tmp_path / ".runtime" / "display.jsonl").exists()
 
     def test_emit_completion_marks_repeated_final_line(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
         endpoint = ConcreteMcpTool()
 
         endpoint.emit_completion("✓ target_a", repeats_at_end=True)
@@ -1195,6 +1196,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = ConcreteMcpTool()
         with mock.patch.dict(os.environ, env):
             exit_code = endpoint.main([])
@@ -1228,6 +1230,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = PromotionRejectingMcpTool()
         with mock.patch.dict(os.environ, env):
             exit_code = endpoint.main([])
@@ -1259,6 +1262,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = NoConfigMcpTool()
         with mock.patch.dict(os.environ, env):
             endpoint.main(["--target", "default"])
@@ -1287,6 +1291,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = FailingMcpTool()
         with mock.patch.dict(os.environ, env):
             exit_code = endpoint.main([])
@@ -1326,6 +1331,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = AcceptanceFailingMcpTool()
 
         with (
@@ -1359,6 +1365,7 @@ class TestMainDisplayEvents:
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = TaggedMcpTool()
         with mock.patch.dict(os.environ, env):
             endpoint.main([])

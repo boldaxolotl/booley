@@ -26,10 +26,8 @@ from booley.criteria.categories import (
 # NOTE: DevelopmentState is imported function-locally (not here) because the
 # test suite patches ``booley.criteria.state.DevelopmentState`` at
 # its source module; a module-level binding here would defeat that patch.
-from booley.criteria.state import (
-    SOURCE_FINGERPRINT_DETAIL_KEY,
-    compute_source_fingerprint,
-)
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.timefmt import utc_now_rfc3339
 

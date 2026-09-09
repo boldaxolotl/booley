@@ -1837,3 +1837,98 @@ floor. Its input is one exact canonical `coverage.json` path plus an optional
 `instruction`. It has no per-call coverage policy or waiver-directory settings.
 The model receives normalized evidence and, only when the entire current Target
 closure matches its recorded fingerprints, verified RTL/testbench text.
+
+### Native coverage configuration
+
+Collection is explicit (`booley flow sim --coverage`, permanent alias `--cov`,
+or MCP `coverage: true`). Configuration and Criteria never turn it on.
+Stable testbench properties belong to the Target's `.core` definition:
+
+```yaml
+targets:
+  sim_counter:
+    flow: sim
+    flow_options:
+      tool: verilator
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks: [start_hook, write_hook]
+```
+
+`reset_included` is boolean and defaults to `true`, counting initialization and
+reset. Set it to `false` only when each test can prove exactly one successful
+`booley_coverage_start()` after reset and before writing its database.
+`custom_main_hooks` applies only to project-authored C++ mains; generated-main,
+HDL-testbench, and Cocotb Targets omit it. A custom main must declare `write_hook`
+and call `booley_coverage_write()` exactly once on every normal terminal path.
+When reset is excluded, declare both hooks and call start before write. A
+`start_hook` declaration is invalid when reset is included. Unknown or duplicate
+hooks, missing declarations, and unproved calls are errors. These controls cannot
+be overridden in `[flows.sim]` or invocation flags.
+
+One Ticket authoring record shares policy while expanding into independent
+Target-bound `coverage_<target>` Criteria:
+
+```yaml
+criteria:
+  mandatory:
+    coverage:
+      - targets: [sim_counter, sim_counter_wide]
+        tests: all
+        metrics:
+          line: {min_pct: 90}
+          branch: {min_pct: 80}
+          toggle: {min_pct: 75}
+```
+
+`targets` must be explicit and nonempty. `tests` is `all` or a nonempty exact list
+of registered test names, for example `[reset, wrap]`. Metrics are `line`,
+`branch`, `expression`, `toggle`, and `cover_property`; select at least one.
+Each `min_pct` is a finite non-boolean number in `(0, 100]`. Thresholds combine
+with AND and use exact rational arithmetic; displayed rounding does not decide
+truth. Zero eligible points blocks evaluation. Only RTL-closure points enter
+denominators; testbench, generated, foreign, FSM, and covergroup records remain
+unscored. Simulation verdicts do not change coverage threshold truth.
+
+#### Approved coverage waivers
+
+Project-data `booley.toml` optionally selects one project-wide approval directory:
+
+```toml
+[coverage.waivers]
+anchor = "project_data_repository"
+directory = "coverage-waivers"
+```
+
+`anchor` is exactly `rtl_repository` or `project_data_repository`; the latter is
+the directory resolved by `booley.runtime.project_dir.resolve_project_dir()`.
+`directory` is a safe relative path. Approval files mirror RTL paths: source
+`rtl/counter.sv` uses `coverage-waivers/rtl/counter.sv.toml`. A human-authored file
+has this shape (replace the placeholders with exact retained evidence):
+
+```toml
+schema = "booley.coverage-waivers/v1"
+source = "rtl/counter.sv"
+source_sha256 = "sha256:<exact source SHA-256>"
+
+[[approval]]
+id = "reserved-counter-branch"
+target = "acme:demo:counter:1#sim_counter"
+point_id = "<complete cp1: point identity from the Campaign>"
+reason = "excluded"
+justification = "Reserved behavior is intentionally excluded."
+approved_by = "verification-owner@example.test"
+approved_at = "2026-09-09T09:00:00Z"
+approval_ref = "review:CR-1042"
+```
+
+For `reason = "unreachable"`, add an `approval.proof` table with `kind = "formal"`,
+a safe `reference` relative to the approval directory, and exact `sha256` of the
+proof file. `excluded` cannot carry proof. Both reasons yield `waived`; only
+exact RTL points are waivable. Unsafe paths/symlinks, malformed or duplicate
+approvals, stale sources, unmatched points, wrong Targets, missing proofs, and
+candidate content block evaluation and apply no subset. The immutable digest
+binds bytes, configuration, sources, approvals, proof, and provenance. Ungated
+collection does not load this directory. Analyst Waiver Candidates have no
+approval authority and cannot be copied here as approved content.

@@ -16,7 +16,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.flows.recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
+from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.flows.synth.recipe import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,

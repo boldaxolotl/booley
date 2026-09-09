@@ -429,7 +429,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
 ) -> None:
     """FPGA QoR intake pins the same sealed-recipe evidence as synthesis."""
     from booley.criteria.templates import BASELINE_TARGET_PARAM
-    from booley.flows.recipe_evidence import (
+    from booley.evidence.fields import (
         BASELINE_REF_PARAM,
         RECIPE_FINGERPRINT_PARAM,
         RECIPE_SNAPSHOT_PARAM,
@@ -507,7 +507,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
 
 
 def test_cycle_count_relative_criterion_pins_ticket_baseline(tmp_path: Path) -> None:
-    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+    from booley.evidence.fields import BASELINE_REF_PARAM
     from booley.harness.setup.intake import _pin_cycle_count_baselines
 
     ctx = TicketContext(

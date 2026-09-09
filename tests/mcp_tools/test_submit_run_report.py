@@ -13,10 +13,10 @@ import pytest
 
 from booley.criteria.state import (
     CATEGORY_RTL,
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    compute_source_fingerprint,
 )
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.runtime import job_records as jobrec
@@ -318,6 +318,7 @@ def test_rejects_report_and_updates_ui_when_verification_became_stale(
 ) -> None:
     work_dir = tmp_path / "worktree"
     state_path = _stale_sim_state(tmp_path, work_dir)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
 
     exit_code, state = _run_endpoint(
         state_path,
