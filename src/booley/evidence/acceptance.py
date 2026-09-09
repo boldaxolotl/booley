@@ -34,8 +34,7 @@ class AcceptanceTargetBinding:
         ]
         if invalid:
             raise ValueError(
-                "Acceptance Target binding requires canonical non-empty "
-                + ", ".join(invalid)
+                "Acceptance Target binding requires canonical non-empty " + ", ".join(invalid)
             )
         _ = self.criterion_key
         return self
@@ -97,9 +96,7 @@ class ResolvedFlowAcceptance:
     """Storage-independent acceptance authority consumed by one Flow run."""
 
     bindings: tuple[AcceptanceTargetBinding, ...] = ()
-    paired_project: PairedProjectBaseline = PairedProjectBaseline(
-        PairedBaselineMode.STANDALONE
-    )
+    paired_project: PairedProjectBaseline = PairedProjectBaseline(PairedBaselineMode.STANDALONE)
     ticket_backed: bool = False
 
     @property

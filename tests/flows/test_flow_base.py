@@ -181,7 +181,9 @@ class TestBooleyFlowExecution:
             encoding="utf-8",
         )
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            "booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path
+        )
         loaded_slugs = []
 
         def load_basis(_tio, slug, **_kwargs):
@@ -231,7 +233,9 @@ class TestBooleyFlowExecution:
         loaded_slugs = []
         basis = _flow_acceptance_basis()
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            "booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path
+        )
 
         def load_basis(_tio, slug, **_kwargs):
             loaded_slugs.append(slug)
