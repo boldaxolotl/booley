@@ -74,10 +74,15 @@ def coverage_sources(
     """Return the complete verified closure, or report-only on any mismatch."""
     from booley.flows.sim.coverage_campaign import freeze_coverage_mapping
     from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.fusesoc.core_projection import projection_enabled
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import FuseSocError
 
     try:
+        # FuseSoC inspection reconciles projected/isolated cores in stealth mode.
+        # Advisory source access must not prepare or change that project state.
+        if projection_enabled(project_root):
+            raise CoverageAnalysisError("Source inspection requires project reconciliation")
         catalog = TargetCatalog.build(project_root)
         handle = catalog.select(campaign.target.identity)
         _safe_path(handle.core_file)

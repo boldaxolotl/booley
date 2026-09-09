@@ -124,6 +124,27 @@ def test_verified_sources_are_supplied_as_exact_text_snapshot(tmp_path):
     assert set(prompt["sources"]) == {"rtl/counter.sv", "tb/counter_tb.sv"}
 
 
+@pytest.mark.parametrize("ignore_native", [False, True])
+def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
+    path = source_project(tmp_path)
+    state = tmp_path / ".booley_project"
+    (state / "cores").mkdir(parents=True)
+    (tmp_path / "counter.core").rename(state / "cores/counter.core")
+    (state / "booley.toml").write_text(
+        f"[stealth]\nenabled = true\nignore_native_cores = {str(ignore_native).lower()}\n"
+    )
+    model = Model()
+    analyst = CoverageAnalystSpecialist(model=model)
+    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    report = analyst.coverage_analyst(path).to_dict()
+
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert report["source_access"] == "report_only"
+    assert json.loads(model.calls[0].prompt)["sources"] is None
+
+
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])
 def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defect):
     path = source_project(tmp_path)

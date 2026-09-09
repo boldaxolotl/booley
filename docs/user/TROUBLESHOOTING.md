@@ -474,6 +474,8 @@ Native-payload pruning preserves analysis. Full-invocation pruning removes the
 Campaign, so select another retained invocation or collect new evidence.
 
 Missing, changed, unsafe, or mismatched Target sources produce report-only analysis.
+Stealth-mode projects also use report-only analysis because resolving their sources
+requires FuseSoC registry reconciliation, which would change project files.
 This does not change the Campaign's measured verdict. The Analyst does not reuse
 legacy `coverage_waivers.json` files or approve its candidates.
 
