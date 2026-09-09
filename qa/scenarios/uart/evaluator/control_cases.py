@@ -29,7 +29,7 @@ def receiver_cases() -> list[tuple]:
         receiver("irq-natural", "irq", "UART-IRQ", "irq", bit=1, mode="identity"),
         receiver("irq-injected", "irq", "UART-IRQ", "irq", bit=7, mode="inject"),
         receiver("history", "history", "UART-HISTORY", "history"),
-        receiver("read-once", "rx", "UART-BUS", "bus", mode="read-once"),
+        receiver("read-once", "pop", "UART-BUS", "bus", mode="read-once"),
     ])
     return result
 

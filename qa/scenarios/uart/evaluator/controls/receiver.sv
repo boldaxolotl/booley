@@ -20,6 +20,7 @@ localparam CORRUPT_DEPTH = 0;
 localparam CORRUPT_WATERMARK = 0;
 localparam CORRUPT_IRQ = 0;
 localparam CORRUPT_HISTORY = 0;
+localparam CORRUPT_POP = 0;
 reg [31:0] control;
 reg [8:0] enabled, events, force_level;
 reg [2:0] watermark;
@@ -52,6 +53,12 @@ always @(posedge clk_i) begin
         phase <= (phase + 1) % 4;
         if (phase == 3) history <= {history[14:0], rx_i};
         if (rsp_valid_o && rsp_ready_i) rsp_valid_o <= 0;
+        // The stalled-read mutant preserves the response snapshot but repeats
+        // its destructive side effect while the response is held outstanding.
+        if (CORRUPT_POP && rsp_valid_o && !rsp_ready_i &&
+            !req_write_i && req_addr_i == 32'h18 && depth > 0) begin
+            head = (head + 1) % 64; depth = depth - 1;
+        end
         if (req_valid_i && req_ready_o) begin
             rsp_valid_o <= 1; rsp_rdata_o <= 0; rsp_error_o <= 0;
             if (req_write_i) begin
