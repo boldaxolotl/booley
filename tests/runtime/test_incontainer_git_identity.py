@@ -153,9 +153,7 @@ def test_identity_ignores_pipeline_toml(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_identity_rejects_invalid_configuration(
-    tmp_path: Path, contents: str, match: str
-) -> None:
+def test_identity_rejects_invalid_configuration(tmp_path: Path, contents: str, match: str) -> None:
     (tmp_path / "booley.toml").write_text(contents, encoding="utf-8")
 
     with pytest.raises(GitIdentityError, match=match):
@@ -171,9 +169,7 @@ def test_identity_rerun_updates_existing_worktree_values(tmp_path: Path) -> None
     apply_git_identity(workspace, GitIdentity("Second Developer", "second-identity.invalid"))
 
     assert _git(workspace, "config", "--worktree", "user.name") == "Second Developer"
-    assert _git(workspace, "config", "--worktree", "user.email") == (
-        "second-identity.invalid"
-    )
+    assert _git(workspace, "config", "--worktree", "user.email") == ("second-identity.invalid")
 
 
 def test_failed_pair_write_restores_prior_worktree_identity(
