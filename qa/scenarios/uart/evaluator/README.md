@@ -1,10 +1,10 @@
 # Independent UART evaluator
 
-This directory stays in operator-controlled storage outside the Developer's
+This directory stays in operator-controlled storage outside the Developer Agent's
 Project, Session Runtime, mounted folders and network reach. Copy only `../spec/`
 and the approved prompts/Ticket payloads into the Project. Never expose this
 implementation, generated seed/cases, controls, build logs or raw observations to
-the implementing Developer. Source isolation must be demonstrated by the run's
+the implementing Developer Agent. Source isolation must be demonstrated by the run's
 actual filesystem/mount/network evidence; path separation alone does not prove it.
 
 The evaluator reads only the frozen public corpus and addenda. Its simulator
@@ -13,7 +13,7 @@ Git commit. Literal includes must resolve to explicit hashed `include_files`;
 absolute, escaping, ambiguous and macro includes are rejected. Include directives
 are rewritten only to the corresponding operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
 Provision cocotb 2.1.0 and Icarus in the isolated operator environment before
-the run; record their exact versions and immutable image identity in run evidence.
+the run; record their exact versions and immutable Session Image identity in run evidence.
 
 From this directory:
 

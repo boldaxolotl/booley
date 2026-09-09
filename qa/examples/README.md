@@ -10,7 +10,7 @@ Read [scenario.yaml](scenario.yaml) and [profiles.yaml](profiles.yaml) beside [r
 
 - a normal baseline check with a local stimulus and evidence contract;
 - an expected seeded failure followed by restored-state proof;
-- an unavailable visual check that leaves GUI qualification incomplete;
+- an unavailable Waveform Viewer check that leaves GUI qualification incomplete;
 - cleanup and a core pass that does not claim full qualification.
 
 The fault-detection check passes because the injected fault is expected. If baseline
