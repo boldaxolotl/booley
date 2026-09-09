@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from booley.core.boundary import as_float
-from booley.flows.clock_timing import (
+from booley.evidence.timing import (
     CLOCK_TIMING_FIELDS,
     per_clock_from_json,
     worst_clock,

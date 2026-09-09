@@ -3293,7 +3293,7 @@ def _mcp_tool_timeout_seconds(
 
 def _ticket_baseline_required(criterion_prefix: str) -> bool:
     """Whether persisted criteria will auto-enable an implementation baseline."""
-    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+    from booley.evidence.fields import BASELINE_REF_PARAM
 
     state_path = os.environ.get("BOOLEY_STATE_FILE")
     if not state_path:

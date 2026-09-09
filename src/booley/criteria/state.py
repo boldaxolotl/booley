@@ -31,7 +31,7 @@ from booley.criteria.threshold_eval import (
     resolve_metric,
 )
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
-from booley.flows.recipe_evidence import (
+from booley.evidence.fields import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
@@ -41,13 +41,10 @@ from booley.flows.recipe_evidence import (
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_DETAIL,
     RECIPE_SNAPSHOT_PARAM,
+)
+from booley.evidence.recipe import (
     implementation_comparison_basis,
     recipe_changes,
-)
-from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-export
-    SOURCE_FINGERPRINT_DETAIL_KEY,
-    as_str_list,
-    compute_source_fingerprint,
 )
 from booley.runtime.timefmt import utc_now_rfc3339
 

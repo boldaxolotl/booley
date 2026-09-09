@@ -13,10 +13,10 @@ import pytest
 
 from booley.criteria.state import (
     CATEGORY_RTL,
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    compute_source_fingerprint,
 )
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.runtime import job_records as jobrec

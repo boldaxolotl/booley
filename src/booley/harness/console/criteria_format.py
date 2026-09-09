@@ -13,7 +13,7 @@ from typing import Literal
 
 from booley.core.boundary import as_dict, as_float, as_int, as_str
 from booley.criteria.thresholds import ThresholdDescriptor, describe_threshold
-from booley.flows.clock_timing import worst_fmax_from_json
+from booley.evidence.timing import worst_fmax_from_json
 
 
 @dataclass(frozen=True)

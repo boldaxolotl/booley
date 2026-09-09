@@ -689,7 +689,7 @@ def _pin_cycle_count_baselines(
 ) -> None:
     """Pin every relative Cycle Count Criterion to the Ticket's base SHA."""
     from booley.criteria.thresholds import has_relative_threshold
-    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+    from booley.evidence.fields import BASELINE_REF_PARAM
 
     for key, params in criterion_params.items():
         if not key.startswith("cycle_count_") or not has_relative_threshold(params):
@@ -734,11 +734,11 @@ def _freeze_recipe_family(
     snapshot_builder: Callable[[Any, str], dict[str, Any]],
 ) -> None:
     """Freeze one implementation criterion family's recorded Target recipes."""
-    from booley.flows.recipe_evidence import (
+    from booley.evidence.fields import (
         RECIPE_FINGERPRINT_PARAM,
         RECIPE_SNAPSHOT_PARAM,
-        recipe_snapshot_fingerprint,
     )
+    from booley.evidence.recipe import recipe_snapshot_fingerprint
 
     keys = [key for key in expanded if key.startswith(prefix)]
     recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
@@ -805,7 +805,7 @@ def _pin_recipe_baseline(
     flow_label: str,
 ) -> bool:
     """Pin relative recipe evidence to the ticket baseline, returning whether needed."""
-    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+    from booley.evidence.fields import BASELINE_REF_PARAM
 
     needs_baseline = _has_relative_threshold(params)
     if needs_baseline and not ctx.base_sha:
