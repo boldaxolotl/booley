@@ -2,7 +2,7 @@
 
 Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley Flow, Target, Ticket Board)? The glossary in [CONTEXT.md](../CONTEXT.md) defines every term and the synonyms to avoid.
+New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley Flow, Target, Ticket Board)? The [context map](../../CONTEXT-MAP.md) points to each canonical glossary and its rejected synonyms.
 
 - [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)
 - [The Agentic RTL IDE](#the-agentic-rtl-ide)

@@ -31,10 +31,10 @@ and explain every finding"* are prompts to type in the agent chat. A skill
 invocation such as `/booley-ticket-create` is also typed in the **agent chat**,
 not in a shell.
 
-Booley's domain terms, including **Target**, **Booley Flow**, **Specialist**, and
-**Session Runtime**, have precise definitions in the canonical controlled
-vocabulary, [CONTEXT.md](../CONTEXT.md). Refer to it whenever a term is unfamiliar;
-this guide does not repeat those definitions.
+Booley's domain terms have precise definitions in the canonical controlled
+vocabularies indexed by the [context map](../../CONTEXT-MAP.md). Refer to the
+owning glossary whenever a term is unfamiliar; this guide does not repeat those
+definitions.
 
 ## First, verify your setup
 

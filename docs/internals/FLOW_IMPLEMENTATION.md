@@ -31,7 +31,7 @@ file, and every Flow run is generated from that description. Existing projects
 therefore port their build description when adopting Booley; [SETUP.md](../user/SETUP.md)
 covers that process.
 
-Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [CONTEXT.md](../CONTEXT.md) glossary) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
+Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [Ticket Board glossary](../../src/booley/ticket_board/CONTEXT.md)) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
 
 A deterministic **Booley Flow** has to do two things: turn the caller's request into a real EDA tool invocation, and turn the result back into facts Booley can reason about. This doc covers both halves for the built-ins: the **invocation** half (FuseSoC and Edalize generate the command) and the **interpretation** half (the per-Flow evidence contract). See [ARCHITECTURE.md](ARCHITECTURE.md) for where this layer sits in the whole system.
 
