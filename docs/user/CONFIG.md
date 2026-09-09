@@ -1100,6 +1100,28 @@ Either non-`auto` value fails loud (`booley doctor`) when its credential is
 absent, rather than silently falling back. See [USAGE.md: Auth &
 billing](USAGE.md#auth--billing).
 
+#### Git identity (`[agent.git]`)
+
+Set the default author and committer identity for Git commands run in
+Interactive Mode and Ticket Mode:
+
+```toml
+[agent.git]
+name = "Expected Developer"
+email = "developer@example.com"
+```
+
+Booley applies each configured value to the active checkout's worktree-specific
+Git configuration. This takes precedence over the host-global `.gitconfig` that
+VS Code copies into a Session Runtime without changing the user's global Git
+configuration. A missing or empty `name` falls back to `Dev`; a missing or empty
+`email` falls back to `dev@localhost`.
+
+Interactive Mode refreshes the values when the Session Runtime is created or
+started. Ticket Mode applies them when it creates a Ticket worktree. Explicit
+Git overrides such as `git commit --author` or the `GIT_AUTHOR_*` and
+`GIT_COMMITTER_*` environment variables still take precedence.
+
 ### Developer Agent policy (`[developer]`)
 
 ```toml

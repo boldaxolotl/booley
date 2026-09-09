@@ -344,33 +344,16 @@ git_wt config --worktree core.autocrlf false
 git_wt checkout -f >&2
 echo "Line endings normalised to LF (core.autocrlf=false)" >&2
 
-# Set git identity so agent tools can commit inside Docker (the container's
-# `agent` user has no global gitconfig and the host's is not mounted).
-# Reads [agent.git] from booley.toml. The fallback is deliberately neutral
-# (A-7): stealth mode scrubs commit MESSAGES, and a "Booley Agent" author
-# would leak the product name in the metadata of every agent commit.
-GIT_NAME="Dev"
-GIT_EMAIL="dev@localhost"
-for toml in "$BOOLEY_PROJECT_DIR_RESOLVED/booley.toml" "$BOOLEY_PROJECT_DIR_RESOLVED/pipeline.toml" "$PIPELINE_DIR/booley.toml" "$PIPELINE_DIR/pipeline.toml"; do
-    if [ -f "$toml" ]; then
-        _git_id=$("${PY[@]}" - "$toml" <<'PYEOF' 2>/dev/null
-import sys, tomllib
-with open(sys.argv[1], 'rb') as f:
-    cfg = tomllib.load(f)
-git = cfg.get('agent', {}).get('git', {})
-print(git.get('name', ''))
-print(git.get('email', ''))
-PYEOF
-)
-        _name=$(echo "$_git_id" | sed -n '1p')
-        _email=$(echo "$_git_id" | sed -n '2p')
-        [ -n "$_name" ] && GIT_NAME="$_name"
-        [ -n "$_email" ] && GIT_EMAIL="$_email"
-        break
-    fi
-done
-git_wt config --worktree user.name "$GIT_NAME"
-git_wt config --worktree user.email "$GIT_EMAIL"
+# Apply the same validated [agent.git] policy used by Interactive Mode. Older
+# layouts may keep booley.toml under .booley/, but pipeline.toml is never read.
+IDENTITY_PROJECT_DIR="$BOOLEY_PROJECT_DIR_RESOLVED"
+if [ ! -f "$IDENTITY_PROJECT_DIR/booley.toml" ] && [ -f "$PIPELINE_DIR/booley.toml" ]; then
+    IDENTITY_PROJECT_DIR="$PIPELINE_DIR"
+fi
+BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    BOOLEY_PROJECT_DIR="$IDENTITY_PROJECT_DIR" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
+    "${PY[@]}" -m booley.runtime.incontainer_git_identity
 
 _parent_lock_release
 # --- End critical section B ---

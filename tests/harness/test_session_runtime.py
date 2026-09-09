@@ -1850,7 +1850,7 @@ class TestUp:
         hooks = [
             _argv_of(c)[-1] for c in run.call_args_list if _argv_of(c)[:2] == ["docker", "exec"]
         ]
-        assert hooks == [dc.mcp_post_start_command()]
+        assert hooks == [f"{dc.git_identity_command()} && {dc.mcp_post_start_command()}"]
 
     def test_rebuild_parks_old_container_until_replacement_succeeds(self, wired):
         workspace, run = wired

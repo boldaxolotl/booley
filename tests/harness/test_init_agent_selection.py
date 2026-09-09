@@ -321,6 +321,29 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
     assert config.read_text(encoding="utf-8") == ('[agent]\nprovider = "claude"\nauth = "auto"\n')
 
 
+def test_persisting_auth_preserves_existing_git_identity(tmp_path):
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    config = project_dir / "booley.toml"
+    config.write_text(
+        '[agent]\nprovider = "claude"\n\n'
+        '[agent.git]\nname = "Expected Developer"\n'
+        'email = "developer-identity.invalid"\n',
+        encoding="utf-8",
+    )
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
+
+    assert resolved == init_cmd.AgentSelection("claude", "auto", False, True)
+    assert init_cmd._step_agent_config(ctx, resolved, config)
+    assert config.read_text(encoding="utf-8") == (
+        '[agent]\nprovider = "claude"\n\nauth = "auto"\n'
+        '[agent.git]\nname = "Expected Developer"\n'
+        'email = "developer-identity.invalid"\n'
+    )
+
+
 def test_check_only_reports_pending_selection_before_project_dir_exists(tmp_path):
     selection = init_cmd.AgentSelection("codex", "subscription", True, True)
     config = tmp_path / ".booley_project" / "booley.toml"

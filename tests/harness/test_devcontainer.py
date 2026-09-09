@@ -14,6 +14,16 @@ from booley.runtime import devcontainer as dc
 
 
 class TestBuildSpec:
+    @pytest.mark.parametrize("app", dc.SUPPORTED_APPS)
+    def test_git_identity_precedes_registration_on_create_and_start(self, app):
+        registrar = dc.mcp_post_start_command()
+        expected_tail = f"{dc.git_identity_command()} && {registrar}"
+
+        spec = dc.build_devcontainer_spec(app, mcp_start_command=registrar)
+
+        for key in ("postCreateCommand", "postStartCommand"):
+            assert spec[key].split("; ")[-1] == expected_tail
+
     def test_core_runtime_fields(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
         assert spec["image"] == "booley-sandbox"
@@ -786,9 +796,9 @@ class TestConfigSeed:
         assert pc.index("cp -n") < pc.index(self._MCP)
         assert f"{dc.AGENT_HOME}/.claude-config-seed.json" in pc
         assert f"{dc.AGENT_HOME}/.claude.json" in pc
-        # With no credential source there is nothing to re-seed on start, so
-        # postStart is just the registrar. The CONFIG seed stays create-only.
-        assert spec["postStartCommand"] == self._MCP
+        # The CONFIG seed stays create-only. Identity is refreshed before the
+        # registrar on every start so copied host Git config cannot win.
+        assert spec["postStartCommand"] == f"{dc.git_identity_command()} && {self._MCP}"
         assert "cp -n" not in spec["postStartCommand"]
 
     def test_poststart_reseeds_credentials(self):
@@ -815,7 +825,7 @@ class TestConfigSeed:
     def test_postcreate_seed_only_when_no_mcp(self):
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, config_seed_source=self._SRC)
         assert spec["postCreateCommand"].startswith("cp -n")
-        assert "postStartCommand" not in spec
+        assert spec["postStartCommand"] == dc.git_identity_command()
 
     def test_no_seed_for_codex(self):
         # Only Claude caches these grants; Codex gets no seed even with a source.
@@ -836,13 +846,14 @@ class TestMcpStartCommand:
             dc.APP_NONE,
             mcp_start_command="python -m booley.harness.incontainer_register",
         )
-        assert spec["postCreateCommand"] == "python -m booley.harness.incontainer_register"
-        assert spec["postStartCommand"] == "python -m booley.harness.incontainer_register"
+        expected = f"{dc.git_identity_command()} && python -m booley.harness.incontainer_register"
+        assert spec["postCreateCommand"] == expected
+        assert spec["postStartCommand"] == expected
 
-    def test_registration_hooks_omitted_by_default(self):
+    def test_identity_hooks_remain_without_registration(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
-        assert "postStartCommand" not in spec
-        assert "postCreateCommand" not in spec
+        assert spec["postStartCommand"] == dc.git_identity_command()
+        assert spec["postCreateCommand"] == dc.git_identity_command()
 
     def test_post_start_command_runs_registrar(self):
         # ADR 0023: the registrar starts the loopback HTTP server and writes

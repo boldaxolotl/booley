@@ -4,6 +4,13 @@
 [project]
 name = "<project>"
 
+# Optional identity for agent-authored commits in Interactive and Ticket Mode.
+# Values are applied to each checkout at worktree scope. Missing fields use the
+# neutral defaults `Dev` and `dev@localhost`.
+# [agent.git]
+# name = "Expected Developer"
+# email = "developer@example.com"
+
 [stealth]
 # Setup keeps commit messages verbatim unless the user explicitly opts in to
 # the banned-word scrub. Set true only when plan row 20 records that choice.
