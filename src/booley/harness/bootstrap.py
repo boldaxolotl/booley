@@ -409,7 +409,22 @@ def _reconcile_base_image(
         ImageStatus.CHANGED: BootstrapState.CHANGED,
         ImageStatus.EXTERNAL: BootstrapState.ERROR,
     }[result.status]
-    detail = "; ".join(item.message for item in result.diagnostics)
+    if result.cleanup.pending and state is BootstrapState.CURRENT:
+        state = BootstrapState.PENDING
+    details = [item.message for item in result.diagnostics]
+    if result.cleanup.pending:
+        noun = "tag" if len(result.cleanup.pending) == 1 else "tags"
+        details.append(
+            f"obsolete Docker image {noun} can be removed: " + ", ".join(result.cleanup.pending)
+        )
+    if result.cleanup.removed:
+        details.append("removed obsolete Docker image tags: " + ", ".join(result.cleanup.removed))
+    if result.cleanup.retained_required:
+        details.append(
+            "retained Docker image tags still required by containers: "
+            + ", ".join(result.cleanup.retained_required)
+        )
+    detail = "; ".join(details)
     return result, BootstrapFinding(
         "base-image", state, detail or f"{result.selected_reference} {result.status}"
     )
