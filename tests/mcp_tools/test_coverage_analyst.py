@@ -92,8 +92,8 @@ def source_project(root):
     path = persist_campaign(root)
     (root / "rtl").mkdir()
     (root / "tb").mkdir()
-    (root / "rtl/counter.sv").write_text("module counter; endmodule\n")
-    (root / "tb/counter_tb.sv").write_text("module counter_tb; endmodule\n")
+    (root / "rtl/counter.sv").write_bytes(b"module counter; endmodule\n")
+    (root / "tb/counter_tb.sv").write_bytes(b"module counter_tb; endmodule\n")
     core = root / "counter.core"
     core.write_text(
         "CAPI=2:\nname: acme:demo:counter:1.0\nfilesets:\n  rtl:\n    files: [rtl/counter.sv]\n    file_type: systemVerilogSource\n  tb:\n    files: [tb/counter_tb.sv]\n    file_type: systemVerilogSource\n    tags: [tb]\ntargets:\n  sim_counter:\n    flow: sim\n    filesets: [rtl, tb]\n    toplevel: counter_tb\n    flow_options:\n      tool: verilator\n"
