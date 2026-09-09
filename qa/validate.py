@@ -136,7 +136,9 @@ def load_profiles(root: Path) -> list[dict]:
                     raise ValueError(f"profiles.yaml: unknown check set {set_id}")
                 check_set = check_sets[set_id]
                 if check_set["scenario_id"] != run["scenario_id"]:
-                    raise ValueError(f"profiles.yaml: {run['id']}: cross-scenario check set {set_id}")
+                    raise ValueError(
+                        f"profiles.yaml: {run['id']}: cross-scenario check set {set_id}"
+                    )
                 used.add(set_id)
                 checks.extend(check_set["checks"])
             strings(checks, f"profiles.yaml: {run['id']}.resolved checks")
