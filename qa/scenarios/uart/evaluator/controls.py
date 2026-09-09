@@ -52,6 +52,11 @@ def controls(output: Path) -> dict:
 
 
 def write_variant(directory: Path, source: str, family: str, variant: str) -> Path:
+    # Boundary controls use independent literal source-clock periods. Their
+    # corrupt variants move exactly one clock outside the public interval.
+    if family in ["timeout_early", "timeout_late"]:
+        period = 1920 if family == "timeout_early" else 2176
+        source = source.replace("TIMEOUT_CYCLES = 2048", f"TIMEOUT_CYCLES = {period}")
     content = source.replace(
         f"CORRUPT_{family.upper()} = 0",
         f"CORRUPT_{family.upper()} = {int(variant == 'corrupt')}",

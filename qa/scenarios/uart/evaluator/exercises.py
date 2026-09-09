@@ -3,6 +3,7 @@
 from cases import REGISTERS
 from driver import Driver, ObservationBlockedError
 from oracles import check_tx, check_val
+from timeout_checks import timeout
 
 
 async def register(driver: Driver, parameters: dict) -> None:
@@ -403,77 +404,6 @@ async def break_error(driver: Driver, parameters: dict) -> None:
     driver.dut.rx_i.value = 1
     await driver.wait(128)
     await rx(driver, {"payload": parameters["payload"], "nco": 0x4000, "parity": parity_mode})
-
-
-async def timeout(driver: Driver, parameters: dict) -> None:
-    mode = parameters["mode"]
-    await driver.configure()
-    await driver.write(4, 64)
-    await driver.write(0x30, parameters["value"] | (0 if mode == "disabled" else 1 << 31))
-    await driver.receive(parameters["payload"])
-    if mode == "disabled":
-        start = len(driver.irqs)
-        await driver.wait(parameters["bit_horizon"] * 64)
-        driver.expect(
-            any(value & 64 for value in driver.irqs[start:]),
-            False,
-            "Timeout disabled over declared observation horizon",
-        )
-        return
-    await await_timeout(driver, parameters["bit_horizon"] * 64)
-    await driver.read(0, 64, 64)
-    if mode in ["enabled", "w1c", "good-recovery"]:
-        await driver.write(0, 64)
-        await driver.read(0, 0, 64)
-        if mode == "good-recovery":
-            await driver.write(0x30, 0)
-            await drain(driver, "rx", parameters["payload"])
-            await rx(driver, {"payload": [0xA5], "nco": 0x4000})
-        return
-    observations = []
-    for intervene in [False, True]:
-        observations.append(await timeout_trial(driver, parameters, intervene))
-    driver.observations.append({"timeout_pair": observations, "mode": mode})
-    raise ObservationBlockedError(
-        "Paired timeout stimuli retained; public phase variation has no universal "
-        "comparison tolerance, so these timestamps alone cannot establish conformance"
-    )
-
-
-async def timeout_trial(driver: Driver, parameters: dict, intervene: bool) -> dict:
-    await driver.reset()
-    await driver.configure()
-    mode = parameters["mode"]
-    payload = list(range(64)) if mode == "full-drop-no-reset" else [0x55, 0xAA]
-    await driver.receive(payload)
-    await driver.write(0x30, (1 << 31) | parameters["value"])
-    first = await await_timeout(driver, parameters["bit_horizon"] * 64)
-    await driver.write(0, 64)
-    await driver.wait(8 * 64)
-    before = await driver.read(0x24)
-    intervention = driver.cycle
-    if intervene and mode == "read-depth-reset":
-        await driver.read(0x18, payload[0], 0xFF)
-    elif intervene and mode in ["receive-depth-reset", "full-drop-no-reset"]:
-        await driver.receive([0xA5])
-    elif intervene and mode == "event-reset":
-        # W1C timing must not substitute for the event that reset the counter.
-        await driver.write(0, 64)
-    else:
-        await driver.wait(12 * 64)
-    after = await driver.read(0x24)
-    second = await await_timeout(driver, parameters["bit_horizon"] * 64)
-    if intervene and mode == "full-drop-no-reset":
-        driver.expect(after & 0xFF0000, before & 0xFF0000, "Dropped byte preserves full depth")
-        await drain(driver, "rx", payload)
-    return {
-        "intervene": intervene,
-        "first_event_read": first,
-        "intervention": intervention,
-        "second_event_read": second,
-        "before_depth": before,
-        "after_depth": after,
-    }
 
 
 async def noise_filter(driver: Driver, parameters: dict) -> None:

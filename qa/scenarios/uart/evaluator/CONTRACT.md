@@ -138,7 +138,21 @@ Use these exact **execution ceilings**, clipped to the remaining named phase bud
 
 Timeout case IDs are `UART-ERROR.timeout.disabled`, `.enabled`, `.read-depth-reset`, `.receive-depth-reset`, `.event-reset`, `.full-drop-no-reset`, `.w1c` and `.good-recovery`, each with the scenario prefix. Disabled behavior is observed over the finite horizon with a nonempty FIFO; no timeout event is expected while EN=0. Enabled behavior records actual first/subsequent IRQ cycles and FIFO contents. For read/receive/event cases retain the depth-changing or timeout-event timestamp; for full-drop retain the unchanged FIFO depth and dropped byte timestamp. Record predicted reset/nonreset semantics from the documentation separately from observed times. Paired cases start from identical declared state, NCO and driving phase and differ only in the named operation, making timing shifts or lack of shifts inspectable without assuming internal counters.
 
-A trustworthy observed contradiction of documented reset/nonreset, disabled-mode, W1C or FIFO semantics is a failure. Where external observations cannot distinguish a timer reset from permissible phase variation, the reset-semantic check remains blocked rather than being declared passed from a coincidental IRQ time. Missing an enabled IRQ before an operational horizon is blocked; no universal public external-pin/MMIO-to-timeout upper bound has been established. Preserve the complete raw timing trace and result for diagnosis. The approved general IRQ visibility bound applies **after an established modeled event**; it does not invent when the timeout counter's first event must occur.
+The approved [timeout rule, revision 2](../spec/timing-addendum.md#approved-timeout-rule--revision-2-09-sep-2026)
+supplies the previously missing exact-a/VAL=32 bound: a new enabled IRQ edge must
+occur within 30–34 bit-times of the reference event. Read acceptance is exact;
+received FIFO-depth changes are bracketed by reads at most eight clocks apart.
+Pairs exercise depth changes and full-FIFO drops with disjoint reset/no-reset
+windows. Event-reset/W1C pairs acknowledge at 2B and 10B after the first IRQ; each
+next interval is measured from the IRQ event, never from its acknowledgement.
+Each trial observes two subsequent periods and drains the preserved FIFO contents.
+Timeout is disabled during initial FIFO loading; enabling it begins the first epoch.
+Missing or out-of-window IRQ edges are circuit failures under this new public
+requirement. Operational ceilings and invalid operator observations remain blocked.
+Raw per-clock pin traces, bus acceptance times and measured reference windows are
+retained even on failure. Other timing situations acquire no implied deadline.
+The eight original timeout case IDs and profile memberships remain unchanged;
+new public/evaluator digests invalidate previous manifests and control evidence.
 
 ## Fixed evidence layout
 

@@ -322,7 +322,7 @@ def peripheral_cases() -> list[dict]:
                 value=32,
                 bit_horizon=4096,
                 nco=0x4000,
-                payload=[0x55],
+                payload=list(range(64)) if mode == "full-drop-no-reset" else [0x55, 0xAA],
             )
         )
     return result + filter_and_reset_cases()

@@ -21,6 +21,18 @@ localparam CORRUPT_WATERMARK = 0;
 localparam CORRUPT_IRQ = 0;
 localparam CORRUPT_HISTORY = 0;
 localparam CORRUPT_POP = 0;
+localparam CORRUPT_TIMEOUT_READ = 0;
+localparam CORRUPT_TIMEOUT_RECEIVE = 0;
+localparam CORRUPT_TIMEOUT_DROP = 0;
+localparam CORRUPT_TIMEOUT_EVENT = 0;
+localparam CORRUPT_TIMEOUT_W1C = 0;
+localparam CORRUPT_TIMEOUT_EARLY = 0;
+localparam CORRUPT_TIMEOUT_LATE = 0;
+localparam CORRUPT_TIMEOUT_SILENT = 0;
+localparam TIMEOUT_CYCLES = 2048;
+reg [31:0] timeout_control;
+integer timeout_age;
+reg restart_timer;
 reg [31:0] control;
 reg [8:0] enabled, events, force_level;
 reg [2:0] watermark;
@@ -39,6 +51,7 @@ assign req_ready_o = !rsp_valid_o;
 always @(posedge clk_i) begin
     if (!rst_ni) begin
         control <= 0; enabled <= 0; events <= 0; force_level <= 0;
+        timeout_control <= 0; timeout_age = 0; restart_timer = 0;
         watermark <= 0; received <= 0; history <= 0;
         filter_samples <= 7; filtered <= 1;
         depth = 0; head = 0; tail = 0;
@@ -46,6 +59,7 @@ always @(posedge clk_i) begin
         rsp_valid_o <= 0; rsp_rdata_o <= 0; rsp_error_o <= 0;
     end else begin
         force_level <= 0;
+        restart_timer = 0;
         filter_samples <= {filter_samples[1:0], rx_i};
         if (&filter_samples) filtered <= 1;
         else if (~|filter_samples) filtered <= 0;
@@ -63,7 +77,10 @@ always @(posedge clk_i) begin
             rsp_valid_o <= 1; rsp_rdata_o <= 0; rsp_error_o <= 0;
             if (req_write_i) begin
                 case (req_addr_i)
-                    0: if (req_wstrb_i[0]) events <= events & ~req_wdata_i[8:0];
+                    0: if (req_wstrb_i[0]) begin
+                        events <= events & ~req_wdata_i[8:0];
+                        if (req_wdata_i[6] && CORRUPT_TIMEOUT_W1C) restart_timer = 1;
+                    end
                     4: begin
                         if (req_wstrb_i[0]) enabled[7:0] <= req_wdata_i[7:0];
                         if (req_wstrb_i[1]) enabled[8] <= req_wdata_i[8];
@@ -74,6 +91,11 @@ always @(posedge clk_i) begin
                     end
                     32'h10: for (lane=0; lane<4; lane=lane+1)
                         if (req_wstrb_i[lane]) control[lane*8 +: 8] <= req_wdata_i[lane*8 +: 8];
+                    32'h30: begin
+                        for (lane=0; lane<4; lane=lane+1)
+                            if (req_wstrb_i[lane]) timeout_control[lane*8 +: 8] <= req_wdata_i[lane*8 +: 8];
+                        restart_timer = 1;
+                    end
                     32'h20: if (req_wstrb_i[0]) begin
                         watermark <= req_wdata_i[4:2];
                         if (req_wdata_i[0]) begin depth = 0; head = 0; tail = 0; end
@@ -88,9 +110,11 @@ always @(posedge clk_i) begin
                     32'h18: if (depth > 0) begin
                         rsp_rdata_o <= fifo[head] ^ CORRUPT_RX;
                         head = (head + 1) % 64; depth = depth - 1;
+                        if (!CORRUPT_TIMEOUT_READ) restart_timer = 1;
                     end
                     32'h24: rsp_rdata_o <= (depth ^ CORRUPT_DEPTH) << 16;
                     32'h2c: rsp_rdata_o <= history ^ CORRUPT_HISTORY;
+                    32'h30: rsp_rdata_o <= timeout_control;
                 endcase
             end
         end
@@ -112,11 +136,21 @@ always @(posedge clk_i) begin
             end
             4: begin
                 if (!sample_rx) events[4] <= 1;
-                else if (depth == 64) events[3] <= 1;
-                else begin fifo[tail] <= received; tail = (tail+1)%64; depth = depth+1; end
+                else if (depth == 64) begin
+                    events[3] <= 1;
+                    if (CORRUPT_TIMEOUT_DROP) restart_timer = 1;
+                end else begin
+                    fifo[tail] <= received; tail = (tail+1)%64; depth = depth+1;
+                    if (!CORRUPT_TIMEOUT_RECEIVE) restart_timer = 1;
+                end
                 state <= 0;
             end
         endcase
+        if (restart_timer || !timeout_control[31] || depth == 0) timeout_age = 0;
+        else if (timeout_age >= TIMEOUT_CYCLES - CORRUPT_TIMEOUT_EARLY + CORRUPT_TIMEOUT_LATE - 1) begin
+            if (!CORRUPT_TIMEOUT_SILENT) events[6] <= 1;
+            if (!CORRUPT_TIMEOUT_EVENT) timeout_age = 0;
+        end else timeout_age = timeout_age + 1;
     end
 end
 endmodule

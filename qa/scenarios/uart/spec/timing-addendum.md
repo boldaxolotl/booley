@@ -32,3 +32,51 @@ To complete an executable conformance contract, the following **approved public 
 The finite limits are conservative test-contract choices relative to the selected serial rates, not product promises derived from an implementation. Publish them in the same addendum the Developer receives. For observations not governed by these explicit bounds or documented timing requirements, reaching an operational timeout produces a blocked result rather than proof of an RTL timing defect.
 
 For VAL, steady all-high/all-low input eventually yielding 0xffff/0x0000 is useful but cannot alone prove ordering. A known transition-rich input and consistent sample-phase/latency alignment is needed to check newest bit 0. A bounded alignment window requires the above public latency decision. Do not fit an arbitrary distinct delay per sample to force a match.
+
+## Approved timeout rule — revision 2 (09 SEP 2026)
+
+Restrict these timeout comparisons to NCO=0x4000, NF=0, normal RX, RX enabled,
+TIMEOUT_CTRL.EN=1 and VAL=32, with a nonempty RX FIFO and no simultaneous reset,
+control write, FIFO reset or competing timeout/depth event. B=64 source clocks.
+A timeout event shall become visible on enabled IRQ bit 6 between 30B and 34B
+source clocks, inclusive, after the event that restarts the timer. This ±2B
+allowance is an approved scenario tolerance, chosen to admit the documented
+1.5-bit phase example plus observation latitude. The corpus does not establish
+it as a universal hardware fact.
+
+Timer restart events are a successful nonempty RDATA read at MMIO acceptance,
+a successfully received character changing FIFO depth, and a timeout event.
+TIMEOUT_CTRL enable begins the first epoch at write acceptance. Disabling the
+timer suppresses events. W1C acknowledges an event without restarting the timer.
+A character discarded because the RX FIFO is full does not restart the timer.
+Periodic events while depth stays nonzero obey the same 30B–34B interval.
+
+## External observation and comparisons
+
+Observe IRQ transitions every source clock, enabled throughout the experiment;
+clear bit 6 before its next possible event. Record bus acceptance times and
+bracket received-byte depth changes with consecutive FIFO_STATUS read acceptance
+samples at most eight clocks apart. For a reset interval [L,U], the accepted
+next-event window is [L+30B,U+34B]. An absent event past U+34B is a failure of this
+new public bound, provided execution is otherwise healthy. Simulator/resource
+failures remain blocked.
+
+Run each trial from a fresh identical setup, first establishing an event E0.
+Clear that event, then intervene sufficiently far from both window boundaries:
+Issue RDATA near E0+8B (record actual acceptance); or finish a received character near E0+18B. The no-reset expected
+window is [E0+30B,E0+34B]; a reset event at [L,U] creates the later window above.
+Require these windows to be disjoint; otherwise block the comparison. Assert
+FIFO contents/depth before and after so the intended event actually occurred.
+The received/read cases start with two frozen payload bytes, so a single read
+keeps the FIFO nonempty. The discarded case starts at full depth 64. Capture the
+full payload in the materialized manifest. Inability to maintain the eight-clock
+observation spacing is blocked evidence, not a new MMIO timing requirement.
+
+To distinguish event reset from acknowledgement reset, repeat with W1C accepted
+at E0+2B and E0+10B. The next event must stay in the E0-relative window in both
+trials; do not use the W1C time as the reference. Record all initial failures,
+paired observations and recovery results without replacing earlier evidence.
+
+This revision was approved by the maintainer. It is a scenario requirement, not
+a universal OpenTitan timing claim. The new public-input and evaluator digests
+require a new frozen manifest; existing run manifests must not be replaced.

@@ -270,7 +270,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Interactive Mode delegate
-    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
+    sha256: 6547ac001a93a6bc0bbd65dc3606726b273f23f34afbbb520e13cd8299cdddbd
   - path: spec/corpus-manifest.json
     audience: Interactive Mode delegate
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -2681,7 +2681,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Interactive Mode delegate
-    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
+    sha256: 6547ac001a93a6bc0bbd65dc3606726b273f23f34afbbb520e13cd8299cdddbd
   - path: spec/corpus-manifest.json
     audience: Interactive Mode delegate
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -4038,7 +4038,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Developer Agent
-    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
+    sha256: 6547ac001a93a6bc0bbd65dc3606726b273f23f34afbbb520e13cd8299cdddbd
   - path: spec/corpus-manifest.json
     audience: Developer Agent
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -4915,25 +4915,28 @@ steps:
   assets:
   - path: evaluator/cases.py
     audience: independent evaluator
-    sha256: cebb0d0e687b046f316fc978793553f0f05f52f17dfedf35b32d9549a2ea9387
+    sha256: e24ee94c4573932fdf9c41dc719a7171ca07e938ac846e5584cfbc8b52b4f9cc
   - path: evaluator/controls/transport.sv
     audience: independent evaluator
     sha256: 3cd4d90ea1ec1a9498bb2a92f45c4b3b062477e94541ada59f6a15d445a8c412
   - path: evaluator/control_cases.py
     audience: independent evaluator
-    sha256: d0a4a33c8245a5f22dbdfa296aa778499265125507b80ac6f122ba1bde904e14
+    sha256: 6b64ef3aecf6ee55874dc615ed07cf32b493aeaea88c3f009a2e94cb750ed3fd
   - path: evaluator/controls/receiver.sv
     audience: independent evaluator
-    sha256: 0e0cad87d54be013909466f05f87ba82d00f92c7bfed703418fd1389b95179d6
+    sha256: 3cd9d605c6d355d3b2f98360e0312fc4dd91b978974b5b1e7ad9bfb215720b8e
   - path: evaluator/controls.py
     audience: independent evaluator
-    sha256: 9821413ec0b769953e674869a5bd8e8fb8346be2cc8b24f649ad90173ee01917
+    sha256: 2aa780c326021b6d9d8b5b212eb0e5528389af5bd2fecce4a8bbf08e59a2fcf6
   - path: evaluator/driver.py
     audience: independent evaluator
     sha256: d245e83299e8b84bd4c3438c201999b3a022247256607bb1dbbf12240838643a
+  - path: evaluator/timeout_checks.py
+    audience: independent evaluator
+    sha256: c836bede0f5cdb94232d7cfc3f25f5800efc454ab199f219efc7d474dc96e54c
   - path: evaluator/exercises.py
     audience: independent evaluator
-    sha256: 03c8b6d5c5a09238fc07cd2022a5342edbf8263f065a1e768eb899fce3f841c4
+    sha256: b2338c3bda6489885525dfd61b6f0ae192a336b6d39082c883127287cad8a7fb
   - path: evaluator/observe.py
     audience: independent evaluator
     sha256: 38efe264b78db70ba051c275cf4160a03d01cb9b815e361fe70354ba1da8488e
@@ -4948,7 +4951,7 @@ steps:
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: d91a9ac037861869f7796c4ac5a4093721d49d62500fc45765a08f7215ca12f5
+    sha256: 1fb734bfe6097c338d62547c78d1522c963042c571ca0c89f31afed54274997b
   - path: evaluator/inputs.py
     audience: independent evaluator
     sha256: 7c91bd0a7ece38519395a7a463b8bf2d1e0a5dcbacaec334964748e147098725
@@ -4957,7 +4960,7 @@ steps:
     sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
   - path: evaluator/CONTRACT.md
     audience: independent evaluator
-    sha256: c64a7bb58c208488e3e1323ed2104467c7b01107b056ef607bb84c4476719c4c
+    sha256: 07d52c02a0f342f512a0db55768c56df4fee219e6773494c8eb668057b23465b
 - id: evaluator-candidate
   phase: evaluate
   action: Build accepted commit in disposable operator checkout.
@@ -6331,7 +6334,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Developer Agent
-    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
+    sha256: 6547ac001a93a6bc0bbd65dc3606726b273f23f34afbbb520e13cd8299cdddbd
   - path: spec/qa_uart.sv
     audience: Developer Agent
     sha256: 019ab153ca1f735225af165ad53c31f542676b95afa9c27322d8d22e404eeb64

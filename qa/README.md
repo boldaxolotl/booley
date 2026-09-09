@@ -33,8 +33,9 @@ preserves historical decisions. Current contracts live in the scenario assets,
 [UART oracle derivation](scenarios/uart/evaluator/CONTRACT.md). Regression tests
 retain compact checksums of the reviewed profile membership and exclusions.
 
-UART timeout comparisons remain blocked where the public timing contract cannot
-establish a verdict. Implementation progress and run results belong in the PR,
+UART exact-a/VAL=32 timeout comparisons use the approved public 30–34 bit-time
+window in the timing addendum. Other timing observations remain blocked when the
+public contract cannot establish a verdict. Implementation progress and run results belong in the PR,
 issues, and run records rather than this reference.
 
 Execution requires the exact released Booley package/image and matching docs,

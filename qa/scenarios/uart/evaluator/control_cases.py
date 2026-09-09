@@ -93,6 +93,7 @@ def control_cases() -> list[tuple]:
             case("UART-TXRX.control", "tx", payload=[0x55], nco=0x4000, parity="disabled"),
         ),
         *receiver_cases(),
+        *timeout_cases(),
     ]
 
 
@@ -103,3 +104,30 @@ def expected_controls() -> dict[str, str]:
         for name, *_ in control_cases()
         for variant, status in VARIANTS.items()
     }
+
+
+def timeout_cases() -> list[tuple]:
+    """Counter defects are independent of the interval-based evaluator."""
+    return [
+        receiver(
+            f"timeout-{name}",
+            f"timeout_{name}",
+            "UART-ERROR",
+            "timeout",
+            mode=mode,
+            value=32,
+            nco=0x4000,
+            bit_horizon=4096,
+            payload=list(range(64)) if mode == "full-drop-no-reset" else [0x55, 0xAA],
+        )
+        for name, mode in [
+            ("read", "read-depth-reset"),
+            ("receive", "receive-depth-reset"),
+            ("drop", "full-drop-no-reset"),
+            ("event", "event-reset"),
+            ("w1c", "w1c"),
+            ("early", "enabled"),
+            ("late", "enabled"),
+            ("silent", "good-recovery"),
+        ]
+    ]
