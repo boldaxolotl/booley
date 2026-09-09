@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -66,28 +65,11 @@ def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionC
     validate_recording(getattr(endpoint.args, "work_dir", None))
     if not changes or not endpoint.state.strict_criteria:
         return
-    raw_logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
-    if not raw_logs_dir:
-        return
-    acceptance_basis: dict[str, Any] = {}
-    raw_ticket_file = os.environ.get("BOOLEY_TICKET_FILE")
-    if raw_ticket_file and Path(raw_ticket_file).is_file():
-        from booley.ticket_board.frontmatter import parse_frontmatter
-
-        fields, _body = parse_frontmatter(Path(raw_ticket_file).read_text(encoding="utf-8"))
-        raw_basis = fields.get("acceptance_basis")
-        if isinstance(raw_basis, dict):
-            acceptance_basis = raw_basis
-    from booley.ticket_board.acceptance_ledger import record_changes
-
-    record_changes(
-        Path(raw_logs_dir),
+    endpoint._acceptance_recorder.record_changes(
         endpoint.state,
         changes,
-        invocation_id=os.environ.get("BOOLEY_RUN_ID") or endpoint._invocation_id,
+        invocation_id=endpoint._invocation_id,
         producer=endpoint.name,
-        execution_id=os.environ.get("BOOLEY_EXECUTION_ID", ""),
-        acceptance_basis=acceptance_basis,
     )
 
 

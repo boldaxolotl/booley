@@ -340,7 +340,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 self.state.criteria,
                 "fpga_impl_ok_",
                 handles,
-                basis=getattr(self, "_acceptance_basis", None),
+                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
                 flow="fpga",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -485,7 +485,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         candidate_handles = self._target_handles
         candidate_refs = self._target_execution_refs
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     self._target_pairs,
@@ -594,7 +598,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            basis_bound=getattr(self, "_acceptance_basis", None) is not None,
+            basis_bound=self._flow_acceptance.basis_bound,
         )
 
     def _prepare_fpga_command(
@@ -1028,7 +1032,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         if full_sha is not None:
             self._baseline_full_sha = full_sha
         try:
-            with baseline_worktree(project_root, baseline_ref) as wt:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as wt:
                 self.args.work_dir = wt
                 current_handles = self._target_handles
                 current_refs = getattr(self, "_target_execution_refs", {})

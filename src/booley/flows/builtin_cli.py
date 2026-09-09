@@ -12,6 +12,7 @@ from booley.runtime.endpoint_execution import ExecutionResult
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
+    from booley.flows.execution_persistence import FlowExecutionAdapter
 
 
 def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
@@ -36,11 +37,17 @@ def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowReque
     return request
 
 
-def execute_cli(flow: BuiltinFlow, argv: list[str] | None = None) -> ExecutionResult:
+def execute_cli(
+    flow: BuiltinFlow,
+    argv: list[str] | None = None,
+    *,
+    adapter: FlowExecutionAdapter | None = None,
+) -> ExecutionResult:
+    from booley.flows.execution_persistence import StandaloneFlowExecution
     from booley.flows.flow_session import FlowSession
 
     request = parse_request(flow, argv)
-    flow.context = FlowSession(flow)
+    flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
     flow.context._args = request
     flow.context._raw_argv = argv if argv is not None else sys.argv[1:]
     return flow.context.execute_prepared()

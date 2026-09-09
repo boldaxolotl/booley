@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.criteria.state import DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.paths import ticket_runtime_dir
 
 if TYPE_CHECKING:
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -48,13 +48,13 @@ def _emit_criteria_update(state: DevelopmentState) -> None:
 def _write_display_event(event: dict) -> None:
     """Append a JSON event to $BOOLEY_RUNTIME_DIR/display.jsonl.
 
-    No-op when BOOLEY_LOGS_DIR is unset (human mode).
+    No-op when composition did not supply BOOLEY_RUNTIME_DIR (human mode).
     """
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
-    if not logs_dir:
+    runtime_dir = os.environ.get("BOOLEY_RUNTIME_DIR")
+    if not runtime_dir:
         return
     try:
-        path = ticket_runtime_dir(logs_dir) / "display.jsonl"
+        path = Path(runtime_dir) / "display.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")

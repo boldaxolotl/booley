@@ -67,7 +67,7 @@ that boundary as an executable repository contract.
 Config modules parse and validate declarative values without constructing live
 backends or importing Runtime mechanisms. Runtime owns the composition adapter
 that turns `AgentSettings` into a provider backend, plus mutable execution state.
-Project Initialization owns reconciliation such as guidance-link setup. D17 has
+Project Initialization owns reconciliation such as guidance-link setup. D18 has
 no waiver or composition exception.
 
 The dependency change, compatibility migrations, and measured diagnostics for
@@ -120,7 +120,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations and notification behavior from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
 | D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
 | D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
-| D17 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
+| D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
+| D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
 
 ## Acceptance evidence ownership
 
@@ -242,7 +243,6 @@ booley.feedback <-> booley.harness
 booley.flows <-> booley.fusesoc
 booley.flows <-> booley.mcp
 booley.flows <-> booley.targets
-booley.flows <-> booley.ticket_board
 booley.fusesoc <-> booley.runtime
 booley.fusesoc <-> booley.targets
 booley.harness <-> booley.mcp
