@@ -1,8 +1,7 @@
 # Public Booley QA suite
 
 The production assets encode the accepted three journeys and explicit qualification
-profiles. They are not qualification evidence. No full scenario or required profile
-has been executed by this implementation work.
+profiles. Qualification requires recorded execution evidence for the selected profiles.
 
 | Journey | Production scenario | Accepted design |
 |---|---|---|
@@ -34,11 +33,9 @@ preserves historical decisions. Current contracts live in the scenario assets,
 [UART oracle derivation](scenarios/uart/evaluator/CONTRACT.md). Regression tests
 retain compact checksums of the reviewed profile membership and exclusions.
 
-The validator and fixture controls pass locally. The suite remains unqualified:
-provider-limit and legacy-client fault infrastructure must be provisioned,
-prerequisite/evidence semantics need further review, and UART paired timeout
-comparisons remain blocked where the public timing contract cannot establish a
-verdict. No full scenario, GUI profile, or eight-hour feasibility run has passed.
+UART timeout comparisons remain blocked where the public timing contract cannot
+establish a verdict. Implementation progress and run results belong in the PR,
+issues, and run records rather than this reference.
 
 Execution requires the exact released Booley package/image and matching docs,
 reference native hosts, authorized disposable resources, provider access, declared

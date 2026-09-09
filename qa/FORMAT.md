@@ -8,7 +8,7 @@ separate retirement and successor registries are unnecessary.
 
 ## Scenario files
 
-Production layout to encode in the implementation handoff:
+Production layout:
 
 ```text
 qa/
@@ -19,6 +19,7 @@ qa/
   profiles.yaml
   coverage.yaml
   scenario.schema.json
+  shared/probes/
   scenarios/<scenario-id>/scenario.yaml
 ```
 
@@ -77,9 +78,11 @@ and `sha256` inputs require full literal lowercase hashes. `pre-run` inputs desc
 an exact identity that must be selected and recorded before execution; this never
 permits changing an already pinned IP, workload or threshold.
 
-Assets carry a scenario-relative contained file `path`, explicit `audience`, and
-an optional SHA-256 checked against current bytes. Production assets record their
-digests. Templates must list permitted `substitutions`: `run_root`, `artifact_root`,
+Assets carry a contained file `path`, explicit `audience`, and an optional SHA-256
+checked against current bytes. `base` defaults to `scenario`; `base: shared` resolves
+within `qa/shared/`. Both bases reject paths and symlinks that escape their allowed
+directories. Each owning step explicitly lists shared assets, including any separate
+shared contract it needs. Production assets record their digests. Templates must list permitted `substitutions`: `run_root`, `artifact_root`,
 `ticket_id`, `commit_id`, `release`, `provider`. An unlisted `{{variable}}` fails
 validation; these substitutions cannot alter thresholds or disclose private assets.
 

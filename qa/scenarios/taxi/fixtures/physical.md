@@ -1,8 +1,12 @@
-## Approved addition: physical synthesis for genuine timing evidence
+## Physical synthesis contract
 
-The user chose **add physical synthesis**, retaining Taxi's existing slang/Yosys logical path. This amends the accepted source's attempt to apply `critical_path_ps_increase_at_most: 0%` to logical synthesis. The logical path remains required for Setup, continuity, Ticket2 and final regression; its original cell-count comparison remains 0%. Add a separate physical Target and apply both 0% cell and 0% critical-path comparisons there. Never reinterpret `estimated_fmax_mhz` as measured physical timing. The historical source annex remains unchanged.
+Taxi requires both slang/Yosys logical synthesis and slang/Yosys/OpenROAD physical
+synthesis. The logical path remains required for Setup, continuity, Ticket2 and
+final regression, with a 0% cell-count increase limit. The separate physical
+Target has both 0% cell-count and 0% critical-path increase limits.
+`estimated_fmax_mhz` is not measured physical timing.
 
-### Added Target and constraints
+### Target and constraints
 
 Create Project-owned persistent Target `synth_mac_10g_physical` during Setup, with the same complete canonical source closure, top `taxi_eth_mac_10g`, and every parameter in the representative MAC table. Keep `frontend: slang`; set `tool: yosys`, `synth_mode: physical`, `ppa_profile: balanced`, `flatten: true` explicitly in Target `flow_options`. Use the published Booley Session Image's physical synthesis resources and record exact Yosys/OpenROAD, liberty/technology and recipe identities. No backend-specific override or alternative library is introduced by this design. The same frozen recipe, source closure, parameter set, library and SDC apply to both sides of every comparison.
 
@@ -10,41 +14,25 @@ Create Project-owned persistent Target `synth_mac_10g_physical` during Setup, wi
 
 The [pinned MAC](https://github.com/fpganinja/taxi/blob/cc70b270b910d369ab1ad7b3855e76399fd461f1/src/eth/rtl/taxi_eth_mac_10g.sv) exposes `rx_clk`, `tx_clk`, `stat_clk`, `ptp_clk`, `ptp_sample_clk`. The [pinned testbench, lines 49–73](https://github.com/fpganinja/taxi/blob/cc70b270b910d369ab1ad7b3855e76399fd461f1/src/eth/tb/taxi_eth_mac_10g/test_taxi_eth_mac_10g.py#L49) supplies 6.4 ns for the first four under 64-bit operation (156.25 MHz), and 8 ns for `ptp_sample_clk` (125 MHz). Freeze these as the physical regression constraint fixture:
 
-```tcl
-create_clock -name rx_clk         -period 6.4 [get_ports rx_clk]
-create_clock -name tx_clk         -period 6.4 [get_ports tx_clk]
-create_clock -name stat_clk       -period 6.4 [get_ports stat_clk]
-create_clock -name ptp_clk        -period 6.4 [get_ports ptp_clk]
-create_clock -name ptp_sample_clk -period 8.0 [get_ports ptp_sample_clk]
-# Fixture-only zero external delay, deliberately conservative across clocks.
-# Exclude clock ports from external data-input delay application.
-set qa_data_inputs [remove_from_collection [all_inputs] \
-    [get_ports {rx_clk tx_clk stat_clk ptp_clk ptp_sample_clk}]]
-foreach qa_clock_name {rx_clk tx_clk stat_clk ptp_clk ptp_sample_clk} {
-    set_input_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 $qa_data_inputs
-    set_output_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 [all_outputs]
-}
-```
+Use [taxi_mac_10g.sdc](taxi_mac_10g.sdc), the executable constraint authority. It excludes clock ports from data-input delays and applies the fixed zero-delay policy below.
 
 This is a reproducible clocked-block regression fixture, not board integration/signoff. Do not change the explicit zero external-delay assumption, blank out clocks, tie enabled PTP/statistics away, or add broad false paths to obtain a pass. The approved fixture assumes zero external input/output delay against each named clock, using explicit `-add_delay` to retain all clock-relative constraints. This is a conservative relative-comparison fixture, not a board interface budget. No asynchronous-clock exemption is implied. Record timing-path coverage and any remaining unconstrained paths explicitly. Common phase for the four equal-period clocks follows the testbench's startup pattern as a regression modeling choice, not a claim that production clocks are phase-related. Any change to clock relations, CDC exceptions or I/O timing requires a reviewed constraint-fixture amendment. Retain the original unqualified 0% timing gate semantics; do not silently strengthen it to five per-clock percentage gates. Require valid per-clock timing coverage for every clock that survives the complete enabled-design synthesis, and prove why any absent clock was optimized out instead of silently accepting missing timing.
 
-### Setup prompt addition
+### Setup prompt
 
-Append this exact authorized addition to the accepted Setup-agent prompt when creating the versioned fixture; preserve the original prompt's full workload:
+Use the complete [Setup payload](../prompts/setup.md), which includes both synthesis Targets and their frozen constraints.
 
-> Also configure persistent `synth_mac_10g_physical` for the same complete `taxi_eth_mac_10g` source closure and every approved parameter, using slang/Yosys followed by OpenROAD physical synthesis, explicit balanced PPA profile and flattening. Author and select the provided five-clock SDC in Project-owned configuration without editing existing Taxi files. Keep `synth_mac_10g` logical. Include both synthesis Targets in CLI/MCP discovery and appropriate deep Doctor checks. Preserve physical tool/library/recipe identities, SDC hash and clock/path coverage. Do not replace missing physical timing evidence with the logical frequency estimate, alter clock periods, disable enabled hardware, add timing waivers or replace the provided zero external-delay fixture with invented board I/O constraints.
-
-### Ordered work and Criteria amendment
+### Ordered work and Criteria
 
 1. Setup creates and validates the fourth Target and five-clock SDC. Discovery/refresh checks cover all four Targets; explicit source and parameter equivalence compares logical/physical Targets.
 2. The unchanged continuity phase runs fresh logical **and physical** synthesis before Interactive Mode. Archive physical reports and artifacts alongside the existing baseline; they belong to the same live run.
 3. Verification Ticket1's implementation Scope and Criteria remain unchanged. The new physical Target is already Project-owned, so it is available in the accepted state and the later seeded Basis. Preserve it through mutation restoration.
-4. Bug Fix Ticket2 retains required logical `synth_mac_10g` with 0% cell increase. Move its impossible logical critical-path comparison to the new physical Target, and add a directed Acceptance Basis/candidate `synth_mac_10g_physical` `synthesis_ok` Criterion with **`cell_count_increase_at_most: 0%` and `critical_path_ps_increase_at_most: 0%`**. Both sides use the seeded Ticket Basis/candidate as usual; do not substitute the earlier clean continuity result for the declared Basis measurement. The repair Scope stays the one RTL file. No Target Plan change or new hardware edit is authorized by adding this already-existing Target to Criteria.
+4. Bug Fix Ticket2 retains required logical `synth_mac_10g` with 0% cell increase. Apply the critical-path comparison to a directed Acceptance Basis/candidate `synth_mac_10g_physical` `synthesis_ok` Criterion with **`cell_count_increase_at_most: 0%` and `critical_path_ps_increase_at_most: 0%`**. Both sides use the seeded Ticket Basis/candidate as usual; do not substitute the earlier clean continuity result for the declared Basis measurement. The repair Scope stays the one RTL file. No Target Plan change or new hardware edit is authorized by adding this already-existing Target to Criteria.
 5. Final regression reruns both logical and fresh physical synthesis against repaired merged RTL. Archive result, normalized metrics, timing directory and source/constraint identities before cleanup; remove the additional run-owned Target/SDC with the Project.
 
 The whole run remains eight hours. Physical work runs within the existing approved baseline, Ticket2 and final-regression phase ceilings (with the Setup addition inside its Setup ceiling); no image preparation, baseline or comparison is moved outside the clock, and no old artifact supplies a fresh required pass. Time exhaustion blocks missing physical work and makes qualification incomplete unless a trustworthy failure already makes it failed.
 
-### Additional checks selected centrally for both Taxi core platforms
+### Checks selected for both Taxi core platforms
 
 | Check ID | Selection | Stimulus and expected observation | Evidence / capture point |
 |---|---|---|---|

@@ -48,7 +48,7 @@ Source: [FIFO_CTRL thresholds](https://github.com/lowRISC/opentitan/blob/615d3c7
 | TX | 0→1, 1→2, 2→4, 3→8, 4→16 | `UART-WATERMARK.tx.e<E>.n<N>` at N=level−1, level, level+1; asserted iff N<level. Disable TX while filling/reading capacity. |
 | RX | 0→1, 1→2, 2→4, 3→8, 4→16, 5→32, 6→62 | `UART-WATERMARK.rx.e<E>.n<N>` at N=level−1, level, level+1; asserted iff N≥level. |
 
-TX capacity cases are `.UART-FIFO.tx.n0/n1/n31/n32` (omit the initial dot when joining prefix); RX cases use n0/n1/n63/n64. Keep TX disabled to measure capacity, then enable and drain in order. RX overflow injects byte 65 after 64 known bytes, expects dropped new byte plus rx_overflow, then drains exactly the original sequence, clears and receives a good byte. The corpus explicitly specifies RX overflow/drop; it does **not** define a TX-overflow interrupt or an unambiguous write-to-full TX FIFO disposition. Do not invent one; the current handoff's generic FIFO overflow assertion must be RX-specific unless an addendum explicitly decides full-TX-write semantics.
+TX capacity cases are `.UART-FIFO.tx.n0/n1/n31/n32` (omit the initial dot when joining prefix); RX cases use n0/n1/n63/n64. Keep TX disabled to measure capacity, then enable and drain in order. RX overflow injects byte 65 after 64 known bytes, expects dropped new byte plus rx_overflow, then drains exactly the original sequence, clears and receives a good byte. The corpus explicitly specifies RX overflow/drop; it does **not** define a TX-overflow interrupt or an unambiguous write-to-full TX FIFO disposition. Do not invent one; FIFO overflow assertions must be RX-specific unless an addendum explicitly decides full-TX-write semantics.
 
 All 256 data values produce `UART-TXRX.tx.b00`…`.bff` and corresponding `.rx.b00`…`.bff`, supplemented by back-to-back/full-duplex cases. TX serial bits are START=0, eight LSB-first data bits, optional parity then STOP=1; idle=1. Parity cases explicitly include 0x00 and 0x01 (the two data parity classes) under disabled/even/odd, and incorrect parity injections under both enabled modes. The Reception prose conditions FIFO insertion on a valid stop and correct optional parity; data/error oracles must follow that precise description unless a future addendum changes it.
 
@@ -80,7 +80,7 @@ For RX, the documented centering procedure checks low again after eight oversamp
 
 **Not established by these documents:** maximum TX launch delay after enqueue/enable, RX pin synchronizer depth and filter-to-VAL pipeline placement, maximum receive-to-FIFO/IRQ visibility latency, exact INTR_TEST level-bit force duration, reset or CTRL-write accumulator phase, and a universal timeout response bound. The RX half-bit centering fact is not a promise that external RX sampling occurs within a guessed two/three clocks. Treating any convenient finite wait as a product-failure deadline would add hidden semantics.
 
-To complete an executable conformance contract, the following **approved public scenario addendum** supplies architecture-independent observation bounds under steady control. The maintainer approved these scenario requirements; they are not facts inferred from the corpus. Let B be the longest bit interval for the selected NCO: 64, 128 or 86 source clocks for exact-a, exact-b or fractional. Reset, NCO/control changes begin a new observation epoch; no case changes control mid-window except cases explicitly testing that transition.
+The **public scenario addendum** supplies architecture-independent observation bounds under steady control. These are scenario requirements, not facts inferred from the corpus. Let B be the longest bit interval for the selected NCO: 64, 128 or 86 source clocks for exact-a, exact-b or fractional. Reset, NCO/control changes begin a new observation epoch; no case changes control mid-window except cases explicitly testing that transition.
 
 1. **RX synchronization and visibility:** an externally driven RX transition reaches the sampling path within B/4 source clocks (round up where nonintegral). This is four nominal oversample periods, an external latency bound rather than a prescribed number of synchronizer stages. A modeled completed character/error becomes visible in FIFO/status/IRQ within B further clocks. False-start/noise tests retain the documented half-bit and 3-tap behavior, not a new filtering algorithm.
 2. **VAL sampling:** normal mode, RX enabled, NF=0 and both loopbacks disabled. Across a complete pattern observation, allow one consistent synchronization delay d in [0, ceil(B/4)] source clocks and a consistent legal NCO phase. VAL contains the last 16 samples of that delayed RX, newest at bit zero, as of MMIO read acceptance. Do not independently refit delay for each sample/read. A constant RX pattern must settle to the corresponding all-zero/all-one VAL within 16 oversample ticks plus ceil(B/4) clocks, then be observable under the four-clock MMIO response bound. Testing NF's placement relative to VAL is avoided because the corpus does not specify it.
@@ -153,16 +153,8 @@ evidence/uart/evaluator/<E>/cases/<C>/execution.log
 
 `observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full operator evidence outside Project/runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer's exposure is auditable. Never replace the operator case manifest with the bounded-feedback subset.
 
-## Retrieved corpus identities
+## Frozen corpus identities
 
-These SHA-256 values were computed from the seven GitHub Contents API files at the pinned commit; downloaded assets remain in temporary operator workspace, not committed in this handoff.
-
-| Permitted asset | SHA-256 |
-|---|---|
-| `hw/ip/uart/README.md` | `c1c47cd45886553b1b9edc376d776eac3d120739d5e6bf50fb9eda13a4963a73` |
-| `hw/ip/uart/doc/theory_of_operation.md` | `8f4ad87b9258900affa09de87fb19e4dcbe5a687899b4c5f4fcbdb6ba3d1eeaa` |
-| `hw/ip/uart/doc/programmers_guide.md` | `14ae66e2a4ae47def172241b7ceec287a426f113555e8a1ba48a2ad4faf3422e` |
-| `hw/ip/uart/doc/interfaces.md` | `202ae95a03e6750a4f84225e322bf2cf832d3869a6138bac1dd23cca0616f1d7` |
-| `hw/ip/uart/doc/registers.md` | `3885d3f96fd9592f0aab42a9d6b5bdddf954d8286583dc7fe52a7eb65bbeadd3` |
-| `hw/ip/uart/doc/block_diagram.svg` | `4bd741bb99ae7adac877a28fbaddef6a6b2ff0fc7fb3e5cbf87d7331d4ddbfdc` |
-| `LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
+The seven permitted documents are stored in [spec/corpus/](../spec/corpus/).
+[corpus-manifest.json](../spec/corpus-manifest.json) records their pinned source
+commit and exact SHA-256 values; use it as the checksum authority.

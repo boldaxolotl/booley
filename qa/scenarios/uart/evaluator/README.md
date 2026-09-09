@@ -12,10 +12,8 @@ adapter compiles an owned snapshot of explicit, hash-verified RTL from the accep
 Git commit. Literal includes must resolve to explicit hashed `include_files`;
 absolute, escaping, ambiguous and macro includes are rejected. Include directives
 are rewritten only to the corresponding operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
-Cocotb and Icarus must be provisioned in the isolated operator environment before
-the run. The exercised control environment used cocotb 2.1.0 and the exact local
-image recorded in the implementation validation record; this is not a product
-release qualification claim.
+Provision cocotb 2.1.0 and Icarus in the isolated operator environment before
+the run; record their exact versions and immutable image identity in run evidence.
 
 From this directory:
 
@@ -55,7 +53,5 @@ Natural interrupt sources and both active/inactive level injection are exercised
 Invalid-address cases now retain occupied FIFO data and every stable CSR across
 the rejected operation. Full RX sampling phase coverage and real hardware controls
 for these additional oracles still require qualification.
-No production UART candidate has been evaluated here.
 
-The active derivation is [CONTRACT.md](CONTRACT.md); historical handoff notes stay
-at their published design commit.
+See [CONTRACT.md](CONTRACT.md) for the public oracle derivation.

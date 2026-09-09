@@ -1,13 +1,7 @@
-# W-01 disposable probes
-
-`trace-fresh`: traced real sim → FST newer than invocation, nonempty and queryable with expected scopes/counts. Taxi `trace-native`: direct native FST → no conversion required. PicoRV32 `trace-vcd-convert`, `trace-fifo`: VCD file/FIFO conversion → queryable FST with same ground truth. Taxi `trace-raw-vcd`, `trace-legacy`, `trace-empty`, `trace-truncated`: each invalid query store → actionable rejection. `trace-recovery`: regenerate valid trace → correct data.
-
-Evidence and recovery: Original/conversion/queried artifact identities, metadata and values; never count raw VCD as successful query store.
-
-## Exact B-Wave matrices
+# B-Wave command matrices
 
 [Reconcile the B-Wave virtual-signal option matrix](https://github.com/boldaxolotl/booley/issues/282)
-supersedes the inventory's provisional virtual matrix. Under
+defines the virtual-signal contract. Under
 `taxi-10g-mac-port-evolution.inventory.W-04`, create these **per-command** checks:
 
 | Command set | Check suffixes (one ID for every named command) | Stimulus / expected result / evidence |
@@ -17,10 +11,7 @@ supersedes the inventory's provisional virtual matrix. Under
 | list, signal, diff, stats, stuck | `virtual-<command>-rejected` | Supply --virtual → argument-parser rejection, exit 2. Retain live help/public-page and diagnostic; silent ignore is failure. |
 | build (outside ten-command query matrix) | `virtual-build-rejected` | Supply --virtual → argument-parser exit 2. Meta gui/schema/docs/skill have no virtual-query surface and gain no virtual support claims. |
 
-At the evaluated source baseline, sample/value accept but ignore virtual
-definitions; signal/diff accept despite the rejection contract. Keep those four
-drift probes failed if still present in the released SUT. Product/docs alignment
-is later implementation work; do not weaken expectations to parser acceptance.
+Judge the released SUT against these semantics; parser acceptance alone is insufficient.
 Only find among behavior-backed virtual commands has schema-backed JSON output.
 
 Under `taxi-10g-mac-port-evolution.inventory.W-03`, independently define `json-<command>-supported`
@@ -30,9 +21,9 @@ distance/stuck: request JSON → documented unsupported-output rejection. Merely
 having --format in help does not establish JSON support. Capture each output,
 exit and release-matched command page.
 
-Current [public marker reference](../../../../crates/bwave/docs/public/reference/markers.md)
-and [overview](../../../../crates/bwave/docs/public/commands/overview.md) agree:
-**native --marker is wave-only**, superseding the inventory's provisional conflict.
+Current [public marker reference](../../../crates/bwave/docs/public/reference/markers.md)
+and [overview](../../../crates/bwave/docs/public/commands/overview.md) agree:
+**native --marker is wave-only**.
 Under `taxi-10g-mac-port-evolution.inventory.W-04`, encode separate `marker-wave-render` (known typed
 in-window time → label at correct column), `marker-wave-async-column` (no signal
 transition at annotation tick → marker column nevertheless present),

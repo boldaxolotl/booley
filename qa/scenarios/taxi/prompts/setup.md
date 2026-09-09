@@ -17,9 +17,9 @@ The agent owns the exact `.core`, requirements-file, and configuration spelling.
 - CLI and MCP Target discovery agree on identity, selectors, EDA programs, toplevels, parameters, and resolved source inputs.
 - Project Setup uses only published setup documentation, packaged skills, cheat sheets, CLI/MCP help, and ordinary Project inspection until an observation requiring source verification has been captured.
 
-### Setup prompt addition
+### Physical synthesis requirements
 
-Append this exact authorized addition to the accepted Setup-agent prompt when creating the versioned fixture; preserve the original prompt's full workload:
+The Setup agent must also satisfy these requirements:
 
 > Also configure persistent `synth_mac_10g_physical` for the same complete `taxi_eth_mac_10g` source closure and every approved parameter, using slang/Yosys followed by OpenROAD physical synthesis, explicit balanced PPA profile and flattening. Author and select the provided five-clock SDC in Project-owned configuration without editing existing Taxi files. Keep `synth_mac_10g` logical. Include both synthesis Targets in CLI/MCP discovery and appropriate deep Doctor checks. Preserve physical tool/library/recipe identities, SDC hash and clock/path coverage. Do not replace missing physical timing evidence with the logical frequency estimate, alter clock periods, disable enabled hardware, add timing waivers or replace the provided zero external-delay fixture with invented board I/O constraints.
 

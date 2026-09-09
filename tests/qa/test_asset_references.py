@@ -1,0 +1,24 @@
+"""Keep every scenario/shared asset attached to the steps that disclose it."""
+
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2] / "qa"
+
+
+def test_production_assets_have_explicit_owning_steps():
+    assets = set()
+    for path in ROOT.glob("scenarios/*/scenario.yaml"):
+        scenario = yaml.safe_load(path.read_text())
+        for step in scenario["steps"]:
+            for asset in step.get("assets", []):
+                base = ROOT / "shared" if asset.get("base") == "shared" else path.parent
+                assets.add((base / asset["path"]).resolve())
+    files = {
+        path.resolve()
+        for directory in ["scenarios", "shared"]
+        for path in (ROOT / directory).rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.name != "scenario.yaml"
+    }
+    assert files == assets, sorted(str(p.relative_to(ROOT)) for p in files - assets)

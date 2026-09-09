@@ -1,7 +1,6 @@
 # Taxi's disposable submodule companion Project
 
-The maintainer approved this companion exercise in the handoff discussion on
-2026-09-08. It is a named phase of the Taxi scenario, with 40 minutes of work and
+This companion exercise is a named Taxi phase, with 40 minutes of work and
 its resources included in Taxi cleanup. It leaves the pinned direct Taxi clone,
 its symlink, Setup, hardware workloads and accepted verification assets unchanged.
 It is not a fourth IP journey or a consumer wrapper around Taxi.

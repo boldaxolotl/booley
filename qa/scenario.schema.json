@@ -332,6 +332,14 @@
                   },
                   "minItems": 0,
                   "uniqueItems": true
+                },
+                "base": {
+                  "enum": [
+                    "scenario",
+                    "shared"
+                  ],
+                  "default": "scenario",
+                  "description": "Resolve path within the owning scenario or qa/shared."
                 }
               },
               "required": [

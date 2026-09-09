@@ -279,3 +279,53 @@ def test_coverage_index_cannot_replace_authored_inventory(tmp_path):
     )
     assert result.returncode == 1
     assert destination.read_bytes() == before
+
+
+def test_shared_asset_is_explicit_and_confined(tmp_path):
+    import hashlib
+
+    import yaml
+
+    scenario, _ = write_suite(tmp_path)
+    shared = tmp_path / "shared/probes"
+    shared.mkdir(parents=True)
+    asset = shared / "common.md"
+    asset.write_text("Shared public probe instructions.\n")
+    scenario["steps"][0]["assets"] = [
+        {
+            "base": "shared",
+            "path": "probes/common.md",
+            "audience": "coordinator",
+            "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
+        }
+    ]
+    path = tmp_path / "scenarios/sample/scenario.yaml"
+    path.write_text(yaml.safe_dump(scenario))
+    command = [sys.executable, str(VALIDATOR), "--root", str(tmp_path)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+    scenario["steps"][0]["assets"][0]["path"] = "../coverage.yaml"
+    path.write_text(yaml.safe_dump(scenario))
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 1
+    assert "contained" in result.stderr
+
+
+def test_shared_directory_cannot_redirect_outside_suite(tmp_path):
+    import yaml
+
+    scenario, _ = write_suite(tmp_path)
+    (tmp_path / "shared").symlink_to("/etc", target_is_directory=True)
+    scenario["steps"][0]["assets"] = [
+        {"base": "shared", "path": "passwd", "audience": "coordinator"}
+    ]
+    (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "contained" in result.stderr

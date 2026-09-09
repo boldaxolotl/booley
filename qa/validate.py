@@ -141,7 +141,10 @@ def validate_assets(scenario: dict, path: Path, root: Path) -> None:
                 validate_source(path.parent, reference, root.parent)
             contained(path.parent, check["capture"])
         for asset in step.get("assets", []):
-            target = contained(path.parent, asset["path"])
+            base = root / "shared" if asset.get("base", "scenario") == "shared" else path.parent
+            if not base.resolve().is_relative_to(root.resolve()):
+                raise ValueError(f"{path}: asset base must be contained in suite")
+            target = contained(base, asset["path"])
             if not target.is_file():
                 raise ValueError(f"{path}: missing asset {target}")
             content = target.read_bytes()

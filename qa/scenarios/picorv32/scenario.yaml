@@ -208,6 +208,10 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.stealth.commit-sanitation
   requires:
   - inputs.project-pin
+  assets:
+  - path: probes/stealth.md
+    audience: coordinator
+    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
 - id: stealth.attribution-removal
   phase: prepare
   action: Exercise attribution-trailer removal.
@@ -223,6 +227,10 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.stealth.attribution-removal
   requires:
   - inputs.project-pin
+  assets:
+  - path: probes/stealth.md
+    audience: coordinator
+    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
 - id: doctor.first-product-exercise
   phase: prepare
   action: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
@@ -304,6 +312,7 @@ steps:
   - path: probes/H-01.md
     audience: coordinator
     sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    base: shared
 - id: inventory.H-01.prerequisite-recovery
   phase: prepare
   action: |-
@@ -329,6 +338,7 @@ steps:
   - path: probes/H-01.md
     audience: coordinator
     sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    base: shared
 - id: inventory.H-03.init-repeat
   phase: prepare
   action: |-
@@ -354,6 +364,7 @@ steps:
   - path: probes/H-03.md
     audience: coordinator
     sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    base: shared
 - id: inventory.H-03.provider
   phase: prepare
   action: |-
@@ -379,6 +390,7 @@ steps:
   - path: probes/H-03.md
     audience: coordinator
     sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    base: shared
 - id: inventory.H-07.forget-granted
   phase: prepare
   action: |-
@@ -529,6 +541,7 @@ steps:
   - path: probes/H-10.md
     audience: coordinator
     sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    base: shared
 - id: inventory.P-08.riscv-firmware
   phase: prepare
   action: |-
@@ -604,6 +617,10 @@ steps:
   - path: probes/ST-01.md
     audience: coordinator
     sha256: 338f32eda54e09e862adf7780a24ff88cb4ef0f06ff1f24cf90862f554fa0b75
+    base: shared
+  - path: probes/stealth.md
+    audience: coordinator
+    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
 - id: inventory.ST-02.dual-repo
   phase: prepare
   action: |-
@@ -1083,6 +1100,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-dedupe
   phase: baseline
   action: |-
@@ -1108,6 +1126,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-hard
   phase: baseline
   action: |-
@@ -1133,6 +1152,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-infra
   phase: baseline
   action: |-
@@ -1158,6 +1178,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-native-waiver
   phase: baseline
   action: |-
@@ -1183,6 +1204,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-nonfatal-warning
   phase: baseline
   action: |-
@@ -1208,6 +1230,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-recovery
   phase: baseline
   action: |-
@@ -1233,6 +1256,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-scope
   phase: baseline
   action: |-
@@ -1258,6 +1282,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-02.lint-warning
   phase: baseline
   action: |-
@@ -1283,6 +1308,7 @@ steps:
   - path: probes/F-02.md
     audience: coordinator
     sha256: e7cf9aa0a1e68e08f141543fbb2136d044f62f34dcd363371cec223080f06624
+    base: shared
 - id: inventory.F-03.synth-advisory
   phase: baseline
   action: |-
@@ -1308,6 +1334,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-baseline
   phase: baseline
   action: |-
@@ -1333,6 +1360,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-frontend-incompatible
   phase: baseline
   action: |-
@@ -1358,6 +1386,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-frontend-missing
   phase: baseline
   action: |-
@@ -1383,6 +1412,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-latch
   phase: baseline
   action: |-
@@ -1408,6 +1438,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-metrics
   phase: baseline
   action: |-
@@ -1433,6 +1464,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-recovery
   phase: baseline
   action: |-
@@ -1458,6 +1490,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.F-03.synth-threshold
   phase: baseline
   action: |-
@@ -1483,6 +1516,7 @@ steps:
   - path: probes/F-03.md
     audience: coordinator
     sha256: 8dd245bd51fb50e4a5d5eb19007e34d5642fe8cb62a0b91f7ab709dd4665493b
+    base: shared
 - id: inventory.H-09.profile-attach
   phase: baseline
   action: |-
@@ -1982,6 +2016,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.semantic-find
   phase: interactive
   action: Invoke `find` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
@@ -1998,6 +2036,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.semantic-sample
   phase: interactive
   action: Invoke `sample` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
@@ -2014,6 +2056,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.semantic-distance
   phase: interactive
   action: Invoke `distance` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
@@ -2032,6 +2078,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.semantic-value
   phase: interactive
   action: Invoke `value` on PicoRV32 Icarus trace and verify signal/time semantics; CLI success alone is insufficient.
@@ -2048,6 +2098,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.rejection-list
   phase: interactive
   action: |-
@@ -2068,6 +2122,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.rejection-signal
   phase: interactive
   action: |-
@@ -2088,6 +2146,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.rejection-diff
   phase: interactive
   action: |-
@@ -2108,6 +2170,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.rejection-stats
   phase: interactive
   action: |-
@@ -2128,6 +2194,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.rejection-stuck
   phase: interactive
   action: |-
@@ -2148,6 +2218,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: bwave.defect-preservation
   phase: interactive
   action: Known defects in `sample`, `value`, `signal` or `diff` remain blocking Findings; do not relabel as expected
@@ -2167,6 +2241,10 @@ steps:
   - inputs.project-pin
   - baseline.physical-synthesis
   - baseline.icarus-wishbone
+  assets:
+  - path: probes/virtual-signals.md
+    audience: coordinator
+    sha256: 0a81cc1f76ad36f397a0500c5cbb71811caa27c1c07077f480d3bbaee6c3960c
 - id: interactive.inject
   phase: interactive
   action: |-
@@ -2380,6 +2458,7 @@ steps:
   - path: probes/D-03.md
     audience: coordinator
     sha256: 55d0ce833dc899b27214842edac9d1f0a103f947111b153817ab48b05e31d32a
+    base: shared
 - id: inventory.D-03.docs-recovery
   phase: interactive
   action: |-
@@ -2405,6 +2484,7 @@ steps:
   - path: probes/D-03.md
     audience: coordinator
     sha256: 55d0ce833dc899b27214842edac9d1f0a103f947111b153817ab48b05e31d32a
+    base: shared
 - id: inventory.I-01.interactive-commit
   phase: interactive
   action: |-
@@ -2430,6 +2510,7 @@ steps:
   - path: probes/I-01.md
     audience: coordinator
     sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    base: shared
 - id: inventory.I-05.catalog-coherence
   phase: interactive
   action: |-
@@ -2455,6 +2536,7 @@ steps:
   - path: probes/I-05.md
     audience: coordinator
     sha256: ccc938b2b450e838dba5d4ee375cb6ae9c656cbe7e90885cbcd1dc213562c9c5
+    base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
   action: |-
@@ -2480,6 +2562,7 @@ steps:
   - path: probes/I-05.md
     audience: coordinator
     sha256: ccc938b2b450e838dba5d4ee375cb6ae9c656cbe7e90885cbcd1dc213562c9c5
+    base: shared
 - id: inventory.ST-04.interrupt-cleanup
   phase: interactive
   action: |-
@@ -2505,6 +2588,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.mount-boundary
   phase: interactive
   action: |-
@@ -2530,6 +2614,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.network-deny
   phase: interactive
   action: |-
@@ -2555,6 +2640,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.origin-push-deny
   phase: interactive
   action: |-
@@ -2580,6 +2666,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.pdk-readonly
   phase: interactive
   action: |-
@@ -2605,6 +2692,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.provider-allow
   phase: interactive
   action: |-
@@ -2630,6 +2718,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.ST-04.runtime-user
   phase: interactive
   action: |-
@@ -2655,6 +2744,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.W-01.trace-fifo
   phase: interactive
   action: |-
@@ -2679,7 +2769,12 @@ steps:
   assets:
   - path: probes/W-01.md
     audience: coordinator
-    sha256: ad95ad562dda1dfe77818a313b29d876c23bf8d975cacd69f6e8f0c9d691212e
+    sha256: 6b49889e5dae5690b12119f6f4b0e7527a1eb50f937ef6c65a8453eefd23abe6
+    base: shared
+  - base: shared
+    path: probes/bwave-matrices.md
+    audience: coordinator
+    sha256: 482386eb8f3812bfa15899df7022f9a3b8e17fe75f3cdedf99cff9281af33610
 - id: inventory.W-01.trace-fresh
   phase: interactive
   action: |-
@@ -2704,7 +2799,12 @@ steps:
   assets:
   - path: probes/W-01.md
     audience: coordinator
-    sha256: ad95ad562dda1dfe77818a313b29d876c23bf8d975cacd69f6e8f0c9d691212e
+    sha256: 6b49889e5dae5690b12119f6f4b0e7527a1eb50f937ef6c65a8453eefd23abe6
+    base: shared
+  - base: shared
+    path: probes/bwave-matrices.md
+    audience: coordinator
+    sha256: 482386eb8f3812bfa15899df7022f9a3b8e17fe75f3cdedf99cff9281af33610
 - id: inventory.W-01.trace-vcd-convert
   phase: interactive
   action: |-
@@ -2729,7 +2829,12 @@ steps:
   assets:
   - path: probes/W-01.md
     audience: coordinator
-    sha256: ad95ad562dda1dfe77818a313b29d876c23bf8d975cacd69f6e8f0c9d691212e
+    sha256: 6b49889e5dae5690b12119f6f4b0e7527a1eb50f937ef6c65a8453eefd23abe6
+    base: shared
+  - base: shared
+    path: probes/bwave-matrices.md
+    audience: coordinator
+    sha256: 482386eb8f3812bfa15899df7022f9a3b8e17fe75f3cdedf99cff9281af33610
 - id: inventory.ST-04.vivado-readonly
   phase: interactive
   action: |-
@@ -2755,6 +2860,7 @@ steps:
   - path: probes/ST-04.md
     audience: coordinator
     sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    base: shared
 - id: inventory.I-01.client-session
   phase: interactive
   action: |-
@@ -2780,6 +2886,7 @@ steps:
   - path: probes/I-01.md
     audience: coordinator
     sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    base: shared
 - id: create.dhrystone-self-checking-cycle-contract.payload
   phase: create
   action: |-
@@ -2856,7 +2963,7 @@ steps:
   assets:
   - path: tickets/evolution.md
     audience: Developer Agent
-    sha256: 95060a239c66a86f596426cfd6d0d51f31a2bd781ac1c530bc3e69dd34937aa6
+    sha256: 2ba5d2e421196c82f2c242f42a785872d64460b2b3e06c945f7495580758b225
 - id: create.rv32-zbb-pcpi.board
   phase: create
   action: Creation returns board path and `waiting` state for `rv32-zbb-pcpi`.
@@ -3941,6 +4048,10 @@ steps:
   - inputs.project-pin
   - ticket1.merge
   - guard.restore-rerun
+  assets:
+  - path: probes/basis-refresh.md
+    audience: coordinator
+    sha256: 5f78b0dae25e1689128481e627867e7e1e85765f8eddf29e0a40d33ae46e3690
 - id: refresh.incompatible-provider
   phase: ticket2
   action: Incompatible provider surface blocks instead of silently refreshing authority.
@@ -3957,6 +4068,10 @@ steps:
   - inputs.project-pin
   - ticket1.merge
   - guard.restore-rerun
+  assets:
+  - path: probes/basis-refresh.md
+    audience: coordinator
+    sha256: 5f78b0dae25e1689128481e627867e7e1e85765f8eddf29e0a40d33ae46e3690
 - id: ticket2.scope
   phase: ticket2
   action: |-
@@ -4969,6 +5084,7 @@ steps:
   - path: probes/S-01.md
     audience: coordinator
     sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    base: shared
 - id: inventory.S-01.review-rtl-bugs
   phase: ticket2
   action: |-
@@ -4994,6 +5110,7 @@ steps:
   - path: probes/S-01.md
     audience: coordinator
     sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    base: shared
 - id: inventory.S-04.criterion-cycle
   phase: ticket2
   action: |-
@@ -5019,6 +5136,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-elab
   phase: ticket2
   action: |-
@@ -5044,6 +5162,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-lint
   phase: ticket2
   action: |-
@@ -5069,6 +5188,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-review-optimization
   phase: ticket2
   action: |-
@@ -5094,6 +5214,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-review-rtl-bugs
   phase: ticket2
   action: |-
@@ -5119,6 +5240,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-sim
   phase: ticket2
   action: |-
@@ -5144,6 +5266,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-standalone
   phase: ticket2
   action: |-
@@ -5169,6 +5292,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-04.criterion-synthesis
   phase: ticket2
   action: |-
@@ -5194,6 +5318,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: inventory.S-06.baseline-mismatch
   phase: ticket2
   action: |-
@@ -5619,6 +5744,7 @@ steps:
   - path: probes/T-02.md
     audience: coordinator
     sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    base: shared
 - id: inventory.T-02.ticket-type-refactor
   phase: ticket2
   action: |-
@@ -5644,6 +5770,7 @@ steps:
   - path: probes/T-02.md
     audience: coordinator
     sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    base: shared
 - id: inventory.S-04.criterion-fpga
   phase: ticket2
   action: |-
@@ -5669,6 +5796,7 @@ steps:
   - path: probes/S-04.md
     audience: coordinator
     sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    base: shared
 - id: cleanup.branches
   phase: cleanup
   action: Reconcile and remove every run-owned branches in dependency order.
