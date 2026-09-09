@@ -9,11 +9,13 @@ from typing import Any
 
 from booley.core.boundary import as_dict, as_str
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
+from booley.evidence.acceptance import (
+    AcceptanceTargetBinding,
+    ResolvedFlowAcceptance,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle
-from booley.ticket_board.acceptance_basis import AcceptanceBasis
-from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 
 
 class ImplementationComparisonError(ValueError):
@@ -161,7 +163,7 @@ def _select_execution_ref(
 
 
 def _binding_for_candidate(
-    basis: AcceptanceBasis,
+    basis: ResolvedFlowAcceptance,
     flow: str,
     criterion: str,
     candidate: TargetExecutionRef,
@@ -182,7 +184,7 @@ def _binding_for_candidate(
 
 
 def _basis_plan(
-    basis: AcceptanceBasis,
+    basis: ResolvedFlowAcceptance,
     project_root: Path | str,
     flow: str,
     criterion: str,
@@ -226,7 +228,7 @@ def target_pair_plans_for_handles(
     candidates: Sequence[TargetHandle],
     *,
     flow: str,
-    basis: AcceptanceBasis | None = None,
+    basis: ResolvedFlowAcceptance | None = None,
 ) -> tuple[TargetPairPlan, ...]:
     """Build plans from already-normalized public Flow candidates."""
     plans: list[TargetPairPlan] = []
@@ -277,7 +279,7 @@ def target_pair_plans_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    basis: AcceptanceBasis | None = None,
+    basis: ResolvedFlowAcceptance | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:
@@ -322,7 +324,7 @@ def target_pairs_for_candidates(
     criterion_prefix: str,
     candidates: Sequence[str],
     *,
-    basis: AcceptanceBasis | None = None,
+    basis: ResolvedFlowAcceptance | None = None,
     project_root: Path | str | None = None,
     flow: str = "",
 ) -> tuple[TargetPairPlan, ...]:

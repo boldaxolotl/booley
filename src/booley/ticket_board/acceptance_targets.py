@@ -19,6 +19,7 @@ from booley.core.boundary import (
     is_str_list,
 )
 from booley.criteria.thresholds import has_relative_threshold
+from booley.evidence.acceptance import AcceptanceTargetBinding
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -41,61 +42,6 @@ _FLOW_BY_CRITERION = {
 _RTL_FILE_TYPE_PREFIXES = ("verilogSource", "systemVerilogSource", "vhdlSource")
 _TB_FILE_TYPE_PREFIXES = ("cSource", "cppSource")
 _TB_USER_SOURCE_SUFFIXES = frozenset({".py"})
-
-
-@dataclass(frozen=True, order=True)
-class AcceptanceTargetBinding:
-    """Canonical directed Target identities and their callable selectors."""
-
-    flow: str
-    criterion: str
-    baseline: str
-    candidate: str
-    baseline_selector: str = ""
-    candidate_selector: str = ""
-
-    def validate_persisted(self) -> AcceptanceTargetBinding:
-        """Reject incomplete or non-canonical values at persistence boundaries."""
-        values = {
-            "flow": self.flow,
-            "criterion": self.criterion,
-            "baseline": self.baseline,
-            "candidate": self.candidate,
-            "baseline_selector": self.baseline_selector,
-            "candidate_selector": self.candidate_selector,
-        }
-        invalid = [
-            name
-            for name, value in values.items()
-            if not isinstance(value, str) or not value.strip() or value != value.strip()
-        ]
-        if invalid:
-            raise ValueError(
-                "Acceptance Target binding requires canonical non-empty " + ", ".join(invalid)
-            )
-        _ = self.criterion_key
-        return self
-
-    @property
-    def criterion_key(self) -> str:
-        """Return the criterion name from its persisted full frontmatter path."""
-        for prefix in ("criteria.mandatory.", "criteria.optional."):
-            if self.criterion.startswith(prefix) and self.criterion != prefix:
-                return self.criterion.removeprefix(prefix)
-        raise ValueError(
-            "Acceptance Target binding criterion must be a full "
-            "criteria.<mandatory|optional>.<criterion> path"
-        )
-
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "flow": self.flow,
-            "criterion": self.criterion,
-            "baseline": self.baseline,
-            "candidate": self.candidate,
-            "baseline_selector": self.baseline_selector,
-            "candidate_selector": self.candidate_selector,
-        }
 
 
 @dataclass(frozen=True)

@@ -280,6 +280,7 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     logs_dir.mkdir()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs_dir))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(logs_dir / ".runtime"))
     flow = _DryLifecycleFlow()
 
     with (

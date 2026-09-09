@@ -411,7 +411,12 @@ def test_flow_entry_uses_real_generated_projection_validation(
     monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: root)
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
     flow = _AcceptanceFlow()
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    flow.execution_adapter = TicketBoardFlowExecution()
     flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
 
     assert flow._pre_state_gate() is None

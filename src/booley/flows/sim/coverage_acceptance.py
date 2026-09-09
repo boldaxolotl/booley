@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import SOURCE_FINGERPRINT_DETAIL_KEY, CriterionChange, DevelopmentState
 from booley.flows.criterion_freshness import build_criterion_freshness
-from booley.ticket_board.acceptance_ledger import record_changes
+from booley.flows.execution_persistence import AcceptanceRecorder
 
 if TYPE_CHECKING:
     from .coverage_campaign import CoverageCampaign
@@ -23,9 +23,7 @@ class CoverageAcceptance:
     """Explicit Ticket publication destination; absent for Interactive Mode."""
 
     state: DevelopmentState
-    logs_dir: Path | None = None
-    execution_id: str = ""
-    acceptance_basis: dict[str, Any] = field(default_factory=dict)
+    recorder: AcceptanceRecorder = field(compare=False)
 
     def publish(self, plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path) -> None:
         """Append normalized evidence before committing the mutable state projection."""
@@ -34,16 +32,13 @@ class CoverageAcceptance:
         changes = _apply_campaign(shadow, plan, campaign, path)
         if not changes:
             return
-        if self.logs_dir is not None and shadow.strict_criteria:
+        if shadow.strict_criteria:
             transaction = hashlib.sha256(campaign.campaign_id.encode()).hexdigest()
-            record_changes(
-                self.logs_dir,
+            self.recorder.record_changes(
                 shadow,
                 changes,
                 invocation_id=campaign.campaign_id,
                 producer="sim",
-                execution_id=self.execution_id,
-                acceptance_basis=self.acceptance_basis,
                 transaction_id=transaction,
             )
             shadow.acceptance_transactions.append(transaction)

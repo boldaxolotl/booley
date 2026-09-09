@@ -1589,7 +1589,18 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     argv = list(getattr(args, "endpoint_args", []) or [])
     if argv and argv[0] == "--":
         argv = argv[1:]
-    return endpoint_cls().main(argv)
+    endpoint = endpoint_cls()
+    if os.environ.get("BOOLEY_TICKET_FILE"):
+        from booley.flows.base import BuiltinFlow, FlowMechanics
+        from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+        adapter = TicketBoardFlowExecution()
+        if isinstance(endpoint, BuiltinFlow):
+            return endpoint.main(argv, adapter=adapter)
+        if isinstance(endpoint, FlowMechanics):
+            endpoint.execution_adapter = adapter
+            endpoint._acceptance_recorder = adapter
+    return endpoint.main(argv)
 
 
 def _target_detail_payload(

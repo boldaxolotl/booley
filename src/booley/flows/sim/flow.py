@@ -1494,7 +1494,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         project_root = Path(self.args.work_dir)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 units, errors = self._plan_simulation_targets(
                     baseline_targets,
@@ -1634,7 +1638,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target,
             invocation_dir=progress.invocation_dir,
             started_at=started_at,
-            acceptance=coverage_acceptance(self.state, diagnostic=self.args.diagnostic),
+            acceptance=coverage_acceptance(
+                self.state,
+                self.context._acceptance_recorder,
+                diagnostic=self.args.diagnostic,
+            ),
         )
         options = SimulationOptions(
             trace=self.args.trace,
@@ -2406,7 +2414,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         }
         results: dict[str, TargetResult] = {}
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 try:
                     for target in baseline_targets:

@@ -17,6 +17,7 @@ from booley.criteria.state import (
     CriterionChange,
     DevelopmentState,
 )
+from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows import (
     endpoint_acceptance,
     endpoint_admission,
@@ -25,6 +26,7 @@ from booley.flows import (
     execution,
 )
 from booley.flows.endpoint_session import PreparedExecution
+from booley.flows.execution_persistence import NoAcceptanceRecorder, StandaloneFlowExecution
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
@@ -110,6 +112,9 @@ class EndpointState(ABC):
         # time; write_report() emits it as ``eda_tool`` so reports say which
         # binary produced the result — distinct from the Booley Flow name.
         self._eda_tool: str | None = None
+        self._acceptance_recorder = NoAcceptanceRecorder()
+        self.execution_adapter = StandaloneFlowExecution()
+        self.flow_acceptance = ResolvedFlowAcceptance()
 
     @property
     def args(self) -> Any:

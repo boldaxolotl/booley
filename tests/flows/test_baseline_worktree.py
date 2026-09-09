@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from booley.flows import baseline_worktree as baseline_module
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -21,47 +22,46 @@ from booley.flows.baseline_worktree import (
 from booley.runtime.submodule_materialization import materialize_submodules
 
 
-def test_paired_project_basis_uses_runtime_ticket_slug(
+def test_ticket_adapter_resolves_paired_project_basis_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ticket = tmp_path / "ticket.md"
-    ticket.write_text("ticket\n", encoding="utf-8")
-    loaded_slugs = []
+    from booley.evidence.acceptance import PairedBaselineMode
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
 
-    class FakeTicketIO:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def load_basis(self, slug, **_kwargs):
-            loaded_slugs.append(slug)
-            return type("Basis", (), {"project_sha": "a" * 40})()
-
-    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-    monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
-    monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: tmp_path
+        "booley.ticket_board.flow_execution.paired_project_repository",
+        lambda _root: SimpleNamespace(worktree=tmp_path),
     )
-    monkeypatch.setattr("booley.ticket_board.io.TicketIO", FakeTicketIO)
     monkeypatch.setattr(
-        "booley.ticket_board.acceptance_targets.resolve_commit",
+        "booley.ticket_board.flow_execution.resolve_commit",
         lambda _worktree, commit: commit,
     )
 
-    assert baseline_module._paired_project_base_sha(tmp_path) == "a" * 40
-    assert loaded_slugs == ["actual-ticket"]
+    policy = TicketBoardFlowExecution._paired_project_baseline(tmp_path, "a" * 40)
+
+    assert policy.mode is PairedBaselineMode.TICKET_PINNED
+    assert policy.sha == "a" * 40
 
 
-def test_paired_project_basis_rejects_unsafe_runtime_ticket_slug(
+def test_ticket_adapter_rejects_unsafe_runtime_ticket_slug_before_loading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.flows.request import FlowRequest
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
     ticket = tmp_path / "ticket.md"
     ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_SLUG", "../../outside")
 
-    with pytest.raises(BaselineWorktreeError, match="unsafe ticket slug"):
-        baseline_module._paired_project_base_sha(tmp_path)
+    load_basis = Mock()
+    monkeypatch.setattr("booley.ticket_board.flow_execution.TicketIO.load_basis", load_basis)
+    outcome = TicketBoardFlowExecution().validate_and_resolve(
+        "sim", FlowRequest(target="demo", work_dir=tmp_path)
+    )
+
+    assert "unsafe ticket slug" in outcome.report_text
+    load_basis.assert_not_called()
 
 
 def _git(repo: Path, *a: str) -> None:

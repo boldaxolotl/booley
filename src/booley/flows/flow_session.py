@@ -5,7 +5,9 @@ from __future__ import annotations
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
+from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.endpoint_state import EndpointState
+from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
@@ -16,10 +18,18 @@ if TYPE_CHECKING:
 class FlowSession(EndpointState):
     """One Flow call's state, admission, acceptance and publication lifetime."""
 
-    def __init__(self, flow: BuiltinFlow) -> None:
+    def __init__(
+        self,
+        flow: BuiltinFlow,
+        execution_adapter: FlowExecutionAdapter | None = None,
+    ) -> None:
         super().__init__()
+        execution_adapter = execution_adapter or StandaloneFlowExecution()
         self.publication_resources = ExitStack()
         self.flow = flow
+        self.execution_adapter = execution_adapter
+        self._acceptance_recorder = execution_adapter
+        self.flow_acceptance = ResolvedFlowAcceptance()
         self.name = flow.name
         self.endpoint_kind = "flow"
         self.satisfies = flow.satisfies

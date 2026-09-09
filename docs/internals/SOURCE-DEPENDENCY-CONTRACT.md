@@ -107,6 +107,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations and notification behavior from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
 
 | D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
+| D16 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file
@@ -215,7 +216,6 @@ booley.feedback <-> booley.harness
 booley.flows <-> booley.fusesoc
 booley.flows <-> booley.mcp
 booley.flows <-> booley.targets
-booley.flows <-> booley.ticket_board
 booley.fusesoc <-> booley.runtime
 booley.fusesoc <-> booley.targets
 booley.harness <-> booley.mcp

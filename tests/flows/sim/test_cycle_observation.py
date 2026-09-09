@@ -85,9 +85,10 @@ def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
     baseline_root = tmp_path / "baseline"
 
     @contextmanager
-    def fake_baseline_worktree(project_root: Path, revision: str):
+    def fake_baseline_worktree(project_root: Path, revision: str, *, paired_project):
         assert project_root == tmp_path
         assert revision == baseline_ref
+        assert paired_project is flow._paired_project_baseline
         yield baseline_root
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
@@ -322,7 +323,8 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
     )
 
     @contextmanager
-    def fake_worktree(_root, _ref):
+    def fake_worktree(_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         yield baseline
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
@@ -369,7 +371,8 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
     )
 
     @contextmanager
-    def fake_worktree(_root, _ref):
+    def fake_worktree(_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         yield baseline
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
@@ -401,7 +404,8 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
     )
 
     @contextmanager
-    def fake_worktree(_root, _ref):
+    def fake_worktree(_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         yield baseline
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
@@ -431,7 +435,8 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     _patch_catalog_select(monkeypatch, ambiguous_target)
 
     @contextmanager
-    def fake_worktree(_root, _ref):
+    def fake_worktree(_root, _ref, *, paired_project):
+        assert paired_project is flow._paired_project_baseline
         yield baseline
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)

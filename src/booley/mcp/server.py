@@ -825,6 +825,7 @@ def _mcp_tool_def_from_class(
     **extra: Any,
 ) -> dict[str, Any]:
     """Build an MCP tool definition dict from an endpoint class and extracted schema."""
+    from booley.flows.base import BuiltinFlow
     from booley.specialists.specialist import Specialist
 
     result = {
@@ -834,6 +835,7 @@ def _mcp_tool_def_from_class(
         "schema": schema,
         "default_timeout": getattr(cls, "default_timeout", 0),
         "is_specialist": issubclass(cls, Specialist),
+        "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
     }
     result.update(extra)
@@ -1172,6 +1174,15 @@ async def _wait_with_queue_credit(
         except TimeoutError:
             if not queued:
                 active_used += time.monotonic() - started
+
+
+def _endpoint_subprocess_env(**overrides: str) -> dict[str, str]:
+    """Return the child environment after MCP composes runtime persistence."""
+    env = {**os.environ, **overrides}
+    logs_dir = env.get("BOOLEY_LOGS_DIR", "")
+    if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
+        env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))
+    return env
 
 
 async def _run_subprocess(
@@ -2663,11 +2674,10 @@ class _JobManager:
                 # identity (poll-side attribution); BOOLEY_SLOT_TIMEOUT_S
                 # carries the real watchdog budget to the child's slot claim
                 # so the holder-deadline reap has a sound anchor.
-                env={
-                    **os.environ,
-                    "BOOLEY_RUN_ID": run_id,
-                    "BOOLEY_SLOT_TIMEOUT_S": str(timeout),
-                },
+                env=_endpoint_subprocess_env(
+                    BOOLEY_RUN_ID=run_id,
+                    BOOLEY_SLOT_TIMEOUT_S=str(timeout),
+                ),
                 is_queued=_child_is_queued,
                 on_first_active=_stamp_run_started,
             )
@@ -3140,7 +3150,9 @@ async def _dispatch_booley_mcp_tool(
 
     # Custom MCP tools run via file path; builtins via python -m
     module = mcp_tool_def["module"]
-    if mcp_tool_def.get("is_custom") and mcp_tool_def.get("custom_path"):
+    if mcp_tool_def.get("is_builtin_flow") and os.environ.get("BOOLEY_TICKET_FILE"):
+        cmd = ["python", "-m", "booley.ticket_board.flow_runner", name, *argv]
+    elif mcp_tool_def.get("is_custom") and mcp_tool_def.get("custom_path"):
         cmd = ["python", mcp_tool_def["custom_path"], *argv]
     else:
         module_path = mcp_tool_def.get("module_path") or f"booley.mcp.{module}"
@@ -3155,7 +3167,11 @@ async def _dispatch_booley_mcp_tool(
     if name in _ASYNC_JOB_MCP_TOOLS:
         return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs)
 
-    exit_code, stdout, stderr, timed_out = await _run_subprocess(cmd, timeout=mcp_tool_timeout)
+    exit_code, stdout, stderr, timed_out = await _run_subprocess(
+        cmd,
+        timeout=mcp_tool_timeout,
+        env=_endpoint_subprocess_env(),
+    )
     if timed_out:
         _write_synthetic_endpoint_end(name, mcp_tool_timeout)
     skip_report = bool(arguments.get("dry_run")) and bool(

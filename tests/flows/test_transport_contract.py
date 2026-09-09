@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.flow_session import FlowSession
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
@@ -13,6 +14,14 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
+
+
+class RecordingExecution(StandaloneFlowExecution):
+    def __init__(self, recorder):
+        self.recorder = recorder
+
+    def record_changes(self, *args, **kwargs):
+        return self.recorder.record_changes(*args, **kwargs)
 
 
 @pytest.mark.parametrize("flow_type", FLOWS)
@@ -81,6 +90,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
     from booley.ticket_board import acceptance_ledger
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
     key = f"{flow_type.satisfies[0]}_demo"
     state_path = runtime / "state.json"
@@ -105,6 +115,8 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
     monkeypatch.setattr(acceptance_ledger, "record_changes", record_changes)
     monkeypatch.setattr(DevelopmentState, "save", save_state)
     outcomes = []
+    recorder = TicketAcceptanceRecorder(log_dir=runtime / "logs")
+
     for direct in (False, True):
         # Reset the input before comparing the two paths.
         state.criteria[key].met = False
@@ -120,9 +132,15 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
 
         monkeypatch.setattr(flow, "_run", run)
         if direct:
-            result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+            result = flow.execute(
+                flow.request_type(target="demo", work_dir=runtime),
+                adapter=RecordingExecution(recorder),
+            )
         else:
-            result = flow.execute_cli(["--target", "demo", "--work-dir", str(runtime)])
+            result = flow.execute_cli(
+                ["--target", "demo", "--work-dir", str(runtime)],
+                adapter=RecordingExecution(recorder),
+            )
         assert events[0:2] == ["immutable", "mutable"]
         assert result.exit_code == 0
         assert DevelopmentState.load(state_path).criteria[key].met
