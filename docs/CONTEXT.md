@@ -2,8 +2,7 @@
 
 This is the canonical vocabulary for concepts shared across Booley. Consult it
 when a term is unfamiliar; it is not an onboarding sequence. The
-[context map](../CONTEXT-MAP.md) points to the separately owned Ticket Board,
-B-Wave, and public QA vocabularies.
+[context map](../CONTEXT-MAP.md) points to the separately owned vocabularies.
 
 Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Session Runtime**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): framework, system, library, platform, toolkit, package, harness
@@ -175,7 +174,7 @@ A passing criterion-family-specific Booley Flow run required after an RTL or tes
 _Avoid_: review gate, planner approval
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and Coverage Analyst (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/CONTEXT.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -185,36 +184,6 @@ _Avoid_: optional blindness, reviewer independence
 **Custom Flow**:
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley_project/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may update project Criteria. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
-
-### Coverage
-
-**Coverage Campaign**:
-One indivisible, durable coverage document for exactly one Target and one Simulation Flow invocation, preserving independent simulation, collection, and evaluation truths.
-_Avoid_: latest coverage, waveform score
-
-**Coverage Point**:
-One losslessly identified native measurement point, including source span, elaborated instance, metric-specific subject, and native record identity.
-_Avoid_: signal score, source-line identity
-
-**Coverage Window**:
-The interval in which native counters contribute to a Campaign, including reset activity unless the Target declares a delayed start.
-_Avoid_: waveform slice
-
-**Coverage Criterion**:
-One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND, satisfied only by a durably persisted passing Campaign; it never starts collection implicitly.
-_Avoid_: Analyst score, inferred coverage goal
-
-**Approved Waiver Set**:
-The immutable, transactionally validated project-wide set of human-approved exact Target-and-point exclusions used by coverage evaluators.
-_Avoid_: cached LLM waivers
-
-**Waiver Candidate**:
-Advisory Coverage Analyst output for human investigation or review, with no approval or evaluation authority.
-_Avoid_: approved waiver, automatic exclusion
-
-**Coverage Analyst**:
-A read-only Specialist that explains one exact Coverage Campaign and may propose Waiver Candidates, using verified Target sources when available.
-_Avoid_: coverage scorer, waveform coverage engine
 
 ### Simulation evidence
 
@@ -233,24 +202,6 @@ _Avoid_: regex, marker, exit-code-only verdict
 **Console**:
 The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
 _Avoid_: flashy mode, monitor, dashboard
-
-### Feedback
-
-**Finding**:
-One logged observation about a Booley run, held in the **Findings Log** and rendered into the user report and outbound view. Every entry is one of four kinds — a *finding* proper (something malfunctioned; needs a reproduction, an observed and an expected), a **Friction Report**, an **Impression**, or a *win* (a check that passed first try, recorded so the finding count has a denominator). Each carries a bucket saying whose problem it is: `project` (the user's repo/config/environment), `booley`, `docs`, or `unknown` until triaged. Only `booley`/`docs` entries with enough evidence, not already filed, are eligible to go upstream. The `/booley-feedback` skill classifies and records ad-hoc feedback.
-_Avoid_: issue, ticket (that is Booley's unit of *work*), defect report
-
-**Friction Report**:
-A Finding that records confusion rather than malfunction — nothing broke, but Booley was hard to follow. Held to its own evidence bar: where it happened (component or the check that surfaced it) and what the reporter expected instead, never a reproduction.
-_Avoid_: minor bug, nitpick, UX bug
-
-**Impression**:
-A Finding carrying what a user *thinks* of Booley — praise, a gripe, a feature wish, whether it earned its keep on a real project — with a `sentiment` of `praise`, `gripe`, `wish` or `mixed`. The one kind with no evidence bar at all: a single sentence is a complete report, because there is nothing to reproduce. Reported and redacted through the same path as everything else, but framed apart from defects in both the user report and outbound view so an opinion is never counted as a bug.
-_Avoid_: feature request, review, rating, testimonial
-
-**Findings Log**:
-The append-only `findings.jsonl` in local feedback state, one JSON entry per line, written concurrently by setup steps, sub-agents and ad-hoc reports. A Project keeps that state in its project state directory; a Booley Source Checkout keeps dogfood feedback outside the checkout in shared Git metadata. The log outlives the run that started it: a project set up in March and hit by a bug in July appends to the same file, which is why entries carry an origin and a `filed` stamp. Rendered into one persistent, local, unredacted **user report** (`SETUP-REPORT.md`, or `FEEDBACK-REPORT.md` on a project that never ran setup). The maintainer-facing view is filtered and redacted transiently for preview/submission; outbound commands require explicit Finding IDs (or an intentional `--all`) so one conversation cannot pull in the unfiled backlog. The `/booley-feedback` skill persists the selected view as `BOOLEY-FEEDBACK.md` only when the user explicitly requests an export.
-_Avoid_: bug database, feedback queue, telemetry (nothing here is automatic or silent)
 
 ## Inside Booley
 

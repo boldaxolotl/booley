@@ -28,7 +28,6 @@ from booley.feedback.render import (
 PUBLIC_FEEDBACK_DOCS = (
     "README.md",
     "docs/user/CONFIG.md",
-    "docs/CONTEXT.md",
     "docs/internals/CONTRIBUTING.md",
     "docs/user/USAGE.md",
     "src/booley/data/cheatsheet.md",

@@ -1,9 +1,12 @@
 # Public QA glossary
 
 This is the canonical vocabulary for Booley's public qualification suite. Shared
-product concepts such as **Booley Flow**, **Finding**, and **Trace Artifact** are
-defined in the [shared glossary](../docs/CONTEXT.md). File shapes and execution
+product concepts such as **Booley Flow** and **Trace Artifact** are defined in
+the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
+[Feedback glossary](../src/booley/feedback/CONTEXT.md). File shapes and execution
 behavior belong in [FORMAT.md](FORMAT.md) and [PROTOCOL.md](PROTOCOL.md).
+
+## Language
 
 **Public QA Suite**:
 The versioned collection of Journeys, Scenarios, Profiles, Capability Coverage, and protocols used to qualify a released Booley product.
@@ -18,7 +21,7 @@ The ordered, versioned declaration of one Journey's inputs, Steps, Checks, evide
 _Avoid_: script, test, run
 
 **Scenario Operator**:
-The coordinator responsible for one QA Run's sequencing, delegated work, evidence integration, resource control, and final report. Delegation does not transfer the Scenario Operator's authority.
+The authority-bearing coordinator of one QA Run.
 _Avoid_: test runner, autonomous campaign, delegate
 
 **Step**:
@@ -30,15 +33,15 @@ One independently observable product claim within a Scenario, with declared stim
 _Avoid_: Criterion, assertion, test function
 
 **Profile**:
-A versioned qualification scope selecting complete QA Runs, platform and provider identities, Checks, and capability prerequisites before execution.
+A versioned qualification scope of QA Runs, environment identities, Checks, and Capability prerequisites.
 _Avoid_: configuration, environment, filter
 
 **QA Run**:
-One evidence-producing execution of selected Profile work against exact product, suite, input, platform, provider, and tool identities.
+One evidence-producing execution of Profile work against exact product, suite, input, and environment identities.
 _Avoid_: Job, Ticket run, test invocation
 
 **Run Result**:
-An append-only observation recording one Check's outcome for one attempt in a QA Run.
+One immutable observation of a Check attempt within a QA Run.
 _Avoid_: Criterion result, verdict, summary
 
 **Capability**:
@@ -50,7 +53,7 @@ The mapping between inventoried Capabilities and the Scenario Checks that exerci
 _Avoid_: RTL coverage, Coverage Campaign, code coverage
 
 **Structural Validation**:
-Offline checking that suite assets satisfy their schemas, references, selections, ordering, digests, reachability, and budgets. Structural Validation executes no Scenario and produces no Qualification evidence.
+A static consistency evaluation of Public QA Suite assets, distinct from evidence-producing Qualification.
 _Avoid_: Qualification, product test, QA Run
 
 **Qualification**:
@@ -62,5 +65,5 @@ The `passed`, `failed`, or `incomplete` Qualification outcome for one Profile.
 _Avoid_: aggregate QA verdict, green status
 
 **Operational Completion**:
-The separate statement of whether a QA Run completed, reached its deadline, or ended in operator error. It is not a Profile Verdict.
+The outcome of a QA Run's operation, distinct from its Profile Verdict.
 _Avoid_: pass, qualification result

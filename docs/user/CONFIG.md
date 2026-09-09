@@ -14,7 +14,7 @@ fills each file.
 skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
 **EDA Provisioning**, **Session Runtime**, **Specialist**, **Developer Agent**, **VLNV** —
-are all defined in the glossary, [CONTEXT.md](../CONTEXT.md), if one is unfamiliar. Every
+are indexed by the [context map](../../CONTEXT-MAP.md) if one is unfamiliar. Every
 project has exactly two mandatory pieces: `.booley_project/booley.toml` (first
 section below) and at least one FuseSoC `.core` file describing your design. If
 you have not described your design yet, start with the [Design description
