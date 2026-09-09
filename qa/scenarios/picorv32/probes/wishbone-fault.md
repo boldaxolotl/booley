@@ -1,12 +1,12 @@
 ### Interactive Mode contract
 
-The QA Scenario Operator launches one long-lived Interactive Mode agent as its child inside the same Booley Session Runtime, with the project working directory, PTY, runtime identity, and MCP access preserved. A conforming launch is `booley session enter -- booley` when the environment requires it; a direct inherited child is also valid when those invariants are demonstrably preserved. This is not a generic outer orchestration sub-agent.
+The QA Scenario Operator launches one long-lived Interactive Mode session as its child inside the same Booley Session Runtime, with the Project working directory, PTY, Session Runtime identity, and MCP tool access preserved. A conforming launch is `booley session enter -- booley` when the environment requires it; a direct inherited child is also valid when those invariants are demonstrably preserved. This is not a separate Specialist or coordinator delegate.
 
 First prompt, before fault injection:
 
 > Work interactively in the current pinned PicoRV32 project. Confirm the Booley session identity, repository cleanliness, Doctor state, and available Targets. Run the traced Wishbone simulation, inspect its artifacts with B-Wave, and report the readiness checkpoint without changing project sources.
 
-The operator then injects exactly one defect in `picorv32.v`, inside `picorv32_wb`: replace the OR reduction that derives `we` from `mem_wstrb[3:0]` with an AND reduction. This preserves full-word writes while breaking byte and halfword stores. The mutation and its location are hidden from the agent prompt.
+The operator then injects exactly one defect in `picorv32.v`, inside `picorv32_wb`: replace the OR reduction that derives `we` from `mem_wstrb[3:0]` with an AND reduction. This preserves full-word writes while breaking byte and halfword stores. The mutation and its location are hidden from the Interactive Mode prompt.
 
 Second prompt to the same child:
 

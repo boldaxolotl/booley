@@ -13,14 +13,15 @@ authored Coverage Obligations, Cells, Allocations, and Verification Chains are r
 
 `coverage.yaml` owns the capability inventory and public sources. Scenario checks
 alone own capability references. `profiles.yaml` alone owns required scenario runs,
-platform/provider identities, selected scenario-qualified check IDs, and capability
-prerequisites. Checks do not repeat profile membership, and the inventory does not
-repeat check assignments. Generate reverse indexes from these references. Resolve
-profiles before execution. No generic dimension-expansion language is required.
+native-host OS and architecture, provider identities, selected scenario-qualified
+check IDs, and capability prerequisites. Checks do not repeat profile membership, and
+the inventory does not repeat check assignments. Generate reverse indexes from these
+references. Resolve profiles before execution. No generic dimension-expansion
+language is required.
 
 A profile's required run explicitly includes the prerequisite checks and supporting
 steps needed to produce its evidence. Perform that work in the same run; never borrow
-unlisted setup or earlier-run artifacts to skip it. Authors list those prerequisites
+unlisted preparation or earlier-run artifacts to skip it. Authors list those prerequisites
 alongside the claims, and validation checks the list is complete. A run selecting
 multiple profiles executes their combined ordered work once, retaining separate
 profile verdicts. No scheduler or automatic prerequisite expansion is required.
@@ -31,29 +32,30 @@ by name; do not silently drop a supported capability to obtain a pass.
 
 ## Profiles
 
-Separate core semantic/product qualification from GUI/client integration. Preserve
-the existing qualification cadence and responsibilities:
+Separate core semantic/product qualification from VS Code Runtime Attachment and
+Waveform Viewer integration. Preserve the existing qualification cadence and
+responsibilities:
 
 - All three journeys with Codex on Ubuntu 24.04 x86-64 and native Windows x86-64
   with Docker Desktop/WSL2.
 - Representative PicoRV32 Claude qualification on Ubuntu; Claude Windows when
   usage permits. The latter remains explicitly pending until run.
 - Both Interactive Mode and Ticket Mode behavior from the accepted journeys.
-- Existing EDA, image, Stealth, and Linux provisioned-Vivado assignments. Windows
+- Existing EDA tool, Session Image, Stealth Mode, and Linux provisioned-Vivado assignments. Windows
   has no provisioned-Vivado requirement; Linux unavailability does not remove it.
 
-Classify each Interactive Mode check by its evidence. Semantic MCP/Flow behavior
-may be exercised independently. Claims about the actual supported VS Code client,
-its attachment/integration, and GUI rendering remain in GUI/client integration and
-require that client or visual evidence. A headless child never earns VS Code credit.
-When no qualified driver/observer exists, retain these checks as unavailable in
-that profile. The specification still includes the full journey; a core result
-does not claim complete Interactive Mode client qualification.
+Classify each Interactive Mode check by its evidence. Semantic MCP tool and Booley
+Flow behavior may be exercised independently. Claims about the actual VS Code Runtime
+Attachment and Waveform Viewer remain in GUI integration and require attachment or
+visual evidence. A headless child never earns VS Code credit. When no qualified
+driver or observer exists, retain these checks as unavailable in that profile. The
+specification still includes the full journey; a core result does not claim complete
+Interactive Mode Runtime Attachment qualification.
 
 Profiles are versioned scope decisions fixed before running. Pre-run capability
 probes determine availability, not scope. Required unavailable work makes its
 profile incomplete. Only the reviewed profile may exclude genuinely inapplicable
-product/platform combinations. Show exclusions in the report with their rationale.
+product and native-host combinations. Show exclusions in the report with their rationale.
 
 ## Verdicts
 
@@ -83,7 +85,7 @@ Example, with no claim that these runs have occurred:
 Core — Ubuntu/Codex: passed (all three required journeys)
 Core — Windows/Codex: passed (all three required journeys)
 Compatibility — Ubuntu/Claude: passed (PicoRV32)
-GUI/client integration: incomplete — observer/driver unavailable
+GUI integration: incomplete — observer/driver unavailable
 Full qualification: incomplete
 Optional Windows/Claude: pending
 Cleanup: complete

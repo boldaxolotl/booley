@@ -2,7 +2,7 @@
 
 This is the public-contract derivation used by the independent evaluator. It does not establish qualification. Only the seven permitted documents at `lowRISC/opentitan@615d3c74fadbbf674c8ca05a70f91094989849fb` were retrieved. No implementation, generated register source, tests, DIFs, HJSON or reference model was consulted. Concrete stimuli below are encoding choices within the agreed scope; scenario-defined observation bounds are explicitly separated from documented facts.
 
-All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain operator-held and inaccessible from the Developer's Project/runtime.
+All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain operator-held and inaccessible from the Developer Agent's Project and Session Runtime.
 
 ## Exact register map and access expansion
 
@@ -87,13 +87,13 @@ The **public scenario addendum** supplies architecture-independent observation b
 3. **TX liveness:** first START appears within 2B clocks after a byte is eligible (TX enabled, nonzero NCO, queued data, no reset/override/loopback). With another queued byte after a completed frame, the next START appears within 2B. Once START appears, the exact accumulator-derived bit cadence still applies; the liveness allowance cannot hide a wrong baud rate. The known-input TX serial checker follows observed START, so no reset-phase or internal pipeline equivalence is imposed.
 4. **INTR_TEST:** write-one forces each selected level state/IRQ for at least one complete source-clock interval from request acceptance; an independent per-clock IRQ monitor observes this with that bit enabled. When the true level condition is false, the injected force ends within B clocks and live status is restored. If the true condition remains active, it stays asserted. Event bits remain latched until W1C. This avoids a new read-to-clear policy and does not require a pending bus response to complete before observing the forced IRQ. Byte masks and no-cross-bit effects still apply.
 
-The finite limits are conservative test-contract choices relative to the selected serial rates, not product promises derived from an implementation. Publish them in the same addendum the Developer receives. For observations not governed by these explicit bounds or documented timing requirements, reaching an operational timeout produces a blocked result rather than proof of an RTL timing defect.
+The finite limits are conservative test-contract choices relative to the selected serial rates, not product promises derived from an implementation. Publish them in the same addendum the Developer Agent receives. For observations not governed by these explicit bounds or documented timing requirements, reaching an operational timeout produces a blocked result rather than proof of an RTL timing defect.
 
 For VAL, steady all-high/all-low input eventually yielding 0xffff/0x0000 is useful but cannot alone prove ordering. A known transition-rich input and consistent sample-phase/latency alignment is needed to check newest bit 0. A bounded alignment window requires the above public latency decision. Do not fit an arbitrary distinct delay per sample to force a match.
 
 ## Deterministic seed and case materialization
 
-The coordinator supplies one 128-bit run seed as exactly 32 lowercase hexadecimal characters. Store it only in the operator-controlled run declaration and materialized manifest; the implementing Developer receives neither seed nor generated cases. The evaluator delegate receives the frozen materialized cases, not authority to regenerate them. A supplied seed with any other length/alphabet blocks preparation. This is an encoding choice for reproducibility, not a UART behavioral requirement.
+The coordinator supplies one 128-bit run seed as exactly 32 lowercase hexadecimal characters. Store it only in the operator-controlled run declaration and materialized manifest; the implementing Developer Agent receives neither seed nor generated cases. The evaluator delegate receives the frozen materialized cases, not authority to regenerate them. A supplied seed with any other length/alphabet blocks preparation. This is an encoding choice for reproducibility, not a UART behavioral requirement.
 
 Use counter-based SHA-256 without a library-specific pseudorandom generator. For family F, supplement index i and block index j, hash the following exact UTF-8/ASCII sequence, including its final LF:
 
@@ -165,7 +165,7 @@ evidence/uart/evaluator/<E>/cases/<C>/trace.vcd
 evidence/uart/evaluator/<E>/cases/<C>/execution.log
 ```
 
-`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full operator evidence outside Project/runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer's exposure is auditable. Never replace the operator case manifest with the bounded-feedback subset.
+`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full operator evidence outside the Project and Session Runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer Agent's exposure is auditable. Never replace the operator case manifest with the bounded-feedback subset.
 
 ## Frozen corpus identities
 

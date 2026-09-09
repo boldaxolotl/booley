@@ -42,9 +42,10 @@ window in the timing addendum. Other timing observations remain blocked when the
 public contract cannot establish a verdict. Implementation progress and run results belong in the PR,
 issues, and run records rather than this reference.
 
-Execution requires the exact released Booley package/image and matching docs,
-reference native hosts, authorized disposable resources, provider access, declared
-EDA provisioning, and independent operator evidence storage. GUI profiles require
-actual supported VS Code clients, WCP and a qualified screenshot observer. Missing
-infrastructure leaves the corresponding profiles incomplete; no headless substitute
-or smaller profile is implied. There is no generic runner or unattended campaign here.
+Execution requires the exact released Booley package, Session Image, and matching
+documentation; reference native hosts; authorized disposable resources; provider
+access; declared EDA Provisioning; and independent operator evidence storage. GUI
+profiles require a VS Code Runtime Attachment, Waveform Control Protocol (WCP) access
+to the Waveform Viewer, and a qualified screenshot observer. Missing infrastructure
+leaves the corresponding profiles incomplete; no headless substitute or smaller
+profile is implied. The suite does not execute unattended campaigns.

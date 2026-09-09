@@ -11,12 +11,13 @@ Record delegate identity and assignment with the step; no delegation event syste
 is required. Delegates cannot grant authority or change acceptance requirements.
 
 Before product exercises, freeze a run ID, selected profile, exact published Booley
-release/package identity and release documentation, suite commit, pinned IP inputs,
-platform/provider/client/backend, relevant image/tool identities, deadline, artifact
-root, pre-run capability probes, and granted authority in `run.json`. Record initial
-identities there; image identities created by Setup and later repository/accepted
-commit identities belong in the producing step's result and evidence. Missing
-required initial identity blocks execution. Missing authority means denied.
+release and package identity, release documentation, suite commit, pinned IP inputs,
+native-host OS and architecture, provider, Runtime Attachment, agent backend,
+relevant Session Image and EDA tool identities, deadline, artifact root, pre-run
+capability probes, and granted authority in `run.json`. Record initial identities
+there; Session Image identities created by Project Setup and later Git repository or
+accepted-commit identities belong in the producing step's result and evidence.
+Missing required initial identity blocks execution. Missing authority means denied.
 
 Runs are unattended. Authority covers only the declared actions and owned resources.
 Use published Booley documentation, packaged skills, CLI/MCP help, and ordinary
@@ -29,20 +30,21 @@ editable installs, development builds, and imports from a source checkout are ex
 Read each step's action, prerequisites, checks, and recovery instructions together.
 A check declares its stimulus, expected observation, contract source, and evidence.
 Preserve artifact identity and freshness. Reuse one artifact for multiple checks only
-when it independently supports each claim. Agent prose cannot replace artifacts.
-UI/client claims require evidence from the supported client; visual claims require
-timestamped visual evidence from a qualified observer.
+when it independently supports each claim. Delegate prose cannot replace artifacts.
+Runtime Attachment claims require evidence from the attached application. Waveform
+Viewer claims require timestamped visual evidence from a qualified observer.
 
 Evidence requirements retain the existing minimums: discovery uses identity-bound
-output and meaningful input rejection where supported; Flow/EDA checks retain the
-actual normalized grade and verified fresh artifacts with Target/Flow/EDA identity;
-stateful checks prove relevant transitions, failure, recovery/persistence, and
-cleanup; agent-mode checks correlate client/backend identity with durable logs and
+output and meaningful input rejection where supported; Booley Flow and EDA tool
+checks retain the actual normalized grade and verified fresh artifacts with Target,
+Booley Flow, and EDA tool identity; stateful checks prove relevant transitions,
+failure, recovery or persistence, and cleanup; Interactive Mode and Ticket Mode
+checks correlate Runtime Attachment and agent-backend identity with durable logs and
 artifacts; documentation checks identify the consulted revision and observed
 behavior. Console text is authoritative when the diagnostic text itself is the
 contract. Preserve Booley's underlying grades and artifact meanings in the evidence.
 
-Agents retain diagnostic and implementation freedom allowed by the journey. Exact
+Delegates retain diagnostic and implementation freedom allowed by the journey. Exact
 commands or prose are mandatory only where the design says their literal form is
 under test. Apply the journey's existing timeouts and narrow retry allowances.
 Prerequisites may reference earlier checks; an unexpected failure blocks dependent
@@ -99,8 +101,8 @@ required checks in that new run.
 
 Persist ownership and intended disposition in `resources.json` before creating a
 resource where its identity is known, otherwise immediately upon acquiring it and
-before dependent work. Track branches, worktrees, processes, runtimes, images,
-mounts, registrations, Grants, profiles, and relays as applicable. Ownership must
+before dependent work. Track branches, worktrees, processes, Session Runtimes,
+Session Images, mounts, registrations, Grants, profiles, and relays as applicable. Ownership must
 be specific enough for cleanup after an interrupted run without touching others'
 state. Update the ledger as resources are released; retain cleanup result evidence.
 

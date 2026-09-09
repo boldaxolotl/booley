@@ -2,7 +2,7 @@
 
 This companion exercise is a named Taxi phase, with 40 minutes of work and
 its resources included in Taxi cleanup. It leaves the pinned direct Taxi clone,
-its symlink, Setup, hardware workloads and accepted verification assets unchanged.
+its symlink, Project Setup, hardware workloads and accepted verification assets unchanged.
 It is not a fourth IP journey or a consumer wrapper around Taxi.
 
 Public authority: [Submodules](../../../../docs/user/CONFIG.md#submodules), reconciled
@@ -14,9 +14,9 @@ continues to belong to the real IP journeys.
 
 Create only beneath the run-owned companion root and its operator-owned fixture
 source directory. Register all Projects, local repositories, branches, worktrees
-and runtimes in the ownership ledger. A separate paired `.booley_project` Git
+and Session Runtimes in the ownership ledger. A separate paired `.booley_project` Git
 repository is intentional and independently owned. Use the same exact published
-Booley release and image identity as the Taxi run. No package installation,
+Booley release and Session Image identity as the Taxi run. No package installation,
 network Git fetch, external push or source edit in the real Taxi Project is allowed.
 
 The suite supplies a deterministic construction recipe, not a dependency on a
@@ -61,7 +61,7 @@ The simulation consumes DATA and LEAF through this instantiated hierarchy;
 constants for their respective revisions. Both versions are valid passing designs.
 `synth_submodule_transport` uses logical synthesis of the root-only transport
 module, independent of selected dependency source paths. Baseline-relative
-synthesis through this Target triggers public workspace reconstruction even in
+synthesis through this Target triggers public Ticket Workspace reconstruction even in
 selection probes that intentionally omit the data submodule; those probes do
 not falsely require a simulation whose inputs they excluded.
 
@@ -73,7 +73,7 @@ failed Simulation Flow, exact restoration, and a fresh passing simulation.
 
 Initialize all sources locally before recording the precondition. Then set each
 committed `.gitmodules` URL to a deliberately unreachable fixture-only SSH
-locator under `example.invalid`; no credentials are supplied. Normal runtime
+locator under `example.invalid`; no credentials are supplied. Normal Session Runtime
 default-deny egress remains active. Capture fixture Git subprocess diagnostics
 without secret-bearing environment values. Success must not depend on URLs,
 remote configuration, a shared object store or a working-tree copy.
@@ -96,28 +96,28 @@ is restored before the next check. Fixture creation itself is not product proof.
 | `submodules.simulation-missing-nested` | From the restored passing fixture, move only `deps/data/nested/leaf` out of all source/search paths while retaining the parent module and all acceptance inputs; invoke the same Simulation Flow. | New invocation fails specifically on the required recursive dependency, including with a prior successful build available. Preserve the diagnostic, source manifest and absence of any fresh passing result/criterion credit. Parent-submodule presence alone cannot satisfy this check. |
 | `submodules.simulation-restore-nested` | Restore the exact leaf commit and rerun the unchanged Target. | Fresh pass proves the nested module's output is consumed again; source identity and original negative result retained. |
 | `submodules.simulation-missing-cold` | Repeat the required-top-submodule absence in a separate cold disposable fixture with no prior compiled products, using the same Target/testbench contract. | Same dependency-specific nonzero Simulation Flow outcome. This distinguishes actual missing-source detection from any warm-cache side effect. Restore the fixture before its normal recovery/cleanup checks. |
-| `submodules.baseline-historical` | Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate B. | Baseline workspace contains A/leaf A/control A while initialized sources remain B; valid results and artifact contents identify each directed side, never the main Project's newer checkout. |
+| `submodules.baseline-historical` | Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate B. | Baseline checkout contains A/leaf A/control A while initialized sources remain B; valid results and artifact contents identify each directed side, never the main Project's newer checkout. |
 | `submodules.standalone` | Inspect the repositories materialized by those product operations before their controlled cleanup. | Every selected outer, nested and paired submodule is detached at its destination commit, has its own `.git` directory and local object closure, no remotes, no `.git` pointer/alternates to source storage. Retain Git identity/config and filesystem evidence. |
-| `submodules.offline` | Perform the same reconstruction with unreachable committed URLs and default-deny egress. | Reconstruction and Flow/Ticket succeed from local objects; retain URL identity, egress configuration, available Git invocation diagnostics and destination contents. Failure to access an SSH URL is not the expected success path. |
+| `submodules.offline` | Perform the same reconstruction with unreachable committed URLs and default-deny egress. | Reconstruction and Booley Flow/Ticket succeed from local objects; retain URL identity, egress configuration, available Git invocation diagnostics and destination contents. Failure to access an SSH URL is not the expected success path. |
 | `submodules.default-all` | Omit `[submodules].paths` and materialize a destination with both top-level gitlinks. | Both outer gitlinks and recursively selected children appear at exact pins; record tree inventory. |
-| `submodules.select-one` | Set `paths = ["deps/data"]` for an independently authored generation and materialize. | Only data and its nested leaf materialize in the outer workspace; unselected directory remains an empty gitlink directory. |
+| `submodules.select-one` | Set `paths = ["deps/data"]` for an independently authored generation and materialize. | Only data and its nested leaf materialize in the outer Ticket Workspace; unselected directory remains an empty gitlink directory. |
 | `submodules.select-none` | Set an explicit empty list and materialize. | No outer top-level submodule is materialized; no simulation requiring excluded data is claimed to pass. |
-| `submodules.simulation-excluded-dependency` | In that explicitly empty-selection fixture, invoke the simulation that still requires data/leaf inside the materialized workspace. | Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion. |
+| `submodules.simulation-excluded-dependency` | In that explicitly empty-selection fixture, invoke the simulation that still requires data/leaf inside the materialized Ticket Workspace. | Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion. |
 | `submodules.selection-intersection` | Include an allowed path not present as a gitlink in that destination revision. | Selection intersects that revision's gitlinks; no invented repository or remote lookup. |
 | `submodules.paired-always` | With outer `paths = []`, materialize a destination whose paired Project repository pins control. | Paired repository's control submodule still materializes recursively at its own destination pin. |
-| `submodules.missing` | Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization. | Hard failure identifies missing source submodule and initialization remedy; no fabricated empty success. |
+| `submodules.missing` | Remove one initialized source submodule only in a disposable variant, then trigger Ticket Workspace materialization. | Hard failure identifies missing source submodule and initialization remedy; no fabricated empty success. |
 | `submodules.dirty` | Change a tracked source file without committing in a disposable variant, then materialize. | Hard failure identifies dirty source; source bytes are retained as fixture evidence and not silently reset by Booley. |
 | `submodules.shallow` | Supply a demonstrably shallow local source variant and materialize. | Hard failure identifies shallow repository and complete-history remedy. |
 | `submodules.incomplete-objects` | In a disposable copy only, remove a known required reachable historical object while preserving the current worktree, then materialize the historical destination. | Hard failure identifies incomplete local objects; no fallback fetch or newer-checkout substitution. Capture exact missing object identity and object-check result. |
 | `submodules.rollback` | Cause a later nested materialization to fail after a prior repository was created; place a uniquely hashed pre-existing sentinel in an unrelated destination beforehand. | Attempt-created repositories are rolled back; pre-existing sentinel/content remain byte-identical. Failure and before/after path inventories retained. |
-| `submodules.matching-destination` | Within a live product operation's documented recovery path, retry materialization with an already matching clean destination. | Matching pinned repository is accepted with the same identity. This checks product workspace recovery, not coordinator restart/resume. |
+| `submodules.matching-destination` | Within a live product operation's documented recovery path, retry materialization with an already matching clean destination. | Matching pinned repository is accepted with the same identity. This checks Ticket Workspace recovery, not coordinator restart/resume. |
 | `submodules.restore` | Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation. | Fresh successful evidence and exact expected pins; all earlier negative observations remain retained. |
-| `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/config/image identities and clean status; companion does not replace any Taxi regression evidence. |
-| `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories/runtimes/worktrees/inventory roots removed, Taxi and borrowed state preserved. |
+| `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/configuration/Session Image identities and clean status; companion does not replace any Taxi regression evidence. |
+| `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories, Session Runtimes, worktrees, and inventory roots removed; Taxi and borrowed state preserved. |
 
 The source-state and selection probes use separate disposable authoring generations
 or copied fixtures so they never edit a live Ticket's protected acceptance inputs.
-They may use the documented workspace-producing baseline Flow path to avoid
+They may use the documented Booley Flow path that produces the baseline Ticket Workspace to avoid
 paying for an LLM Ticket per negative fixture. An internal Python function call or
 hand-built destination is not evidence that the public product route worked.
 
@@ -126,20 +126,20 @@ stale-success reuse. Archive baseline evidence separately and require a new
 invocation/result identity for every observation. Move missing sources to an
 operator-owned location outside all consumed source/library paths; do not leave
 a renamed module discoverable in the Project. Do not modify source lists or
-assertions to make the negative pass, and do not let an agent repair or fetch the
+assertions to make the negative pass, and do not let the Developer Agent repair or fetch the
 dependency before its failure is captured. These seven functional checks consume
 the same 40-minute companion allocation; they do not extend the run deadline.
 
 ## Continuation and evidence
 
-The companion requires trustworthy run identity, release/image, authority and
-its own fixture setup. It does not depend on Taxi's mutation or fault-repair
+The companion requires trustworthy run identity, release and Session Image, authority, and
+its own fixture preparation. It does not depend on Taxi's mutation or fault-repair
 outcome. A companion failure blocks only its dependent checks, not independent
 Taxi work. At its cap, capture remaining requirements as blocked and clean up.
 The whole Taxi core profile cannot pass with an unmet required companion check.
 
 Keep fixture recipe digest, exact source and destination commits, gitlink trees,
-local object-closure proofs, isolated variant diffs, Git and Flow/Ticket logs,
+local object-closure proofs, isolated variant diffs, Git and Booley Flow/Ticket logs,
 resolved source lists, simulation reports, pre-existing sentinel hashes, resource
 ledger and cleanup proof outside disposable Project state. Never infer offline
 reconstruction from Taxi's symlink or from ordinary cloning.

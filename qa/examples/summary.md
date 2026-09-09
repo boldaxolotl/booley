@@ -12,4 +12,5 @@ Operational completion: completed. Cleanup: complete. No Findings in this
 illustrative slice. Check outcomes: four passed, one unavailable. Records:
 [results.jsonl](results.jsonl). Evidence references are fictional examples.
 
-No complete journey, VS Code client, or real Booley release is qualified by this example.
+No complete journey, VS Code Runtime Attachment, Waveform Viewer, or real Booley
+release is qualified by this example.
