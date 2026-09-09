@@ -102,7 +102,7 @@ def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> Non
         option
         for action in build_parser(flow)._actions
         for option in action.option_strings
-        if option.startswith("--") and option not in {"--coverage", "--cov"}  # #213 release gate
+        if option.startswith("--")
     }
     documented_options = set(
         re.findall(r"--[a-z][a-z0-9-]*", _shared_section() + _flow_section(flow.name))

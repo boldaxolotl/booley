@@ -919,11 +919,12 @@ The Criteria detail includes:
 - `_metric_map` and `_min_allowed` for threshold/acceptance display
 
 
-### Coverage Campaign orchestration (internal, issue #213 Phases 4–5)
+### Coverage Campaign orchestration
 
-`SimulateFlow` accepts internal `SimRequest.coverage=True` and hidden CLI aliases
-`--coverage` / `--cov`. Neither CLI help nor the MCP schema exposes collection
-before the final release gate. A Coverage Criterion never activates collection.
+`SimulateFlow` accepts `SimRequest.coverage=True`, public CLI `--coverage` /
+`--cov`, and MCP boolean `coverage`. Collection defaults to false. The `coverage`
+Criterion and exact-path Coverage Analyst are public alongside these controls.
+A Coverage Criterion never activates collection.
 
 `prepare_coverage_invocation(request, project_context)` resolves all selected
 Targets without EDA, build setup, report allocation, or state mutation. It
@@ -945,7 +946,7 @@ Target-local collector failures permit later Targets; shared execution or
 publication failures abort with earlier Target results and pending Targets
 preserved in structured output. Progress is observational and never resumed.
 
-Internal waiver configuration is `[coverage.waivers]` in the project-data
+Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
 configuration remains under `flow_options.booley.coverage`.
@@ -954,8 +955,8 @@ The canonical Target directory holds `coverage.json`, `simulation.json`,
 `native/raw/`, `native/merged/`, and hook sidecars. Native paths in the Campaign
 are relative to that Target directory; Flow artifact pointers are relative to
 the producing work directory. No flat per-Target compatibility report is
-written in any Simulation mode. Analyst replacement and public exposure remain
-later phases of #213.
+written in any Simulation mode. The separate report-driven Analyst consumes the
+exact completed Target Campaign without publishing policy evidence.
 
 #### Persistence and recovery
 
@@ -1011,7 +1012,7 @@ the same exact selection completes interrupted cleanup. Campaign bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
 
-Internal maintenance entry points (the public coverage release gate is unchanged):
+Explicit maintenance entry points:
 
 ```bash
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
@@ -1029,5 +1030,5 @@ matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Acceptance Evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The
 Analyst's versioned output and text-only model boundary are documented in
-[MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). Public Simulation
-coverage controls remain reserved for phase 7 of issue #213.
+[MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). The release gate and
+validation commands are recorded in [coverage-release-gate.md](coverage-release-gate.md).

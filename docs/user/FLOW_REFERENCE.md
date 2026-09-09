@@ -135,6 +135,8 @@ Useful controls:
   through as the test name.
 - `--skip <name,...>` excludes exact registered test names.
 - `--trace` captures a waveform artifact.
+- `--coverage` (permanent alias `--cov`) explicitly collects a native Verilator
+  Coverage Campaign. MCP uses boolean `coverage: true`; the default is false.
 - `--result-verbosity <compact|full>` selects cocotb console detail and defaults
   to `compact`; `full` prints every XML testcase entry. Complete XML and JSON
   artifacts are retained in either mode.
@@ -196,6 +198,77 @@ When `mode=elab_only_standalone` is requested, the invocation report also carrie
 `failures`, optional `unparsed` modules, and the standalone log pointer.
 The sweep can satisfy `elaborate_standalone`; an unavailable or untrustworthy
 probe is exit `2` and leaves its prior Criterion state unchanged.
+
+### Native Coverage Campaigns
+
+```bash
+booley flow sim --target sim_soc --coverage
+booley flow sim --target sim_soc --cov --trace
+booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_soc/coverage.json
+```
+
+Collection requires simulation mode and Verilator for every selected Target.
+Selecting Icarus, even alongside a Verilator Target, rejects the whole invocation
+before build or report paths are created. Targets and tests run sequentially in
+stable order, with one simulator process per test, including Cocotb. Normal,
+trace, coverage, and trace+coverage builds have separate cache identities.
+
+A Criterion never activates collection. Without one, the full runnable selected
+suite produces the same durable Campaign with evaluation `not_requested`, without
+loading waivers or updating Coverage Criteria. Explicit invocation test selection
+wins over the Criterion's exact suite, which wins over the full registered suite.
+A different explicit suite still collects evidence but blocks gated evaluation.
+
+Only a durably persisted `pass` satisfies `coverage_<target>`. Simulation failure,
+collection completeness, and policy evaluation remain independent: a failing
+simulation can produce valid passing coverage, and passing simulation can miss a
+threshold. Exit precedence is `2` for Preflight, collection, infrastructure,
+persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
+simulation failure or valid threshold miss; otherwise `0`, including ungated
+collection. Structured `detail.targets[selector]` retains each Target's
+`simulation`, `collection`, `evaluation`, `coverage_campaign`, and
+`simulation_report` even when another Target dominates the exit code.
+
+The default report root is `flow-reports` under the resolved project-data
+directory; `--report-dir` selects an explicit root. Each invocation owns:
+
+```text
+<reports>/sim/<number>/
+  report.json
+  progress.json
+  targets/<encoded-target>/
+    coverage.json
+    simulation.json
+    native/raw/
+    native/merged/
+    ... hook and queryability evidence
+```
+
+`coverage.json` uses `booley.coverage-campaign/v1`: exact source/build/tool and
+suite fingerprints, independent per-run verdicts, lossless point identities,
+sparse positive hit incidence, capabilities, rollups, and stored evaluation.
+Native artifact paths are relative to the Target directory; Flow pointers are
+relative to the producing work directory. There is no project-wide latest
+Campaign and no cross-Target merge. Missing legacy flat reports require consumers
+to follow the canonical report pointers instead.
+
+### Exact coverage retention
+
+Use the report root and exact invocation number from the produced report:
+
+```bash
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
+```
+
+Native pruning removes that Target's raw and merged databases while retaining
+immutable Campaign, Simulation, and hook evidence. Target-local
+`availability.json` records `pruning` or `pruned`; normalized evidence remains
+analyzable. Full pruning removes the exact invocation's reports and native
+payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
+number. Selection is validated before deletion; ambiguous, unsafe, changed, or
+active selections exit `2`. Retry an interrupted cleanup with the same exact
+selection. No age, size, or latest heuristic deletes evidence automatically.
 
 ## `lint`
 

@@ -85,7 +85,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` returns a 
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -178,6 +178,12 @@ variants, and the first public test that killed each detected mutant.
 |-----------|-------------|--------|-------|
 | `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
 | `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
+
+#### Coverage
+
+| Criterion | Description | Set by | Workflow Region |
+|-----------|-------------|--------|-------|
+| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim --coverage` | post-sim |
 
 #### Verification Quality
 

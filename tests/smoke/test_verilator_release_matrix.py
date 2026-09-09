@@ -372,8 +372,14 @@ endmodule
     second = _run([str(binary), "+verilator+seed+123"], tmp_path).stdout
     different = _run([str(binary), "+verilator+seed+124"], tmp_path).stdout
 
-    assert first == second
-    assert first != different
+    # Verilator also prints wall-clock telemetry, which is not seed-controlled.
+    values = [
+        re.findall(r"^RANDOM=([0-9a-f]{8})$", output, flags=re.MULTILINE)
+        for output in (first, second, different)
+    ]
+    assert all(len(value) == 1 for value in values), (first, second, different)
+    assert values[0] == values[1]
+    assert values[0] != values[2]
 
     invalid = tmp_path / "invalid.sv"
     invalid.write_text("module invalid; this is not SystemVerilog; endmodule\n", encoding="utf-8")
