@@ -349,7 +349,7 @@ async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep
     ctx = _capture(tio, slug, operation["reason"], disposition)
     assert ctx.inspection is not None
     if ctx.triage_report_enabled:
-        prep.load_models_config(tio._project_root)
+        prep.load_backend_config(tio._project_root)
     if action == "regenerate" and (
         prior is None
         or prior["heads"] != ctx.inspection["heads"]

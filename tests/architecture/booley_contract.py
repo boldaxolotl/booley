@@ -87,6 +87,12 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D18",
+        (prefix("booley.config"),),
+        (prefix("booley.runtime"),),
+        "configuration returns validated values and does not own Runtime construction or setup",
+    ),
+    DirectionRule(
         "D14",
         (prefix("booley.runtime"),),
         (prefix("booley.ticket_board"),),

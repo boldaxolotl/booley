@@ -278,7 +278,7 @@ def test_model_cannot_approve_unaccepted_work(blocked, monkeypatch):
     from tests.review.test_preparation import _assessment, _explanation
 
     root, _tio, _ = blocked
-    monkeypatch.setattr(prep, "load_models_config", lambda root: None)
+    monkeypatch.setattr(prep, "load_backend_config", lambda root: None)
     monkeypatch.setattr(
         prep,
         "_invoke_agent",

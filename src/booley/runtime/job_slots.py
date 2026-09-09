@@ -52,6 +52,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.config.jobs import SlotCaps, parse_caps
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -76,6 +77,8 @@ from booley.runtime.pid import (
     observe_process,
 )
 from booley.runtime.timefmt import rfc3339_from_epoch
+
+__all__ = ["SlotCaps", "parse_caps"]
 
 logger = logging.getLogger(__name__)
 
@@ -156,36 +159,6 @@ class ClaimAbortedError(RuntimeError):
     request (e.g. the Runner's Ctrl+C event) can end a queue wait instead of
     idling until a slot frees.
     """
-
-
-@dataclass
-class SlotCaps:
-    """Per-class concurrency caps + global queue bound ([jobs] in booley.toml).
-
-    The defaults preserve the pre-ADR-0028 semantics exactly: one heavy EDA
-    run at a time, a small pool for API-bound Specialists, and two concurrent
-    tickets.
-    """
-
-    max_heavy: int = 1
-    max_light: int = 3
-    max_tickets: int = 2
-    queue_max: int = 8
-
-    def cap_for(self, job_class: str) -> int:
-        caps = {
-            CLASS_HEAVY: self.max_heavy,
-            CLASS_LIGHT: self.max_light,
-            CLASS_TICKET: self.max_tickets,
-        }
-        if job_class not in caps:
-            raise ValueError(f"Unknown job class: {job_class!r}")
-        # A zero/negative cap would deadlock every claimant; clamp loudly.
-        cap = caps[job_class]
-        if cap < 1:
-            logger.warning("Cap for %s is %r; clamping to 1", job_class, cap)
-            return 1
-        return cap
 
 
 # Token states returned by SlotStore.refresh().
@@ -353,45 +326,6 @@ def _describe_holder(tok: SlotToken, now: float) -> str:
 
 
 _default_pid_alive = is_pid_alive
-
-
-def parse_caps(data: dict) -> SlotCaps:
-    """Parse [jobs] concurrency caps from a loaded booley.toml dict.
-
-    Defaults preserve the pre-slot-store semantics for local workloads.
-    Invalid values warn and keep the default —
-    a typo in a cap must not change admission behavior silently. Lives here
-    (not in harness config) so endpoint subprocesses can resolve caps without
-    importing the harness.
-    """
-    section = data.get("jobs", {})
-    caps = SlotCaps()
-    if not isinstance(section, dict):
-        logger.warning("[jobs] is not a table; using defaults")
-        return caps
-    known = ("max_heavy", "max_light", "max_tickets", "queue_max")
-    # Resource reservation is consumed by Doctor's admission invariant, not
-    # by the integer slot-cap parser.  It is still a recognized [jobs] key.
-    non_cap_keys = {"heavy_memory"}
-    for key in known:
-        if key not in section:
-            continue
-        val = section[key]
-        floor = 0 if key == "queue_max" else 1
-        if isinstance(val, int) and not isinstance(val, bool) and val >= floor:
-            setattr(caps, key, val)
-        else:
-            logger.warning(
-                "[jobs] %s = %r is invalid (int >= %d); using %d",
-                key,
-                val,
-                floor,
-                getattr(caps, key),
-            )
-    for key in section:
-        if key not in known and key not in non_cap_keys:
-            logger.warning("[jobs] has unknown key %r (ignored)", key)
-    return caps
 
 
 class SlotStore:

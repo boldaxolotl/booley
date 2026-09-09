@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.config.guidance_links import (
+from booley.harness.setup.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     _points_to,

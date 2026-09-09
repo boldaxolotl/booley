@@ -493,7 +493,7 @@ class TestConfiguredProvider:
         assert doctor._configured_provider(None) == "claude"
 
     def test_devcontainer_app_env_beats_the_default(self, tmp_path, monkeypatch):
-        """Third resolution step, same as ``_backend_config._lazy_backend_config``:
+        """Third resolution step, same as ``config.agent._lazy_agent_settings``:
         in-container the devcontainer exports which app runs the session."""
         from booley.harness import doctor
 

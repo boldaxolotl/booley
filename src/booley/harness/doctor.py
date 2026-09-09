@@ -37,12 +37,7 @@ from booley.audit import (
     resource_policy,
     target_matrix,
 )
-from booley.config.guidance_links import (
-    CANON_NAME,
-    LINK_NAMES,
-    ensure_guidance_links,
-    guidance_entry_current,
-)
+from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.flows import execution
@@ -86,6 +81,12 @@ from booley.harness.init_cmd import (
     warn,
 )
 from booley.harness.setup.common import note
+from booley.harness.setup.guidance_links import (
+    CANON_NAME,
+    LINK_NAMES,
+    ensure_guidance_links,
+    guidance_entry_current,
+)
 from booley.harness.setup.line_endings import (
     LineEndingMode,
     LineEndingObservation,
@@ -1685,8 +1686,6 @@ def _check_memory_invariant(
     """
     _warn = _warning_sink(_warn, "sandbox.memory-overcommit")
 
-    from booley.runtime import job_slots
-
     if project is None:
         _skip("memory invariant skipped - no valid project config")
         return
@@ -1714,7 +1713,7 @@ def _check_memory_invariant(
             return
         source = "[sandbox] memory"
 
-    caps = job_slots.parse_caps(project.booley_toml)
+    caps = parse_caps(project.booley_toml)
     reservation = _heavy_memory_reservation(project)
     if reservation.error:
         _warn(reservation.error)
@@ -3123,7 +3122,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     """Return the single agent provider this project's runs will use.
 
     Booley runs exactly one provider, and there is ALWAYS an answer: this
-    mirrors ``_backend_config._lazy_backend_config`` --
+    mirrors ``config.agent._lazy_agent_settings`` --
     ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] provider`` ->
     ``BOOLEY_AGENT_APP`` (exported by the devcontainer) -> ``_DEFAULT_PROVIDER``.
     An omitted ``[agent] provider`` is not "unknown", it is the default, so the
@@ -4026,9 +4025,9 @@ def _check_agent_backend_health(
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
-        from booley.config.settings import get_backend_config, load_models_config
+        from booley.runtime.agent_config import get_backend_config, load_backend_config
 
-        load_models_config(project_root)
+        load_backend_config(project_root)
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()
     except (ImportError, AttributeError, RuntimeError, OSError, ValueError) as exc:

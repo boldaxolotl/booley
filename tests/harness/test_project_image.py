@@ -26,6 +26,15 @@ class TestImageName:
         assert pi.project_image_name(d) == "my-proj-booley-sandbox"
 
 
+class TestProjectSandboxImage:
+    def test_non_table_sandbox_uses_default(self, tmp_path):
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text('sandbox = "wrong shape"\n')
+
+        assert pi.project_sandbox_image(tmp_path) == pi.BASE_IMAGE
+
+
 # ===========================================================================
 # resolve_requirements — only [sandbox].pip_requirements is baked
 # ===========================================================================

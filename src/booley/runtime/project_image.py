@@ -24,9 +24,13 @@ import hashlib
 import logging
 import re
 import subprocess
-import tomllib
 from pathlib import Path
 
+from booley.config.sandbox import (
+    SANDBOX_IMAGE,
+    project_image_name,
+    project_sandbox_image,
+)
 from booley.runtime.docker_build import run_docker_build
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
@@ -36,11 +40,12 @@ from booley.runtime.image_provenance import (
     PARENT_ARTIFACT_LOCAL_IMAGE_ID,
     resolve_build_context_fingerprint,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
 
 logger = logging.getLogger(__name__)
 
-BASE_IMAGE = "booley-sandbox"
+__all__ = ["project_image_name", "project_sandbox_image"]
+
+BASE_IMAGE = SANDBOX_IMAGE
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
 # requirements pin on any of these shadows the image's version at build time
@@ -100,34 +105,6 @@ def _matches_content_hash(text: str) -> bool:
             rest = "".join(lines[:i] + lines[i + 1 :])
             return declared == _content_digest(rest)
     return True
-
-
-def project_image_name(project_root: Path) -> str:
-    """Deterministic tag for the generated project image (docker-name-safe)."""
-    slug = re.sub(r"[^a-z0-9_.-]+", "-", project_root.name.lower()).strip("-._")
-    return f"{slug or 'project'}-{BASE_IMAGE}"
-
-
-def project_sandbox_image(project_root: Path) -> str:
-    """Return the Project-selected Session Image, or the standard image."""
-    try:
-        project_dir = resolve_checkout_project_dir(project_root)
-    except FileNotFoundError:
-        return BASE_IMAGE
-    toml_path = project_dir / "booley.toml"
-    if not toml_path.is_file():
-        return BASE_IMAGE
-    try:
-        with toml_path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return BASE_IMAGE
-    raw = data.get("sandbox", {}).get("image", "")
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    if (project_dir / "docker" / "Dockerfile").is_file():
-        return project_image_name(project_root)
-    return BASE_IMAGE
 
 
 def dockerfile_parent_image(dockerfile: Path) -> str | None:

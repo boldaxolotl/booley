@@ -601,16 +601,13 @@ class TestCallAgent:
     @pytest.fixture(autouse=True)
     def _disable_docker_sandbox(self):
         """Disable Docker sandbox so call_agent routes through ClaudeSDKBackend."""
-        from booley.config.agent import (
-            BackendConfig,
-            SandboxConfig,
-            set_backend_config,
-        )
+        from booley.config.agent import AgentSettings
         from booley.runtime.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_config import BackendConfig, set_backend_config
 
         cfg = BackendConfig(
+            settings=AgentSettings(),
             active_backend=ClaudeSDKBackend(),
-            sandbox=SandboxConfig(),
         )
         set_backend_config(cfg)
         yield

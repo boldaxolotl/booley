@@ -174,7 +174,7 @@ def _check_in_progress_ops(git_cwd: str, project_root: Path) -> list[str]:
 def _check_agent_backend() -> None:
     """Validate local backend configuration without launching its CLI."""
     try:
-        from booley.config.settings import get_backend_config
+        from booley.runtime.agent_config import get_backend_config
 
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()

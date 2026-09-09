@@ -25,10 +25,10 @@ def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provide
     monkeypatch.setattr(chat_cmd, "resolve_checkout_project_dir", lambda _root: project_dir)
     monkeypatch.setattr(
         chat_cmd,
-        "load_models_config",
+        "load_agent_settings",
         lambda root, *, project_dir: loaded.append((root, project_dir)),
     )
-    monkeypatch.setattr(chat_cmd, "get_backend_config", lambda: config)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
 
     def execvp(executable, argv):
         executed.append((executable, argv))
@@ -46,8 +46,8 @@ def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provide
 def test_run_reports_missing_configured_cli(tmp_path, monkeypatch, capsys):
     config = type("Config", (), {"provider": "codex"})()
     monkeypatch.setattr(chat_cmd, "resolve_checkout_project_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd, "load_models_config", lambda _root, *, project_dir: None)
-    monkeypatch.setattr(chat_cmd, "get_backend_config", lambda: config)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, project_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
         chat_cmd.os,
         "execvp",
@@ -62,7 +62,7 @@ def test_run_reports_invalid_project_config(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(chat_cmd, "resolve_checkout_project_dir", lambda root: root)
     monkeypatch.setattr(
         chat_cmd,
-        "load_models_config",
+        "load_agent_settings",
         lambda _root, *, project_dir: (_ for _ in ()).throw(
             BackendConfigError("invalid provider")
         ),
@@ -76,7 +76,7 @@ def test_run_does_not_mask_unexpected_runtime_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_cmd, "resolve_checkout_project_dir", lambda root: root)
     monkeypatch.setattr(
         chat_cmd,
-        "load_models_config",
+        "load_agent_settings",
         lambda _root, *, project_dir: (_ for _ in ()).throw(RuntimeError("backend defect")),
     )
 

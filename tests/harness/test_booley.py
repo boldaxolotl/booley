@@ -626,11 +626,11 @@ class TestCmdShell:
         def _boom(_root):
             raise RuntimeError("invalid provider 'nope'")
 
-        monkeypatch.setattr(cfgmod, "load_models_config", _boom)
+        monkeypatch.setattr(cfgmod, "load_agent_settings", _boom)
         sandbox = type("S", (), {"image": "img", "memory": ""})()
         monkeypatch.setattr(
             cfgmod,
-            "get_backend_config",
+            "get_agent_settings",
             type("C", (), {"sandbox": sandbox}),
         )
         monkeypatch.setattr(
@@ -658,10 +658,10 @@ class TestCmdShell:
         from booley.harness import sandbox as sandbox_mod
 
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-        monkeypatch.setattr(cfgmod, "load_models_config", lambda _root: None)
+        monkeypatch.setattr(cfgmod, "load_agent_settings", lambda _root: None)
         sandbox_cfg = type("S", (), {"image": "img", "memory": "8g"})()
         backend_cfg = type("C", (), {"sandbox": sandbox_cfg})()
-        monkeypatch.setattr(cfgmod, "get_backend_config", lambda: backend_cfg)
+        monkeypatch.setattr(cfgmod, "get_agent_settings", lambda: backend_cfg)
         captured: dict[str, str] = {}
 
         class _FakeRunner:

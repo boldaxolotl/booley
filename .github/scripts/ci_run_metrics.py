@@ -41,6 +41,31 @@ def _percentile(values: list[float], proportion: float) -> float:
     return sorted(values)[math.ceil(len(values) * proportion) - 1]
 
 
+def _completed_current_attempt_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
+    """Return completed jobs whose timestamps belong to the current attempt.
+
+    GitHub's failed-job rerun endpoint includes carried-over jobs from the prior
+    attempt. It rewrites their ``created_at`` to the rerun time while retaining
+    the original start and completion timestamps. Skipped jobs may likewise
+    retain an old completion time. Neither kind consumed runner time in the
+    current attempt, so omit them from its telemetry.
+    """
+    completed: list[dict[str, Any]] = []
+    for job in jobs:
+        if (
+            not isinstance(job, dict)
+            or not job.get("completed_at")
+            or job.get("conclusion") == "skipped"
+        ):
+            continue
+        created = _timestamp(job.get("created_at"), field="job queue.start")
+        started = _timestamp(job.get("started_at"), field="job queue.end")
+        if started < created:
+            continue
+        completed.append(job)
+    return completed
+
+
 def summarize(run: Any, jobs_payload: Any, observed_at: str) -> dict[str, Any]:
     """Build stable run-level metrics from GitHub's run and jobs responses."""
     if not isinstance(run, dict) or not isinstance(jobs_payload, dict):
@@ -48,7 +73,7 @@ def summarize(run: Any, jobs_payload: Any, observed_at: str) -> dict[str, Any]:
     jobs = jobs_payload.get("jobs")
     if not isinstance(jobs, list):
         raise MetricsError("jobs payload must contain a jobs list")
-    completed = [job for job in jobs if isinstance(job, dict) and job.get("completed_at")]
+    completed = _completed_current_attempt_jobs(jobs)
     runtime_seconds = [
         _seconds(job.get("started_at"), job.get("completed_at"), field="job runtime")
         for job in completed

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_int, require_list
-from booley.runtime.auth_token import config_dir
+from booley.core.user_paths import config_dir
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 7200
 DEFAULT_MAX_SESSIONS = 4
