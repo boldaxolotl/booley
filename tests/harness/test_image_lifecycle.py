@@ -18,6 +18,7 @@ class FakeDocker:
     def __init__(self, images: dict[str, tuple[str, dict[str, str]]]) -> None:
         self.images = images
         self.registry_identities: dict[str, tuple[str, ...]] = {}
+        self.used_image_ids: frozenset[str] = frozenset()
         self.mutations: list[tuple[str, ...]] = []
 
     def image_id(self, image: str) -> str | None:
@@ -30,6 +31,16 @@ class FakeDocker:
 
     def repo_digests(self, image: str) -> tuple[str, ...]:
         return self.registry_identities.get(image, ())
+
+    def image_references(self) -> tuple[lifecycle.ImageReference, ...]:
+        return tuple(
+            lifecycle.ImageReference(reference, image_id)
+            for reference, (image_id, _labels) in sorted(self.images.items())
+            if not reference.startswith("sha256:")
+        )
+
+    def container_image_ids(self) -> frozenset[str]:
+        return self.used_image_ids
 
     def tag(self, source: str, target: str) -> None:
         self.mutations.append(("tag", source, target))
@@ -133,6 +144,27 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     return values
 
 
+def _current_registry_base() -> tuple[str, dict[str, str]]:
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    node = lifecycle._base_node(payload)
+    image_id = "sha256:" + "a" * 64
+    labels = _labels(payload="payload-new", recipe=node.build.recipe_fingerprint)
+    labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT: (
+                "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+            ),
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
+        }
+    )
+    return image_id, labels
+
+
 def test_host_scope_never_reads_project_configuration(monkeypatch):
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
@@ -146,6 +178,113 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
 
     assert result.selected_reference == lifecycle.BASE_IMAGE
     assert result.status is lifecycle.Status.STALE
+
+
+def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id, labels = _current_registry_base()
+    current_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
+    prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    docker = FakeDocker(
+        {
+            lifecycle.BASE_IMAGE: (image_id, labels),
+            current_release: (image_id, labels),
+            prior_release: ("sha256:" + "b" * 64, {}),
+        }
+    )
+    docker.used_image_ids = frozenset({image_id})
+    builder = _wire(monkeypatch, docker)
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert not builder.built
+    assert result.status is lifecycle.Status.CHANGED
+    assert result.changed_images == ()
+    assert result.cleanup.removed == (prior_release, current_release)
+    assert docker.image_id(lifecycle.BASE_IMAGE) == image_id
+    assert docker.image_id(prior_release) is None
+    assert docker.image_id(current_release) is None
+
+
+def test_host_check_reports_release_cleanup_without_mutating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id, labels = _current_registry_base()
+    prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    docker = FakeDocker(
+        {
+            lifecycle.BASE_IMAGE: (image_id, labels),
+            prior_release: ("sha256:" + "b" * 64, {}),
+            "ghcr.io/boldaxolotl/booley-sandbox:latest": (image_id, labels),
+            "example.com/booley-sandbox:0.2.4": ("sha256:" + "c" * 64, {}),
+        }
+    )
+    _wire(monkeypatch, docker)
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+
+    assert result.status is lifecycle.Status.CURRENT
+    assert result.cleanup.pending == (prior_release,)
+    assert not result.cleanup.removed
+    assert not docker.mutations
+
+
+def test_host_ensure_retains_release_image_required_by_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prior_id = "sha256:" + "b" * 64
+    prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    docker = FakeDocker({prior_release: (prior_id, {})})
+    docker.used_image_ids = frozenset({prior_id})
+    _wire(monkeypatch, docker)
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert result.cleanup.retained_required == (prior_release,)
+    assert docker.image_id(prior_release) == prior_id
+
+
+def test_host_cleanup_refuses_reference_that_changed_after_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+
+    class RetaggedDocker(FakeDocker):
+        def image_id(self, image: str) -> str | None:
+            if image == release:
+                return "sha256:" + "c" * 64
+            return super().image_id(image)
+
+    docker = RetaggedDocker({release: ("sha256:" + "b" * 64, {})})
+    _wire(monkeypatch, docker)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="refused to clean changed"):
+        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert not any(mutation == ("remove_tag", release) for mutation in docker.mutations)
+
+
+def test_host_cleanup_failure_does_not_roll_back_reconciled_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+
+    class CleanupFailureDocker(FakeDocker):
+        def remove_tag(self, image: str) -> None:
+            if image == release:
+                raise lifecycle.ImageLifecycleError("cleanup denied")
+            super().remove_tag(image)
+
+    docker = CleanupFailureDocker({release: ("sha256:" + "b" * 64, {})})
+    builder = _wire(monkeypatch, docker)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="cleanup denied"):
+        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert builder.built == [lifecycle.BASE_IMAGE]
+    assert docker.image_id(lifecycle.BASE_IMAGE) is not None
+    assert docker.image_id(release) is not None
 
 
 def test_composed_force_refreshes_host_base_exactly_once(tmp_path: Path, monkeypatch):
@@ -162,6 +301,32 @@ def test_composed_force_refreshes_host_base_exactly_once(tmp_path: Path, monkeyp
     assert builder.built.count(lifecycle.BASE_IMAGE) == 1
     assert builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
     assert result.status is lifecycle.Status.CHANGED
+
+
+def test_project_ensure_cleans_release_tags_for_selected_shipped_flavor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker = FakeDocker({})
+    builder = _wire(monkeypatch, docker)
+    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
+    flavor_id = docker.image_id("booley-sandbox-riscv")
+    assert flavor_id is not None
+    current_release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.6"
+    prior_release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
+    flavor_labels = docker.images["booley-sandbox-riscv"][1]
+    docker.images[current_release] = (flavor_id, flavor_labels)
+    docker.images[prior_release] = ("sha256:" + "e" * 64, {})
+    docker.mutations.clear()
+    builder.built.clear()
+
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
+
+    assert not builder.built
+    assert result.status is lifecycle.Status.CHANGED
+    assert result.cleanup.removed == (prior_release, current_release)
+    assert docker.image_id("booley-sandbox-riscv") == flavor_id
 
 
 def test_check_rejects_same_version_with_different_payload(tmp_path: Path, monkeypatch):
@@ -906,6 +1071,189 @@ def test_docker_tag_removal_failure_is_reported(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="image is in use"):
         lifecycle._DockerCli().remove_tag("booley-lifecycle-backup:prior")
+
+
+def test_docker_image_inventory_accepts_windows_newlines_and_full_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id = "sha256:" + "a" * 64
+    output = '{"Repository":"booley-sandbox","Tag":"latest","ID":"' + image_id + '"}\r\n'
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    )
+
+    assert lifecycle._DockerCli().image_references() == (
+        lifecycle.ImageReference("booley-sandbox:latest", image_id),
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "not-json\n",
+        "{}\n",
+        '{"Repository":"booley-sandbox","Tag":"latest","ID":"short"}\n',
+    ],
+)
+def test_docker_image_inventory_rejects_malformed_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    )
+
+    with pytest.raises(
+        lifecycle.ImageLifecycleError,
+        match=r"malformed image inventory row 1:",
+    ):
+        lifecycle._DockerCli().image_references()
+
+
+def test_docker_image_inventory_rejects_conflicting_reference_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = "sha256:" + "a" * 64
+    second_id = "sha256:" + "b" * 64
+    output = (
+        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{first_id}"}}\n'
+        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{second_id}"}}\n'
+    )
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="conflicting IDs"):
+        lifecycle._DockerCli().image_references()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message"),
+    [
+        ("image_references", "inventory Docker image references"),
+        ("container_image_ids", "inventory Docker containers"),
+    ],
+)
+def test_docker_inventory_reports_command_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=message):
+        getattr(lifecycle._DockerCli(), method_name)()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message"),
+    [
+        ("image_references", "image inventory denied"),
+        ("container_image_ids", "container inventory denied"),
+    ],
+)
+def test_docker_inventory_reports_command_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr=message),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=message):
+        getattr(lifecycle._DockerCli(), method_name)()
+
+
+def test_docker_container_inventory_includes_running_and_stopped_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = "sha256:" + "a" * 64
+    second_id = "sha256:" + "b" * 64
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, stdout="one\r\ntwo\r\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=first_id + "\r\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=second_id + "\r\n", stderr=""),
+        )
+    )
+    monkeypatch.setattr(lifecycle.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    assert lifecycle._DockerCli().container_image_ids() == frozenset({first_id, second_id})
+
+
+def test_docker_container_inventory_reports_inspect_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, stdout="container-id\n", stderr=""),
+            OSError("inspect unavailable"),
+        )
+    )
+
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        result = next(results)
+        if isinstance(result, OSError):
+            raise result
+        return result
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inspect unavailable"):
+        lifecycle._DockerCli().container_image_ids()
+
+
+def test_docker_container_inventory_rejects_invalid_inspect_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, stdout="container-id\n", stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="container disappeared"),
+        )
+    )
+    monkeypatch.setattr(lifecycle.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="container disappeared"):
+        lifecycle._DockerCli().container_image_ids()
+
+
+def test_docker_tag_removal_is_exact_non_forced_and_does_not_prune_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+
+    lifecycle._DockerCli().remove_tag("ghcr.io/boldaxolotl/booley-sandbox:0.2.5")
+
+    assert commands == [
+        [
+            "docker",
+            "image",
+            "rm",
+            "--no-prune",
+            "ghcr.io/boldaxolotl/booley-sandbox:0.2.5",
+        ]
+    ]
+    assert "--force" not in commands[0]
 
 
 def test_tagged_parent_is_treated_as_its_exact_external_artifact(
