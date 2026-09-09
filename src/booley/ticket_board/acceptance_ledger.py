@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .persistence import WriteOnceConflictError, atomic_replace_bytes, atomic_write_once
@@ -105,11 +106,24 @@ def _participant_heads(value: Any) -> dict[str, str]:
     return heads
 
 
-def _reserve_sequence(root: Path) -> tuple[int, Path]:
+def _reserve_sequence(root: Path, transaction_id: str = "") -> tuple[int, Path]:
     """Atomically reserve the next bounded evidence sequence directory."""
     root.mkdir(parents=True, exist_ok=True)
+    with (root / ".sequence.lock").open("a+", encoding="utf-8") as handle:
+        wait_for_file_lock(handle, timeout_s=5)
+        try:
+            return _allocate_sequence(root, transaction_id)
+        finally:
+            release_file_lock(handle)
+
+
+def _allocate_sequence(root: Path, transaction_id: str) -> tuple[int, Path]:
+    used = {path.name.partition(".tx.")[0] for path in root.iterdir()}
     for sequence in range(1, 1_000_001):
-        directory = root / f"{sequence:09d}"
+        name = f"{sequence:09d}"
+        if name in used:
+            continue
+        directory = root / (f"{name}.tx.{transaction_id}" if transaction_id else name)
         try:
             directory.mkdir()
         except FileExistsError:
@@ -118,15 +132,18 @@ def _reserve_sequence(root: Path) -> tuple[int, Path]:
     raise AcceptanceLedgerError(f"acceptance evidence sequence exhausted beneath {root}")
 
 
-def _read_evidence_records(log_dir: Path) -> list[dict[str, Any]]:
+def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
     """Read and structurally validate every immutable observation."""
     root = Path(log_dir) / "acceptance" / "evidence"
     if not root.exists():
         return []
     records: list[dict[str, Any]] = []
     for directory in sorted(path for path in root.iterdir() if path.is_dir()):
+        sequence_name, separator, transaction = directory.name.partition(".tx.")
+        if separator and transaction not in state.acceptance_transactions:
+            continue
         try:
-            sequence = int(directory.name)
+            sequence = int(sequence_name)
             payload = json.loads((directory / "record.json").read_text(encoding="utf-8"))
             if payload.get("sequence") != sequence:
                 raise ValueError("record sequence does not match its directory")
@@ -140,7 +157,7 @@ def _read_evidence_records(log_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _read_evidence_refs(log_dir: Path) -> list[dict[str, Any]]:
+def _read_evidence_refs(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
     """Return integrity-checked references to every immutable observation."""
     return [
         {
@@ -149,14 +166,14 @@ def _read_evidence_refs(log_dir: Path) -> list[dict[str, Any]]:
             "criterion": payload["criterion"],
             "role": payload["role"],
         }
-        for payload in _read_evidence_records(log_dir)
+        for payload in _read_evidence_records(log_dir, state)
     ]
 
 
 def _validate_state_projection(log_dir: Path, state: DevelopmentState) -> None:
     """Reject mutable Criterion values that conflict with ledger-observed values."""
     latest: dict[str, dict[str, Any]] = {}
-    for payload in _read_evidence_records(log_dir):
+    for payload in _read_evidence_records(log_dir, state):
         latest[payload["criterion"]] = payload
     for criterion, payload in latest.items():
         entry = state.criteria.get(criterion)
@@ -176,8 +193,11 @@ def record_changes(
     execution_id: str,
     acceptance_basis: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
+    transaction_id: str = "",
 ) -> tuple[EvidenceRef, ...]:
     """Persist normalized effective Criterion changes in completion order."""
+    if transaction_id and re.fullmatch(r"[0-9a-f]{64}", transaction_id) is None:
+        raise AcceptanceLedgerError("invalid acceptance transaction identity")
     evidence_root = Path(log_dir) / "acceptance" / "evidence"
     refs: list[EvidenceRef] = []
     timestamp = recorded_at or utc_now_rfc3339()
@@ -187,7 +207,7 @@ def record_changes(
             if change.params.get("from_state") == "fail" and not change.met
             else "candidate"
         )
-        sequence, directory = _reserve_sequence(evidence_root)
+        sequence, directory = _reserve_sequence(evidence_root, transaction_id)
         payload = {
             "schema": SCHEMA_VERSION,
             "sequence": sequence,
@@ -233,7 +253,7 @@ def freeze_acceptance(
         "acceptance_basis": dict(acceptance_basis or {}),
         "participant_heads": _participant_heads(participant_heads),
         "criteria": {key: entry.to_dict() for key, entry in state.criteria.items()},
-        "evidence": _read_evidence_refs(log_dir),
+        "evidence": _read_evidence_refs(log_dir, state),
     }
     encoded = _canonical(payload)
     digest = hashlib.sha256(encoded).hexdigest()

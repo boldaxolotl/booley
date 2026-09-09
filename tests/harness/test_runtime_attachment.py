@@ -124,19 +124,21 @@ def test_sigint_requests_cancellation_and_returns_130(tmp_path: Path, monkeypatc
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
 
+    ready = tmp_path / "command-ready"
     interrupter = threading.Thread(
-        target=lambda: (time.sleep(0.2), os.kill(os.getpid(), signal.SIGINT)),
+        target=lambda: _interrupt_when(ready.exists),
         daemon=True,
     )
     interrupter.start()
     result = runtime_attachment.run_command(
         root,
         "session-name",
-        [sys.executable, "-c", "import time; time.sleep(120)"],
+        [sys.executable, "-c", f"import time; open({str(ready)!r}, 'w').close(); time.sleep(120)"],
         tty=False,
     )
     interrupter.join(timeout=2)
 
+    assert ready.exists()
     assert result.exit_code == 130
     assert result.state == "terminal"
     assert result.terminal_cause == "cancelled"

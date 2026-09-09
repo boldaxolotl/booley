@@ -302,6 +302,10 @@ def _criterion_target_matches(
 
 def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     """Reject an unbound Ticket-mode Target before job admission/EDA."""
+    # Explicit native collection also supports ungated Targets (#213). Coverage
+    # preflight has already validated the complete selection before admission.
+    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
+        return None
     if (
         not endpoint.state.strict_criteria
         or not endpoint.satisfies

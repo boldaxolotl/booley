@@ -19,6 +19,8 @@ class SimArguments(BuiltinArguments):
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
         # TB top, so it comes from the resolved Target (tb_top_for_target), not
         # a per-call arg.
+        # Internal parsing only until the Coverage Campaign release gate (#213).
+        parser.add_argument("--coverage", "--cov", action="store_true", help=argparse.SUPPRESS)
         SimArguments._add_elaboration_args(parser)
         parser.add_argument(
             "--test",

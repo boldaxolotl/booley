@@ -163,7 +163,14 @@ signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do
 not change Criteria. Multi-Target checks continue through every Target, with
 an infrastructure error taking precedence over a design failure.
 
-Structured output (`sim_<target>.json`):
+
+Simulation report migration: flat `sim_<target>.json` files and the earlier
+`targets/sim_<target>.json` copies are no longer written. Use the exact
+`artifacts[target].report` path in the numbered invocation's `report.json`.
+Qualified Target selectors are percent-encoded into one directory component.
+Old scripts should consume that pointer instead of guessing a filename.
+
+Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
 
 | Field | Contents |
 |---|---|
@@ -174,7 +181,7 @@ Structured output (`sim_<target>.json`):
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
-Elaboration Check structured output uses the same `sim_<target>.json` name and
+Elaboration Check structured output uses the same canonical `simulation.json` name and
 sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
 
 | Field | Contents |
@@ -299,11 +306,27 @@ and XDC constraints.
 Useful controls:
 
 - `--baseline <git-ref>` compares implementation metrics with another revision.
+- `--ppa-profile <compact|balanced|max_frequency>` overrides the Target's
+  portable optimization intent for this invocation. Resolution is call,
+  Target `flow_options.ppa_profile`, then `balanced`.
 - `--no-cache` forces fresh implementation instead of reusing a matching result.
 - `--dry-run` performs the shared aggregate planning contract described above.
   Its FPGA work units include resolved part, top, XDC, source inputs, recipe,
   and the explicitly marked Vivado Make command template. A later Target error
   blocks execution but does not hide valid earlier work units from the plan.
+
+| Profile | Vivado synthesis | Vivado implementation | Intent |
+|---|---|---|---|
+| `compact` | `Flow_AreaOptimized_high` | `Area_Explore` | Prefer resource/area reduction. |
+| `balanced` | unchanged Vivado default | unchanged Vivado default | Preserve the existing default trade-off. |
+| `max_frequency` | `Flow_PerfOptimized_high` | `Performance_ExplorePostRoutePhysOpt` | Prefer timing/Fmax. |
+
+These mappings are internal adapter evidence, not raw public knobs. A per-call
+profile applies to both baseline and candidate. Directed Target pairs may carry
+different persistent profiles, but basis-bound comparisons reject differing
+measurement recipes. Target `synth` and `pnr` values are Edalize engine-selector
+fields; the built-in FPGA Flow neither forwards them nor treats them as Vivado
+strategy overrides.
 
 The Flow normalizes utilization, routed timing/Fmax, fixed critical-condition
 counts (latches, combinational loops, and multi-driven nets), constraint/recipe
@@ -326,6 +349,10 @@ Structured output (`fpga_<target>.json`):
 | `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
 | `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
 | `artifacts` | The durable report, complete run log, and build, synthesis, and implementation directories. |
+
+The profile name describes optimization intent, not a promised QoR result.
+FPGA area is represented by LUT/FF/BRAM/DSP utilization. Power is not currently
+normalized, so this Flow does not claim a measured power result.
 
 ## Related references
 

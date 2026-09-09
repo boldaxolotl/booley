@@ -354,7 +354,7 @@ claiming that RTL alone caused it.
 ### Reports and artifacts
 
 Every run writes a per-Target JSON report at
-`<runtime>/flow-reports/sim_{target}.json` carrying the resolved identity (`target`,
+`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` carrying the resolved identity (`target`,
 `tb_top`, `eda_tool`), timing, the target `passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
 `error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
@@ -712,7 +712,8 @@ timing is met.
 
 ### Configuration boundary
 
-The selected Target owns FPGA build intent: device part, out-of-context choice,
+The selected Target owns FPGA build intent: device part, portable PPA profile,
+out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
 policy; every invocation still names its Target. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
 owns the exact keys, defaults, and examples.
@@ -724,14 +725,16 @@ backend. Booley always builds and executes the Vivado EDAM below. Unprefixed
 vendored Targets retain a `tool: vivado` compatibility fallback because they
 cannot be renamed to the Booley convention.
 
-The device `part`, `out_of_context` choice, and other build-recipe inputs live
+The device `part`, `ppa_profile`, `out_of_context` choice, and other
+build-recipe inputs live
 under the selected Target's `flow_options`. XDC constraints are a Target
 `file_type: xdc` fileset, and compile-time defines are typed `vlogdefine`
 parameters. Doctor rejects those build inputs under `[flows.fpga]`.
 
 Dry-run and real execution share one validated Target-recipe preflight. Both
 run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
-sources, and inspect those sources for provenance. Only the real path then
+sources, resolve the portable profile and concrete Vivado mapping, and inspect
+those sources for provenance. Only the real path then
 materializes the Vivado project and creates execution evidence. Multi-Target
 planning is execution-atomic: a later setup failure prevents every real unit,
 while dry-run retains valid earlier work units beside Target-attributed
@@ -797,7 +800,14 @@ come from the XDC and surface in the `per_clock` metric map below.
 
 Both provisioning sources run the **same** Edalize `vivado` project inside the
 Session Runtime. The Booley Flow materializes it (sources, XDC, part, defines,
-generated Tcl), then invokes its `make` target:
+generated Tcl), applies the characterized non-default `synth_1` and `impl_1`
+strategy properties, then invokes its `make` target. `balanced` performs no Tcl
+write and preserves Edalize's existing defaults byte-for-byte. Strategy
+assignment must precede the out-of-context patch because Vivado resets synthesis
+step properties when a strategy changes. The recipe records the final required
+step. `max_frequency` installs a post-route Tcl hook and requires its completion
+witness before accepting a run or caching its reports, even if routing succeeded.
+A later boardless bitstream failure remains acceptable once that witness exists:
 
 ```
 make -C .booley_project/.runtime/edalize/fpga/<target>
@@ -907,3 +917,107 @@ The Criteria detail includes:
 - normalized current/baseline recipe fingerprints and snapshots, with their
   semantic differences summarized in the Review package
 - `_metric_map` and `_min_allowed` for threshold/acceptance display
+
+
+### Coverage Campaign orchestration (internal, issue #213 Phases 4–5)
+
+`SimulateFlow` accepts internal `SimRequest.coverage=True` and hidden CLI aliases
+`--coverage` / `--cov`. Neither CLI help nor the MCP schema exposes collection
+before the final release gate. A Coverage Criterion never activates collection.
+
+`prepare_coverage_invocation(request, project_context)` resolves all selected
+Targets without EDA, build setup, report allocation, or state mutation. It
+aggregates invalid selections, rejects any non-Verilator Target, validates hook
+contracts, and freezes exact suites and source/build fingerprints. Selection is
+explicit invocation filtering first, then the Criterion suite, then all runnable
+registered tests. Configured/explicit skips remain visible as suite mismatch
+when a Criterion requires those tests. Execution is sorted and sequential.
+
+`run_coverage_target(plan, execution, progress)` collects through
+`SimulationExecutionPort`, assembles and validates the canonical Campaign,
+loads approved waivers only when gated, evaluates, and publishes in order:
+Campaign, Simulation projection, Acceptance Evidence, saved Criteria state,
+terminal progress. Source/Target drift is rejected. Ungated evaluation remains
+`not_requested`, including incompatible input; collection errors still exit 2.
+Valid threshold misses or simulation failures exit 1. Blocking evaluation,
+collector, infrastructure, or persistence errors take precedence with exit 2.
+Target-local collector failures permit later Targets; shared execution or
+publication failures abort with earlier Target results and pending Targets
+preserved in structured output. Progress is observational and never resumed.
+
+Internal waiver configuration is `[coverage.waivers]` in the project-data
+`booley.toml`, with explicit `anchor` (`rtl_repository` or
+`project_data_repository`) and safe relative `directory`. Target window/hook
+configuration remains under `flow_options.booley.coverage`.
+
+The canonical Target directory holds `coverage.json`, `simulation.json`,
+`native/raw/`, `native/merged/`, and hook sidecars. Native paths in the Campaign
+are relative to that Target directory; Flow artifact pointers are relative to
+the producing work directory. No flat per-Target compatibility report is
+written in any Simulation mode. Analyst replacement and public exposure remain
+later phases of #213.
+
+#### Persistence and recovery
+
+Campaign and Simulation publication precede Acceptance Evidence. Coverage
+observations use transaction-qualified ledger sequence directories. Their
+transaction identity is included in `acceptance_transactions` in the same atomic
+Harness state save as the updated Criteria. Acceptance readers ignore evidence
+from transactions absent from the saved state, including partially written
+sequences. Thus an interrupted evidence append or failed state save preserves
+the prior authoritative projection without deleting historical observations.
+Ordinary nontransactional ledger observations retain their existing semantics.
+
+Terminal progress follows the state save. If its write fails, the committed
+Campaign and Criteria remain valid and the command returns 2. Persistence errors
+retain the independently measured simulation, collection, and evaluation truths
+in the structured result; an error does not turn a measured verdict into a
+policy `blocked` verdict. Report paths are usable only when their publication
+succeeded. No later stage runs after an earlier publication failure, except for
+an observational error checkpoint.
+
+The Flow holds an OS file lock outside the invocation directory while producing
+coverage. Pruning takes the same nonblocking lock, so active invocations cannot
+be removed. Process exit releases ownership; `progress.json` is never lock or
+resume authority. Every subsequent Flow invocation allocates a fresh number,
+and the Target transaction rejects previously started native state.
+
+#### Exact report retention
+
+The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
+root explicitly; callers obtain project-data roots through
+`booley.runtime.project_dir.resolve_project_dir()`. They never discover a
+“latest” Campaign or apply age/size rules:
+
+- `prune_native_payload(reports_root, invocation, target)` requires an exact
+  positive invocation number and one exact manifest Target selector. It validates
+  the Campaign and Simulation identities, every native path and recorded digest,
+  and the full deletion set before mutation. Symlinks, unknown payloads, changed
+  databases, unexplained missing databases, and ambiguous selections are errors.
+- `prune_invocation(reports_root, invocation)` validates every existing Target
+  before atomically moving that invocation to `.pruned-N` and removing its
+  contents. Interrupted attempts may be removed after their process releases the
+  lock. A pruning journal permits retry after partial cleanup. The empty
+  `.pruned-N` tombstone reserves the number permanently; it contains no Campaign
+  or native evidence. Other invocations remain untouched.
+
+Native pruning first writes Target-local `availability.json` with schema
+`booley.coverage-availability/v1`, the Campaign identity and file digest, and
+native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
+and native availability must not be assumed. Renaming `native/` to
+`.native-pruned/` removes all native databases from their canonical paths in one
+operation; cleanup then removes that quarantine and records `pruned`. Retrying
+the same exact selection completes interrupted cleanup. Campaign bytes,
+Simulation bytes, and hook evidence never change. Normalized Campaign evidence
+remains analyzable after native pruning; full pruning prevents re-analysis.
+
+Internal maintenance entry points (the public coverage release gate is unchanged):
+
+```bash
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
+python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
+```
+
+Selection, locking, validation, and filesystem failures exit 2. Both operations
+are retryable for their exact selections. Do not manually remove journals,
+quarantines, invocation locks, or number tombstones.
