@@ -263,9 +263,10 @@ def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
 def test_default_wrapper_keeps_configured_role_usage_and_tool_free_backend(tmp_path, monkeypatch):
     from claude_agent_sdk import ResultMessage
 
-    from booley.config.settings import BackendConfig, set_backend_config
+    from booley.config.agent import AgentSettings
     from booley.runtime import _claude_backend
     from booley.runtime.agent_backend import ClaudeSDKBackend
+    from booley.runtime.agent_config import BackendConfig, set_backend_config
 
     path = persist_campaign(tmp_path)
     options_seen = []
@@ -288,9 +289,11 @@ def test_default_wrapper_keeps_configured_role_usage_and_tool_free_backend(tmp_p
     monkeypatch.setattr(_claude_backend, "query", query)
     set_backend_config(
         BackendConfig(
+            settings=AgentSettings(
+                provider="claude",
+                role_models={"coverage_analyst": "chosen-model"},
+            ),
             active_backend=ClaudeSDKBackend(),
-            provider="claude",
-            role_models={"coverage_analyst": "chosen-model"},
         )
     )
     try:

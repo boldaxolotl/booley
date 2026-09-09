@@ -64,6 +64,37 @@ def test_rejects_negative_timing_evidence() -> None:
         summarize(_run(), jobs, "2026-09-06T10:05:00Z")
 
 
+def test_ignores_carried_jobs_in_failed_job_rerun_payload() -> None:
+    jobs = {
+        "jobs": [
+            {
+                "created_at": "2026-09-06T10:10:00Z",
+                "started_at": "2026-09-06T10:00:02Z",
+                "completed_at": "2026-09-06T10:01:32Z",
+                "conclusion": "success",
+            },
+            {
+                "created_at": "2026-09-06T10:10:00Z",
+                "started_at": "2026-09-06T10:10:00Z",
+                "completed_at": "2026-09-06T10:01:32Z",
+                "conclusion": "skipped",
+            },
+            {
+                "created_at": "2026-09-06T10:10:00Z",
+                "started_at": "2026-09-06T10:10:02Z",
+                "completed_at": "2026-09-06T10:10:12Z",
+                "conclusion": "success",
+            },
+        ]
+    }
+
+    metrics = summarize(_run(), jobs, "2026-09-06T10:11:00Z")
+
+    assert metrics["completed_jobs"] == 1
+    assert metrics["runner_minutes"] == pytest.approx(10 / 60)
+    assert metrics["job_queue_seconds"] == {"median": 2, "p90": 2, "max": 2}
+
+
 def test_rejects_missing_jobs_list() -> None:
     with pytest.raises(MetricsError, match="jobs list"):
         summarize(_run(), {}, "2026-09-06T10:05:00Z")

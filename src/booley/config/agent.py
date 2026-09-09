@@ -1,15 +1,17 @@
-"""Dual-backend architecture: BackendConfig, SandboxConfig, model loading."""
+"""Validate agent, model, sandbox, and concurrency settings."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from booley.config.jobs import SlotCaps, parse_caps
+from booley.config.sandbox import SANDBOX_IMAGE, project_image_name
 from booley.core.config_paths import resolve_toml
-from booley.runtime.job_slots import SlotCaps
 
 if TYPE_CHECKING:
     pass
@@ -47,7 +49,7 @@ _MODEL_TIERS = MODEL_TIERS
 # Two kinds of role live here and they resolve through different call paths:
 #
 #   * harness steps (``developer``, ``recovery``) — keys of config.STEP_TIERS,
-#     resolved in-process when load_models_config() syncs MODEL_MAP.
+#     resolved by the Runtime composition root.
 #   * specialists (``reviewer``, ``mutation_tester``, …) — each runs as its own
 #     `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
 #     the role key must equal the specialist's ``Specialist.name``.
@@ -114,10 +116,7 @@ _PROVIDER_TIER_EFFORT: dict[str, dict[str, str]] = {
 _DEFAULT_TIER_MODELS: dict[str, str] = dict(_PROVIDER_TIER_MODELS["claude"])
 
 
-SANDBOX_IMAGE = "booley-sandbox"
-
-
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SandboxConfig:
     """Sandbox configuration parsed from booley.toml [sandbox].
 
@@ -138,26 +137,23 @@ class SandboxConfig:
     mount_host_skills: bool = False
 
 
-@dataclass
-class BackendConfig:
-    """Holds the single active backend and tier-to-model mapping.
+@dataclass(frozen=True, slots=True)
+class AgentSettings:
+    """Validated agent, model, sandbox, and job settings consumed by Runtime."""
 
-    Single source of truth for "which backend + which model" a given
-    step_name should use. Both the developer and every specialist run on
-    the one configured provider. Testable via set_backend_config().
-    """
-
-    active_backend: Any = None
-    tier_models: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_TIER_MODELS))
+    tier_models: Mapping[str, str] = field(default_factory=lambda: dict(_DEFAULT_TIER_MODELS))
     # [models.roles]: role name -> tier name or literal model id. Empty = every
     # role takes its step/floor tier, which is the pre-knob behavior.
-    role_models: dict[str, str] = field(default_factory=dict)
+    role_models: Mapping[str, str] = field(default_factory=dict)
     auth: str = _DEFAULT_AUTH
     provider: str = _DEFAULT_PROVIDER
-    # NOTE: the default provider is _DEFAULT_PROVIDER, applied in
-    # get_backend_config(), load_models_config(), and _parse_provider().
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     jobs: SlotCaps = field(default_factory=SlotCaps)
+
+    def __post_init__(self) -> None:
+        """Freeze caller-owned mappings as part of the validated value object."""
+        object.__setattr__(self, "tier_models", MappingProxyType(dict(self.tier_models)))
+        object.__setattr__(self, "role_models", MappingProxyType(dict(self.role_models)))
 
     def model_for_tier(self, tier: str) -> str:
         return self.tier_models.get(tier, self.tier_models["standard"])
@@ -184,23 +180,8 @@ class BackendConfig:
         provider_effort = _PROVIDER_TIER_EFFORT.get(self.provider, {})
         return provider_effort.get(tier)
 
-    def backend_for_tier(self, tier: str) -> Any:
-        """Return the backend for the given tier — always the single active one."""
-        return self.active_backend
 
-
-_backend_config: BackendConfig | None = None
-
-
-def _make_backend(provider: str, auth_mode: str) -> Any:
-    """Instantiate the native backend for a provider name."""
-    if provider == "claude":
-        from booley.runtime.agent_backend import ClaudeSDKBackend
-
-        return ClaudeSDKBackend(auth_mode=auth_mode)
-    from booley.runtime.agent_backend import CodexBackend
-
-    return CodexBackend(auth_mode=auth_mode)
+_agent_settings: AgentSettings | None = None
 
 
 def _resolve_tier_models(provider: str, overrides: dict[str, str] | None) -> dict[str, str]:
@@ -217,15 +198,14 @@ def _resolve_tier_models(provider: str, overrides: dict[str, str] | None) -> dic
     return tiers
 
 
-def _build_backend_config(
+def _build_agent_settings(
     provider: str,
     auth: str,
     tier_overrides: dict[str, str] | None = None,
     role_models: dict[str, str] | None = None,
-) -> BackendConfig:
-    """Assemble a BackendConfig for a resolved (provider, auth) pair."""
-    return BackendConfig(
-        active_backend=_make_backend(provider, auth),
+) -> AgentSettings:
+    """Assemble validated settings for a resolved provider and auth mode."""
+    return AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=dict(role_models or {}),
         provider=provider,
@@ -233,58 +213,37 @@ def _build_backend_config(
     )
 
 
-def _lazy_backend_config() -> BackendConfig:
-    """Resolve a BackendConfig when nothing has been explicitly configured.
+def _unresolved_provider_error() -> BackendConfigError:
+    return BackendConfigError(
+        "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
+        "is unset, no booley.toml with an [agent] provider was found at "
+        "BOOLEY_PROJECT_DIR, and BOOLEY_AGENT_APP names no provider. "
+        "If you are running a specialist directly (e.g. "
+        "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
+        "of:\n"
+        "  * export BOOLEY_PRIMARY_PROVIDER=claude   # or codex\n"
+        '  * add an [agent] provider = "claude" block to booley.toml\n'
+        "In a developer run this instead means the propagation broke — "
+        "rebuild the sandbox image if it predates the provider hand-off."
+    )
 
-    Resolution order, most-authoritative first:
 
-    1. ``BOOLEY_PRIMARY_PROVIDER`` — the developer's hand-off to nested
-       specialists inside a container.
-    2. The project's ``booley.toml`` reached via ``BOOLEY_PROJECT_DIR``. This
-       is what lets a specialist *subprocess* honor ``provider`` even when the
-       env hand-off was dropped (a stale image, a missed propagation) — the
-       toml is mounted in the container, so it's a reliable second source.
-    3. ``BOOLEY_AGENT_APP`` — the devcontainer always exports which agent app
-       runs the session (``claude``/``codex``/``none``; see
-       ``devcontainer.build_devcontainer_spec``). Its vocabulary is exactly
-       the provider vocabulary, so when a bare specialist is launched from a
-       terminal inside the container — with no developer to hand off
-       ``BOOLEY_PRIMARY_PROVIDER`` and no ``[agent] provider`` in booley.toml —
-       the app signal reliably names the backend. Falling back to it turns a
-       hard ``BackendConfigError`` into a working standalone invocation.
-    4. Fail loud inside a container only when even the app signal is absent
-       (``none``/unset): tell the user exactly how to pin the provider. On the
-       host (tests, ad-hoc MCP endpoint runs) fall back to ``_DEFAULT_PROVIDER`` —
-       Claude, never codex, so a missing config can't 401.
-    """
+def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
+    """Resolve the provider from hand-off, Project, app, or host default."""
     import os
 
-    # Read the project toml once, up front: whichever branch settles the
-    # provider, the project's [models] / [models.roles] still apply. Without
-    # this a specialist subprocess — which never calls load_models_config —
-    # would silently ignore every model the project pinned.
-    project = _project_config_from_env()
-    tiers = project.tier_models if project else None
-    roles = project.role_models if project else None
-
     env_provider = os.environ.get("BOOLEY_PRIMARY_PROVIDER")
-    env_auth = os.environ.get("BOOLEY_PRIMARY_AUTH")
-    auth = (
-        _env_auth()
-        if env_auth is not None
-        else (project.auth if project else None) or _DEFAULT_AUTH
-    )
     if env_provider is not None:
         if env_provider not in _VALID_PROVIDERS:
             logger.warning(
                 "Unknown BOOLEY_PRIMARY_PROVIDER %r; using %s", env_provider, _DEFAULT_PROVIDER
             )
             env_provider = _DEFAULT_PROVIDER
-        return _build_backend_config(env_provider, auth, tiers, roles)
+        return env_provider
 
     if project is not None and project.provider is not None:
         logger.info("Resolved provider=%s from project booley.toml", project.provider)
-        return _build_backend_config(project.provider, project.auth or _DEFAULT_AUTH, tiers, roles)
+        return project.provider
 
     app_provider = os.environ.get("BOOLEY_AGENT_APP")
     if app_provider in _VALID_PROVIDERS:
@@ -293,42 +252,47 @@ def _lazy_backend_config() -> BackendConfig:
             "hand-off — standalone specialist invocation)",
             app_provider,
         )
-        return _build_backend_config(app_provider, auth, tiers, roles)
+        return app_provider
 
     if _inside_container():
-        raise BackendConfigError(
-            "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
-            "is unset, no booley.toml with an [agent] provider was found at "
-            "BOOLEY_PROJECT_DIR, and BOOLEY_AGENT_APP names no provider. "
-            "If you are running a specialist directly (e.g. "
-            "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
-            "of:\n"
-            "  * export BOOLEY_PRIMARY_PROVIDER=claude   # or codex\n"
-            '  * add an [agent] provider = "claude" block to booley.toml\n'
-            "In a developer run this instead means the propagation broke — "
-            "rebuild the sandbox image if it predates the provider hand-off."
-        )
+        raise _unresolved_provider_error()
 
-    return _build_backend_config(_DEFAULT_PROVIDER, auth, tiers, roles)
+    return _DEFAULT_PROVIDER
 
 
-def get_backend_config() -> BackendConfig:
-    """Return the current BackendConfig (lazily initialized when unset).
+def _lazy_agent_settings() -> AgentSettings:
+    """Resolve settings from environment, Project configuration, and defaults."""
+    import os
 
-    See :func:`_lazy_backend_config` for how the provider is resolved when no
-    config has been installed via :func:`load_models_config` /
-    :func:`set_backend_config`.
-    """
-    global _backend_config
-    if _backend_config is None:
-        _backend_config = _lazy_backend_config()
-    return _backend_config
+    # Specialists load Project pins lazily when no parent developer configured
+    # this process. Provider precedence remains hand-off, Project, app, default.
+    project = _project_config_from_env()
+    auth = (
+        _env_auth()
+        if os.environ.get("BOOLEY_PRIMARY_AUTH") is not None
+        else (project.auth if project else None) or _DEFAULT_AUTH
+    )
+
+    return _build_agent_settings(
+        _resolve_lazy_provider(project),
+        auth,
+        project.tier_models if project else None,
+        project.role_models if project else None,
+    )
 
 
-def set_backend_config(cfg: BackendConfig) -> None:
-    """Replace the global BackendConfig (for testing)."""
-    global _backend_config
-    _backend_config = cfg
+def get_agent_settings() -> AgentSettings:
+    """Return validated settings, resolving environment and Project defaults lazily."""
+    global _agent_settings
+    if _agent_settings is None:
+        _agent_settings = _lazy_agent_settings()
+    return _agent_settings
+
+
+def set_agent_settings(settings: AgentSettings | None) -> None:
+    """Replace or clear cached settings for deterministic tests and composition."""
+    global _agent_settings
+    _agent_settings = settings
 
 
 @dataclass(frozen=True)
@@ -359,7 +323,7 @@ def _project_config_from_env() -> _ProjectAgentConfig | None:
         directly inside, so the same flat probe finds it.
 
     This is the path a *specialist subprocess* takes: it never calls
-    ``load_models_config``, so without this it would see none of the project's
+    ``load_agent_settings``, so without this it would see none of the project's
     ``[models]`` pins. Returns ``None`` when the dir/toml is absent or
     unreadable. An *invalid* provider/auth/role still raises (fail loud).
     """
@@ -443,11 +407,8 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
 def _parse_jobs_config(data: dict) -> SlotCaps:
     """Parse [jobs] concurrency caps (ADR 0028 Decision 5).
 
-    Thin alias for ``job_slots.parse_caps`` — the logic lives beside the slot
-    store so MCP endpoint subprocesses can resolve caps without importing the harness.
+    Thin compatibility alias for the Config-owned parser.
     """
-    from booley.runtime.job_slots import parse_caps
-
     return parse_caps(data)
 
 
@@ -459,8 +420,8 @@ def _resolve_booley_toml(project_data: Path) -> Path:
     return path
 
 
-def load_models_config(project_root: Path, *, project_dir: Path | None = None) -> None:
-    """Load [agent] + [sandbox] from booley.toml and configure the backend + MODEL_MAP.
+def load_agent_settings(project_root: Path, *, project_dir: Path | None = None) -> AgentSettings:
+    """Load and install validated agent, model, sandbox, and job settings.
 
     The single provider is selected via ``[agent] provider`` (default:
     ``_DEFAULT_PROVIDER``). The developer and every specialist run on it.
@@ -470,9 +431,7 @@ def load_models_config(project_root: Path, *, project_dir: Path | None = None) -
     provider raises ``BackendConfigError`` — we never silently run a backend
     the project didn't ask for.
     """
-    global _backend_config
-
-    from .settings import MODEL_MAP, STEP_TIERS
+    global _agent_settings
 
     (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg) = _load_toml_agent_config(
         project_root,
@@ -481,8 +440,7 @@ def load_models_config(project_root: Path, *, project_dir: Path | None = None) -
     if provider is None:
         provider = _DEFAULT_PROVIDER
 
-    _backend_config = BackendConfig(
-        active_backend=_make_backend(provider, auth),
+    _agent_settings = AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=role_models,
         auth=auth,
@@ -491,11 +449,7 @@ def load_models_config(project_root: Path, *, project_dir: Path | None = None) -
         jobs=jobs_cfg,
     )
 
-    # Harness steps read MODEL_MAP, so per-role pins have to land in it too —
-    # otherwise [models.roles] developer = … would be ignored by the one agent
-    # users are most likely to pin.
-    for step_key, tier in STEP_TIERS.items():
-        MODEL_MAP[step_key] = _backend_config.model_for_role(step_key, tier)
+    return _agent_settings
 
 
 def _load_toml_agent_config(
@@ -544,9 +498,7 @@ def _load_toml_agent_config(
             str(sandbox_section.get("image", "")).strip()
         )
         if not has_explicit_image and (project_data / "docker" / "Dockerfile").is_file():
-            from booley.runtime.project_image import project_image_name
-
-            sandbox_cfg.image = project_image_name(project_root)
+            sandbox_cfg = replace(sandbox_cfg, image=project_image_name(project_root))
         jobs_cfg = _parse_jobs_config(data)
         (auth, tier_overrides, provider, role_models) = _parse_agent_and_models(data, auth)
         logger.debug(
@@ -607,7 +559,7 @@ def _env_auth() -> str:
 
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
-    ``_lazy_backend_config`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
+    ``_lazy_agent_settings`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
     """
     import os
 
@@ -622,7 +574,7 @@ def resolve_auth_policy() -> str:
     """The effective ``[agent] auth`` policy, resolved without side effects.
 
     For callers that need only the auth policy (sandbox env forwarding, doctor
-    reporting) and must never trip ``_lazy_backend_config``'s fail-loud
+    reporting) and must never trip ``_lazy_agent_settings``'s fail-loud
     provider resolution. Order: ``BOOLEY_PRIMARY_AUTH`` (the developer's
     hand-off into containers) beats the project's booley.toml; absent both,
     ``auto``. Never raises: an invalid toml value degrades to ``auto`` with a
@@ -675,7 +627,7 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
     """Parse ``[models.roles]`` — per-agent model pins.
 
     Each value is either a tier name or a literal model id; the distinction is
-    resolved late, in ``BackendConfig.model_for_role``, so a role pinned to a
+    resolved late, in ``AgentSettings.model_for_role``, so a role pinned to a
     tier keeps tracking that tier's ``[models]`` override.
 
     An unknown role key raises ``BackendConfigError``. Silently ignoring it is

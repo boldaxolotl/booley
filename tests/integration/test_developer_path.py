@@ -254,7 +254,7 @@ async def _run_developer_pipeline(
       - _launch_developer_agent
       - run_summary_agent (returns stub path)
       - check_uncommitted_code_statuses + dirty-handoff guardrail (configurable)
-      - load_models_config (no-op)
+      - load_backend_config (no-op)
 
     ``check_uncommitted_*`` args take plain path strings; they are converted
     to the ``DirtyFile`` entries that ``check_uncommitted_code_statuses``
@@ -292,7 +292,7 @@ async def _run_developer_pipeline(
             side_effect=commit_scope_mock,
         ),
         # Bypass model config loading (no booley.toml in test env)
-        patch("booley.config.settings.load_models_config"),
+        patch("booley.runtime.agent_config.load_backend_config"),
     ]
 
     # Worktree setup bypass (for tests that go through workspace setup)

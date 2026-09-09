@@ -6,14 +6,16 @@ import pytest
 
 from booley.config.settings import (
     _PROVIDER_TIER_MODELS,
-    API_RETRY_BACKOFF_MULTIPLIER,
-    API_RETRY_INITIAL_BACKOFF_S,
-    API_RETRY_MAX_BACKOFF_S,
-    MAX_API_RETRIES,
     MODEL_MAP,
     STEP_TIERS,
     SandboxConfig,
     _parse_sandbox_config,
+)
+from booley.runtime._retry import (
+    API_RETRY_BACKOFF_MULTIPLIER,
+    API_RETRY_INITIAL_BACKOFF_S,
+    API_RETRY_MAX_BACKOFF_S,
+    MAX_API_RETRIES,
 )
 
 # Derived, not hardcoded: a second copy of the model list only ever rots out of

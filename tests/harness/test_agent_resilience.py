@@ -229,7 +229,7 @@ class TestHandleRateLimitEvent:
     @pytest.mark.asyncio
     async def test_rejected_without_resets_at(self):
         """Rejected without resets_at should use fallback backoff."""
-        from booley.config.settings import RATE_LIMIT_FALLBACK_BACKOFF_S
+        from booley.runtime._retry import RATE_LIMIT_FALLBACK_BACKOFF_S
         from booley.runtime.agent_backend import _handle_rate_limit_event
 
         info = _MockRateLimitInfo(status="rejected", resets_at=None, rate_limit_type="seven_day")

@@ -48,6 +48,8 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.user_paths import config_dir
+
 APP_CLAUDE = "claude"
 APP_CODEX = "codex"
 
@@ -132,13 +134,6 @@ def credential_for_env_var(name: str) -> AppCredential | None:
         if cred.env_var == name:
             return cred
     return None
-
-
-def config_dir() -> Path:
-    """Booley's per-user config dir, honouring ``XDG_CONFIG_HOME``."""
-    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    root = Path(base) if base else Path.home() / ".config"
-    return root / "booley"
 
 
 def token_path(app: str = APP_CLAUDE) -> Path:

@@ -18,12 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from booley.config.settings import get_backend_config, load_models_config
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.harness.job_fence import wait_for_ticket_jobs
 from booley.runtime.agent import call_agent
+from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -962,8 +962,8 @@ async def _invoke_agent(
             "You are a read-only senior reviewer preparing a human triage package. "
             "Ground every claim in the supplied ticket, Git evidence, logs, or source."
         ),
-        model=cfg.model_for_role("triage_report", "standard"),
-        reasoning_effort=cfg.effort_for_tier("standard"),
+        model=cfg.settings.model_for_role("triage_report", "standard"),
+        reasoning_effort=cfg.settings.effort_for_tier("standard"),
         cwd=workspace.repository,
         allowed_agent_capabilities=["Read", "Glob", "Grep"],
         output_format=_output_schema(),
@@ -1200,7 +1200,7 @@ def _write_ready_manifest(
             "briefing_sha256": _file_sha256(briefing_path),
             "duration_s": round(duration, 2),
             "cost_usd": round(result.cost_usd, 4),
-            "model": get_backend_config().model_for_role("triage_report", "standard"),
+            "model": get_backend_config().settings.model_for_role("triage_report", "standard"),
         }
     )
     if html_path is None:
@@ -1413,7 +1413,7 @@ async def prepare_review_command(
         canonical = _requested_review_slug(project_root, slug)
         if canonical is not None:
             return await request_review_command(project_root, canonical, action="regenerate")
-        load_models_config(project_root)
+        load_backend_config(project_root)
         _resolve_context(
             project_root.resolve(),
             slug,

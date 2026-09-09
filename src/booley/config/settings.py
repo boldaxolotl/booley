@@ -1,9 +1,8 @@
 """Harness configuration — model routing, MCP capability sets, and re-exports.
 
 Submodules own their concerns; this facade re-exports for backward compat:
-  - _retry: API resilience constants
   - _limits: iteration caps
-  - _backend_config: BackendConfig, SandboxConfig, load_models_config
+  - agent: AgentSettings, SandboxConfig, and validated config loading
 """
 
 from __future__ import annotations
@@ -17,30 +16,19 @@ from booley.core.config_paths import resolve_booley_toml
 
 logger = logging.getLogger(__name__)
 
-# --- Re-exports: API resilience (owned by _retry.py) ---
-# --- Re-exports: backend config (owned by _backend_config.py) ---
-from booley.runtime._retry import (  # noqa: F401 — legacy settings facade
-    API_RETRY_BACKOFF_MULTIPLIER,
-    API_RETRY_INITIAL_BACKOFF_S,
-    API_RETRY_JITTER_FRACTION,
-    API_RETRY_MAX_BACKOFF_S,
-    MAX_API_RETRIES,
-    RATE_LIMIT_FALLBACK_BACKOFF_S,
-    RATE_LIMIT_SLEEP_BUFFER_S,
-)
-
+# --- Re-exports: validated agent settings (owned by agent.py) ---
 from .agent import (  # noqa: F401 — re-exported as public API of configuration settings
     _DEFAULT_PROVIDER,
     _DEFAULT_TIER_MODELS,
     _PROVIDER_TIER_MODELS,
     SANDBOX_IMAGE,
-    BackendConfig,
+    AgentSettings,
     BackendConfigError,
     SandboxConfig,
     _parse_sandbox_config,
-    get_backend_config,
-    load_models_config,
-    set_backend_config,
+    get_agent_settings,
+    load_agent_settings,
+    set_agent_settings,
 )
 
 # --- Re-exports: editor for Console clickable links (always VS Code) ---

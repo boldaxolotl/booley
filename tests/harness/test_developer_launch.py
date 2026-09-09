@@ -15,9 +15,9 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from booley.config import settings as harness_config
 from booley.harness import developer
 from booley.harness.models import AgentCallParams
+from booley.runtime import agent_config as runtime_agent_config
 
 
 @contextlib.contextmanager
@@ -54,6 +54,7 @@ class _DummyConfig:
     provider = "claude"
 
     def __init__(self) -> None:
+        self.settings = self
         self.active_backend = _DummyBackend()
 
     def model_for_tier(self, _tier: str) -> str:
@@ -68,7 +69,7 @@ class _DummyConfig:
 
 def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
     cfg = _DummyConfig()
-    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", lambda: cfg)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
 
     logs_dir = tmp_path / "logs"
@@ -136,7 +137,7 @@ def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
 def test_launch_developer_agent_env_dir_override(tmp_path, monkeypatch):
     """BOOLEY_PROJECT_DIR from the devcontainer env wins over discovery."""
     cfg = _DummyConfig()
-    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", lambda: cfg)
 
     project_dir = tmp_path / "mounted-project"
     project_dir.mkdir()
@@ -164,7 +165,7 @@ def test_launch_developer_agent_env_dir_override(tmp_path, monkeypatch):
 
 def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_path, monkeypatch):
     cfg = _DummyConfig()
-    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", lambda: cfg)
 
     control_project_dir = tmp_path / "control-project"
     control_project_dir.mkdir()
@@ -196,7 +197,7 @@ def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_p
 
 def test_launch_restores_every_overridden_environment_key(tmp_path, monkeypatch):
     cfg = _DummyConfig()
-    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", lambda: cfg)
     monkeypatch.setenv("BOOLEY_SLUG", "outer-session")
     monkeypatch.delenv("BOOLEY_AGENT_ROLE", raising=False)
 
@@ -217,7 +218,7 @@ def test_launch_restores_every_overridden_environment_key(tmp_path, monkeypatch)
 
 def test_launch_passes_developer_budget_to_backend(tmp_path, monkeypatch):
     cfg = _DummyConfig()
-    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", lambda: cfg)
     budget = object()
 
     with _env_guard():
@@ -361,7 +362,7 @@ def test_developer_prompt_snapshot_is_run_indexed(tmp_path, monkeypatch):
         work_dir=tmp_path / "work",
     )
 
-    monkeypatch.setattr(harness_config, "get_backend_config", _DummyConfig)
+    monkeypatch.setattr(runtime_agent_config, "get_backend_config", _DummyConfig)
     monkeypatch.setattr(developer, "_detect_backend_key", lambda: "codex")
     monkeypatch.setenv("BOOLEY_ORACLE_FEEDBACK", "1")
     monkeypatch.setenv("BOOLEY_ORACLE_FEEDBACK_ATTEMPT", "2")

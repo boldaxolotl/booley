@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from booley.config.jobs import parse_caps
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
     _write_display_event,
@@ -98,7 +99,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
         cfg = _load_rtl_config(None)
     except Exception:  # noqa: BLE001 — best-effort; defaults are safe
         cfg = {}
-    caps = job_slots.parse_caps(cfg or {})
+    caps = parse_caps(cfg or {})
     role = (
         job_slots.ROLE_TICKET
         if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"

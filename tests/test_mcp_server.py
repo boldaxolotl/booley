@@ -1372,16 +1372,15 @@ class TestBwaveDispatch:
 
 
 # ---------------------------------------------------------------------------
-# _load_backend_config_from_toml (Interactive Mode honors [agent] in booley.toml)
+# _load_agent_settings_from_toml (Interactive Mode honors [agent] in booley.toml)
 # ---------------------------------------------------------------------------
 
 
-class TestLoadBackendConfigFromToml:
-    """Interactive Mode must read [agent] primary/secondary from booley.toml.
+class TestLoadAgentSettingsFromToml:
+    """Interactive Mode must preload agent settings from booley.toml.
 
-    Regression guard: without this, get_backend_config() lazily defaults to
-    codex-primary, so specialists ran on Codex even when the project selected
-    primary = "claude" — the exact bug this fix addresses.
+    Regression guard: without this, Runtime may lazily use defaults even when
+    the Project selected another provider.
     """
 
     @pytest.fixture(autouse=True)
@@ -1394,10 +1393,10 @@ class TestLoadBackendConfigFromToml:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.config.settings import get_backend_config, set_backend_config
-            from booley.mcp.server import _load_backend_config_from_toml
+            from booley.mcp.server import _load_agent_settings_from_toml
+            from booley.runtime.agent_config import get_backend_config, set_backend_config
 
-            self._load = _load_backend_config_from_toml
+            self._load = _load_agent_settings_from_toml
             self._get = get_backend_config
             self._set = set_backend_config
             # Start from a clean global so we exercise the real load path.
@@ -1424,7 +1423,7 @@ class TestLoadBackendConfigFromToml:
 
         self._load()
 
-        assert self._get().provider == "claude"
+        assert self._get().settings.provider == "claude"
 
     def test_falls_back_to_cwd_when_env_unset(self, tmp_path, monkeypatch):
         root = self._write_project(
@@ -1436,7 +1435,7 @@ class TestLoadBackendConfigFromToml:
 
         self._load()
 
-        assert self._get().provider == "claude"
+        assert self._get().settings.provider == "claude"
 
     def test_missing_toml_does_not_raise(self, tmp_path, monkeypatch):
         # No .booley_project/booley.toml at all — must not crash server startup.

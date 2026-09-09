@@ -31,6 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.config.jobs import parse_caps
 from booley.feedback import cli as feedback_cli
 from booley.harness import cheatsheet, doctor_stamp, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
@@ -1420,7 +1421,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         )
         return 2
 
-    from booley.config.settings import get_backend_config, load_models_config
+    from booley.config.settings import get_agent_settings, load_agent_settings
     from booley.harness.sandbox import DockerRunner, DockerSandboxConfig
 
     # Load the project's booley.toml ([sandbox].image, memory, ...) — without
@@ -1428,7 +1429,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     # the project configured a custom one. Early setup (no booley.toml yet)
     # still gets a shell on the defaults.
     try:
-        load_models_config(project_root)
+        load_agent_settings(project_root)
     except (OSError, ValueError, RuntimeError) as exc:
         # RuntimeError covers BackendConfigError (invalid [agent] provider /
         # sandbox mode) — mirror doctor, which warns-and-defaults rather than
@@ -1438,7 +1439,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
 
-    cfg = get_backend_config()
+    cfg = get_agent_settings()
     docker_cfg = DockerSandboxConfig(
         image=cfg.sandbox.image,
         needs_network=bool(getattr(args, "net", False)),
@@ -1907,7 +1908,7 @@ def _claim_ticket_slot(
     try:
         from booley.runtime.shared_infra import _load_rtl_config
 
-        caps = job_slots.parse_caps(_load_rtl_config(project_root) or {})
+        caps = parse_caps(_load_rtl_config(project_root) or {})
     except Exception:  # noqa: BLE001 — defaults are safe
         caps = job_slots.SlotCaps()
     store = job_slots.SlotStore(root, caps)

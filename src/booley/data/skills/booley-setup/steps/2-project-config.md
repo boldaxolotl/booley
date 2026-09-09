@@ -507,7 +507,9 @@ What goes here:
   switch is valid only with `enabled = true`.
 - **Agent backend — preserve row 19 exactly.** `booley init` has already written
   explicit `provider` and `auth` values. Carry them forward unchanged; for a
-  legacy project, write only the missing field settled during planning.
+  legacy project, write only the missing field settled during planning. Preserve
+  an existing `[agent.git]` identity unchanged; it controls the default author
+  and committer for Interactive and Ticket Mode checkouts.
 - **Feedback mode — write what row 21 settled**, whenever it is anything other
   than the `ask` default: `[feedback] mode = "email"`, `"file-only"`, or
   `"off"`. Writing it

@@ -459,8 +459,10 @@ async def test_agent_invocation_is_read_only(tmp_path: Path, monkeypatch):
         return AgentResult()
 
     config = SimpleNamespace(
-        model_for_role=lambda *_args: "review-model",
-        effort_for_tier=lambda *_args: "medium",
+        settings=SimpleNamespace(
+            model_for_role=lambda *_args: "review-model",
+            effort_for_tier=lambda *_args: "medium",
+        )
     )
     monkeypatch.setattr(rp, "get_backend_config", lambda: config)
     monkeypatch.setattr(rp, "call_agent", call)
@@ -640,7 +642,9 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     monkeypatch.setattr(rp, "_agent_workspace", workspace)
     monkeypatch.setattr(rp, "_invoke_agent", invoke)
     monkeypatch.setattr(rp, "_record_call", lambda *_args, **_kwargs: None)
-    config = SimpleNamespace(model_for_role=lambda *_args: "review-model")
+    config = SimpleNamespace(
+        settings=SimpleNamespace(model_for_role=lambda *_args: "review-model")
+    )
     monkeypatch.setattr(rp, "get_backend_config", lambda: config)
 
     outcome = await rp.prepare_review(tmp_path, "demo")

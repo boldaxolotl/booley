@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_str, is_str_list
+from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
-from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.core.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
 _logger = _logging.getLogger(__name__)
 

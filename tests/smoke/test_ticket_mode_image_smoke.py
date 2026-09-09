@@ -351,7 +351,7 @@ def _run_through_runner(monkeypatch: pytest.MonkeyPatch, project: Path, slug: st
 
 
 def _prepare_environment(monkeypatch: pytest.MonkeyPatch, project: Path) -> None:
-    from booley.config import agent as agent_config
+    from booley.runtime import agent_config
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))

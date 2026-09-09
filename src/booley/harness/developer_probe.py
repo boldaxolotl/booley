@@ -124,12 +124,12 @@ def measure_developer_rss(
     """
     import asyncio
 
-    from booley.config import settings as config_mod
     from booley.harness.models import AgentCallParams
     from booley.runtime import agent as agent_mod
+    from booley.runtime import agent_config as config_mod
 
     try:
-        config_mod.load_models_config(project_root)
+        config_mod.load_backend_config(project_root)
         if getrusage is None:
             if resource is None:
                 raise ProbeError(
@@ -140,7 +140,7 @@ def measure_developer_rss(
         cfg = config_mod.get_backend_config()
         params = AgentCallParams(
             prompt=_PROBE_PROMPT,
-            model=cfg.model_for_tier("light"),
+            model=cfg.settings.model_for_tier("light"),
             cwd=str(project_root),
             allowed_agent_capabilities=[],
             max_turns=1,

@@ -23,9 +23,9 @@ from typing import ClassVar
 import pytest
 
 import booley
-from booley.config import settings as harness_config
 from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
+from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
 
@@ -91,11 +91,10 @@ def _mk_audit(root: Path, booley_toml: dict | None = None) -> doctor.ProjectAudi
 
 class TestAgentBackendHealth:
     def _patch_backend(self, monkeypatch, backend) -> None:
-        # doctor imports these lazily via `from booley.config.settings import
-        # ...` at call time, so patching the config module attrs intercepts it.
-        monkeypatch.setattr(harness_config, "load_models_config", lambda _root: None)
+        # Doctor resolves live composition through the Runtime adapter.
+        monkeypatch.setattr(runtime_agent_config, "load_backend_config", lambda _root: None)
         monkeypatch.setattr(
-            harness_config,
+            runtime_agent_config,
             "get_backend_config",
             lambda: SimpleNamespace(active_backend=backend),
         )
@@ -114,7 +113,7 @@ class TestAgentBackendHealth:
         def bad_load(_root) -> None:
             raise ValueError("models.toml is garbage")
 
-        monkeypatch.setattr(harness_config, "load_models_config", bad_load)
+        monkeypatch.setattr(runtime_agent_config, "load_backend_config", bad_load)
         rec = _Rec()
         doctor._check_agent_backend_health(tmp_path, rec.p, rec.w)
         assert rec.kinds() == {"warn"}

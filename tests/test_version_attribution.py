@@ -113,6 +113,10 @@ def test_imported_checkout_ignores_stale_current_and_legacy_metadata(tmp_path) -
         (_ROOT / "src" / "booley" / "core" / "boundary.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (core_dir / "checkout_role.py").write_text(
+        (_ROOT / "src" / "booley" / "core" / "checkout_role.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     runtime_dir = package_file.parent / "runtime"
     runtime_dir.mkdir()
     (runtime_dir / "__init__.py").write_text("", encoding="utf-8")

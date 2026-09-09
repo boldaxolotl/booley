@@ -225,6 +225,11 @@ _APP_TOKEN_SEED_TARGET = {
 HOST_SKILLS_SIDECAR = f"{AGENT_HOME}/.booley-host-skills"
 
 
+def git_identity_command() -> str:
+    """Fixed command that applies the Project's Interactive Mode Git identity."""
+    return "python -m booley.runtime.incontainer_git_identity"
+
+
 def mcp_post_start_command() -> str:
     """Shell command for ``postStartCommand``: start + register the in-container MCP.
 
@@ -781,7 +786,11 @@ def _build_post_create_command(
         else None
     )
     creds_seed_cmd = _build_creds_seed_command(seeding_creds, auth_target, seed_source)
-    return "; ".join(c for c in (seed_cmd, creds_seed_cmd, mcp_start_command) if c) or None
+    return "; ".join(
+        command
+        for command in (seed_cmd, creds_seed_cmd, _runtime_start_tail(mcp_start_command))
+        if command
+    )
 
 
 def _build_creds_seed_command(
@@ -817,6 +826,12 @@ def _build_creds_seed_command(
     if not seeding_creds or not seed_source:
         return None
     return f"(cp {seed_source} {auth_target} && chmod 600 {auth_target}) 2>/dev/null || true"
+
+
+def _runtime_start_tail(mcp_start_command: str | None) -> str:
+    """Apply identity before registration, preserving identity setup failure."""
+    identity = git_identity_command()
+    return f"{identity} && {mcp_start_command}" if mcp_start_command else identity
 
 
 def build_devcontainer_spec(
@@ -980,12 +995,12 @@ def build_devcontainer_spec(
     # Re-seed credentials on every start, then revive the MCP endpoint: a resumed
     # container must not run agents against the token it froze at create time.
     post_start = "; ".join(
-        c
-        for c in (
+        command
+        for command in (
             _build_creds_seed_command(seeding_creds, auth_target, seed_source),
-            mcp_start_command,
+            _runtime_start_tail(mcp_start_command),
         )
-        if c
+        if command
     )
     if post_start:
         spec["postStartCommand"] = post_start
