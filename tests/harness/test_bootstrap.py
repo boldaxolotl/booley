@@ -9,7 +9,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
-from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
+from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 
 
 def _current(resource: str) -> bootstrap.BootstrapFinding:
@@ -766,6 +766,48 @@ def test_base_image_failure_becomes_typed_finding(monkeypatch: pytest.MonkeyPatc
     assert result is None
     assert finding == bootstrap.BootstrapFinding(
         "base-image", bootstrap.BootstrapState.ERROR, "inspect failed"
+    )
+
+
+def test_base_image_check_reports_pending_release_tag_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    result = LifecycleResult(
+        "booley-sandbox",
+        "sha256:id",
+        Status.CURRENT,
+        cleanup=ImageCleanup(pending=(release,)),
+    )
+    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
+
+    actual, finding = bootstrap._reconcile_base_image(Intent.CHECK, verbose=False)
+
+    assert actual is result
+    assert finding.state is bootstrap.BootstrapState.PENDING
+    assert finding.detail == f"obsolete Docker image tag can be removed: {release}"
+
+
+def test_base_image_reports_removed_and_container_retained_release_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    removed = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    retained = "ghcr.io/boldaxolotl/booley-sandbox:0.2.4"
+    result = LifecycleResult(
+        "booley-sandbox",
+        "sha256:id",
+        Status.CHANGED,
+        cleanup=ImageCleanup(removed=(removed,), retained_required=(retained,)),
+    )
+    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
+
+    actual, finding = bootstrap._reconcile_base_image(Intent.ENSURE, verbose=False)
+
+    assert actual is result
+    assert finding.state is bootstrap.BootstrapState.CHANGED
+    assert finding.detail == (
+        f"removed obsolete Docker image tags: {removed}; "
+        f"retained Docker image tags still required by containers: {retained}"
     )
 
 
