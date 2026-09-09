@@ -249,6 +249,9 @@ class AgentCallParams:
     #          parent env, where the harness already exported BOOLEY_MCP_TOOLS.
     developer_mcp_tools: list[str] | None = None
 
+    # Text-only calls expose no execution, filesystem, or nested MCP capabilities.
+    text_only: bool = False
+
 
 @dataclass
 class AgentResult:

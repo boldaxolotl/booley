@@ -311,3 +311,118 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
     assert result.coverage_window.mode == "post_reset"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
     assert result.merge.status == "equivalent"
+
+
+@pytest.mark.parametrize(
+    "harness,trace",
+    [("generated", False), ("generated", True), ("post_reset", False), ("custom", False)],
+)
+def test_real_coverage_flow_publishes_canonical_campaign(
+    tmp_path: Path, harness: str, trace: bool
+) -> None:
+    import json
+
+    from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+
+    if harness == "custom":
+        _write_custom_target(tmp_path)
+    else:
+        _write_generated_target(tmp_path, post_reset=harness == "post_reset")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=tmp_path,
+            coverage=True,
+            trace=trace,
+            report_dir=tmp_path / "reports",
+        )
+    )
+    assert result.exit_code == 0, result.outcome
+    path = tmp_path / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
+    campaign = decode_coverage_campaign(
+        json.loads(path.read_text()), DurableTargetIdentity("booley:smoke:coverage:1#sim")
+    )
+    assert campaign.collection["status"] == "complete"
+    assert campaign.evaluation["status"] == "not_requested"
+    assert campaign.build["trace"] is trace
+    assert campaign.points
+
+
+def test_real_cocotb_flow_uses_one_process_per_selected_test(tmp_path: Path) -> None:
+    import json
+
+    from tests.fixtures.verilator_acceptance.flow_fixture import write_project
+
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+
+    root = tmp_path / "project"
+    write_project(root, "cocotb", "pass")
+    path = root / "test_case.py"
+    original = path.read_text()
+    path.write_text(
+        original
+        + "\n"
+        + original[original.index("@cocotb.test()") :].replace(
+            "async def check(", "async def another("
+        )
+    )
+    (root / ".booley_project/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
+    result = SimulateFlow().execute(
+        SimRequest(target="sim", work_dir=root, coverage=True, report_dir=root / "reports")
+    )
+    assert result.exit_code == 0, result.outcome
+    campaign = json.loads(
+        (root / result.outcome.detail["targets"]["sim"]["coverage_campaign"]).read_text()
+    )
+    assert len(campaign["tests"]["runs"]) == 2
+    raw = [artifact for artifact in campaign["artifacts"] if artifact["kind"] == "raw_native"]
+    assert len({artifact["path"] for artifact in raw}) == 2
+    assert {run["test"] for run in campaign["tests"]["runs"]} == {"another", "check"}
+
+
+def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
+    import hashlib
+
+    from tests.fixtures.verilator_acceptance.flow_fixture import write_project
+
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+
+    root = tmp_path / "project"
+    write_project(root, "generated", "pass")
+    top = root / "top.sv"
+    top.write_text(
+        top.read_text().replace(
+            "module top;",
+            "module top; string tracefile; initial begin "
+            'if ($value$plusargs("tracefile=%s", tracefile)) begin '
+            "$dumpfile(tracefile); $dumpvars(0, top); end end",
+        )
+    )
+    (root / ".booley_project" / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    previous = {}
+    for coverage, trace in [(False, False), (False, True), (True, False), (True, True)]:
+        result = SimulateFlow().execute(
+            SimRequest(
+                target="sim",
+                work_dir=root,
+                coverage=coverage,
+                trace=trace,
+                report_dir=root / "reports",
+            )
+        )
+        assert result.exit_code == 0, result.outcome
+        binaries = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob("Vtop")
+            if path.is_file()
+        }
+        assert len(binaries) == len(previous) + 1
+        assert all(binaries.get(path) == digest for path, digest in previous.items())
+        previous = binaries

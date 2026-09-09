@@ -29,13 +29,8 @@ from __future__ import annotations
 # this dict contains a specialist's own name (or any other specialist's
 # name).
 NESTED_MCP_CAPABILITIES: dict[str, tuple[str, ...]] = {
-    # Phase-2 virtual_signal_creator needs simulate + bwave_* to test
-    # branch conditions. Other Phase-1 sub-agents don't use them but
-    # they're harmless to expose at this level.
-    "coverage_analyst": (
-        "sim",
-        "bwave",
-    ),
+    # The report-driven Analyst receives supplied text and no MCP capabilities.
+    "coverage_analyst": (),
     # Code-modifying specialist runs Simulation's pre-submit build-only mode.
     "tb_coder": ("sim",),
     # No MCP needed for these — they reason over text, not the design.

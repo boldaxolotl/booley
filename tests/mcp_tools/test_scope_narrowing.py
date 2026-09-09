@@ -310,10 +310,5 @@ class TestOtherSpecialistsNotNarrowed:
 
         assert not hasattr(MutationTesterSpecialist, "_build_narrowed_scope")
 
-    def test_coverage_analyst_has_no_narrowing(self):
-        from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-
-        assert not hasattr(CoverageAnalystSpecialist, "_build_narrowed_scope")
-
     def test_tb_coder_does_have_narrowing(self):
         assert hasattr(TbCoderSpecialist, "_build_narrowed_scope")

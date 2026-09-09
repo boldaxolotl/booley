@@ -3,7 +3,7 @@
 ``booley.bwave.contract`` documents what the Rust binary promises;
 these tests run the *built binary* and assert the promise holds, so a
 metadata or diagnostic change fails here instead of silently breaking a Python
-consumer (TraceSession, coverage_analyst's discovery fallback, bwave_sessions'
+consumer (TraceSession and bwave_sessions'
 identity probe). The Rust side pins the same markers in ``crates/bwave/src/cache.rs``
 (contract tests at the bottom of its test mod).
 """
@@ -149,7 +149,7 @@ def test_trace_session_accepts_native_multi_root_store(
 
 
 def test_total_miss_is_exit_usage_plus_marker(store: Path) -> None:
-    """The exact (returncode, stderr-substring) tuple coverage_analyst keys on."""
+    """The native total-miss result remains distinguishable from other errors."""
     result = _run("stats", str(store), "-s", "no_such_signal_anywhere")
     assert result.returncode == EXIT_USAGE, result.stderr
     assert NO_MATCH_MARKER in result.stderr.lower(), result.stderr

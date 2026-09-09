@@ -1,8 +1,8 @@
 # Step 3: Review Tickets
 
 For each `status: "review"` ticket, use the prepared package as the normal path.
-The post-developer report agent has already inspected the ticket, source, diff,
-logs, reports, scope, and state. The harness has already enumerated all criteria,
+The post-developer or explicitly requested review preparation has already
+inspected the ticket, source, diff, logs, reports, scope, and state. The harness has already enumerated all criteria,
 commits, changed files, health findings, economics, and durable diff pairs.
 
 ## 1. Render once
@@ -10,12 +10,27 @@ commits, changed files, health findings, economics, and durable diff pairs.
 Run exactly once:
 
 ```bash
-booley board review-briefing $SLUG
+booley board review-briefing $SLUG --no-open-diffs
 ```
 
-This command performs a fast freshness check, opens every prepared diff, and
-prints the fixed review briefing. Present that output without rebuilding its
-tables or rereading its underlying evidence. Do not run `prepare-review` during
+This command performs a fast freshness check and prints the fixed review
+briefing with diff launching disabled. Always use `--no-open-diffs`: the automatic
+filter uses extensions and binary detection, so it cannot recognize every
+compiled output (for example, hexadecimal firmware stored as `.txt`).
+
+Before opening any diff, apply the artifact classification rule in `SKILL.md`
+to the changed paths. Use the prepared report first; when a path's provenance
+is unclear, inspect only its relevant build rule/output declaration and, if
+needed, a small content sample without displaying an artifact diff. Open the
+prepared base/head pairs individually for confirmed human-authored files using
+the configured diff viewer. Leave compiled artifacts and unresolved paths
+unopened; do not rerun the command with automatic launching enabled.
+
+Present the briefing with each changed-file diff status corrected to the actual
+outcome: opened, omitted (compiled artifact), or not opened (provenance unclear
+or viewer unavailable). The command's printed "diff opened" text is not evidence
+of a launch when `--no-open-diffs` was used. Preserve all other briefing facts
+and tables. Do not run `prepare-review` during
 interactive triage and do not poll the manifest.
 
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
@@ -36,8 +51,9 @@ inspect those facts and diffs before offering the normal decision choices.
 
 ## 2. Evidence escalation only
 
-Read raw evidence only when the user asks a follow-up the prepared briefing
-cannot answer or the briefing identifies an anomaly requiring diagnosis. Start
+Read raw evidence only for the artifact-classification gate above, when the user
+asks a follow-up the prepared briefing cannot answer, or when the briefing
+identifies an anomaly requiring diagnosis. Start
 with the one cited source relevant to that question. Do not routinely reread
 `REPORT.md`, state, run logs, transcripts, Flow reports, Git history, or diffs.
 
@@ -53,14 +69,26 @@ appear with its justification.
 
 ## 3. Decision
 
-Ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
+For a briefing marked **unaccepted**, offer **fix here** / **refresh** /
+**finalize** / **hold** / **reset** / **archive**. Keep the Ticket in review
+while making corrections. Run verification endpoints and `submit_run_report`
+through `booley board review-exec $SLUG -- <normal endpoint command>` so they
+record Ticket evidence. Commit changes, then use `booley board refresh-review
+$SLUG` to capture new inputs. `booley board finalize-review $SLUG` checks every
+normal acceptance gate and publishes first acceptance; only a successful
+finalization makes approval available. Hold leaves the Ticket unchanged.
+
+If a legacy review has no accepted snapshot, the explicit recovery operation is
+`booley board request-review $SLUG --repair --reason "<recovery intent>"`.
+It preserves work and creates an unaccepted package when its Basis/worktree are
+valid. Never substitute a mechanical move or fabricate accepted evidence.
+
+For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
 
 - **Approve**: `python -m booley.ticket_board complete $SLUG`
-- **Fix here**: keep the Ticket in review and make only the correction the
-  reviewer can complete interactively in its existing worktree. Invoke the
-  relevant Flows and Specialists directly against that worktree, commit the
-  correction to the same Ticket branch, refresh its review evidence, and return
-  to this decision. Do not hand it back to the Runner for partial rework.
+- **Fix here**: accepted snapshots are immutable. Explain that changed source
+  heads cannot be silently reaccepted by `refresh-review`; retain work and
+  resolve the required acceptance recovery before claiming another approval.
 - **Reset**: ask why a clean run is required, then run
   `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`.
   This is a clean start:

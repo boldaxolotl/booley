@@ -533,6 +533,20 @@ def _add_board_subparsers(sub) -> None:
         help="Archive a ticket that is not 'done' (discards its state)",
     )
 
+    for command in ("request-review", "refresh-review", "finalize-review"):
+        review_p = board_sub.add_parser(
+            command, help="Prepare explicit human review", parents=[root_opt]
+        )
+        review_p.add_argument("slug")
+        review_p.add_argument("--reason", default="")
+        if command == "request-review":
+            review_p.add_argument("--repair", action="store_true")
+    exec_p = board_sub.add_parser(
+        "review-exec", help="Run an endpoint in this review ticket", parents=[root_opt]
+    )
+    exec_p.add_argument("slug")
+    exec_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
+
     prepare_p = board_sub.add_parser(
         "prepare-review",
         help="Generate or refresh a review/blocked ticket's HTML change explanation",
@@ -1128,6 +1142,10 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
 
     special = {
         "archive": lambda: _cmd_board_archive(args, tio),
+        "request-review": lambda: _cmd_requested_review(args, project_root, "request"),
+        "refresh-review": lambda: _cmd_requested_review(args, project_root, "refresh"),
+        "finalize-review": lambda: _cmd_requested_review(args, project_root, "finalize"),
+        "review-exec": lambda: _cmd_review_exec(args, project_root),
         "prepare-review": lambda: _cmd_board_prepare_review(args, project_root),
         "review-briefing": lambda: _cmd_board_review_briefing(args, project_root),
         "blocked-briefing": lambda: _cmd_board_blocked_briefing(args, project_root),
@@ -1156,6 +1174,37 @@ def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
     # A named ticket that was not archived (missing or refused) is a
     # failure; the no-slug sweep legitimately finds nothing.
     return 1 if args.slug else 0
+
+
+def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: str) -> int:
+    import asyncio
+
+    from booley.review.requests import request_review_command
+
+    outcome = asyncio.run(
+        request_review_command(
+            project_root,
+            args.slug,
+            reason=args.reason,
+            repair=getattr(args, "repair", False),
+            action=action,
+        )
+    )
+    if not outcome.ready:
+        print(f"ERROR: {outcome.message}", file=sys.stderr)
+        return 2
+    print(f"Review package ready: {outcome.package_path}")
+    return 0
+
+
+def _cmd_review_exec(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.review.interactive import run_review_command
+
+    try:
+        return run_review_command(project_root, args.slug, args.endpoint_command)
+    except (ValueError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> int:

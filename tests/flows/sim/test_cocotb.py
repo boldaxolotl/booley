@@ -194,7 +194,7 @@ class TestCocotbVerdictMatrix:
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_key == "sim_pass_ccfg"
         assert result.criterion_met is True
-        report = json.loads((tmp_path / "reports/sim_ccfg.json").read_text())
+        report = json.loads((tmp_path / "reports/sim/1/targets/ccfg/simulation.json").read_text())
         telemetry = report["tests"][0]
         assert report["complete"] is True
         assert telemetry["phase_timings_s"]["run"] == 1.5
@@ -228,7 +228,9 @@ class TestCocotbVerdictMatrix:
             result = _run_cocotb(tmp_path, flow, out)
 
         assert "test_count           PASS         17 cycles" in result.report_text
-        report = json.loads((tmp_path / "reports" / "sim_ccfg.json").read_text())
+        report = json.loads(
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text()
+        )
         by_name = {test["name"]: test for test in report["tests"]}
         assert by_name["test_reset"]["cycles"] == 3
         assert by_name["test_count"]["cycles"] == 17
@@ -255,7 +257,7 @@ class TestCocotbVerdictMatrix:
         # The cocotb failure text is surfaced; siblings stay pass (G9 shape).
         assert "deliberate failure" in result.report_text
         report = json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         by_name = {t["name"]: t for t in report["tests"]}
         assert by_name["test_fail_assert"]["verdict"] == "fail"
@@ -295,7 +297,7 @@ class TestCocotbVerdictMatrix:
         assert result.exit_code == EXIT_FAILURE
         assert "no matching @cocotb.test" in result.report_text
         report = json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         by_name = {t["name"]: t for t in report["tests"]}
         assert by_name["test_fail_assert"]["verdict"] == "inconclusive"
@@ -318,7 +320,7 @@ class TestCocotbVerdictMatrix:
         assert result.exit_code == EXIT_SUCCESS  # extras don't flip verdicts
         assert "test_surprise" in result.report_text
         report = json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         assert len(report["tests"]) == 3  # selected set only
 
@@ -405,7 +407,7 @@ class TestCocotbVerdictMatrix:
         assert result.exit_code == EXIT_FAILURE
         # Per-test verdicts still come from the reconciled XML.
         report = json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         assert all(t["verdict"] == "pass" for t in report["tests"])
 
@@ -422,7 +424,7 @@ class TestCocotbVerdictMatrix:
             result = _run_cocotb(tmp_path, flow, out, returncode=1)
         assert result.exit_code == EXIT_FAILURE
         report = json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         by_name = {t["name"]: t for t in report["tests"]}
         # Finished-and-passed stays pass, the active test reads timeout, and a
@@ -696,7 +698,7 @@ class TestCocotbBuildFailureShape:
 
     def _report(self, tmp_path: Path) -> dict:
         return json.loads(
-            (tmp_path / "reports" / "sim_ccfg.json").read_text(),
+            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
 
     def test_build_failure_yields_one_build_entry_not_a_verdict_per_test(

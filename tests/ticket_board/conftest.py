@@ -89,3 +89,18 @@ def _set_project_dir(tmp_path, monkeypatch):
 
     reset_cache()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+
+
+def publish_handoff_snapshot(tio: TicketIO, slug: str, *_args) -> bool:
+    """Satisfy handoff's durable precondition in tests of unrelated policy."""
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.acceptance_ledger import freeze_acceptance
+
+    freeze_acceptance(
+        tio.logs_dir / slug,
+        DevelopmentState(slug=slug),
+        execution_id="fixture",
+        acceptance_basis=None,
+        participant_heads={"outer": "a" * 40},
+    )
+    return True

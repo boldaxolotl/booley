@@ -145,7 +145,7 @@ class TicketIO:
                 time.sleep(0.2)
 
     @contextlib.contextmanager
-    def _ticket_lock(self, slug):
+    def _ticket_lock(self, slug, *, review_operation: bool = False):
         """Per-ticket OS-level file lock at logs/<slug>/.runtime/ticket.lock.
 
         Uses msvcrt (Windows) or fcntl (Unix) for real byte-range locking.
@@ -161,6 +161,10 @@ class TicketIO:
             try:
                 self._acquire_lock(lock_file, slug, lock_path, pid_to_stamp)
                 locked = True
+                if not review_operation:
+                    from booley.review.entry import assert_idle
+
+                    assert_idle(log_dir)
                 yield
             finally:
                 if locked:
@@ -214,7 +218,7 @@ class TicketIO:
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> AcceptanceBasis:
         """Load an executable basis from Board authority and cross-check its snapshot."""
-        with self._ticket_lock(slug):
+        with self._ticket_lock(slug, review_operation=True):
             return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
 
     def _load_basis_unlocked(
@@ -307,6 +311,12 @@ class TicketIO:
                 print(f"Error: ticket '{slug}' not found", file=sys.stderr)
                 return False
 
+            if normalize_dir(to_dir) in {"board/review", "board/done"}:
+                print(
+                    "Error: use handoff or board request-review; completion requires approve",
+                    file=sys.stderr,
+                )
+                return False
             new_dir = self.tickets_dir / normalize_dir(to_dir)
             new_dir.mkdir(parents=True, exist_ok=True)
             new_path = new_dir / file_path.name
@@ -368,6 +378,17 @@ class TicketIO:
             actor,
             detail,
         )
+
+    def _move_prerequisite(self, slug, new_path, before_move):
+        if before_move is not None and not before_move():
+            return False
+        if new_path.parent.name == "review":
+            from .acceptance_ledger import read_acceptance
+
+            if read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind != "accepted":
+                print("Error: unaccepted review requires board request-review", file=sys.stderr)
+                return False
+        return True
 
     def move_and_update(
         self,
@@ -438,7 +459,7 @@ class TicketIO:
                 return False
             new_path, source, destination = resolved
             transition = self._canonical_transition(transition, source, destination)
-            if before_move is not None and not before_move():
+            if not self._move_prerequisite(slug, new_path, before_move):
                 return False
 
             spec_updates = self._apply_updates(progress, updates, append_step)

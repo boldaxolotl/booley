@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.request import FlowRequest
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
@@ -17,6 +18,7 @@ class FlowSession(EndpointState):
 
     def __init__(self, flow: BuiltinFlow) -> None:
         super().__init__()
+        self.publication_resources = ExitStack()
         self.flow = flow
         self.name = flow.name
         self.endpoint_kind = "flow"
@@ -42,3 +44,8 @@ class FlowSession(EndpointState):
 
     def _resolve_display_label(self) -> str | None:
         return self.flow._resolve_display_label()
+
+    def execute_prepared(self) -> ExecutionResult:
+        """Keep invocation resources alive through final report publication."""
+        with self.publication_resources:
+            return super().execute_prepared()

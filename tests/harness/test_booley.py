@@ -2543,3 +2543,48 @@ def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
 
     with pytest.raises(SystemExit):
         parser.parse_args(["session", command, "--project-root", "/tmp/project"])
+
+
+@pytest.mark.parametrize("action", ["request", "refresh", "finalize"])
+@pytest.mark.parametrize("ready", [True, False])
+def test_requested_review_cli_routes_arguments_and_failure(
+    tmp_path, monkeypatch, capsys, action, ready
+):
+    from booley.review import preparation, requests
+
+    async def request(root, slug, **kwargs):
+        assert root == tmp_path and slug == "demo"
+        assert kwargs == {"reason": "Inspect gates", "repair": False, "action": action}
+        return preparation.ReviewPrepOutcome(
+            "ready" if ready else "failed", "unmet gate", package_path=tmp_path / "briefing.json"
+        )
+
+    monkeypatch.setattr(requests, "request_review_command", request)
+    args = tlr._build_parser().parse_args(
+        ["board", f"{action}-review", "demo", "--reason", "Inspect gates"]
+    )
+    assert tlr._cmd_requested_review(args, tmp_path, action) == (0 if ready else 2)
+    output = capsys.readouterr()
+    assert "Review package ready" in output.out if ready else "unmet gate" in output.err
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_review_exec_cli_preserves_command_exit_or_reports_error(
+    tmp_path, monkeypatch, capsys, failure
+):
+    from booley.review import interactive
+
+    def run(root, slug, command):
+        assert root == tmp_path and slug == "demo"
+        assert command == ["verify", "--target", "example"]
+        if failure:
+            raise ValueError("stale review execution")
+        return 7
+
+    monkeypatch.setattr(interactive, "run_review_command", run)
+    args = tlr._build_parser().parse_args(
+        ["board", "review-exec", "demo", "--", "verify", "--target", "example"]
+    )
+    assert tlr._cmd_review_exec(args, tmp_path) == (2 if failure else 7)
+    if failure:
+        assert "stale review execution" in capsys.readouterr().err

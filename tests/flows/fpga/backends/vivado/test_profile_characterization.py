@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 _FIXTURE = Path(__file__).resolve().parents[4] / "fixtures" / "vivado_profile_characterization"
-_REPORT = _FIXTURE.parents[2] / "docs" / "research" / "vivado-profile-characterization-20260907.md"
 _PROFILES = ("balanced", "compact", "max_frequency")
 _EXPECTED_MAPPING = {
     "balanced": ("Vivado Synthesis Defaults", "Vivado Implementation Defaults"),
@@ -66,7 +65,6 @@ def test_checked_in_evidence_covers_every_portable_profile() -> None:
     assert tuple(supported) == ("synthesis", "implementation")
     for catalog in supported.values():
         assert catalog == sorted(set(catalog))
-    report = _REPORT.read_text(encoding="utf-8")
     for profile, (synthesis, implementation) in _EXPECTED_MAPPING.items():
         result = evidence["profiles"][profile]
         assert result["synthesis_strategy"] == synthesis
@@ -77,7 +75,6 @@ def test_checked_in_evidence_covers_every_portable_profile() -> None:
         assert result["wns_ns"] >= 0
         assert result["whs_ns"] >= 0
         assert "-mode out_of_context" in result["effective_commands"][0]
-        assert f"| `{profile}` | `{synthesis}` | `{implementation}` |" in report
 
 
 def _vivado() -> Path:

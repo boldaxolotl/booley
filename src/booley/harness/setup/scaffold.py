@@ -702,7 +702,7 @@ def _fpga_target(c: ScaffoldChoices) -> str:
     return f"""\
   fpga:  # fpga_impl
     flow: generic
-    flow_options: {{tool: vivado, part: {c.fpga_part}, out_of_context: true, booley: {{doctor: [fpga]}}}}
+    flow_options: {{tool: vivado, part: {c.fpga_part}, ppa_profile: balanced, out_of_context: true, booley: {{doctor: [fpga]}}}}
     filesets: [rtl, xdc]
     toplevel: {c.name}
     parameters: [WIDTH]

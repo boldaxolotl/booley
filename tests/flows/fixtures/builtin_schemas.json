@@ -246,6 +246,15 @@
         "type": "boolean",
         "default": false,
         "description": "Bypass reusable implementation results and run the recipe again"
+      },
+      "ppa_profile": {
+        "type": "string",
+        "enum": [
+          "compact",
+          "balanced",
+          "max_frequency"
+        ],
+        "description": "Override the Target's portable FPGA optimization profile for this call"
       }
     },
     "required": [

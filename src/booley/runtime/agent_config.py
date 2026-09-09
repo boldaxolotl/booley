@@ -62,5 +62,4 @@ def set_backend_config(config: BackendConfig | None) -> None:
     global _backend_config, _backend_injected
     _backend_config = config
     _backend_injected = config is not None
-    if config is None:
-        set_agent_settings(None)
+    set_agent_settings(None if config is None else config.settings)

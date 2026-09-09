@@ -446,3 +446,40 @@ booley eda grant revoke --kind vivado /exact/deleted/project
 
 After every Grant for that root is gone, remove the obsolete inventory entry
 with `booley projects forget /exact/deleted/project`.
+
+
+## Coverage Campaign retention (internal preview)
+
+Coverage collection remains hidden until the issue #213 release gate. For
+internal Campaign testing, report retention is explicit: native-only pruning
+keeps normalized `coverage.json`, `simulation.json`, and hook evidence; full
+invocation pruning removes all reports and prevents re-analysis. See the
+[exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
+
+An `availability.json` status of `pruning` means cleanup was interrupted. Retry
+the same exact maintenance command after resolving the filesystem error. A lock
+contention error means the invocation is still executing or another maintenance
+operation is using it. Do not delete the lock file to bypass it. An interrupted
+Simulation starts a new numbered invocation when rerun; it never resumes old
+native databases. Empty `.pruned-N` directories reserve historical invocation
+numbers and should be retained.
+
+### Coverage Analyst input and model availability
+
+Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
+Target names, `latest`, waveforms, and legacy `coverage_report.json` are not Analyst
+inputs. A missing or incomplete matching `simulation.json` means that Target is
+not ready for analysis; another Target still running does not block a completed one.
+Native-payload pruning preserves analysis. Full-invocation pruning removes the
+Campaign, so select another retained invocation or collect new evidence.
+
+Missing, changed, unsafe, or mismatched Target sources produce report-only analysis.
+Stealth-mode projects also use report-only analysis because resolving their sources
+requires FuseSoC registry reconciliation, which would change project files.
+This does not change the Campaign's measured verdict. The Analyst does not reuse
+legacy `coverage_waivers.json` files or approve its candidates.
+
+Codex analysis requires cached metadata for the exact configured model. If that
+metadata is missing, start the configured Codex CLI to refresh model discovery,
+then retry. Analysis fails closed instead of starting an agent with execution
+capabilities. Claude analysis disables built-in tools and MCP servers as well.

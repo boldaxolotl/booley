@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from booley.ticket_board import notifications, operations
-from tests.ticket_board.conftest import make_ticket_file
+from tests.ticket_board.conftest import make_ticket_file, publish_handoff_snapshot
 
 
 @pytest.mark.parametrize("setting", ["events = 42", "ntfy_topic = 42", "notifications = []"])
@@ -26,7 +26,7 @@ def test_bad_digest_does_not_fail_review(tio, monkeypatch, content):
     (log / "triage-prep").mkdir(parents=True)
     (log / "booley_state.json").write_text("{}")
     (log / "triage-prep" / "manifest.json").write_bytes(content)
-    monkeypatch.setattr(operations, "_prepare_handoff_snapshot", lambda *_a: True)
+    monkeypatch.setattr(operations, "_prepare_handoff_snapshot", publish_handoff_snapshot)
     entry = tio.find_ticket("probe")
     assert operations._handoff_to_review(tio, "probe", entry, "running", "summary", None)
     assert tio.find_ticket("probe")["status"] == "review"
@@ -154,7 +154,7 @@ def test_automatic_done_handoff_notifies(tio, monkeypatch):
     log.mkdir(parents=True)
     (log / "run.log").write_text("Developer finished\n")
     monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_a: True)
-    monkeypatch.setattr(operations, "_prepare_handoff_snapshot", lambda *_a: True)
+    monkeypatch.setattr(operations, "_prepare_handoff_snapshot", publish_handoff_snapshot)
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", Mock(merge=False), None)
     )

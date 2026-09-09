@@ -187,7 +187,13 @@ def _next_invocation_dir(endpoint: EndpointState, report_dir: Path) -> Path:
     endpoint_dir = report_dir / endpoint.name
     endpoint_dir.mkdir(parents=True, exist_ok=True)
     while True:
-        existing = (int(d.name) for d in endpoint_dir.iterdir() if d.is_dir() and d.name.isdigit())
+        # Count observed names even if pruning renames a directory during this scan.
+        # Rechecking is_dir() would discard the old name before seeing its tombstone.
+        existing = (
+            int(d.name.removeprefix(".pruned-"))
+            for d in endpoint_dir.iterdir()
+            if d.name.removeprefix(".pruned-").isdigit()
+        )
         inv_dir = endpoint_dir / str(max(existing, default=0) + 1)
         try:
             # mkdir without exist_ok is the cross-process reservation.

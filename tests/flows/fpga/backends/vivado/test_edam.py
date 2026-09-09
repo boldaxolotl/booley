@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[5] / "src"))
 
 from booley.flows import edam as edam_layer
 from booley.flows.fpga.backends.vivado import edam as fpga_edam
+from booley.flows.fpga.profiles import VIVADO_PROFILES
 
 _FIXTURES = Path(__file__).resolve().parents[4] / "fixtures" / "vivado_reports"
 
@@ -348,6 +349,26 @@ class TestConfigure:
             work_root,
             "fpga_cfgA",
             {"WIDTH": 8, "FLAG": True, "MODE": "quick run"},
+        )
+
+        original = project_tcl.read_bytes()
+        fpga_edam.apply_ppa_profile(work_root, "fpga_cfgA", VIVADO_PROFILES["balanced"])
+        assert project_tcl.read_bytes() == original
+
+        fpga_edam.apply_ppa_profile(
+            work_root,
+            "fpga_cfgA",
+            VIVADO_PROFILES["max_frequency"],
+        )
+        fpga_edam.enable_out_of_context(work_root, "fpga_cfgA")
+        patched = project_tcl.read_text(encoding="utf-8")
+        assert "STEPS.POST_ROUTE_PHYS_OPT_DESIGN.TCL.POST" in patched
+        hook = work_root / "booley_post_route_complete.tcl"
+        assert hook.read_text() == 'puts "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"\n'
+        assert "Flow_PerfOptimized_high [get_runs synth_1]" in patched
+        assert "Performance_ExplorePostRoutePhysOpt [get_runs impl_1]" in patched
+        assert patched.index("Flow_PerfOptimized_high") < patched.index(
+            "STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS"
         )
 
     def test_parameter_contract_rejects_dropped_override(self, tmp_path: Path):

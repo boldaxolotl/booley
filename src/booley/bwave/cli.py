@@ -65,8 +65,8 @@ BWAVE_CARGO_TOML = _REPO_ROOT / "crates" / "bwave" / "Cargo.toml"
 def _bwave_cmd() -> list[str]:
     """Return the command prefix for the native bwave binary.
 
-    Resolution lives in booley.runtime.paths so this wrapper, the FIFO streamer and
-    coverage_analyst all find the same binary. Never resolve it by bare name:
+    Resolution lives in booley.runtime.paths so this wrapper and the FIFO streamer
+    find the same binary. Never resolve it by bare name:
     on PATH, `bwave` is *this* wrapper.
     """
     found = native_bwave_binary()

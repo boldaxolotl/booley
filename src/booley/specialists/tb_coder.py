@@ -552,7 +552,7 @@ class TbCoderSpecialist(Specialist):
             "Do NOT add `$dumpfile` or `$dumpvars` to any TB or RTL file. "
             "The harness manages tracing via `+tracefile` plusargs and an "
             "auxiliary module; user-authored dump calls override that path "
-            "and break trace collection (coverage_analyst, bwave).\n"
+            "and break B-Wave trace collection.\n"
         )
         parts.append("\n## Before You Submit: Elaborate\n")
         changed_scope = "testbench/verification changes"

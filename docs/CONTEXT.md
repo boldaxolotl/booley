@@ -51,7 +51,7 @@ The ticket-driven execution mode: a `booley run` invocation, issued from inside 
 _Avoid_: batch mode, automated mode, host mode
 
 **Interactive Mode**:
-Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; there is no Ticket, Scope, Developer Agent, Harness-managed state file, or Criteria tracking.
+Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Preflight**:
@@ -196,7 +196,7 @@ A passing criterion-family-specific Booley Flow run required after an RTL or tes
 _Avoid_: review gate, planner approval
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer and Mutation Tester (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); Coverage Analyst and TB Coder also exist but are hidden until they mature; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and Coverage Analyst (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -226,7 +226,7 @@ An immutable, completion-ordered record of one normalized Criterion outcome prod
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
+The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
 _Avoid_: final booley_state, cached status, review report
 
 **Simulation Criterion**:
@@ -241,8 +241,12 @@ _Avoid_: cycle time, runtime, performance score
 A specialized Simulation Criterion for one Target and named test, satisfied only when the test passes and its Cycle Count meets every declared threshold. A mandatory Cycle Count Criterion fulfills the simulation requirement for that test without requiring a duplicate Simulation Criterion.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
 
+**Unaccepted Review**:
+Human inspection of a Ticket whose work has not passed acceptance. It retains outstanding Criteria and supports human-directed verification before first acceptance; entering review alone never permits completion.
+_Avoid_: forced acceptance, accepted hold
+
 **Ticket Board**:
-The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
+The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as execution pauses; blocked work may explicitly enter unaccepted human review while retaining outstanding gates; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Acceptance Basis**:
@@ -272,6 +276,36 @@ _Avoid_: allowlist
 **Escalation**:
 A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.
 _Avoid_: spec gap, blocker, impediment
+
+### Coverage
+
+**Coverage Campaign**:
+One indivisible, durable coverage document for exactly one Target and one Simulation Flow invocation, preserving independent simulation, collection, and evaluation truths.
+_Avoid_: latest coverage, waveform score
+
+**Coverage Point**:
+One losslessly identified native measurement point, including source span, elaborated instance, metric-specific subject, and native record identity.
+_Avoid_: signal score, source-line identity
+
+**Coverage Window**:
+The interval in which native counters contribute to a Campaign, including reset activity unless the Target declares a delayed start.
+_Avoid_: waveform slice
+
+**Coverage Criterion**:
+One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND.
+_Avoid_: Analyst score, inferred coverage goal
+
+**Approved Waiver Set**:
+The immutable, transactionally validated project-wide set of human-approved exact Target-and-point exclusions used by coverage evaluators.
+_Avoid_: cached LLM waivers
+
+**Waiver Candidate**:
+Advisory Coverage Analyst output for human investigation or review, with no approval or evaluation authority.
+_Avoid_: approved waiver, automatic exclusion
+
+**Coverage Analyst**:
+A read-only Specialist that explains one exact Coverage Campaign and may propose Waiver Candidates, using verified Target sources when available.
+_Avoid_: coverage scorer, waveform coverage engine
 
 ### Waveform analysis
 
@@ -350,7 +384,7 @@ An immutable, completion-ordered record of one normalized Criterion outcome prod
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
+The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
 _Avoid_: final booley_state, cached status, review report
 
 ## Retired and ambiguous terminology
