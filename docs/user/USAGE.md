@@ -335,6 +335,13 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
+Booley validates each proposal as one exact replacement, compiles it in
+isolation, and restores the pristine source. A completed run publishes one
+atomic campaign manifest with a durable baseline log, every mutant log, each
+source variant, and the first public test that killed each detected mutant.
+
+The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `tb_coder` also exists but is hidden until it matures (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
+
 #### Coverage collection workflows
 
 In Interactive Mode, explicitly request collection, then pass its exact Campaign
@@ -354,13 +361,6 @@ for each required Target and explicitly invoke `sim --coverage`. Only a durable
 Campaign `pass` satisfies the Criterion. `fail` and `blocked` do not satisfy it;
 Simulation Criteria retain their independent measured truth. The Analyst only
 advises and never changes Criteria or approves Waiver Candidates.
-
-Booley validates each proposal as one exact replacement, compiles it in
-isolation, and restores the pristine source. A completed run publishes one
-atomic campaign manifest with a durable baseline log, every mutant log, each
-source variant, and the first public test that killed each detected mutant.
-
-The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `tb_coder` also exists but is hidden until it matures (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
 
 ### Running a Booley Flow directly
 
