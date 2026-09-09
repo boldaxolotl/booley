@@ -94,6 +94,7 @@ def control_cases() -> list[tuple]:
         ),
         *receiver_cases(),
         *timeout_cases(),
+        receiver("timeout-natural", "timeout_silent", "UART-IRQ", "irq", bit=6, mode="identity"),
     ]
 
 

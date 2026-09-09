@@ -42,15 +42,16 @@ remaining time. The coordinator further clips controls plus evaluation to the sh
 repairs plus full reruns to 45 minutes each, and all work to the cleanup boundary.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
-The 26 controls each require positive, independently corrupted and restored
-hardware: 78 simulator runs in total. The transport fixture covers MMIO and TX;
+The 27 controls each require positive, independently corrupted and restored
+hardware: 81 simulator runs in total. The transport fixture covers MMIO and TX;
 the separate receiver fixture covers exact-a RX at all four start phases with
 NF=0/1, even/odd parity reception, RX FIFO depth/order, RX watermark state, natural
 RX and injected event IRQ observation, transition-rich VAL history, and stalled
 exactly-once reads. Candidate admission requires every control for this evaluator
 identity. Timeout controls separately omit read/receive/event resets, incorrectly
 reset on full-FIFO drops or W1C, suppress the IRQ, and move one clock outside
-each inclusive 30B/34B boundary. Keep failed control attempts alongside successful corrections.
+each inclusive 30B/34B boundary. A natural timeout IRQ control uses the same
+public timing bound. Keep failed control attempts alongside successful corrections.
 
 These fixtures qualify the named observation paths, not complete UART behavior.
 The receiver supports only the exact-a rate. Fractional/exact-b RX, parity-error

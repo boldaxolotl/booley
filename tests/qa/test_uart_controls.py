@@ -50,4 +50,4 @@ def test_control_publication_requires_stable_evaluator(monkeypatch, tmp_path, ch
 
         record = json.loads((destination / "controls.json").read_text())
         assert record["evaluator_sha256"] == "before"
-        assert len(record["results"]) == 78
+        assert len(record["results"]) == 81

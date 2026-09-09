@@ -3,7 +3,7 @@
 from cases import REGISTERS
 from driver import Driver, ObservationBlockedError
 from oracles import check_tx, check_val
-from timeout_checks import timeout
+from timeout_checks import timed_event, timeout
 
 
 async def register(driver: Driver, parameters: dict) -> None:
@@ -321,9 +321,14 @@ async def natural_irq(driver: Driver, bit: int) -> None:
         driver.dut.rx_i.value = 1
         await driver.wait(64)
     else:
-        await driver.write(0x30, (1 << 31) | 32)
         await driver.receive([0x55])
-        await await_timeout(driver, 4096 * 64)
+        enabled = await driver.read(4) & 64
+        await driver.write(0x30, (1 << 31) | 32)
+        accepted = driver.last_acceptance
+        if enabled:
+            await timed_event(driver, (accepted, accepted), accepted - 1)
+        else:
+            await masked_timeout_state(driver)
 
 
 async def injected_irq(driver: Driver, bit: int) -> None:
@@ -360,12 +365,12 @@ async def injected_irq(driver: Driver, bit: int) -> None:
             await driver.read(0, 0, mask)
 
 
-async def await_timeout(driver: Driver, horizon: int) -> int:
-    """Observe an event; exhaustion is not a newly invented circuit deadline."""
-    for _ in range(horizon):
+async def masked_timeout_state(driver: Driver) -> None:
+    """Masked-IRQ probes cannot apply the public rule requiring enabled IRQs."""
+    for _ in range(4096 * 64):
         if await driver.read(0) & 64:
-            return driver.last_acceptance
-    raise ObservationBlockedError("No timeout event within operational observation horizon")
+            return
+    raise ObservationBlockedError("No masked timeout state within operational horizon")
 
 
 async def error(driver: Driver, parameters: dict) -> None:
