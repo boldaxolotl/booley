@@ -140,7 +140,7 @@ def measure_developer_rss(
         cfg = config_mod.get_backend_config()
         params = AgentCallParams(
             prompt=_PROBE_PROMPT,
-            model=cfg.model_for_tier("light"),
+            model=cfg.settings.model_for_tier("light"),
             cwd=str(project_root),
             allowed_agent_capabilities=[],
             max_turns=1,

@@ -32,7 +32,7 @@ async def call_agent(
     """Call an agent via the configured backend.
 
     Routes through BackendConfig: if step_name is provided, resolves
-    tier -> backend + model. Otherwise uses the active backend with the
+    tier -> model. Otherwise uses the active backend with the
     provided model string (backward compatibility).
 
     The backend runs the agent CLI/SDK as a plain subprocess — Booley is
@@ -43,14 +43,11 @@ async def call_agent(
 
     if step_name is not None and step_name in STEP_TIERS:
         tier = STEP_TIERS[step_name]
-        backend = cfg.backend_for_tier(tier)
-        params.model = cfg.model_for_tier(tier)
+        params.model = cfg.settings.model_for_tier(tier)
         if params.reasoning_effort is None:
-            params.reasoning_effort = cfg.effort_for_tier(tier)
-    else:
-        backend = cfg.active_backend
+            params.reasoning_effort = cfg.settings.effort_for_tier(tier)
 
-    return await backend.call(params, on_event=on_event)
+    return await cfg.active_backend.call(params, on_event=on_event)
 
 
 def extract_json(text: str) -> dict[str, Any] | None:

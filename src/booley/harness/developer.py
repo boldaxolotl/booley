@@ -1539,8 +1539,8 @@ def _write_developer_prompt_snapshot(
         metadata={
             "backend": _detect_backend_key(),
             "label": "developer",
-            "model": cfg.model_for_role("developer", "heavy"),
-            "reasoning_effort": cfg.effort_for_tier("heavy"),
+            "model": cfg.settings.model_for_role("developer", "heavy"),
+            "reasoning_effort": cfg.settings.effort_for_tier("heavy"),
             "run_index": run_index,
             "slug": ctx.slug,
             "ticket_type": ctx.ticket_type,
@@ -1906,7 +1906,7 @@ async def _launch_developer_agent(
     cfg = get_backend_config()
     # Resolve from the validated settings paired with the live backend so a
     # [models.roles] developer pin is authoritative here.
-    model = cfg.model_for_role("developer", "heavy")
+    model = cfg.settings.model_for_role("developer", "heavy")
 
     endpoint_env = {
         "BOOLEY_SLUG": slug,
@@ -1922,8 +1922,8 @@ async def _launch_developer_agent(
         "BOOLEY_STATE_FILE": str(state_path),
         # Propagate the provider so nested specialists run on the same backend
         # as the developer instead of falling back to the codex default.
-        "BOOLEY_PRIMARY_PROVIDER": cfg.provider,
-        "BOOLEY_PRIMARY_AUTH": cfg.auth,
+        "BOOLEY_PRIMARY_PROVIDER": cfg.settings.provider,
+        "BOOLEY_PRIMARY_AUTH": cfg.settings.auth,
         # Job admission role (ADR 0028): everything spawned under this
         # Developer Agent queues behind interactive work. Absent ⇒ interactive.
         "BOOLEY_AGENT_ROLE": "ticket",
@@ -1951,7 +1951,7 @@ async def _launch_developer_agent(
         timeout_seconds=7200,
         transcript_path=transcript_path,
         label="developer",
-        reasoning_effort=cfg.effort_for_tier("heavy"),
+        reasoning_effort=cfg.settings.effort_for_tier("heavy"),
         # Marks this call developer-level for the Codex backend, which
         # routes it through a per-ticket HOME (config.toml with BOOLEY_* env
         # + this MCP allowlist, no nested markers). Claude ignores the field.

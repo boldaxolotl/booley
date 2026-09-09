@@ -1423,7 +1423,7 @@ class TestLoadAgentSettingsFromToml:
 
         self._load()
 
-        assert self._get().provider == "claude"
+        assert self._get().settings.provider == "claude"
 
     def test_falls_back_to_cwd_when_env_unset(self, tmp_path, monkeypatch):
         root = self._write_project(
@@ -1435,7 +1435,7 @@ class TestLoadAgentSettingsFromToml:
 
         self._load()
 
-        assert self._get().provider == "claude"
+        assert self._get().settings.provider == "claude"
 
     def test_missing_toml_does_not_raise(self, tmp_path, monkeypatch):
         # No .booley_project/booley.toml at all — must not crash server startup.

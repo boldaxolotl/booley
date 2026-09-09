@@ -174,7 +174,7 @@ class TestLoadAgentSettings:
 class TestSpecialistSubprocessPath:
     """A specialist subprocess resolves settings lazily.
 
-    It resolves through _lazy_backend_config → _project_config_from_env, so the
+    It resolves through _lazy_agent_settings → _project_config_from_env, so the
     project's pins have to survive that path or the knob silently does nothing
     for exactly the agents it was built to configure.
     """

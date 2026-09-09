@@ -256,8 +256,8 @@ async def _invoke(ctx: BlockedContext) -> AgentResult:
                     "You are a read-only senior incident reviewer preparing a concise "
                     "blocked-ticket triage dossier grounded only in supplied evidence."
                 ),
-                model=cfg.model_for_role("triage_report", "standard"),
-                reasoning_effort=cfg.effort_for_tier("standard"),
+                model=cfg.settings.model_for_role("triage_report", "standard"),
+                reasoning_effort=cfg.settings.effort_for_tier("standard"),
                 cwd=ctx.worktree or ctx.project_root,
                 allowed_agent_capabilities=["Read", "Glob", "Grep"],
                 output_format=_schema(),

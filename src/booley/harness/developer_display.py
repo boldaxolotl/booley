@@ -319,7 +319,8 @@ def _display_ticket_banner(ctx: TicketContext) -> None:
     terminal.raw()
     _DISPLAY = {"claude": ("Claude", chrome), "codex": ("ChatGPT", chrome)}
     bcfg = get_backend_config()
-    p_name, p_color = _DISPLAY.get(bcfg.provider, (bcfg.provider, dim))
+    provider = bcfg.settings.provider
+    p_name, p_color = _DISPLAY.get(provider, (provider, dim))
     backend_line = f"{dim('agent')} {p_color(p_name)}"
 
     lines = [bold_amber(ctx.slug)]

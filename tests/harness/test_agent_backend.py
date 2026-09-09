@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.config.agent import _PROVIDER_TIER_MODELS
+from booley.config.agent import _PROVIDER_TIER_MODELS, AgentSettings
 from booley.config.settings import (
     _DEFAULT_TIER_MODELS,
     MODEL_MAP,
@@ -135,35 +135,39 @@ class TestClaudeSdkLaunchContract:
 # ===========================================================================
 
 
-class TestBackendConfig:
+class TestRuntimeBackendConfig:
     def setup_method(self):
         self.mock_active = MagicMock()
         self.mock_active.name = "MockActive"
 
     def test_model_for_tier_known(self):
         cfg = BackendConfig(
+            settings=AgentSettings(
+                tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"}
+            ),
             active_backend=self.mock_active,
-            tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"},
         )
-        assert cfg.model_for_tier("heavy") == "opus"
-        assert cfg.model_for_tier("standard") == "sonnet"
-        assert cfg.model_for_tier("light") == "haiku"
+        assert cfg.settings.model_for_tier("heavy") == "opus"
+        assert cfg.settings.model_for_tier("standard") == "sonnet"
+        assert cfg.settings.model_for_tier("light") == "haiku"
 
     def test_model_for_tier_unknown_falls_back_to_standard(self):
         cfg = BackendConfig(
+            settings=AgentSettings(
+                tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"}
+            ),
             active_backend=self.mock_active,
-            tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"},
         )
-        assert cfg.model_for_tier("nonexistent") == "sonnet"
+        assert cfg.settings.model_for_tier("nonexistent") == "sonnet"
 
-    def test_backend_for_tier_active(self):
+    def test_pairs_settings_with_active_backend(self):
+        settings = AgentSettings(tier_models=dict(_DEFAULT_TIER_MODELS))
         cfg = BackendConfig(
+            settings=settings,
             active_backend=self.mock_active,
-            tier_models=dict(_DEFAULT_TIER_MODELS),
         )
-        assert cfg.backend_for_tier("heavy") is self.mock_active
-        assert cfg.backend_for_tier("standard") is self.mock_active
-        assert cfg.backend_for_tier("light") is self.mock_active
+        assert cfg.settings is settings
+        assert cfg.active_backend is self.mock_active
 
 
 # ===========================================================================
@@ -194,7 +198,7 @@ class TestStepTiers:
 # ===========================================================================
 
 
-class TestLoadModelsConfig:
+class TestLoadBackendConfig:
     def setup_method(self):
         # Save and reset global state before each test
         self._saved_model_map = dict(MODEL_MAP)
@@ -212,8 +216,8 @@ class TestLoadModelsConfig:
         cfg = get_backend_config()
         assert cfg is not None
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
-        assert cfg.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert cfg.settings.provider == "claude"
+        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
 
     def test_direct_settings_reload_refreshes_runtime_backend(self, tmp_path):
         """Runtime notices a Config reload performed by a config-only caller."""
@@ -228,7 +232,7 @@ class TestLoadModelsConfig:
 
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.provider == "codex"
+        assert cfg.settings.provider == "codex"
 
     def test_explicit_models_override_defaults(self, tmp_path):
         """[models] section overrides the hardcoded codex tier models."""
@@ -247,8 +251,8 @@ class TestLoadModelsConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.tier_models["heavy"] == "gpt-5.5-turbo"
-        assert cfg.tier_models["light"] == "gpt-5.4-mini"
+        assert cfg.settings.tier_models["heavy"] == "gpt-5.5-turbo"
+        assert cfg.settings.tier_models["light"] == "gpt-5.4-mini"
 
     def test_claude_provider_opt_in(self, tmp_path):
         """[agent] provider = 'claude' flips the active backend to Claude."""
@@ -266,8 +270,8 @@ class TestLoadModelsConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
-        assert cfg.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert cfg.settings.provider == "claude"
+        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
 
     def test_retired_primary_alias_is_ignored(self, tmp_path):
         from booley.runtime.agent_backend import ClaudeSDKBackend
@@ -284,7 +288,7 @@ class TestLoadModelsConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
+        assert cfg.settings.provider == "claude"
 
     def test_invalid_provider_raises(self, tmp_path):
         """An invalid provider is a hard error — never a silent fallback."""
@@ -307,8 +311,8 @@ class TestLoadModelsConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg is not None
-        assert cfg.provider == "claude"
-        assert cfg.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert cfg.settings.provider == "claude"
+        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
 
     def test_default_provider_is_claude(self, tmp_path):
         """With no provider set, the default is claude (never a silent codex)."""
@@ -323,7 +327,7 @@ class TestLoadModelsConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
+        assert cfg.settings.provider == "claude"
 
     def test_auth_from_toml(self, tmp_path):
         """The single auth field is loaded from toml."""
@@ -337,7 +341,7 @@ class TestLoadModelsConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.auth == "subscription"
+        assert cfg.settings.auth == "subscription"
 
     def test_retired_primary_auth_alias_is_ignored(self, tmp_path):
         toml_dir = tmp_path / ".booley" / "project"
@@ -350,7 +354,7 @@ class TestLoadModelsConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.auth == "auto"
+        assert cfg.settings.auth == "auto"
 
     def test_lazy_default_honors_provider_env(self, monkeypatch):
         """get_backend_config() reads BOOLEY_PRIMARY_PROVIDER for nested agents."""
@@ -360,7 +364,7 @@ class TestLoadModelsConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
+        assert cfg.settings.provider == "claude"
 
     def test_provider_handoff_preserves_project_auth(self, tmp_path, monkeypatch):
         (tmp_path / "booley.toml").write_text(
@@ -371,7 +375,7 @@ class TestLoadModelsConfig:
         monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
         set_backend_config(None)
 
-        assert get_backend_config().auth == "subscription"
+        assert get_backend_config().settings.auth == "subscription"
 
     def test_codex_resume_command_and_thread_id(self, tmp_path, monkeypatch):
         from booley.runtime._codex_backend import _codex_build_cmd, _codex_thread_id
@@ -395,7 +399,7 @@ class TestLoadModelsConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
+        assert cfg.settings.provider == "claude"
 
     def test_lazy_resolves_provider_from_project_toml(self, tmp_path, monkeypatch):
         """No env hand-off → resolve provider from BOOLEY_PROJECT_DIR/booley.toml.
@@ -419,8 +423,8 @@ class TestLoadModelsConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.provider == "codex"
-        assert cfg.auth == "subscription"
+        assert cfg.settings.provider == "codex"
+        assert cfg.settings.auth == "subscription"
 
     def test_lazy_raises_in_container_without_provider(self, tmp_path, monkeypatch):
         """Inside a container with no env, no toml, no app signal → fail loud."""
@@ -471,7 +475,7 @@ class TestLoadModelsConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.provider == "codex"
+        assert cfg.settings.provider == "codex"
 
     def test_agent_app_none_does_not_resolve(self, tmp_path, monkeypatch):
         """BOOLEY_AGENT_APP='none' is not a provider → still fail loud in container."""
@@ -495,7 +499,7 @@ class TestLoadModelsConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.provider == "claude"
+        assert cfg.settings.provider == "claude"
 
     def test_booley_toml_preferred_over_pipeline_toml(self, tmp_path):
         """booley.toml takes precedence when both exist."""
@@ -515,7 +519,7 @@ class TestLoadModelsConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.auth == "subscription"
+        assert cfg.settings.auth == "subscription"
 
 
 # ===========================================================================

@@ -6,6 +6,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from booley.core.boundary import as_dict
 from booley.core.project_dir import resolve_checkout_project_dir
 
 SANDBOX_IMAGE = "booley-sandbox"
@@ -31,7 +32,8 @@ def project_sandbox_image(project_root: Path) -> str:
             data = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError):
         return SANDBOX_IMAGE
-    raw = data.get("sandbox", {}).get("image", "")
+    sandbox = as_dict(data.get("sandbox"), default={}) or {}
+    raw = sandbox.get("image", "")
     if isinstance(raw, str) and raw.strip():
         return raw
     if (project_dir / "docker" / "Dockerfile").is_file():

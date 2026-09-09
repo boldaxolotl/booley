@@ -3122,7 +3122,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     """Return the single agent provider this project's runs will use.
 
     Booley runs exactly one provider, and there is ALWAYS an answer: this
-    mirrors ``_backend_config._lazy_backend_config`` --
+    mirrors ``config.agent._lazy_agent_settings`` --
     ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] provider`` ->
     ``BOOLEY_AGENT_APP`` (exported by the devcontainer) -> ``_DEFAULT_PROVIDER``.
     An omitted ``[agent] provider`` is not "unknown", it is the default, so the

@@ -54,6 +54,7 @@ class _DummyConfig:
     provider = "claude"
 
     def __init__(self) -> None:
+        self.settings = self
         self.active_backend = _DummyBackend()
 
     def model_for_tier(self, _tier: str) -> str:

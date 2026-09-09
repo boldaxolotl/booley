@@ -6355,6 +6355,9 @@ class TestDeveloperProbe:
         monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
 
         class _Cfg:
+            def __init__(self):
+                self.settings = self
+
             def model_for_tier(self, tier):
                 assert tier == "light"  # cheapest real call
                 return "test-model"
@@ -6391,6 +6394,9 @@ class TestDeveloperProbe:
         monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
 
         class _Cfg:
+            def __init__(self):
+                self.settings = self
+
             def model_for_tier(self, tier):
                 return "test-model"
 

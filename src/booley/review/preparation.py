@@ -915,8 +915,8 @@ async def _invoke_agent(
             "You are a read-only senior reviewer preparing a human triage package. "
             "Ground every claim in the supplied ticket, Git evidence, logs, or source."
         ),
-        model=cfg.model_for_role("triage_report", "standard"),
-        reasoning_effort=cfg.effort_for_tier("standard"),
+        model=cfg.settings.model_for_role("triage_report", "standard"),
+        reasoning_effort=cfg.settings.effort_for_tier("standard"),
         cwd=workspace.repository,
         allowed_agent_capabilities=["Read", "Glob", "Grep"],
         output_format=_output_schema(),
@@ -1143,7 +1143,7 @@ def _write_ready_manifest(
             "briefing_sha256": _file_sha256(briefing_path),
             "duration_s": round(duration, 2),
             "cost_usd": round(result.cost_usd, 4),
-            "model": get_backend_config().model_for_role("triage_report", "standard"),
+            "model": get_backend_config().settings.model_for_role("triage_report", "standard"),
         }
     )
     if html_path is None:

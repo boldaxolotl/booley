@@ -216,58 +216,37 @@ def _build_agent_settings(
     )
 
 
-def _lazy_agent_settings() -> AgentSettings:
-    """Resolve agent settings when nothing has been explicitly configured.
+def _unresolved_provider_error() -> BackendConfigError:
+    return BackendConfigError(
+        "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
+        "is unset, no booley.toml with an [agent] provider was found at "
+        "BOOLEY_PROJECT_DIR, and BOOLEY_AGENT_APP names no provider. "
+        "If you are running a specialist directly (e.g. "
+        "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
+        "of:\n"
+        "  * export BOOLEY_PRIMARY_PROVIDER=claude   # or codex\n"
+        '  * add an [agent] provider = "claude" block to booley.toml\n'
+        "In a developer run this instead means the propagation broke — "
+        "rebuild the sandbox image if it predates the provider hand-off."
+    )
 
-    Resolution order, most-authoritative first:
 
-    1. ``BOOLEY_PRIMARY_PROVIDER`` — the developer's hand-off to nested
-       specialists inside a container.
-    2. The project's ``booley.toml`` reached via ``BOOLEY_PROJECT_DIR``. This
-       is what lets a specialist *subprocess* honor ``provider`` even when the
-       env hand-off was dropped (a stale image, a missed propagation) — the
-       toml is mounted in the container, so it's a reliable second source.
-    3. ``BOOLEY_AGENT_APP`` — the devcontainer always exports which agent app
-       runs the session (``claude``/``codex``/``none``; see
-       ``devcontainer.build_devcontainer_spec``). Its vocabulary is exactly
-       the provider vocabulary, so when a bare specialist is launched from a
-       terminal inside the container — with no developer to hand off
-       ``BOOLEY_PRIMARY_PROVIDER`` and no ``[agent] provider`` in booley.toml —
-       the app signal reliably names the backend. Falling back to it turns a
-       hard ``BackendConfigError`` into a working standalone invocation.
-    4. Fail loud inside a container only when even the app signal is absent
-       (``none``/unset): tell the user exactly how to pin the provider. On the
-       host (tests, ad-hoc MCP endpoint runs) fall back to ``_DEFAULT_PROVIDER`` —
-       Claude, never codex, so a missing config can't 401.
-    """
+def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
+    """Resolve the provider from hand-off, Project, app, or host default."""
     import os
 
-    # Read the project toml once, up front: whichever branch settles the
-    # provider, the project's [models] / [models.roles] still apply. Without
-    # this a specialist subprocess — which never calls load_agent_settings —
-    # would silently ignore every model the project pinned.
-    project = _project_config_from_env()
-    tiers = project.tier_models if project else None
-    roles = project.role_models if project else None
-
     env_provider = os.environ.get("BOOLEY_PRIMARY_PROVIDER")
-    env_auth = os.environ.get("BOOLEY_PRIMARY_AUTH")
-    auth = (
-        _env_auth()
-        if env_auth is not None
-        else (project.auth if project else None) or _DEFAULT_AUTH
-    )
     if env_provider is not None:
         if env_provider not in _VALID_PROVIDERS:
             logger.warning(
                 "Unknown BOOLEY_PRIMARY_PROVIDER %r; using %s", env_provider, _DEFAULT_PROVIDER
             )
             env_provider = _DEFAULT_PROVIDER
-        return _build_agent_settings(env_provider, auth, tiers, roles)
+        return env_provider
 
     if project is not None and project.provider is not None:
         logger.info("Resolved provider=%s from project booley.toml", project.provider)
-        return _build_agent_settings(project.provider, project.auth or _DEFAULT_AUTH, tiers, roles)
+        return project.provider
 
     app_provider = os.environ.get("BOOLEY_AGENT_APP")
     if app_provider in _VALID_PROVIDERS:
@@ -276,23 +255,33 @@ def _lazy_agent_settings() -> AgentSettings:
             "hand-off — standalone specialist invocation)",
             app_provider,
         )
-        return _build_agent_settings(app_provider, auth, tiers, roles)
+        return app_provider
 
     if _inside_container():
-        raise BackendConfigError(
-            "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
-            "is unset, no booley.toml with an [agent] provider was found at "
-            "BOOLEY_PROJECT_DIR, and BOOLEY_AGENT_APP names no provider. "
-            "If you are running a specialist directly (e.g. "
-            "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
-            "of:\n"
-            "  * export BOOLEY_PRIMARY_PROVIDER=claude   # or codex\n"
-            '  * add an [agent] provider = "claude" block to booley.toml\n'
-            "In a developer run this instead means the propagation broke — "
-            "rebuild the sandbox image if it predates the provider hand-off."
-        )
+        raise _unresolved_provider_error()
 
-    return _build_agent_settings(_DEFAULT_PROVIDER, auth, tiers, roles)
+    return _DEFAULT_PROVIDER
+
+
+def _lazy_agent_settings() -> AgentSettings:
+    """Resolve settings from environment, Project configuration, and defaults."""
+    import os
+
+    # Specialists load Project pins lazily when no parent developer configured
+    # this process. Provider precedence remains hand-off, Project, app, default.
+    project = _project_config_from_env()
+    auth = (
+        _env_auth()
+        if os.environ.get("BOOLEY_PRIMARY_AUTH") is not None
+        else (project.auth if project else None) or _DEFAULT_AUTH
+    )
+
+    return _build_agent_settings(
+        _resolve_lazy_provider(project),
+        auth,
+        project.tier_models if project else None,
+        project.role_models if project else None,
+    )
 
 
 def get_agent_settings() -> AgentSettings:
@@ -573,7 +562,7 @@ def _env_auth() -> str:
 
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
-    ``_lazy_backend_config`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
+    ``_lazy_agent_settings`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
     """
     import os
 
@@ -588,7 +577,7 @@ def resolve_auth_policy() -> str:
     """The effective ``[agent] auth`` policy, resolved without side effects.
 
     For callers that need only the auth policy (sandbox env forwarding, doctor
-    reporting) and must never trip ``_lazy_backend_config``'s fail-loud
+    reporting) and must never trip ``_lazy_agent_settings``'s fail-loud
     provider resolution. Order: ``BOOLEY_PRIMARY_AUTH`` (the developer's
     hand-off into containers) beats the project's booley.toml; absent both,
     ``auto``. Never raises: an invalid toml value degrades to ``auto`` with a
