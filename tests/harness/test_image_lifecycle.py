@@ -1114,6 +1114,69 @@ def test_docker_image_inventory_rejects_malformed_rows(
         lifecycle._DockerCli().image_references()
 
 
+def test_docker_image_inventory_rejects_conflicting_reference_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = "sha256:" + "a" * 64
+    second_id = "sha256:" + "b" * 64
+    output = (
+        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{first_id}"}}\n'
+        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{second_id}"}}\n'
+    )
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="conflicting IDs"):
+        lifecycle._DockerCli().image_references()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message"),
+    [
+        ("image_references", "inventory Docker image references"),
+        ("container_image_ids", "inventory Docker containers"),
+    ],
+)
+def test_docker_inventory_reports_command_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=message):
+        getattr(lifecycle._DockerCli(), method_name)()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "message"),
+    [
+        ("image_references", "image inventory denied"),
+        ("container_image_ids", "container inventory denied"),
+    ],
+)
+def test_docker_inventory_reports_command_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr=message),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=message):
+        getattr(lifecycle._DockerCli(), method_name)()
+
+
 def test_docker_container_inventory_includes_running_and_stopped_containers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1129,6 +1192,43 @@ def test_docker_container_inventory_includes_running_and_stopped_containers(
     monkeypatch.setattr(lifecycle.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
     assert lifecycle._DockerCli().container_image_ids() == frozenset({first_id, second_id})
+
+
+def test_docker_container_inventory_reports_inspect_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, stdout="container-id\n", stderr=""),
+            OSError("inspect unavailable"),
+        )
+    )
+
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        result = next(results)
+        if isinstance(result, OSError):
+            raise result
+        return result
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inspect unavailable"):
+        lifecycle._DockerCli().container_image_ids()
+
+
+def test_docker_container_inventory_rejects_invalid_inspect_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, stdout="container-id\n", stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="container disappeared"),
+        )
+    )
+    monkeypatch.setattr(lifecycle.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="container disappeared"):
+        lifecycle._DockerCli().container_image_ids()
 
 
 def test_docker_tag_removal_is_exact_non_forced_and_does_not_prune_parents(

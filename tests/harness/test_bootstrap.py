@@ -788,6 +788,29 @@ def test_base_image_check_reports_pending_release_tag_cleanup(
     assert finding.detail == f"obsolete Docker image tag can be removed: {release}"
 
 
+def test_base_image_reports_removed_and_container_retained_release_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    removed = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    retained = "ghcr.io/boldaxolotl/booley-sandbox:0.2.4"
+    result = LifecycleResult(
+        "booley-sandbox",
+        "sha256:id",
+        Status.CHANGED,
+        cleanup=ImageCleanup(removed=(removed,), retained_required=(retained,)),
+    )
+    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
+
+    actual, finding = bootstrap._reconcile_base_image(Intent.ENSURE, verbose=False)
+
+    assert actual is result
+    assert finding.state is bootstrap.BootstrapState.CHANGED
+    assert finding.detail == (
+        f"removed obsolete Docker image tags: {removed}; "
+        f"retained Docker image tags still required by containers: {retained}"
+    )
+
+
 @pytest.mark.parametrize(
     ("sidecar_state", "bootstrap_state"),
     tuple(zip(bootstrap.host_sidecars.SidecarState, bootstrap.BootstrapState, strict=True)),

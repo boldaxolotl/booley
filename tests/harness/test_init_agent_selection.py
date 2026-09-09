@@ -458,6 +458,23 @@ def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch)
     )
 
 
+def test_image_lifecycle_step_returns_after_reporting_pending_cleanup(tmp_path, monkeypatch):
+    release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.CURRENT,
+        cleanup=ImageCleanup(pending=(release,)),
+    )
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert ctx.results[-1] == init_cmd.StepResult(
+        "docker_image", "warn", "obsolete Session Image tags remain"
+    )
+
+
 def test_image_lifecycle_step_reports_cleanup_alongside_stale_image(tmp_path, monkeypatch):
     pending = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
     retained = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.4"
