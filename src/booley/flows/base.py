@@ -175,7 +175,7 @@ class FlowMechanics:
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
         execution_state = getattr(self, "context", self)
-        resolved = execution_state.execution_adapter.validate_and_resolve(self.name, self.args)
+        resolved = execution_state.execution_adapter.validate_and_resolve(self.args)
         if isinstance(resolved, EndpointOutcome):
             return resolved
         execution_state.flow_acceptance = resolved

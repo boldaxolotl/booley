@@ -27,8 +27,7 @@ class FlowSession(EndpointState):
         execution_adapter = execution_adapter or StandaloneFlowExecution()
         self.publication_resources = ExitStack()
         self.flow = flow
-        self.execution_adapter = execution_adapter
-        self._acceptance_recorder = execution_adapter
+        self.configure_flow_execution(execution_adapter)
         self.flow_acceptance = ResolvedFlowAcceptance()
         self.name = flow.name
         self.endpoint_kind = "flow"

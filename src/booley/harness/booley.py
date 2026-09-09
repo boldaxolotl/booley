@@ -1598,8 +1598,7 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
         if isinstance(endpoint, BuiltinFlow):
             return endpoint.main(argv, adapter=adapter)
         if isinstance(endpoint, FlowMechanics):
-            endpoint.execution_adapter = adapter
-            endpoint._acceptance_recorder = adapter
+            endpoint.configure_flow_execution(adapter)
     return endpoint.main(argv)
 
 

@@ -825,7 +825,7 @@ def _mcp_tool_def_from_class(
     **extra: Any,
 ) -> dict[str, Any]:
     """Build an MCP tool definition dict from an endpoint class and extracted schema."""
-    from booley.flows.base import BuiltinFlow
+    from booley.flows.base import BuiltinFlow, FlowMechanics
     from booley.specialists.specialist import Specialist
 
     result = {
@@ -835,6 +835,7 @@ def _mcp_tool_def_from_class(
         "schema": schema,
         "default_timeout": getattr(cls, "default_timeout", 0),
         "is_specialist": issubclass(cls, Specialist),
+        "is_flow": issubclass(cls, FlowMechanics),
         "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
     }
@@ -3150,8 +3151,11 @@ async def _dispatch_booley_mcp_tool(
 
     # Custom MCP tools run via file path; builtins via python -m
     module = mcp_tool_def["module"]
-    if mcp_tool_def.get("is_builtin_flow") and os.environ.get("BOOLEY_TICKET_FILE"):
-        cmd = ["python", "-m", "booley.ticket_board.flow_runner", name, *argv]
+    if mcp_tool_def.get("is_flow") and os.environ.get("BOOLEY_TICKET_FILE"):
+        cmd = ["python", "-m", "booley.ticket_board.flow_runner"]
+        if mcp_tool_def.get("is_custom") and mcp_tool_def.get("custom_path"):
+            cmd.extend(["--custom-path", mcp_tool_def["custom_path"]])
+        cmd.extend([name, *argv])
     elif mcp_tool_def.get("is_custom") and mcp_tool_def.get("custom_path"):
         cmd = ["python", mcp_tool_def["custom_path"], *argv]
     else:

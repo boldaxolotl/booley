@@ -34,7 +34,6 @@ class FlowExecutionAdapter(AcceptanceRecorder, Protocol):
 
     def validate_and_resolve(
         self,
-        flow_name: str,
         request: FlowRequest,
     ) -> ResolvedFlowAcceptance | EndpointOutcome: ...
 
@@ -59,7 +58,6 @@ class StandaloneFlowExecution(NoAcceptanceRecorder):
 
     def validate_and_resolve(
         self,
-        flow_name: str,
         request: FlowRequest,
     ) -> ResolvedFlowAcceptance | EndpointOutcome:
         if os.environ.get("BOOLEY_TICKET_FILE"):

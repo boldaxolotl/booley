@@ -57,7 +57,7 @@ def test_ticket_adapter_rejects_unsafe_runtime_ticket_slug_before_loading(
     load_basis = Mock()
     monkeypatch.setattr("booley.ticket_board.flow_execution.TicketIO.load_basis", load_basis)
     outcome = TicketBoardFlowExecution().validate_and_resolve(
-        "sim", FlowRequest(target="demo", work_dir=tmp_path)
+        FlowRequest(target="demo", work_dir=tmp_path)
     )
 
     assert "unsafe ticket slug" in outcome.report_text

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_dict
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.evidence.acceptance import (
     PairedProjectBaseline,
@@ -48,7 +49,14 @@ class TicketAcceptanceRecorder:
             return {}
         fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
         raw_basis = fields.get("acceptance_basis")
-        return dict(raw_basis) if isinstance(raw_basis, dict) else {}
+        if raw_basis is None:
+            return {}
+        try:
+            return require_dict(raw_basis, field="acceptance_basis")
+        except BoundaryError as exc:
+            from booley.flows.execution_persistence import AcceptanceRecordingError
+
+            raise AcceptanceRecordingError(str(exc)) from exc
 
     def record_changes(
         self,
@@ -97,7 +105,6 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
 
     def validate_and_resolve(
         self,
-        flow_name: str,
         request: FlowRequest,
     ) -> ResolvedFlowAcceptance | EndpointOutcome:
         try:
@@ -108,7 +115,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             return ResolvedFlowAcceptance(tuple(basis.bindings), paired, ticket_backed=True)
         except TicketSlugError as exc:
             return self._blocked(f"{BLOCK_REASON}: {exc}")
-        except (OSError, AcceptanceBasisError, ValueError) as exc:
+        except (OSError, AcceptanceBasisError) as exc:
             return self._blocked(str(exc))
 
     def _load_basis(self) -> tuple[AcceptanceBasis, Path]:
