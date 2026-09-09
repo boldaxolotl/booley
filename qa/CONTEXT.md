@@ -4,7 +4,8 @@ This is the canonical vocabulary for Booley's public qualification suite. Shared
 product concepts such as **Booley Flow** and **Trace Artifact** are defined in
 the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
 [Feedback glossary](../src/booley/feedback/CONTEXT.md). File shapes and execution
-behavior belong in [FORMAT.md](FORMAT.md) and [PROTOCOL.md](PROTOCOL.md).
+behavior belong in [FORMAT.md](agents/FORMAT.md) and
+[PROTOCOL.md](agents/PROTOCOL.md).
 
 ## Language
 
