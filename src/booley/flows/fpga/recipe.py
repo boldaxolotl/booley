@@ -7,7 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..recipe_evidence import jsonable, recipe_snapshot_fingerprint
+from booley.evidence.recipe import jsonable, recipe_snapshot_fingerprint
+
 from .profiles import VivadoProfile, resolve_fpga_profile
 
 

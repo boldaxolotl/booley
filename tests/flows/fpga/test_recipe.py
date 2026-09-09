@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from booley.evidence.recipe import implementation_comparison_basis, recipe_changes
 from booley.flows.fpga.recipe import (
     fpga_recipe_snapshot,
     fpga_recipe_snapshot_fingerprint,
 )
-from booley.flows.recipe_evidence import implementation_comparison_basis, recipe_changes
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 

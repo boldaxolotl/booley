@@ -29,6 +29,13 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
+from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
+from booley.evidence.timing import (
+    ClockTiming,
+    make_clock_timing,
+    per_clock_to_json,
+    worst_clock,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -64,12 +71,6 @@ from ..baseline_worktree import (
     git_short_sha,
     resolve_ticket_baseline,
 )
-from ..clock_timing import (
-    ClockTiming,
-    make_clock_timing,
-    per_clock_to_json,
-    worst_clock,
-)
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
@@ -91,7 +92,6 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
-from ..recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -438,7 +438,7 @@ def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
     """Build the per-clock timing map from ``STA_PERCLOCK`` markers.
 
     Each clock's ``critical_path_ps``/``fmax_mhz`` is derived from its period and
-    worst setup slack by the shared :mod:`booley.flows.clock_timing` helper, so
+    worst setup slack by the shared :mod:`booley.evidence.timing` helper, so
     the STA and Vivado flows share one ns→ps→MHz derivation. ``critical_path_ps``
     intentionally means STA timing — ABC ``delay =`` mapper estimates are never
     a source here.

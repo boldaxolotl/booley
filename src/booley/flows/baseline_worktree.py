@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_str
+from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.fusesoc.fusesoc_registry import state_cores_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.runtime.submodule_materialization import (
@@ -39,8 +40,6 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.targets.domain import TargetHandle
-
-from .recipe_evidence import BASELINE_REF_PARAM
 
 logger = logging.getLogger(__name__)
 

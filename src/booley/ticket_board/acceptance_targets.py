@@ -581,7 +581,7 @@ def _validate_comparison_basis(
         return [f"{binding.label}: cannot compare Target measurement basis: {exc}"]
     if snapshots is None:
         return []
-    from booley.flows.recipe_evidence import implementation_comparison_basis, recipe_changes
+    from booley.evidence.recipe import implementation_comparison_basis, recipe_changes
 
     baseline_snapshot, candidate_snapshot = snapshots
     changes = recipe_changes(

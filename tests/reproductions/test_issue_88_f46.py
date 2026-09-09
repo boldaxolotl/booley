@@ -10,11 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.criteria.state import (
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    compute_source_fingerprint,
 )
 from booley.criteria.templates import CriteriaTemplate
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.criteria_summary_format import build_criteria_summary_lines
 

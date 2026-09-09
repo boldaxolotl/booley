@@ -116,7 +116,23 @@ deliberately, rather than silently opening the whole trace and letting you read
 the wrong picture. A bare `bwave gui` needs no WCP server: it falls back to
 launching the editor CLI on the file.
 
-Usually the fix is **"Developer: Reload Window"**, not a rebuild. VaporView only
+Booley first checks whether VaporView is installed in the attached remote
+window. If it is missing, install it there with
+`code --install-extension lramseyer.vaporview`. If the Session Runtime cannot
+reach the Marketplace, obtain the official VaporView VSIX on a networked host,
+from the matching version on the
+[official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
+(`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
+use **Extensions: Install from VSIX...** in the attached remote window.
+After installation, run
+`python -m booley.runtime.incontainer_vaporview`, then **Developer: Reload
+Window**. Verify with `code --list-extensions --show-versions` in the remote
+terminal; it must list `lramseyer.vaporview@1.5.4`. Be careful with a host
+terminal: a plain host `code` command may install locally instead of into the
+attached container.
+
+When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
+not a rebuild. VaporView only
 wakes up for a waveform tab, so Booley patches its manifest to start on every
 window instead — but that patch runs from `postAttachCommand`, which VS Code
 runs *after* it has already started the extension host. On the first window of a

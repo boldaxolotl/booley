@@ -117,9 +117,9 @@ def perclock_timing_tcl() -> str:
     (``-path_delay max``) and hold (``-path_delay min``) slack against paths
     *ending* in that clock domain (``-to $clk``). The marker carries the clock's
     name, its constrained period (ns), and both slacks (ns) — Python derives the
-    per-clock critical path/Fmax from period and setup slack (:func:`booley.dev_support
-    .clock_timing.derive_critical_path_and_fmax`), exactly as the overall path
-    does. A clock with no setup/hold path emits ``NA`` for that slack.
+    per-clock critical path/Fmax from period and setup slack
+    (:func:`booley.evidence.timing.derive_critical_path_and_fmax`), exactly as the
+    overall path does. A clock with no setup/hold path emits ``NA`` for that slack.
 
     Every step is wrapped in ``catch``: a build lacking ``all_clocks`` /
     ``-to <clock>`` support degrades to *no* per-clock markers (the aggregate

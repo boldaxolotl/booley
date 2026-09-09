@@ -10,11 +10,11 @@ from unittest.mock import patch
 import pytest
 
 from booley.criteria.state import (
-    SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    compute_source_fingerprint,
 )
 from booley.criteria.templates import cycle_count_criterion_key
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
