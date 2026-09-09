@@ -51,7 +51,7 @@ The ticket-driven execution mode: a `booley run` invocation, issued from inside 
 _Avoid_: batch mode, automated mode, host mode
 
 **Interactive Mode**:
-Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; there is no Ticket, Scope, Developer Agent, Harness-managed state file, or Criteria tracking.
+Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Preflight**:
@@ -226,7 +226,7 @@ An immutable, completion-ordered record of one normalized Criterion outcome prod
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
+The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
 _Avoid_: final booley_state, cached status, review report
 
 **Simulation Criterion**:
@@ -241,8 +241,12 @@ _Avoid_: cycle time, runtime, performance score
 A specialized Simulation Criterion for one Target and named test, satisfied only when the test passes and its Cycle Count meets every declared threshold. A mandatory Cycle Count Criterion fulfills the simulation requirement for that test without requiring a duplicate Simulation Criterion.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
 
+**Unaccepted Review**:
+Human inspection of a Ticket whose work has not passed acceptance. It retains outstanding Criteria and supports human-directed verification before first acceptance; entering review alone never permits completion.
+_Avoid_: forced acceptance, accepted hold
+
 **Ticket Board**:
-The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
+The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as execution pauses; blocked work may explicitly enter unaccepted human review while retaining outstanding gates; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Acceptance Basis**:
@@ -380,7 +384,7 @@ An immutable, completion-ordered record of one normalized Criterion outcome prod
 _Avoid_: booley_state entry, raw Flow result, execution identity
 
 **Acceptance Snapshot**:
-The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
+The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Accepted review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
 _Avoid_: final booley_state, cached status, review report
 
 ## Retired and ambiguous terminology

@@ -146,7 +146,7 @@ class TestTransitions:
     def test_transition_error_lists_allowed_destinations(self):
         error = format_transition_error(TicketState.BLOCKED, TicketState.DONE)
         assert error == (
-            "illegal ticket transition blocked -> done; legal from blocked: queued, running"
+            "illegal ticket transition blocked -> done; legal from blocked: queued, review, running"
         )
 
     def test_review_only_has_normal_transition_to_done(self):

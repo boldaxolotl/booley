@@ -125,14 +125,9 @@ def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None
 
     criteria_data = state_data
     if entry.get("status") in {"review", "done"}:
-        from .acceptance_ledger import read_acceptance
+        from booley.review.entry import criteria_projection
 
-        accepted = read_acceptance(logs_dir / slug)
-        criteria_data = (
-            {"criteria": accepted.snapshot.criteria}
-            if accepted.kind == "accepted" and accepted.snapshot is not None
-            else None
-        )
+        criteria_data = criteria_projection(logs_dir / slug)
     cr = _load_criteria_summary(criteria_data)
     if cr is not None:
         entry["criteria_passed"], entry["criteria_total"] = cr

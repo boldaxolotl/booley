@@ -217,6 +217,7 @@ class CriterionRow:
     outcome: str
     freshness: str
     metric: str
+    availability: str = "available"
 
     @classmethod
     def parse(cls, value: Any) -> CriterionRow:
@@ -231,10 +232,17 @@ class CriterionRow:
             _enum(row, "outcome", CRITERION_OUTCOMES),
             _enum(row, "freshness", CRITERION_FRESHNESS),
             require_str(row, "metric"),
+            _enum(
+                {"availability": row.get("availability", "available")},
+                "availability",
+                {"available", "unavailable"},
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         status = "STALE" if self.freshness == "stale" else self.outcome.replace("_", " ")
+        if self.availability == "unavailable":
+            status = "unavailable (no observation)"
         return {
             "category": self.category,
             "criterion": self.criterion,
@@ -243,6 +251,7 @@ class CriterionRow:
             "freshness": self.freshness,
             "status": status,
             "metric": self.metric,
+            "availability": self.availability,
         }
 
 
@@ -382,6 +391,7 @@ class ReviewPackage(Mapping[str, Any]):
     run_economics: str
     health: Mapping[str, Any]
     feature_branch: str
+    inspection: Mapping[str, Any] | None = None
     kind: str = "review"
     version: int = PACKAGE_VERSION
 
@@ -402,7 +412,19 @@ class ReviewPackage(Mapping[str, Any]):
             report_path = _optional_path(row, "developer_report_path")
             if report_path is None:
                 raise ReviewArtifactError("developer_report_path must not be null")
+            inspection = row.get("inspection")
+            if inspection is not None:
+                inspection = require_dict(inspection, field="inspection")
+                _enum(inspection, "disposition", {"accepted", "unaccepted"})
+                if inspection.get("schema") != 1:
+                    raise ReviewArtifactError("unsupported inspection schema")
+                if (
+                    inspection["disposition"] == "unaccepted"
+                    and row["assessment"]["recommendation"] == "approve"
+                ):
+                    raise ReviewArtifactError("unaccepted inspection cannot recommend approval")
             return cls(
+                inspection=_freeze(inspection) if inspection is not None else None,
                 slug=require_str(row, "slug"),
                 repositories=repositories,
                 criteria=tuple(
@@ -453,6 +475,7 @@ class ReviewPackage(Mapping[str, Any]):
         return {
             "version": self.version,
             "kind": self.kind,
+            "inspection": _thaw(self.inspection),
             "slug": self.slug,
             "feature_branch": self.feature_branch,
             "base_sha": primary.base_sha,

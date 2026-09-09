@@ -165,8 +165,10 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
     contract = " ".join(review.split())
 
     for required in (
-        "Ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
-        "Do not hand it back to the Runner for partial rework",
+        "For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
+        "For a briefing marked **unaccepted**",
+        "accepted snapshots are immutable",
+        "only a successful finalization makes approval available",
         "This is a clean start",
         "Do not selectively retain reviewed work",
         "never resumes through an ordinary move to `queued`",
