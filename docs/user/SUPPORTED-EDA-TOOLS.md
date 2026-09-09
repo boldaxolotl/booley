@@ -175,9 +175,7 @@ may override the Python rows (see
 
 Verilator 5.052 includes the nested-shift compiler fix required for native
 coverage. The image includes LZ4 development headers for native FST model
-builds and retains the system allocator. See the
-[upgrade acceptance record](../internals/verilator-5052-acceptance.md) for
-validated harnesses, waveform checks, and per-instance coverage requirements.
+builds and retains the system allocator.
 
 Check what your image actually has rather than trusting the table after an
 upgrade:

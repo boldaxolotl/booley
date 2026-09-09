@@ -23,6 +23,8 @@ simulation, synthesis, linting, and ticket-based workflows.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
   framework code must not hardcode project paths or names.
+- Keep implementation plans under `docs/plans/`. Plans are local-only artifacts
+  and must not be committed to version control.
 
 ## Agent skills
 
