@@ -58,7 +58,7 @@ cannot decide whether an expectation or oracle is meaningful; review does that.
 | `summary.md` | Profile verdicts, tested identities, operational completion, missing/failed work, findings, deviations, and cleanup |
 
 The containing directory supplies the run ID to result/finding records; external
-references use run ID plus record ID. Common release/image inputs need not repeat
+references use run ID plus record ID. Common release and Session Image inputs need not repeat
 on every result. Changes created by steps are recorded as outputs, not by mutating
 the original run declaration. Retain evidence outside disposable Project state.
 
@@ -100,7 +100,8 @@ It rejects missing sets, unused sets, duplicate checks, and sets that belong to
 another scenario. Supporting steps are derived from the selected checks and scenario
 ordering rather than repeated in `profiles.yaml`.
 
-The validator is standalone so authoring does not import the system under test.
+The validator is standalone so authoring does not import the installed Booley release
+under test.
 Its strict metadata checks reject unknown coverage/profile fields without adding
 another persistent schema family. HTTPS authorities are syntax-checked offline;
 review and release-matched execution must verify their actual content and currency.
