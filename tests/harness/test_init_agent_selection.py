@@ -10,6 +10,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime.image_lifecycle import ImageCleanup
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -439,6 +440,22 @@ def test_image_lifecycle_step_returns_each_nonerror_result(
 
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert ctx.results[-1] == init_cmd.StepResult(record, result_status, detail)
+
+
+def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch):
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.CHANGED,
+        cleanup=ImageCleanup(removed=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
+    )
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert ctx.results[-1] == init_cmd.StepResult(
+        "docker_image", "ok", "removed obsolete Session Image tags"
+    )
 
 
 def test_flag_cannot_silently_replace_existing_provider(tmp_path):

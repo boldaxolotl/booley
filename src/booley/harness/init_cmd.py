@@ -1064,9 +1064,16 @@ def _step_image_lifecycle(
             warn(diagnostic.message)
         ctx.record("docker_image", "warn", "Session Image provenance is stale")
         return result
+    if result.cleanup.pending:
+        warn("obsolete Session Image tags can be removed: " + ", ".join(result.cleanup.pending))
+        ctx.record("docker_image", "warn", "obsolete Session Image tags remain")
+        return result
     if result.changed_images:
         ok("reconciled Session Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
+    elif result.cleanup.removed:
+        ok("removed obsolete Session Image tags: " + ", ".join(result.cleanup.removed))
+        ctx.record("docker_image", "ok", "removed obsolete Session Image tags")
     else:
         skip(f"Session Image {result.selected_reference} is current")
         ctx.record("docker_image", "skip", "current")

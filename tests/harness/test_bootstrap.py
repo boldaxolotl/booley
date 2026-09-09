@@ -9,7 +9,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
-from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
+from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 
 
 def _current(resource: str) -> bootstrap.BootstrapFinding:
@@ -767,6 +767,25 @@ def test_base_image_failure_becomes_typed_finding(monkeypatch: pytest.MonkeyPatc
     assert finding == bootstrap.BootstrapFinding(
         "base-image", bootstrap.BootstrapState.ERROR, "inspect failed"
     )
+
+
+def test_base_image_check_reports_pending_release_tag_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    result = LifecycleResult(
+        "booley-sandbox",
+        "sha256:id",
+        Status.CURRENT,
+        cleanup=ImageCleanup(pending=(release,)),
+    )
+    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_args, **_kwargs: result)
+
+    actual, finding = bootstrap._reconcile_base_image(Intent.CHECK, verbose=False)
+
+    assert actual is result
+    assert finding.state is bootstrap.BootstrapState.PENDING
+    assert finding.detail == f"obsolete Docker image tag can be removed: {release}"
 
 
 @pytest.mark.parametrize(

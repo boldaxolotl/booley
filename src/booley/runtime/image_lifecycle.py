@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
-from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_opt_str
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_dict,
+    require_opt_str,
+    require_str,
+)
 from booley.runtime import project_image
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -41,6 +48,8 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 BASE_IMAGE = "booley-sandbox"
 STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 FLAVOR_RECIPES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
+PUBLISHED_REGISTRY = "ghcr.io/boldaxolotl"
+_STABLE_RELEASE_TAG = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 
 
 class Intent(StrEnum):
@@ -105,6 +114,23 @@ class Diagnostic:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class ImageReference:
+    """One exact local Docker reference and its immutable artifact ID."""
+
+    reference: str
+    image_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageCleanup:
+    """Release-tag cleanup facts produced by one lifecycle reconciliation."""
+
+    pending: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+    retained_required: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class LifecycleResult:
     """Stable facts returned across the image-lifecycle seam."""
@@ -117,6 +143,7 @@ class LifecycleResult:
     payload_fingerprint: str | None = None
     requires_spec_reseed: bool = False
     requires_runtime_recreation: bool = False
+    cleanup: ImageCleanup = field(default_factory=ImageCleanup)
 
 
 @dataclass(frozen=True)
@@ -150,6 +177,10 @@ class DockerPort(Protocol):
     def label(self, image: str, name: str) -> str | None: ...
 
     def repo_digests(self, image: str) -> tuple[str, ...]: ...
+
+    def image_references(self) -> tuple[ImageReference, ...]: ...
+
+    def container_image_ids(self) -> frozenset[str]: ...
 
     def tag(self, source: str, target: str) -> None: ...
 
@@ -619,6 +650,66 @@ def _check_result(
     )
 
 
+def _published_release_repository(reference: str) -> str:
+    return f"{PUBLISHED_REGISTRY}/{reference}"
+
+
+def _release_tag(reference: str, managed_reference: str) -> str | None:
+    prefix = _published_release_repository(managed_reference) + ":"
+    if not reference.startswith(prefix):
+        return None
+    tag = reference.removeprefix(prefix)
+    return tag if _STABLE_RELEASE_TAG.fullmatch(tag) else None
+
+
+def _release_cleanup_candidates(
+    managed_reference: str,
+    inventory: tuple[ImageReference, ...],
+) -> tuple[ImageReference, ...]:
+    candidates = (
+        item for item in inventory if _release_tag(item.reference, managed_reference) is not None
+    )
+    return tuple(sorted(candidates, key=lambda item: item.reference))
+
+
+def _reconcile_release_tag_cleanup(
+    managed_reference: str,
+    intent: Intent,
+    docker: DockerPort,
+) -> ImageCleanup:
+    inventory = docker.image_references()
+    candidates = _release_cleanup_candidates(managed_reference, inventory)
+    if not candidates:
+        return ImageCleanup()
+    references_by_id: dict[str, set[str]] = {}
+    for item in inventory:
+        references_by_id.setdefault(item.image_id, set()).add(item.reference)
+    container_ids = docker.container_image_ids()
+    pending: list[str] = []
+    removed: list[str] = []
+    retained: list[str] = []
+    for candidate in candidates:
+        aliases = references_by_id.get(candidate.image_id, set()) - {candidate.reference}
+        if candidate.image_id in container_ids and not aliases:
+            retained.append(candidate.reference)
+            continue
+        if intent is Intent.CHECK:
+            pending.append(candidate.reference)
+            continue
+        if docker.image_id(candidate.reference) != candidate.image_id:
+            raise ImageLifecycleError(
+                f"refused to clean changed Docker image reference {candidate.reference}"
+            )
+        docker.remove_tag(candidate.reference)
+        removed.append(candidate.reference)
+    return ImageCleanup(tuple(pending), tuple(removed), tuple(retained))
+
+
+def _with_cleanup(result: LifecycleResult, cleanup: ImageCleanup) -> LifecycleResult:
+    status = Status.CHANGED if cleanup.removed else result.status
+    return replace(result, status=status, cleanup=cleanup)
+
+
 def reconcile(
     scope: ImageScope,
     intent: Intent,
@@ -657,11 +748,15 @@ def _reconcile_host(
     nodes = _with_parent_artifacts((_base_node(payload),), docker)
     stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
     if intent is Intent.CHECK:
-        return _check_result(BASE_IMAGE, nodes, docker, stale, legacy_diagnostics)
+        result = _check_result(BASE_IMAGE, nodes, docker, stale, legacy_diagnostics)
+        cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
+        return _with_cleanup(result, cleanup)
     if builder is None:
         raise TypeError("mutating image reconciliation requires a build adapter")
     changed = _mutate("host", nodes, intent, docker, builder)
-    return _verified_result(BASE_IMAGE, nodes[-1], changed, legacy_diagnostics, docker)
+    result = _verified_result(BASE_IMAGE, nodes[-1], changed, legacy_diagnostics, docker)
+    cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
+    return _with_cleanup(result, cleanup)
 
 
 def _reconcile_project(
@@ -696,7 +791,11 @@ def _reconcile_project(
         _verify_host_base(scope.base, docker)
     stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
     if intent is Intent.CHECK:
-        return _check_result(selected, nodes, docker, stale, legacy_diagnostics)
+        result = _check_result(selected, nodes, docker, stale, legacy_diagnostics)
+        if selected in FLAVOR_RECIPES:
+            cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
+            return _with_cleanup(result, cleanup)
+        return result
     if builder is None:
         raise TypeError("mutating image reconciliation requires a build adapter")
     refreshable = frozenset({node.reference for node in nodes if node.reference != BASE_IMAGE})
@@ -708,7 +807,11 @@ def _reconcile_project(
         builder,
         refreshable=refreshable if intent is Intent.REFRESH else None,
     )
-    return _verified_result(selected, nodes[-1], changed, legacy_diagnostics, docker)
+    result = _verified_result(selected, nodes[-1], changed, legacy_diagnostics, docker)
+    if selected in FLAVOR_RECIPES:
+        cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
+        return _with_cleanup(result, cleanup)
+    return result
 
 
 def _verify_host_base(result: LifecycleResult, docker: DockerPort) -> None:
@@ -816,6 +919,46 @@ class _DockerCli:
             raise ImageLifecycleError(f"Docker returned malformed RepoDigests for {image!r}")
         return tuple(value for value in normalized if value is not None)
 
+    def image_references(self) -> tuple[ImageReference, ...]:
+        try:
+            result = subprocess.run(
+                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(
+                f"could not inventory Docker image references: {exc}"
+            ) from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise ImageLifecycleError(
+                "could not inventory Docker image references: "
+                f"{detail or f'Docker exited {result.returncode}'}"
+            )
+        return _parse_image_references(result.stdout)
+
+    def container_image_ids(self) -> frozenset[str]:
+        try:
+            result = subprocess.run(
+                ["docker", "container", "ls", "--all", "--quiet", "--no-trunc"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"could not inventory Docker containers: {exc}") from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise ImageLifecycleError(
+                f"could not inventory Docker containers: "
+                f"{detail or f'Docker exited {result.returncode}'}"
+            )
+        return _inspect_container_image_ids(result.stdout.splitlines())
+
     def tag(self, source: str, target: str) -> None:
         try:
             result = subprocess.run(
@@ -829,7 +972,10 @@ class _DockerCli:
     def remove_tag(self, image: str) -> None:
         try:
             result = subprocess.run(
-                ["docker", "image", "rm", image], capture_output=True, text=True, check=False
+                ["docker", "image", "rm", "--no-prune", image],
+                capture_output=True,
+                text=True,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not remove retained tag {image}: {exc}") from exc
@@ -839,6 +985,51 @@ class _DockerCli:
                 f"could not remove retained tag {image}: "
                 f"{detail or f'Docker exited {result.returncode}'}"
             )
+
+
+def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
+    references: dict[str, str] = {}
+    for line in output.splitlines():
+        try:
+            document = require_dict(json.loads(line), field="Docker image inventory row")
+            repository = require_str(document, "Repository")
+            tag = require_str(document, "Tag")
+            image_id = require_str(document, "ID")
+        except (BoundaryError, json.JSONDecodeError) as exc:
+            raise ImageLifecycleError("Docker returned malformed image inventory") from exc
+        if not is_local_image_id(image_id):
+            raise ImageLifecycleError("Docker returned malformed image inventory")
+        reference = f"{repository}:{tag}"
+        previous = references.setdefault(reference, image_id)
+        if previous != image_id:
+            raise ImageLifecycleError(f"Docker returned conflicting IDs for {reference}")
+    return tuple(ImageReference(reference, image_id) for reference, image_id in references.items())
+
+
+def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
+    image_ids = set()
+    for container_id in container_ids:
+        try:
+            result = subprocess.run(
+                ["docker", "container", "inspect", "--format", "{{.Image}}", container_id],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(
+                f"could not inspect Docker container {container_id}: {exc}"
+            ) from exc
+        image_id = result.stdout.strip()
+        if result.returncode or not is_local_image_id(image_id):
+            detail = (result.stderr or result.stdout).strip()
+            raise ImageLifecycleError(
+                f"could not inspect Docker container {container_id}: "
+                f"{detail or f'Docker exited {result.returncode}'}"
+            )
+        image_ids.add(image_id)
+    return frozenset(image_ids)
 
 
 def _docker_adapter() -> DockerPort:

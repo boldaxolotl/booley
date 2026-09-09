@@ -14,6 +14,7 @@ FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
 BuildPort = runtime_lifecycle.BuildPort
 DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
+ImageCleanup = runtime_lifecycle.ImageCleanup
 ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
 ImageNode = runtime_lifecycle.ImageNode
 ImageScope = runtime_lifecycle.ImageScope
