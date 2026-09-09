@@ -60,6 +60,11 @@ _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "worksp
 _FIXED_REGISTRAR = "python -m booley.harness.incontainer_register"
 _LEGACY_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
 _ACCEPTED_FIXED_REGISTRARS = frozenset({_FIXED_REGISTRAR, _LEGACY_FIXED_REGISTRAR})
+_FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity"
+_ACCEPTED_FIXED_START_TAILS = frozenset(
+    {_FIXED_GIT_IDENTITY}
+    | {f"{_FIXED_GIT_IDENTITY} && {registrar}" for registrar in _ACCEPTED_FIXED_REGISTRARS}
+)
 _FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
 _FIXED_SEED_FRAGMENTS = frozenset(
     {
@@ -753,7 +758,7 @@ def _validate_lifecycle(spec: dict[str, Any]) -> None:
         if not isinstance(raw, str):
             raise RuntimeSpecError(f"devcontainer.json {key} differs from fixed Booley policy")
         fragments = raw.split("; ")
-        if not fragments or fragments[-1] not in _ACCEPTED_FIXED_REGISTRARS:
+        if not fragments or fragments[-1] not in _ACCEPTED_FIXED_START_TAILS:
             raise RuntimeSpecError(f"devcontainer.json {key} differs from fixed Booley policy")
         if len(fragments) != len(set(fragments)) or any(
             fragment not in _FIXED_SEED_FRAGMENTS for fragment in fragments[:-1]
