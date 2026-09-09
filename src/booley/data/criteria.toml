@@ -114,7 +114,6 @@ workflow_region = "post_sim"
 per_target  = true
 category    = "rtl"
 group       = "coverage"
-hidden      = true  # exposed only at the final coverage release gate
 
 [synthesis_ok]
 description = "ASIC synthesis completes within area/timing budgets"

@@ -509,6 +509,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run FIFO pipeline smoke test",
         "Run native FST/Verilator cross-validation",
         "Run Verilator compiler and native coverage acceptance",
+        "Run Coverage Campaign release matrix and production collector",
         "Run simulator ground-truth tests",
         "Run cocotb Icarus/Verilator production-image flows",
         "Run Ticket Mode production-image smoke",
@@ -523,6 +524,11 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert rendered.count("--name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-") >= 4
     readonly_workspace = '--mount type=bind,src="${{ github.workspace }}",dst=/work,readonly'
     assert rendered.count(readonly_workspace) >= 4
+    coverage = next(step for step in validations if step["name"].startswith("Run Coverage"))
+    assert "test_verilator_release_matrix.py" in coverage["run"]
+    assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
+    assert "assert_junit.py" in coverage["run"]
+    assert "--min-tests 18 --max-skips 0" in coverage["run"]
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
     assert "cd /validation-tmp/project" in rendered

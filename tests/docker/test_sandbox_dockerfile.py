@@ -697,4 +697,4 @@ def test_verilator_acceptance_is_required_in_candidate_image() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     assert "booley-test python /work/tests/docker/verilator_acceptance.py" in workflow
     assert "--work-dir /validation-tmp" in workflow
-    assert "fifo native-fst verilator simulator" in workflow
+    assert "fifo native-fst verilator coverage-release simulator" in workflow

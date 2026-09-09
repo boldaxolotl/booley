@@ -208,7 +208,7 @@ def test_base_catalog_contains_only_the_new_coverage_family() -> None:
     definitions = {definition.name: definition for definition in load_base_criteria()}
 
     assert definitions["coverage"].per_target is True
-    assert definitions["coverage"].hidden is True
+    assert definitions["coverage"].hidden is False
     assert (
         not {
             "coverage_toggle",

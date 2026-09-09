@@ -48,15 +48,16 @@ The blocker is licenses, not design: the maintainer can't validate a Flow for an
 
 ## Native Coverage Campaigns
 
-Phases 0–6 of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
+The implementation of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
 Verilator-native measurement, immutable Campaigns, deterministic Criteria,
 transactional waivers, canonical persistence, exact pruning, and the report-driven
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
-Phase 7 still owns public Simulation coverage controls, the complete cross-mode
-release matrix, and release documentation. Native FSM and covergroup records
+Simulation collection controls and the Coverage Criterion are public alongside
+the Analyst. The [release gate](coverage-release-gate.md) records cross-mode and
+real-tool verification status. Native FSM and covergroup records
 remain unscored evidence in V1. B-Wave has no coverage measurement role.
 
 ## Continuous Integration (`booley ci`)
@@ -149,8 +150,7 @@ edges. A small Booley-owned adapter emits the dependency graph and hands a Flow
 only the transitive closure of its top. The result is cached until its sources
 or compilation inputs change. This cuts the time Booley Flows spend resolving
 files they do not need and stops spurious syntax errors surfacing from unrelated
-ones. The adapter is shared with the slang-backed coverage work rather than
-creating a separate front-end for each feature.
+ones.
 
 The gap here is *inside* a Target, not across them. FuseSoC already answers "which files does Target X build": a `.core` Target resolves to a concrete ordered fileset and every Booley Flow selects one via `--target`. What it deliberately doesn't do is prune within that fileset: the fileset covers **that Target's top** (its top-level module), not the minimal closure for some other module you want to lint or elaborate in isolation. Filesets get shared across Targets and `depends` composition (a Target pulling in other cores it builds on) pulls in more of a dependency core than any one top instantiates, so in practice they run coarse.
 

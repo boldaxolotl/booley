@@ -55,6 +55,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
         "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
+        "`--coverage` / `--cov` collects a native Coverage Campaign, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
