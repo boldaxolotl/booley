@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from booley.core.boundary import BoundaryError, as_str, require_dict
 
 _DEFAULT_NAME = "Dev"
 _DEFAULT_EMAIL = "dev@localhost"
@@ -27,24 +31,26 @@ class GitIdentity:
     email: str
 
 
-def _table(value: Any, field: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise GitIdentityError(f"{field} must be a table")
-    return value
+def _table(value: Any, field: str) -> dict[str, Any]:
+    try:
+        return require_dict(value, field=field)
+    except BoundaryError as exc:
+        raise GitIdentityError(f"{field} must be a table") from exc
 
 
 def _identity_field(git: Mapping[str, Any], field: str, default: str) -> str:
     value = git.get(field)
     if value is None:
         return default
-    if not isinstance(value, str):
+    text = as_str(value)
+    if text is None:
         raise GitIdentityError(f"[agent.git] {field} must be a string")
-    value = value.strip()
-    if not value:
+    text = text.strip()
+    if not text:
         return default
-    if any(character in value for character in ("\0", "\r", "\n")):
+    if any(character in text for character in ("\0", "\r", "\n")):
         raise GitIdentityError(f"[agent.git] {field} contains a forbidden control character")
-    return value
+    return text
 
 
 def load_git_identity(project_dir: Path) -> GitIdentity:
@@ -89,56 +95,80 @@ def _require_git(checkout: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _worktree_value(checkout: Path, key: str) -> str | None:
-    result = _git(checkout, "config", "--worktree", "--get", key)
+def _worktree_config_path(checkout: Path) -> Path:
+    raw_path = _require_git(checkout, "rev-parse", "--git-path", "config.worktree")
+    path = Path(raw_path)
+    return path if path.is_absolute() else checkout / path
+
+
+def _stage_worktree_config(checkout: Path, target: Path, identity: GitIdentity) -> Path:
+    try:
+        descriptor, raw_staged = tempfile.mkstemp(
+            prefix=f".{target.name}.booley-", dir=target.parent
+        )
+        os.close(descriptor)
+        staged = Path(raw_staged)
+        if target.exists():
+            if not target.is_file():
+                raise GitIdentityError(f"worktree Git config is not a file: {target}")
+            shutil.copyfile(target, staged)
+            shutil.copymode(target, staged)
+        _require_git(
+            checkout, "config", "--file", str(staged), "--replace-all", "user.name", identity.name
+        )
+        _require_git(
+            checkout,
+            "config",
+            "--file",
+            str(staged),
+            "--replace-all",
+            "user.email",
+            identity.email,
+        )
+        return staged
+    except (OSError, GitIdentityError) as exc:
+        if "staged" in locals():
+            staged.unlink(missing_ok=True)
+        if isinstance(exc, GitIdentityError):
+            raise
+        raise GitIdentityError(f"cannot stage worktree Git identity: {exc}") from exc
+
+
+def _worktree_config_enabled(checkout: Path) -> bool:
+    result = _git(checkout, "config", "--local", "--get", "extensions.worktreeConfig")
     if result.returncode == 1:
-        return None
+        return False
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        raise GitIdentityError(f"cannot inspect worktree Git identity: {detail}")
-    return result.stdout.rstrip("\n")
-
-
-def _restore_worktree_value(checkout: Path, key: str, value: str | None) -> None:
-    if value is None:
-        result = _git(checkout, "config", "--worktree", "--unset-all", key)
-        if result.returncode not in (0, 5):
-            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-            raise GitIdentityError(f"cannot restore worktree Git identity: {detail}")
-        return
-    _require_git(checkout, "config", "--worktree", "--replace-all", key, value)
+        raise GitIdentityError(f"cannot inspect worktree Git configuration: {detail}")
+    return result.stdout.strip().lower() == "true"
 
 
 def apply_git_identity(checkout: Path, identity: GitIdentity) -> None:
     """Set *identity* in the checkout's worktree-specific Git configuration."""
-    name = _identity_field({"name": identity.name}, "name", _DEFAULT_NAME)
-    email = _identity_field({"email": identity.email}, "email", _DEFAULT_EMAIL)
-    _require_git(checkout, "config", "extensions.worktreeConfig", "true")
-    prior = {
-        "user.name": _worktree_value(checkout, "user.name"),
-        "user.email": _worktree_value(checkout, "user.email"),
-    }
+    normalized = GitIdentity(
+        _identity_field({"name": identity.name}, "name", _DEFAULT_NAME),
+        _identity_field({"email": identity.email}, "email", _DEFAULT_EMAIL),
+    )
+    target = _worktree_config_path(checkout)
+    staged = _stage_worktree_config(checkout, target, normalized)
     try:
-        _require_git(checkout, "config", "--worktree", "--replace-all", "user.name", name)
-        _require_git(checkout, "config", "--worktree", "--replace-all", "user.email", email)
-        if _worktree_value(checkout, "user.name") != name:
-            raise GitIdentityError("worktree user.name verification failed")
-        if _worktree_value(checkout, "user.email") != email:
-            raise GitIdentityError("worktree user.email verification failed")
-    except GitIdentityError as exc:
-        try:
-            for key, value in prior.items():
-                _restore_worktree_value(checkout, key, value)
-        except GitIdentityError as restore_exc:
-            raise GitIdentityError(f"{exc}; rollback also failed: {restore_exc}") from exc
-        raise
+        enabled = _worktree_config_enabled(checkout)
+        staged.replace(target)
+    except OSError as exc:
+        raise GitIdentityError(f"cannot publish worktree Git identity: {exc}") from exc
+    finally:
+        staged.unlink(missing_ok=True)
+    if not enabled:
+        _require_git(checkout, "config", "--local", "extensions.worktreeConfig", "true")
 
 
 def main() -> None:
     """Apply the mounted Project configuration to the attached checkout."""
     project_dir = Path(os.environ.get("BOOLEY_PROJECT_DIR", "/booley-project"))
     identity = load_git_identity(project_dir)
-    apply_git_identity(Path.cwd(), identity)
+    checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))
+    apply_git_identity(checkout, identity)
 
 
 if __name__ == "__main__":

@@ -203,3 +203,32 @@ def test_failed_pair_write_restores_prior_worktree_identity(
 
     assert _git(workspace, "config", "--worktree", "user.name") == "Prior Developer"
     assert _git(workspace, "config", "--worktree", "user.email") == "prior-identity.invalid"
+
+
+def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _git(workspace, "init", "-q")
+    (workspace / ".git" / "config.worktree").mkdir()
+
+    with pytest.raises(GitIdentityError):
+        apply_git_identity(
+            workspace,
+            GitIdentity("Expected Developer", "developer-identity.invalid"),
+        )
+
+    result = subprocess.run(
+        [
+            "git",
+            "config",
+            "--file",
+            str(workspace / ".git" / "config"),
+            "--get",
+            "extensions.worktreeConfig",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1

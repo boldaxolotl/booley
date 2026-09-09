@@ -360,6 +360,18 @@ class TestWorktreeCreateScript:
         assert _git(worktree, "config", "user.name").stdout.strip() == "Dev"
         assert _git(worktree, "config", "user.email").stdout.strip() == "dev@localhost"
 
+    def test_invalid_git_identity_fails_worktree_creation(self, tmp_path: Path):
+        project_root, project_data = _submodule_project(tmp_path)
+        (project_data / "booley.toml").write_text(
+            '[submodules]\npaths = ["vendor/ip core"]\n\n[agent.git]\nname = 42\n',
+            encoding="utf-8",
+        )
+
+        result = _run_worktree_create(project_root, "invalid-identity")
+
+        assert result.returncode != 0
+        assert "[agent.git] name must be a string" in result.stderr
+
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
         """Worktree slug must not escape the worktrees directory."""
         from booley.runtime.paths import dev_support_dir
