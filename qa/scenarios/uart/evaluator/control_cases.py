@@ -10,9 +10,9 @@ def receiver(name: str, mutation: str, family: str, action: str, **parameters: o
     return name, "receiver", mutation, case(f"{family}.control.{name}", action, **parameters)
 
 
-def peripheral(name: str, mutation: str, action: str) -> tuple:
+def peripheral(name: str, mutation: str, action: str, **parameters: object) -> tuple:
     """Use the broader independent fixture for one multi-case hardware sweep."""
-    return name, "peripheral", mutation, case(f"UART-CONTROL.{name}", action)
+    return name, "peripheral", mutation, case(f"UART-CONTROL.{name}", action, **parameters)
 
 
 def receiver_cases() -> list[tuple]:
@@ -109,7 +109,10 @@ def control_cases() -> list[tuple]:
         peripheral("invalid-addresses", "invalid", "control-invalid-addresses"),
         peripheral("loopback", "loop", "control-loopback"),
         peripheral("override", "override", "control-override"),
-        peripheral("resets", "reset", "control-resets"),
+        *[
+            peripheral(f"reset-{mode}", "reset", "reset", mode=mode, payload=[0x55], nco=0x4000)
+            for mode in ["idle", "active-tx", "active-rx", "occupied", "pending-mmio"]
+        ],
     ]
 
 

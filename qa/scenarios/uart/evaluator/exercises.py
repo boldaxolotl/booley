@@ -1,7 +1,7 @@
 """Public-contract UART stimuli, independent of candidate RTL and testbench."""
 
 from cases import REGISTERS
-from driver import Driver, ObservationBlockedError
+from driver import CircuitMismatchError, Driver, ObservationBlockedError
 from oracles import check_tx, check_val
 from timeout_checks import timed_event, timeout
 
@@ -271,7 +271,7 @@ async def irq(driver: Driver, parameters: dict) -> None:
     await driver.configure(control=2)
     await driver.write(4, 0 if mode in ["mask", "enable"] else mask)
     if mode == "inject":
-        await injected_irq(driver, bit)
+        await injected_irq(driver, bit, parameters.get("active"))
         return
     start = len(driver.irqs)
     await natural_irq(driver, bit)
@@ -331,17 +331,17 @@ async def natural_irq(driver: Driver, bit: int) -> None:
             await masked_timeout_state(driver)
 
 
-async def injected_irq(driver: Driver, bit: int) -> None:
+async def injected_irq(driver: Driver, bit: int, active: bool | None = None) -> None:
     mask = 1 << bit
-    states = [False, True] if bit in [0, 1, 8] else [False]
-    for active in states:
+    states = [active] if active is not None else ([False, True] if bit in [0, 1, 8] else [False])
+    for state_active in states:
         if bit in [0, 8]:
             await driver.write(0x20, 2)
-            if not active:
+            if not state_active:
                 await driver.write(0x1C, 0x55)
         elif bit == 1:
             await driver.write(0x20, 1)
-            if active:
+            if state_active:
                 await driver.receive([0x55])
         start = len(driver.irqs)
         await driver.write(8, mask)
@@ -356,10 +356,10 @@ async def injected_irq(driver: Driver, bit: int) -> None:
             False,
             "Injection has no cross-bit enabled effect",
         )
-        await driver.read(0, mask if active or bit not in [0, 1, 8] else 0, mask)
+        await driver.read(0, mask if state_active or bit not in [0, 1, 8] else 0, mask)
         if bit in [0, 1, 8]:
             await driver.write(0, mask)
-            await driver.read(0, mask if active else 0, mask)
+            await driver.read(0, mask if state_active else 0, mask)
         else:
             await driver.write(0, mask)
             await driver.read(0, 0, mask)
@@ -458,11 +458,30 @@ async def override(driver: Driver, parameters: dict) -> None:
     await driver.configure(control=2)
     for byte in parameters["payload"]:
         await driver.write(0x1C, byte)
-    level = int(parameters["mode"] == "high")
+    mode = parameters["mode"]
+    level = int(mode in ["high", "release"])
     await driver.write(0x28, 1 | (level << 1))
-    await driver.wait(64)
-    driver.expect(driver.tx[-1], level, "TX override pin level")
+    if mode == "release":
+        await driver.configure()
+        start = len(driver.tx)
+        await driver.wait(14 * 64)
+        driver.expect(
+            all(value == 1 for value in driver.tx[start:]),
+            True,
+            "Enabled transmitter remains held until override release",
+        )
+    else:
+        await driver.wait(64)
+        driver.expect(driver.tx[-1], level, "TX override pin level")
     await driver.read(0x24, len(parameters["payload"]), 0xFF)
+    if mode == "release":
+        start = len(driver.tx)
+        await driver.write(0x28, 0)
+        await driver.wait((14 * len(parameters["payload"]) + 4) * 64)
+        result = check_tx(driver.tx[start:], parameters["payload"], 0x4000)
+        driver.expect(result["status"], "pass", "Override release: " + result["reason"])
+        await driver.read(0x24, 0, 0xFF)
+        return
     await driver.write(0x28, 0)
     await drain(driver, "tx", parameters["payload"])
 
@@ -509,16 +528,37 @@ async def reset_case(driver: Driver, parameters: dict) -> None:
     await parity(driver, {**parameters, "parity": "disabled"})
 
 
-async def control_rx_rates(driver: Driver, _: dict) -> None:
-    for nco in [0x2000, 0x3000]:
-        await rx(driver, {"payload": [0x55, 0xAA], "nco": nco})
+async def control_sweep(driver: Driver, steps: list[tuple[str, object, dict]]) -> None:
+    """Run every control subcase, retaining all targeted circuit mismatches."""
+    failures = []
+    for name, exercise, parameters in steps:
+        try:
+            await exercise(driver, parameters)
+        except CircuitMismatchError as error:
+            failures.append(f"{name}: {error}")
         await driver.reset()
+    if failures:
+        raise CircuitMismatchError("; ".join(failures))
+
+
+async def control_rx_rates(driver: Driver, _: dict) -> None:
+    await control_sweep(
+        driver,
+        [
+            (f"nco-{nco:04x}", rx, {"payload": [0x55, 0xAA], "nco": nco})
+            for nco in [0x2000, 0x3000]
+        ],
+    )
 
 
 async def control_parity_errors(driver: Driver, _: dict) -> None:
-    for parity_mode in ["even", "odd"]:
-        await error(driver, {"parity": parity_mode, "payload": [0x55]})
-        await driver.reset()
+    await control_sweep(
+        driver,
+        [
+            (parity_mode, error, {"parity": parity_mode, "payload": [0x55]})
+            for parity_mode in ["even", "odd"]
+        ],
+    )
 
 
 async def control_overflow(driver: Driver, _: dict) -> None:
@@ -526,40 +566,47 @@ async def control_overflow(driver: Driver, _: dict) -> None:
 
 
 async def control_breaks(driver: Driver, _: dict) -> None:
+    steps = []
     for encoding in range(4):
         for parity_mode in ["disabled", "even"]:
-            await break_error(
-                driver,
-                {
-                    "encoding": encoding,
-                    "characters": [2, 4, 8, 16][encoding],
-                    "parity": parity_mode,
-                    "payload": [0x55],
-                },
-            )
-            await driver.reset()
+            parameters = {
+                "encoding": encoding,
+                "characters": [2, 4, 8, 16][encoding],
+                "parity": parity_mode,
+                "payload": [0x55],
+            }
+            steps.append((f"e{encoding}-{parity_mode}", break_error, parameters))
+    await control_sweep(driver, steps)
 
 
 async def control_watermarks(driver: Driver, _: dict) -> None:
+    steps = []
     for direction, thresholds in [("tx", [1, 2, 4, 8, 16]), ("rx", [1, 2, 4, 8, 16, 32, 62])]:
         for encoding, threshold in enumerate(thresholds):
-            await watermark(
-                driver,
-                {
-                    "direction": direction,
-                    "encoding": encoding,
-                    "depth": threshold,
-                    "expected": direction == "rx",
-                    "payload": list(range(threshold)),
-                },
-            )
-            await driver.reset()
+            parameters = {
+                "direction": direction,
+                "encoding": encoding,
+                "depth": threshold,
+                "expected": direction == "rx",
+                "payload": list(range(threshold)),
+            }
+            steps.append((f"{direction}-e{encoding}", watermark, parameters))
+    await control_sweep(driver, steps)
 
 
 async def control_level_injection(driver: Driver, _: dict) -> None:
-    for bit in [0, 1, 8]:
-        await irq(driver, {"bit": bit, "mode": "inject"})
-        await driver.reset()
+    await control_sweep(
+        driver,
+        [
+            (
+                f"bit{bit}-active{int(active)}",
+                irq,
+                {"bit": bit, "mode": "inject", "active": active},
+            )
+            for bit in [0, 1, 8]
+            for active in [False, True]
+        ],
+    )
 
 
 async def control_invalid_addresses(driver: Driver, _: dict) -> None:
@@ -567,27 +614,34 @@ async def control_invalid_addresses(driver: Driver, _: dict) -> None:
     for offset, *_ in REGISTERS.values():
         addresses.update(offset + low for low in [1, 2, 3])
         addresses.update(offset | high for high in [0x100, 0x10000, 0x80000000])
-    for address in sorted(addresses):
-        for write in [False, True]:
-            await invalid(driver, {"address": address, "write": write})
-            await driver.reset()
+    await control_sweep(
+        driver,
+        [
+            (f"a{address:08x}-w{int(write)}", invalid, {"address": address, "write": write})
+            for address in sorted(addresses)
+            for write in [False, True]
+        ],
+    )
 
 
 async def control_loopback(driver: Driver, _: dict) -> None:
-    for mode in ["system", "line"]:
-        await loop(driver, {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000})
-        await driver.reset()
+    await control_sweep(
+        driver,
+        [
+            (mode, loop, {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000})
+            for mode in ["system", "line"]
+        ],
+    )
 
 
 async def control_override(driver: Driver, _: dict) -> None:
-    for mode in ["low", "high", "release"]:
-        await override(driver, {"mode": mode, "payload": [0x55, 0xAA]})
-        await driver.reset()
-
-
-async def control_resets(driver: Driver, _: dict) -> None:
-    for mode in ["idle", "active-tx", "active-rx", "occupied", "pending-mmio"]:
-        await reset_case(driver, {"mode": mode, "payload": [0x55], "nco": 0x4000})
+    await control_sweep(
+        driver,
+        [
+            (mode, override, {"mode": mode, "payload": [0x55, 0xAA]})
+            for mode in ["low", "high", "release"]
+        ],
+    )
 
 
 EXERCISES = {
@@ -622,5 +676,4 @@ EXERCISES = {
     "control-invalid-addresses": control_invalid_addresses,
     "control-loopback": control_loopback,
     "control-override": control_override,
-    "control-resets": control_resets,
 }

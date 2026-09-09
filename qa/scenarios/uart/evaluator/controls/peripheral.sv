@@ -63,7 +63,8 @@ wire [8:0] visible_levels = CORRUPT_WATERMARK ? levels ^ 9'h103 : levels;
 wire loop_tx = CORRUPT_LOOP ? 1'b1 : rx_i;
 wire override_tx = CORRUPT_OVERRIDE ? ~override_control[1] : override_control[1];
 assign tx_o = override_control[0] ? override_tx : (control[5] ? loop_tx : tx_serial);
-assign irq_o = (events | visible_levels | force_level) & enabled;
+assign irq_o = (events | visible_levels | force_level) & enabled &
+    (CORRUPT_LEVEL_INJECTION ? 9'h0fc : 9'h1ff);
 assign req_ready_o = !rsp_valid_o;
 
 function integer bit_period;

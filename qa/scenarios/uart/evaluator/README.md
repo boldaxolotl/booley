@@ -42,8 +42,8 @@ remaining time. The coordinator further clips controls plus evaluation to the sh
 repairs plus full reruns to 45 minutes each, and all work to the cleanup boundary.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
-The 37 controls each require positive, independently corrupted and restored
-hardware: 111 simulator runs in total. The transport fixture covers MMIO and TX;
+The 41 controls each require positive, independently corrupted and restored
+hardware: 123 simulator runs in total. The transport fixture covers MMIO and TX;
 the separate receiver fixture covers exact-a RX at all four start phases with
 NF=0/1, even/odd parity reception, RX FIFO depth/order, RX watermark state, natural
 RX and injected event IRQ observation, transition-rich VAL history, and stalled

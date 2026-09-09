@@ -4921,13 +4921,13 @@ steps:
     sha256: 3cd4d90ea1ec1a9498bb2a92f45c4b3b062477e94541ada59f6a15d445a8c412
   - path: evaluator/control_cases.py
     audience: independent evaluator
-    sha256: d2d072fb5849c765bb393cbfa302ce7b100b3e8cb9072239035f131c3e44e99f
+    sha256: 4035109bf3d18e8c0dc6ff8f238f8e1190c38d21be25fb8b0d6e9cee3c9c4ce7
   - path: evaluator/controls/receiver.sv
     audience: independent evaluator
     sha256: 3cd9d605c6d355d3b2f98360e0312fc4dd91b978974b5b1e7ad9bfb215720b8e
   - path: evaluator/controls/peripheral.sv
     audience: independent evaluator
-    sha256: f4245f6d7afe6006ea9c792c347b3635b66bd0685ec35eafd5ac818bc8114504
+    sha256: 55a024b4836a7c9dd5520fced476f60cc55c3b3db702af7f6784cd47585b9f89
   - path: evaluator/controls.py
     audience: independent evaluator
     sha256: 2aa780c326021b6d9d8b5b212eb0e5528389af5bd2fecce4a8bbf08e59a2fcf6
@@ -4939,7 +4939,7 @@ steps:
     sha256: c836bede0f5cdb94232d7cfc3f25f5800efc454ab199f219efc7d474dc96e54c
   - path: evaluator/exercises.py
     audience: independent evaluator
-    sha256: 72001002aca285e582e5910f20bf340ef529354ccd4beb98c3db56a2c692ca80
+    sha256: 016e26f619fc55279db7eb5d056dfb7e5200643bf71522b32c8866fd9986aeb1
   - path: evaluator/observe.py
     audience: independent evaluator
     sha256: 38efe264b78db70ba051c275cf4160a03d01cb9b815e361fe70354ba1da8488e
@@ -4954,7 +4954,7 @@ steps:
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: db365acbaaa240de28d62b482189f8794a8dacb39cf6b45477f1ede40d23173b
+    sha256: 21810a185692170c3b278bdfee2522e1b02f6ee881875ccf5562001e3f1d95f1
   - path: evaluator/inputs.py
     audience: independent evaluator
     sha256: 7c91bd0a7ece38519395a7a463b8bf2d1e0a5dcbacaec334964748e147098725

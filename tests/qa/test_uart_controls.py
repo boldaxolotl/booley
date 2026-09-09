@@ -52,7 +52,7 @@ def test_control_publication_requires_stable_evaluator(monkeypatch, tmp_path, ch
 
         record = json.loads((destination / "controls.json").read_text())
         assert record["evaluator_sha256"] == "before"
-        assert len(record["results"]) == 111
+        assert len(record["results"]) == 123
 
 
 def test_successful_system_loopback_observations_are_serializable(monkeypatch):
@@ -90,3 +90,23 @@ def test_successful_system_loopback_observations_are_serializable(monkeypatch):
     driver = Driver()
     asyncio.run(exercises.loop(driver, {"mode": "system", "payload": [0x55], "nco": 0x4000}))
     json.dumps(driver.observations)
+
+
+def test_corrupt_control_sweep_retains_every_subcase(monkeypatch):
+    evaluator = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/evaluator"
+    monkeypatch.syspath_prepend(str(evaluator))
+    exercises = importlib.import_module("exercises")
+    calls = []
+
+    class Driver:
+        async def reset(self):
+            calls.append("reset")
+
+    async def fail(_driver, parameters):
+        calls.append(parameters["name"])
+        raise exercises.CircuitMismatchError(parameters["name"])
+
+    steps = [(name, fail, {"name": name}) for name in ["first", "second"]]
+    with pytest.raises(exercises.CircuitMismatchError, match=r"first.*second"):
+        asyncio.run(exercises.control_sweep(Driver(), steps))
+    assert calls == ["first", "reset", "second", "reset"]
