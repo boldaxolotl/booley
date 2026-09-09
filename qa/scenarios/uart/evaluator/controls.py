@@ -5,36 +5,25 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from cases import case, evaluator_identity
+from cases import evaluator_identity
+from control_cases import VARIANTS, control_cases
 from publication import publish_new
 from run import HERE, case_result, launch
 
 
 def controls(output: Path) -> dict:
-    """Qualify the transport path, without claiming candidate UART coverage."""
+    """Qualify selected observation paths without claiming full UART conformance."""
     output.mkdir(parents=True, exist_ok=False)
-    source = (HERE / "controls/transport.sv").read_text()
-    expected = {"positive": "pass", "corrupt": "fail", "restored": "pass"}
+    evaluator_sha256 = evaluator_identity()
     results = {}
     phase_deadline = time.time() + 1800
     deadline = time.monotonic() + 1800
-    for family in ["mmio", "serial"]:
-        stimulus = (
-            case(
-                "UART-REG.CTRL.control",
-                "register",
-                address=0x10,
-                mode="reset-defined",
-                expected=0,
-                mask=0xFFFF03F7,
-            )
-            if family == "mmio"
-            else case("UART-TXRX.control", "tx", payload=[0x55], nco=0x4000, parity="disabled")
-        )
-        for variant, verdict in expected.items():
+    for family, source_name, mutation, stimulus in control_cases():
+        source = (HERE / "controls" / f"{source_name}.sv").read_text()
+        for variant, verdict in VARIANTS.items():
             directory = output / f"{family}-{variant}"
             directory.mkdir()
-            fixture = write_variant(directory, source, family, variant)
+            fixture = write_variant(directory, source, mutation, variant)
             build = directory / "build"
             code = launch(
                 ["--build", str(build), "--sources", str(fixture)],
@@ -47,10 +36,12 @@ def controls(output: Path) -> dict:
             results[f"{family}-{variant}"] = result
             if result["status"] != verdict:
                 raise RuntimeError(f"Control {family}/{variant} expected {verdict}: {result}")
+    if evaluator_identity() != evaluator_sha256:
+        raise RuntimeError("Evaluator changed during controls; retain this attempt and restart")
     publish_new(
         output / "controls.json",
         {
-            "evaluator_sha256": evaluator_identity(),
+            "evaluator_sha256": evaluator_sha256,
             "results": results,
             "phase_deadline": datetime.fromtimestamp(phase_deadline, UTC)
             .isoformat(timespec="seconds")

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cases import evaluator_identity, materialize
+from control_cases import expected_controls
 from inputs import snapshot
 
 HERE = Path(__file__).resolve().parent
@@ -57,11 +58,7 @@ def launch(args: list[str], log: Path, seconds: float) -> int:
 def verify_controls(controls: dict) -> None:
     if controls.get("evaluator_sha256") != evaluator_identity():
         raise ValueError("Controls must qualify the exact current evaluator")
-    expected = {
-        f"{family}-{variant}": status
-        for family in ["mmio", "serial"]
-        for variant, status in [("positive", "pass"), ("corrupt", "fail"), ("restored", "pass")]
-    }
+    expected = expected_controls()
     observed = {key: value["status"] for key, value in controls["results"].items()}
     if observed != expected:
         raise ValueError("Complete positive, corruption and restoration controls are required")

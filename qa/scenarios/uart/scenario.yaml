@@ -270,7 +270,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Interactive Mode delegate
-    sha256: 789e6d38cfe6adb2fb08ede7569489ad61619ffda242b50c8bd6f437249906c3
+    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
   - path: spec/corpus-manifest.json
     audience: Interactive Mode delegate
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -386,7 +386,7 @@ steps:
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
     base: shared
 - id: inventory.H-01.install
   phase: prepare
@@ -412,7 +412,7 @@ steps:
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
     base: shared
 - id: inventory.H-01.pip-distro
   phase: prepare
@@ -438,7 +438,7 @@ steps:
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
     base: shared
 - id: inventory.H-01.pip-recovery
   phase: prepare
@@ -464,7 +464,7 @@ steps:
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: a52bc190d9ae5828606f53ecde81006d51e1cbc433dea4f02bf8f9efb02539b2
+    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
     base: shared
 - id: inventory.H-02.force-repair
   phase: prepare
@@ -490,7 +490,7 @@ steps:
   assets:
   - path: probes/H-02.md
     audience: coordinator
-    sha256: 9512c945cc76f4d4a6e537269760113f8015293357d162feca63ce4d287af76e
+    sha256: b35ae1ee6c2eb803108e5963b5f8cce3574e349378b3824f8f3875f29f16f308
 - id: inventory.H-02.idempotent
   phase: prepare
   action: |-
@@ -515,7 +515,7 @@ steps:
   assets:
   - path: probes/H-02.md
     audience: coordinator
-    sha256: 9512c945cc76f4d4a6e537269760113f8015293357d162feca63ce4d287af76e
+    sha256: b35ae1ee6c2eb803108e5963b5f8cce3574e349378b3824f8f3875f29f16f308
 - id: inventory.H-02.repair-ready
   phase: prepare
   action: |-
@@ -540,7 +540,7 @@ steps:
   assets:
   - path: probes/H-02.md
     audience: coordinator
-    sha256: 9512c945cc76f4d4a6e537269760113f8015293357d162feca63ce4d287af76e
+    sha256: b35ae1ee6c2eb803108e5963b5f8cce3574e349378b3824f8f3875f29f16f308
 - id: inventory.H-03.init-check
   phase: prepare
   action: |-
@@ -565,7 +565,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.init-force
   phase: prepare
@@ -591,7 +591,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.location-guard
   phase: prepare
@@ -617,7 +617,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.provider
   phase: prepare
@@ -643,7 +643,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.seed
   phase: prepare
@@ -669,7 +669,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.skip-credentials
   phase: prepare
@@ -695,7 +695,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-04.scaffold-repeat
   phase: prepare
@@ -721,7 +721,7 @@ steps:
   assets:
   - path: probes/H-04.md
     audience: coordinator
-    sha256: 38959f85f82c28c098c603ed2952eea54f3671ce6001a879482fe68069c961e0
+    sha256: 25e2234464a41958ffc480026b84d7551ab8b1d04c6b8527f445069ab2d018e8
 - id: inventory.H-05.auth-clear
   phase: prepare
   action: |-
@@ -746,7 +746,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-05.auth-precedence
   phase: prepare
   action: |-
@@ -771,7 +771,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-05.auth-recovery
   phase: prepare
   action: |-
@@ -796,7 +796,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-05.auth-secret-boundary
   phase: prepare
   action: |-
@@ -821,7 +821,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-05.auth-stdin
   phase: prepare
   action: |-
@@ -846,7 +846,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-05.auth-store
   phase: prepare
   action: |-
@@ -871,7 +871,7 @@ steps:
   assets:
   - path: probes/H-05.md
     audience: coordinator
-    sha256: 96dcd5297a4611bb6b84a666af85738a8078370785b9091d4ce6af08f9e90ecb
+    sha256: c159bed643a76156b82313832f936aa649a1db5896016ddd6c7aa23116de93cd
 - id: inventory.H-06.enter-failure
   phase: prepare
   action: |-
@@ -896,7 +896,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.enter-success
   phase: prepare
   action: |-
@@ -921,7 +921,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.interrupt
   phase: prepare
   action: |-
@@ -946,7 +946,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.refresh
   phase: prepare
   action: |-
@@ -971,7 +971,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.refresh-rollback
   phase: prepare
   action: |-
@@ -996,7 +996,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.runtime-down
   phase: prepare
   action: |-
@@ -1021,7 +1021,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.runtime-retry
   phase: prepare
   action: |-
@@ -1046,7 +1046,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-06.runtime-up
   phase: prepare
   action: |-
@@ -1071,7 +1071,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: inventory.H-10.doctor-recovery
   phase: prepare
   action: |-
@@ -1096,7 +1096,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.doctor-warning
   phase: prepare
@@ -1122,7 +1122,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.failure-not-waivable
   phase: prepare
@@ -1148,7 +1148,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.health-stale
   phase: prepare
@@ -1174,7 +1174,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.waiver-expired
   phase: prepare
@@ -1200,7 +1200,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.waiver-stale
   phase: prepare
@@ -1226,7 +1226,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-10.waiver-valid
   phase: prepare
@@ -1252,7 +1252,7 @@ steps:
   assets:
   - path: probes/H-10.md
     audience: coordinator
-    sha256: 5812af64455b99951c0ce5b4fca55d8e9d5b8f47ae0fe58401a8862e9fdfa964
+    sha256: 822c9c0317d8821ea85469e752a3efb5a5b5acdd62a8904f0774dba6eb360c9f
     base: shared
 - id: inventory.H-11.upgrade-ack
   phase: prepare
@@ -1278,7 +1278,7 @@ steps:
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: 4d9bf4317cf17ed0735f5fd9403635b5455a5693c41397f54d3bbe3db9c9dab7
+    sha256: 97582451b5b3df7f6c0bbeaa742c594c760456ef3c70194c427a43084e7f66db
 - id: inventory.H-11.upgrade-heal
   phase: prepare
   action: |-
@@ -1303,7 +1303,7 @@ steps:
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: 4d9bf4317cf17ed0735f5fd9403635b5455a5693c41397f54d3bbe3db9c9dab7
+    sha256: 97582451b5b3df7f6c0bbeaa742c594c760456ef3c70194c427a43084e7f66db
 - id: inventory.H-11.upgrade-pending
   phase: prepare
   action: |-
@@ -1328,7 +1328,7 @@ steps:
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: 4d9bf4317cf17ed0735f5fd9403635b5455a5693c41397f54d3bbe3db9c9dab7
+    sha256: 97582451b5b3df7f6c0bbeaa742c594c760456ef3c70194c427a43084e7f66db
 - id: inventory.H-12.config-cap
   phase: prepare
   action: |-
@@ -1353,7 +1353,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1411,7 +1411,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1469,7 +1469,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1527,7 +1527,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1585,7 +1585,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1643,7 +1643,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1701,7 +1701,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1759,7 +1759,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1817,7 +1817,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1875,7 +1875,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1933,7 +1933,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -1991,7 +1991,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -2049,7 +2049,7 @@ steps:
   assets:
   - path: probes/H-12.md
     audience: coordinator
-    sha256: 05d503e2729e0b98b07bb0da28fc1e44cabab23773493f986ee1c047b35744ca
+    sha256: 83f2d83d5a319705660f5bb8ef873fd8fe87eb9beb1e7ec71e30b8051b1f72d4
   - path: probes/host-policy/README.md
     audience: coordinator
     sha256: 31b78aa3539e09cf944e4dda31280cb831b23dbec974fab1205d591e83c23809
@@ -2107,7 +2107,7 @@ steps:
   assets:
   - path: probes/H-13.md
     audience: coordinator
-    sha256: 4991c0c35af4620c6cda066ec4921c61eaacd29424d06579db4f35b9c421eea3
+    sha256: d7c9227ea3b0b223e1392c3ceadf4abd27b270a9bacb280a055a3e51aa5ecb05
 - id: inventory.H-13.route-policy
   phase: prepare
   action: |-
@@ -2132,7 +2132,7 @@ steps:
   assets:
   - path: probes/H-13.md
     audience: coordinator
-    sha256: 4991c0c35af4620c6cda066ec4921c61eaacd29424d06579db4f35b9c421eea3
+    sha256: d7c9227ea3b0b223e1392c3ceadf4abd27b270a9bacb280a055a3e51aa5ecb05
 - id: inventory.ST-01.nonstealth-history
   phase: prepare
   action: |-
@@ -2157,7 +2157,7 @@ steps:
   assets:
   - path: probes/ST-01.md
     audience: coordinator
-    sha256: 338f32eda54e09e862adf7780a24ff88cb4ef0f06ff1f24cf90862f554fa0b75
+    sha256: 856a6c286c3fe8e3bbe279212e7135bbc70aa1721485cbcdd253a5f75083a97e
     base: shared
 - id: inventory.ST-01.stealth-legacy
   phase: prepare
@@ -2183,7 +2183,7 @@ steps:
   assets:
   - path: probes/ST-01.md
     audience: coordinator
-    sha256: 338f32eda54e09e862adf7780a24ff88cb4ef0f06ff1f24cf90862f554fa0b75
+    sha256: 856a6c286c3fe8e3bbe279212e7135bbc70aa1721485cbcdd253a5f75083a97e
     base: shared
 - id: inventory.H-03.lf-auto
   phase: prepare
@@ -2209,7 +2209,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.lf-compat
   phase: prepare
@@ -2235,7 +2235,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.lf-dirty
   phase: prepare
@@ -2261,7 +2261,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.lf-hardlink
   phase: prepare
@@ -2287,7 +2287,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.lf-protected
   phase: prepare
@@ -2313,7 +2313,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-03.lf-recovery
   phase: prepare
@@ -2339,7 +2339,7 @@ steps:
   assets:
   - path: probes/H-03.md
     audience: coordinator
-    sha256: 201d5c9324469cf8353dbbf0d52e6413bbf9438fdb33560584190b20167ca951
+    sha256: 1b6bbb9e01c2afa22d940dbbd576732a890eb5b2f5740a255f577efd8fcf3a66
     base: shared
 - id: inventory.H-06.legacy-poststop-failure
   phase: prepare
@@ -2365,7 +2365,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2396,7 +2396,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2427,7 +2427,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2458,7 +2458,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2489,7 +2489,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2520,7 +2520,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2551,7 +2551,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
   - path: probes/legacy-client/README.md
     audience: coordinator
     sha256: 0d2c688f13abc85a4f549db43a933597c1228a37265b7b1f204c635fd2e6587b
@@ -2582,7 +2582,7 @@ steps:
   assets:
   - path: probes/H-06.md
     audience: coordinator
-    sha256: 20fc522cab82b2b6eef3aedce353f9b174f3c064df7d241cea2afa9a380447c2
+    sha256: 3d873c0d51ac14faacca71e6fecf0dc229714e9ef0827c2006156d66e4121c9f
 - id: setup-new
   phase: interactive
   action: Run packaged /booley-setup new inside Session Runtime.
@@ -2604,7 +2604,7 @@ steps:
   assets:
   - path: prompts/setup.md
     audience: setup delegate
-    sha256: 60c1b46f8bafc688b1c271e496dc8db33299075f02bddc5c676e1607cf08afcc
+    sha256: 0d36ab14dad605ce21a79cc716a76c8b2731c4be34a9b5070878c847008ff3d2
 - id: setup-doctor-plain
   phase: interactive
   action: Run plain Doctor on generated Project.
@@ -2681,7 +2681,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Interactive Mode delegate
-    sha256: 789e6d38cfe6adb2fb08ede7569489ad61619ffda242b50c8bd6f437249906c3
+    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
   - path: spec/corpus-manifest.json
     audience: Interactive Mode delegate
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -2855,7 +2855,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-concurrent
   phase: interactive
   action: |-
@@ -2880,7 +2880,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-filed
   phase: interactive
   action: |-
@@ -2905,7 +2905,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-kinds
   phase: interactive
   action: |-
@@ -2930,7 +2930,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-list
   phase: interactive
   action: |-
@@ -2955,7 +2955,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-regenerate
   phase: interactive
   action: |-
@@ -2980,7 +2980,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-01.feedback-triage
   phase: interactive
   action: |-
@@ -3005,7 +3005,7 @@ steps:
   assets:
   - path: probes/D-01.md
     audience: coordinator
-    sha256: 7e4df1b19688c95eec82e0b53dd7a3004d6e81098752987d051514139dedfbb9
+    sha256: 949b5326e3bcb37830f7bb5474766d369fb5c41b621569d3af90aedf300b786b
 - id: inventory.D-02.feedback-block-submit
   phase: interactive
   action: |-
@@ -3030,7 +3030,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-02.feedback-export
   phase: interactive
   action: |-
@@ -3055,7 +3055,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-02.feedback-file-only
   phase: interactive
   action: |-
@@ -3080,7 +3080,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-02.feedback-off
   phase: interactive
   action: |-
@@ -3105,7 +3105,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-02.feedback-redact
   phase: interactive
   action: |-
@@ -3130,7 +3130,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-02.feedback-token
   phase: interactive
   action: |-
@@ -3155,7 +3155,7 @@ steps:
   assets:
   - path: probes/D-02.md
     audience: coordinator
-    sha256: f9c3f7bf45d1bace1a5cf5cd9c7a6d3a4c0aa08e795077c8cdc4851aa9667edd
+    sha256: 679479af2c50627c2cf15a8cb9af1031ca07d6e812f7cc2fe788fe406c57e9c2
 - id: inventory.D-03.docs-contract
   phase: interactive
   action: |-
@@ -3180,7 +3180,7 @@ steps:
   assets:
   - path: probes/D-03.md
     audience: coordinator
-    sha256: 55d0ce833dc899b27214842edac9d1f0a103f947111b153817ab48b05e31d32a
+    sha256: 320ea297f8d5d054bb605d412a17b475b8f89d91dffa8548e4da80312935ae35
     base: shared
 - id: inventory.D-03.docs-recovery
   phase: interactive
@@ -3206,7 +3206,7 @@ steps:
   assets:
   - path: probes/D-03.md
     audience: coordinator
-    sha256: 55d0ce833dc899b27214842edac9d1f0a103f947111b153817ab48b05e31d32a
+    sha256: 320ea297f8d5d054bb605d412a17b475b8f89d91dffa8548e4da80312935ae35
     base: shared
 - id: inventory.I-01.bare-launch
   phase: interactive
@@ -3232,7 +3232,7 @@ steps:
   assets:
   - path: probes/I-01.md
     audience: coordinator
-    sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    sha256: aa79a68cda3320bdce158a250e9028ec1fa9018bde2ef39d4bedb1033d6cba41
     base: shared
 - id: inventory.I-01.bare-launch-failure
   phase: interactive
@@ -3258,7 +3258,7 @@ steps:
   assets:
   - path: probes/I-01.md
     audience: coordinator
-    sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    sha256: aa79a68cda3320bdce158a250e9028ec1fa9018bde2ef39d4bedb1033d6cba41
     base: shared
 - id: inventory.I-01.bare-launch-recovery
   phase: interactive
@@ -3284,7 +3284,7 @@ steps:
   assets:
   - path: probes/I-01.md
     audience: coordinator
-    sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    sha256: aa79a68cda3320bdce158a250e9028ec1fa9018bde2ef39d4bedb1033d6cba41
     base: shared
 - id: inventory.I-01.interactive-commit
   phase: interactive
@@ -3310,7 +3310,7 @@ steps:
   assets:
   - path: probes/I-01.md
     audience: coordinator
-    sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    sha256: aa79a68cda3320bdce158a250e9028ec1fa9018bde2ef39d4bedb1033d6cba41
     base: shared
 - id: inventory.I-03.mcp-disabled
   phase: interactive
@@ -3336,7 +3336,7 @@ steps:
   assets:
   - path: probes/I-03.md
     audience: coordinator
-    sha256: 6c10450ab4c7f8d1d408bb2c33b5f93e409349d3810063853725c7b6f119cfde
+    sha256: 67ef95fc1f11826e163be33bb3fc57741951438efa65d91cc58f8fd581789b9b
 - id: inventory.I-03.mcp-modes
   phase: interactive
   action: |-
@@ -3361,7 +3361,7 @@ steps:
   assets:
   - path: probes/I-03.md
     audience: coordinator
-    sha256: 6c10450ab4c7f8d1d408bb2c33b5f93e409349d3810063853725c7b6f119cfde
+    sha256: 67ef95fc1f11826e163be33bb3fc57741951438efa65d91cc58f8fd581789b9b
 - id: inventory.I-03.mcp-restored
   phase: interactive
   action: |-
@@ -3386,7 +3386,7 @@ steps:
   assets:
   - path: probes/I-03.md
     audience: coordinator
-    sha256: 6c10450ab4c7f8d1d408bb2c33b5f93e409349d3810063853725c7b6f119cfde
+    sha256: 67ef95fc1f11826e163be33bb3fc57741951438efa65d91cc58f8fd581789b9b
 - id: inventory.I-05.catalog-coherence
   phase: interactive
   action: |-
@@ -3411,7 +3411,7 @@ steps:
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: ccc938b2b450e838dba5d4ee375cb6ae9c656cbe7e90885cbcd1dc213562c9c5
+    sha256: 6c4ba9d69e53adac4a529286a012b396794cdea6e58c8cdca786e5c4f656ed2b
     base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
@@ -3437,7 +3437,7 @@ steps:
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: ccc938b2b450e838dba5d4ee375cb6ae9c656cbe7e90885cbcd1dc213562c9c5
+    sha256: 6c4ba9d69e53adac4a529286a012b396794cdea6e58c8cdca786e5c4f656ed2b
     base: shared
 - id: inventory.P-10.custom-criterion
   phase: interactive
@@ -3464,7 +3464,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.P-10.custom-disabled
   phase: interactive
   action: |-
@@ -3490,7 +3490,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.P-10.custom-discover
   phase: interactive
   action: |-
@@ -3516,7 +3516,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.P-10.custom-invalid
   phase: interactive
   action: |-
@@ -3542,7 +3542,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.P-10.custom-preflight
   phase: interactive
   action: |-
@@ -3568,7 +3568,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.P-10.custom-recovery
   phase: interactive
   action: |-
@@ -3594,7 +3594,7 @@ steps:
   assets:
   - path: probes/P-10.md
     audience: coordinator
-    sha256: d9df241539062745d18cbfa849e70c86c1484f7113762dfe208fb79bd59f65e1
+    sha256: faf0c922e7820c34c71e6e95f4f69a5cfba02810138465c29689781e80dca02e
 - id: inventory.ST-04.interrupt-cleanup
   phase: interactive
   action: |-
@@ -3619,7 +3619,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.mount-boundary
   phase: interactive
@@ -3645,7 +3645,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.network-deny
   phase: interactive
@@ -3671,7 +3671,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.origin-push-deny
   phase: interactive
@@ -3697,7 +3697,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.pdk-readonly
   phase: interactive
@@ -3723,7 +3723,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.provider-allow
   phase: interactive
@@ -3749,7 +3749,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.ST-04.runtime-user
   phase: interactive
@@ -3775,7 +3775,7 @@ steps:
   assets:
   - path: probes/ST-04.md
     audience: coordinator
-    sha256: 956200f38453e4f149e89d565fccb7eefd4b8379b21c8ede660fd8c0387c5cba
+    sha256: 6e28f3fa9f7a2a9181a68b20f593d37febc71b462f9efe5dbf58dfc59fef6071
     base: shared
 - id: inventory.T-12.notify-absent
   phase: interactive
@@ -3801,7 +3801,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.T-12.notify-blocked
   phase: interactive
   action: |-
@@ -3826,7 +3826,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.T-12.notify-completion-drift
   phase: interactive
   action: |-
@@ -3851,7 +3851,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.T-12.notify-doctor
   phase: interactive
   action: |-
@@ -3876,7 +3876,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.T-12.notify-unavailable-blocked
   phase: interactive
   action: |-
@@ -3901,7 +3901,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.T-12.notify-unavailable-doctor
   phase: interactive
   action: |-
@@ -3926,7 +3926,7 @@ steps:
   assets:
   - path: probes/T-12.md
     audience: coordinator
-    sha256: 9a6305f9b31880df56b6beb61bb388c100b98e608be5323111c9159e5ab3389f
+    sha256: f784c28b326cd2b8b410daf2206e5a869fb34bd47c5be3f9bd45ddc3fd22bb1e
 - id: inventory.I-01.client-session
   phase: interactive
   action: |-
@@ -3951,7 +3951,7 @@ steps:
   assets:
   - path: probes/I-01.md
     audience: coordinator
-    sha256: 1a1028153e67903e7377adeb82d177b1097804d92211840d6b7d9f1804edd5b2
+    sha256: aa79a68cda3320bdce158a250e9028ec1fa9018bde2ef39d4bedb1033d6cba41
     base: shared
 - id: gui-runtime-client
   phase: interactive
@@ -4029,7 +4029,7 @@ steps:
   assets:
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: fc48c6f104dad2a2a1497934068417dba6da52e6b7685da3105bc4da8f300301
+    sha256: b9c6ed7142ac37072a5317b8c1f2761a9a1d8483cea08fddefccf106efd9cda5
   - path: spec/qa_uart.sv
     audience: Developer Agent
     sha256: 019ab153ca1f735225af165ad53c31f542676b95afa9c27322d8d22e404eeb64
@@ -4038,7 +4038,7 @@ steps:
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Developer Agent
-    sha256: 789e6d38cfe6adb2fb08ede7569489ad61619ffda242b50c8bd6f437249906c3
+    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
   - path: spec/corpus-manifest.json
     audience: Developer Agent
     sha256: 9ed5ccb918e1a03f808561c08142e445400e21829ba515d2fae2d704fef5c5f5
@@ -4237,7 +4237,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-clean-waived
   phase: feature
@@ -4263,7 +4263,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-done
   phase: feature
@@ -4289,7 +4289,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-guidance
   phase: feature
@@ -4315,7 +4315,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-rerun
   phase: feature
@@ -4341,7 +4341,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-security
   phase: feature
@@ -4367,7 +4367,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-spec
   phase: feature
@@ -4393,7 +4393,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-stale
   phase: feature
@@ -4419,7 +4419,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-01.review-tb-quality
   phase: feature
@@ -4445,7 +4445,7 @@ steps:
   assets:
   - path: probes/S-01.md
     audience: coordinator
-    sha256: 454fffbd6a29af1e680136940c94b384915d531b734675e1219be0cd3975640e
+    sha256: 0cbce199870487cbb0e4ecdeae1adf2e367e88a65bf22beb1c1e758f428c62b6
     base: shared
 - id: inventory.S-02.mutation-auto-dry
   phase: feature
@@ -4471,7 +4471,7 @@ steps:
   assets:
   - path: probes/S-02.md
     audience: coordinator
-    sha256: 273da28bc992a5555e538145338eef03a591bd543a512182a43186f3ff065f0f
+    sha256: 3a7024be34cef7cfc15147cac62d4421e600b3485632816bc73a9a3862e780ea
 - id: inventory.S-02.mutation-campaign
   phase: feature
   action: |-
@@ -4496,7 +4496,7 @@ steps:
   assets:
   - path: probes/S-02.md
     audience: coordinator
-    sha256: 273da28bc992a5555e538145338eef03a591bd543a512182a43186f3ff065f0f
+    sha256: 3a7024be34cef7cfc15147cac62d4421e600b3485632816bc73a9a3862e780ea
 - id: inventory.S-02.mutation-default-dry
   phase: feature
   action: |-
@@ -4521,7 +4521,7 @@ steps:
   assets:
   - path: probes/S-02.md
     audience: coordinator
-    sha256: 273da28bc992a5555e538145338eef03a591bd543a512182a43186f3ff065f0f
+    sha256: 3a7024be34cef7cfc15147cac62d4421e600b3485632816bc73a9a3862e780ea
 - id: inventory.S-02.mutation-lock-regen
   phase: feature
   action: |-
@@ -4546,7 +4546,7 @@ steps:
   assets:
   - path: probes/S-02.md
     audience: coordinator
-    sha256: 273da28bc992a5555e538145338eef03a591bd543a512182a43186f3ff065f0f
+    sha256: 3a7024be34cef7cfc15147cac62d4421e600b3485632816bc73a9a3862e780ea
 - id: inventory.S-02.mutation-lock-reuse
   phase: feature
   action: |-
@@ -4571,7 +4571,7 @@ steps:
   assets:
   - path: probes/S-02.md
     audience: coordinator
-    sha256: 273da28bc992a5555e538145338eef03a591bd543a512182a43186f3ff065f0f
+    sha256: 3a7024be34cef7cfc15147cac62d4421e600b3485632816bc73a9a3862e780ea
 - id: inventory.S-03.isolation-complete
   phase: feature
   action: |-
@@ -4596,7 +4596,7 @@ steps:
   assets:
   - path: probes/S-03.md
     audience: coordinator
-    sha256: 0bc7f2026b453502f3143535bc10f0ad365525d4c3bb2349ebe90a0306175fd1
+    sha256: c3ab2e37ff5e3ead030c52dbc296946a0aa9330c4799f2dd60f857f4cfdc1f1a
 - id: inventory.S-03.isolation-failure
   phase: feature
   action: |-
@@ -4621,7 +4621,7 @@ steps:
   assets:
   - path: probes/S-03.md
     audience: coordinator
-    sha256: 0bc7f2026b453502f3143535bc10f0ad365525d4c3bb2349ebe90a0306175fd1
+    sha256: c3ab2e37ff5e3ead030c52dbc296946a0aa9330c4799f2dd60f857f4cfdc1f1a
 - id: inventory.S-03.isolation-hidden
   phase: feature
   action: |-
@@ -4646,7 +4646,7 @@ steps:
   assets:
   - path: probes/S-03.md
     audience: coordinator
-    sha256: 0bc7f2026b453502f3143535bc10f0ad365525d4c3bb2349ebe90a0306175fd1
+    sha256: c3ab2e37ff5e3ead030c52dbc296946a0aa9330c4799f2dd60f857f4cfdc1f1a
 - id: inventory.S-03.isolation-visible
   phase: feature
   action: |-
@@ -4671,7 +4671,7 @@ steps:
   assets:
   - path: probes/S-03.md
     audience: coordinator
-    sha256: 0bc7f2026b453502f3143535bc10f0ad365525d4c3bb2349ebe90a0306175fd1
+    sha256: c3ab2e37ff5e3ead030c52dbc296946a0aa9330c4799f2dd60f857f4cfdc1f1a
 - id: inventory.S-04.criterion-mutation
   phase: feature
   action: |-
@@ -4696,7 +4696,7 @@ steps:
   assets:
   - path: probes/S-04.md
     audience: coordinator
-    sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    sha256: 5c28de1f666994558bca85d7777d0c59eac5c2a9d4a7abde0a219b050c9c35d0
     base: shared
 - id: inventory.S-04.criterion-review-security
   phase: feature
@@ -4722,7 +4722,7 @@ steps:
   assets:
   - path: probes/S-04.md
     audience: coordinator
-    sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    sha256: 5c28de1f666994558bca85d7777d0c59eac5c2a9d4a7abde0a219b050c9c35d0
     base: shared
 - id: inventory.S-04.criterion-review-spec
   phase: feature
@@ -4748,7 +4748,7 @@ steps:
   assets:
   - path: probes/S-04.md
     audience: coordinator
-    sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    sha256: 5c28de1f666994558bca85d7777d0c59eac5c2a9d4a7abde0a219b050c9c35d0
     base: shared
 - id: inventory.S-04.criterion-review-tb-quality
   phase: feature
@@ -4774,7 +4774,7 @@ steps:
   assets:
   - path: probes/S-04.md
     audience: coordinator
-    sha256: a5189f2d6762dc0bc6499f76266e30e9e8f7e291d31be3d2c9d73e4cc65805c4
+    sha256: 5c28de1f666994558bca85d7777d0c59eac5c2a9d4a7abde0a219b050c9c35d0
     base: shared
 - id: inventory.T-02.accepted-commit
   phase: feature
@@ -4800,7 +4800,7 @@ steps:
   assets:
   - path: probes/T-02.md
     audience: coordinator
-    sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    sha256: c86ea5b23edca7d8789ea9d07347d3ebf9ce2f1c223f6bd2f2182688bf4ab249
     base: shared
 - id: inventory.T-02.report-retained
   phase: feature
@@ -4826,7 +4826,7 @@ steps:
   assets:
   - path: probes/T-02.md
     audience: coordinator
-    sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    sha256: c86ea5b23edca7d8789ea9d07347d3ebf9ce2f1c223f6bd2f2182688bf4ab249
     base: shared
 - id: inventory.T-02.ticket-type-feature
   phase: feature
@@ -4852,7 +4852,7 @@ steps:
   assets:
   - path: probes/T-02.md
     audience: coordinator
-    sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    sha256: c86ea5b23edca7d8789ea9d07347d3ebf9ce2f1c223f6bd2f2182688bf4ab249
     base: shared
 - id: inventory.T-02.ticket-type-verification
   phase: feature
@@ -4878,7 +4878,7 @@ steps:
   assets:
   - path: probes/T-02.md
     audience: coordinator
-    sha256: 4fd2fd399f8aaf4fcd7c0a0312821c48ce4b976e31694b54da1f8b26eadc6067
+    sha256: c86ea5b23edca7d8789ea9d07347d3ebf9ce2f1c223f6bd2f2182688bf4ab249
     base: shared
 - id: evaluator-isolation
   phase: evaluate
@@ -4919,9 +4919,15 @@ steps:
   - path: evaluator/controls/transport.sv
     audience: independent evaluator
     sha256: 3cd4d90ea1ec1a9498bb2a92f45c4b3b062477e94541ada59f6a15d445a8c412
+  - path: evaluator/control_cases.py
+    audience: independent evaluator
+    sha256: e04e65574e900d0ab48ba69d5dc09eab6b8b3ebaddc41fb6700143ce41f5711c
+  - path: evaluator/controls/receiver.sv
+    audience: independent evaluator
+    sha256: a9e6734901402592b3fe9cd267e1fa240952a1dbc3a44bb4c37e94bc7898c7c8
   - path: evaluator/controls.py
     audience: independent evaluator
-    sha256: 6d27a4bffc3fddf6804c7c3333ae19eb16ad3f2ad91f625d10bfa001fdb279b2
+    sha256: 9821413ec0b769953e674869a5bd8e8fb8346be2cc8b24f649ad90173ee01917
   - path: evaluator/driver.py
     audience: independent evaluator
     sha256: d245e83299e8b84bd4c3438c201999b3a022247256607bb1dbbf12240838643a
@@ -4936,16 +4942,16 @@ steps:
     sha256: 0e11e0a05ab67a87d190af87434cd90f77f769dc2f9ade3879fc7866dd5da907
   - path: evaluator/run.py
     audience: independent evaluator
-    sha256: 1b4bf4b731fbd206be607f3a2259edaa7bc5f20296d031a60bc07426dc86864e
+    sha256: 2bd8fff7978e8f33b2d3771ef70ffe270eef28e4f7605177ad02d45ee2f8e52a
   - path: evaluator/worker.py
     audience: independent evaluator
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: eb37679a9ebbf863de47da688ce2449df2300d738af60a75952570b338682cb6
+    sha256: d91a9ac037861869f7796c4ac5a4093721d49d62500fc45765a08f7215ca12f5
   - path: evaluator/inputs.py
     audience: independent evaluator
-    sha256: fafed8139d6b95a72c536b48ebc4ac54ea1de4dde9baf8039e4c2e95603897ef
+    sha256: 7c91bd0a7ece38519395a7a463b8bf2d1e0a5dcbacaec334964748e147098725
   - path: evaluator/publication.py
     audience: independent evaluator
     sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
@@ -6319,13 +6325,13 @@ steps:
     sha256: e4f6fa2e522c97af0b73ad0cef5b585fd2355bdd142111769cc02b998cb2f69a
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: fc48c6f104dad2a2a1497934068417dba6da52e6b7685da3105bc4da8f300301
+    sha256: b9c6ed7142ac37072a5317b8c1f2761a9a1d8483cea08fddefccf106efd9cda5
   - path: spec/mmio-addendum.md
     audience: Developer Agent
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
   - path: spec/timing-addendum.md
     audience: Developer Agent
-    sha256: 789e6d38cfe6adb2fb08ede7569489ad61619ffda242b50c8bd6f437249906c3
+    sha256: eae6618fc09da2ec89cf0184bbfbb6921fe67fbc92a2ed7a1c4edf85c16bad0a
   - path: spec/qa_uart.sv
     audience: Developer Agent
     sha256: 019ab153ca1f735225af165ad53c31f542676b95afa9c27322d8d22e404eeb64

@@ -42,4 +42,3 @@ to diff → exact endpoints/delta; `marker-wrapper-wave` supplies named endpoint
 to wave → expected interval and annotations. Retain registry snapshots and
 outputs separately. Wrapper time-name substitution does not imply native option
 support on value/diff.
-

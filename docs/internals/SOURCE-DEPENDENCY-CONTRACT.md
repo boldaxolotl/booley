@@ -57,9 +57,8 @@ functions. D14 has no waiver or composition exception.
   composite submodule materialization reuse these mechanics without Ticket policy;
   materialization preserves separate rollback for each repository selection.
 
-The dependency change and measured diagnostics for
-[#423](https://github.com/boldaxolotl/booley/issues/423) are recorded in
-[the implementation evidence](../research/runtime-ticket-board-423-evidence.md).
+The dependency change is tracked in
+[#423](https://github.com/boldaxolotl/booley/issues/423).
 
 ## Graph semantics
 

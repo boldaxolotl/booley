@@ -71,7 +71,9 @@ def snapshot(candidate: dict, evaluator: Path, destination: Path) -> list[Path]:
     for path, content in rewritten.items():
         output = destination / path
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(content, encoding="utf-8")
+        # Preserve committed CRLF/LF bytes on every operator host. Text-mode
+        # writes on Windows would turn existing CRLF into CRCRLF.
+        output.write_bytes(content.encode("utf-8"))
     return [destination / item["path"] for item in sources]
 
 

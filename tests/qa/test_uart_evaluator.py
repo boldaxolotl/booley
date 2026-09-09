@@ -3,6 +3,8 @@
 import functools
 import operator
 
+import pytest
+
 
 def test_mmio_control_detects_one_defined_response_bit():
     from qa.scenarios.uart.evaluator.oracles import compare_mmio
@@ -67,7 +69,8 @@ def test_serial_oracle_rejects_unrequested_extra_frame():
     assert check_tx([1] * 8 + frame + frame, [0x55], 0x4000)["status"] == "fail"
 
 
-def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newline):
     import hashlib
     import os
     import subprocess
@@ -77,8 +80,10 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
 
     root = tmp_path / "candidate"
     root.mkdir()
-    (root / "uart.sv").write_text('`include "constants.svh"\nmodule qa_uart; endmodule\n')
-    (root / "constants.svh").write_text("`define CONSTANT 1\n")
+    (root / "uart.sv").write_bytes(
+        newline.join([b'`include "constants.svh"', b"module qa_uart; endmodule", b""])
+    )
+    (root / "constants.svh").write_bytes(b"`define CONSTANT 1" + newline)
     git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     git_env.update(
         {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TEMPLATE_DIR": ""}
@@ -128,7 +133,7 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
     candidate["include_files"] = entries[1:]
     snapshot(candidate, tmp_path / "operator", tmp_path / "frozen")
     (root / "constants.svh").write_text("`define CONSTANT 2\n")
-    assert (tmp_path / "frozen/constants.svh").read_text() == "`define CONSTANT 1\n"
+    assert (tmp_path / "frozen/constants.svh").read_bytes() == b"`define CONSTANT 1" + newline
     with pytest.raises(ValueError, match="committed digest"):
         snapshot(candidate, tmp_path / "operator", tmp_path / "changed")
 

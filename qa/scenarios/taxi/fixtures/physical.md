@@ -46,4 +46,3 @@ The whole run remains eight hours. Physical work runs within the existing approv
 | `taxi-10g-mac-port-evolution.ticket2.synthesis-path` | Core | Same physical pair has critical-path increase at most 0% using published unqualified timing metric semantics. | Fresh paired physical `per_clock` timing, selected representative metric and exact comparison. |
 | `taxi-10g-mac-port-evolution.physical.final` | Core | Rerun successful fresh physical synthesis on final repaired merged state. | Physical result/artifacts, source/SDC/library identities and timing coverage. |
 | `taxi-10g-mac-port-evolution.physical.archive-cleanup` | Core | Preserve physical reports/timing artifacts before deleting run-owned Target/SDC/Project. | Archive manifest and configuration/resource cleanup proof. |
-

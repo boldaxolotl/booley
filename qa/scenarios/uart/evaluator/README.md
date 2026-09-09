@@ -42,16 +42,25 @@ remaining time. The coordinator further clips controls plus evaluation to the sh
 repairs plus full reruns to 45 minutes each, and all work to the cleanup boundary.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
-The controls deliberately implement only transport and serial behavior. Positive,
-separate MMIO/serial one-bit corruption, and restored runs qualify those observation
-paths; they do not establish full UART functionality. Keep the original failed
-control attempts alongside successful corrections.
+The 18 controls each require positive, independently corrupted and restored
+hardware: 54 simulator runs in total. The transport fixture covers MMIO and TX;
+the separate receiver fixture covers exact-a RX at all four start phases with
+NF=0/1, even/odd parity reception, RX FIFO depth/order, RX watermark state, natural
+RX and injected event IRQ observation, transition-rich VAL history, and stalled
+exactly-once reads. Candidate admission requires every control for this evaluator
+identity. Keep failed control attempts alongside successful corrections.
+
+These fixtures qualify the named observation paths, not complete UART behavior.
+The receiver supports only the exact-a rate. Fractional/exact-b RX, parity-error
+detection, break/overflow, all watermark encodings, level injection, invalid
+addresses, loopback, override, reset combinations and timeout semantics still
+need independent hardware qualification before those families receive that credit.
 
 Depth/event-reset timeout cases retain paired stimuli and timestamps but remain
 blocked: the public text does not supply a universal phase-comparison tolerance.
 Natural interrupt sources and both active/inactive level injection are exercised.
 Invalid-address cases now retain occupied FIFO data and every stable CSR across
-the rejected operation. Full RX sampling phase coverage and real hardware controls
-for these additional oracles still require qualification.
+the rejected operation. Their presence in the evaluator is distinct from the
+hardware qualification listed above.
 
 See [CONTRACT.md](CONTRACT.md) for the public oracle derivation.

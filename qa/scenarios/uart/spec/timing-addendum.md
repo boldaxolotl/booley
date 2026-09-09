@@ -32,4 +32,3 @@ To complete an executable conformance contract, the following **approved public 
 The finite limits are conservative test-contract choices relative to the selected serial rates, not product promises derived from an implementation. Publish them in the same addendum the Developer receives. For observations not governed by these explicit bounds or documented timing requirements, reaching an operational timeout produces a blocked result rather than proof of an RTL timing defect.
 
 For VAL, steady all-high/all-low input eventually yielding 0xffff/0x0000 is useful but cannot alone prove ordering. A known transition-rich input and consistent sample-phase/latency alignment is needed to check newest bit 0. A bounded alignment window requires the above public latency decision. Do not fit an arbitrary distinct delay per sample to force a match.
-
