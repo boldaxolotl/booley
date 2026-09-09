@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.ticket_board.conftest import publish_handoff_snapshot
+
 # Import from the scripts directory (one level up from unit/)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from datetime import UTC
@@ -1608,7 +1610,7 @@ class TestOpHandoff:
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
         monkeypatch.setattr(
-            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+            "booley.ticket_board.operations._prepare_handoff_snapshot", publish_handoff_snapshot
         )
         assert op_handoff(tio, "t1") is True
 
@@ -1672,7 +1674,7 @@ class TestOpHandoff:
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t4")
         monkeypatch.setattr(
-            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+            "booley.ticket_board.operations._prepare_handoff_snapshot", publish_handoff_snapshot
         )
         result = op_handoff(tio, "t4")
         assert result is True
@@ -1703,7 +1705,7 @@ class TestOpHandoff:
             prev = s
         _write_transitions_log(tio, "t5", lines)
         monkeypatch.setattr(
-            "booley.ticket_board.operations._prepare_handoff_snapshot", lambda *_: True
+            "booley.ticket_board.operations._prepare_handoff_snapshot", publish_handoff_snapshot
         )
         result = op_handoff(tio, "t5")
         assert result is True

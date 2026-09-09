@@ -296,6 +296,7 @@ def render_explanation_html(
         f'<meta http-equiv="Content-Security-Policy" content="{csp}">'
         f"<style>{_CSS}</style><title>{escape(str(package['slug']))} review</title></head><body>"
         f"<h1>{escape(str(package['slug']))}</h1>"
+        + _inspection_banner(package)
         + _section_cards("Background", explanation.background)
         + _section_cards("Intuition", explanation.intuition)
         + f"<section><h2>Code and change references</h2>{references}</section>"
@@ -319,4 +320,15 @@ def _render_quiz(index: int, question: QuizQuestion) -> str:
     return (
         f'<article class="quiz-question"><h3>{index}. {escape(question.question)}</h3>'
         f'{choices}<p class="quiz-feedback" aria-live="polite"></p></article>'
+    )
+
+
+def _inspection_banner(package: Mapping[str, Any]) -> str:
+    inspection = package.get("inspection")
+    if not inspection:
+        return ""
+    return (
+        f"<section><h2>Acceptance: {escape(inspection['disposition'])}</h2>"
+        f"<p>{escape(inspection['reason'])}</p>"
+        f"<p>Original block: {escape(inspection['blocked_reason'])}</p></section>"
     )

@@ -2,6 +2,16 @@
 
 For each `status: "blocked"` ticket:
 
+## Explicit interactive review request
+
+When the user asks to review blocked work or finish its verification
+interactively, commit the intended Ticket source changes and run
+`booley board request-review $SLUG --reason "<user intent>"`, then follow the
+review step. That request authorizes package generation. Preserve outstanding
+gates; the resulting review is explicitly unaccepted. If generation fails,
+report the error and leave the Ticket blocked. Use the normal diagnosis path
+below when the user has not requested this transition.
+
 ## Fast path
 
 Run exactly once:

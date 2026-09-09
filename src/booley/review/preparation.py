@@ -45,6 +45,7 @@ from booley.ticket_board.ticket_repositories import (
 )
 
 from .artifact import ReviewPackage
+from .entry import ReviewInspection
 from .evidence import ReviewEvidenceError, ReviewEvidencePackage, build_review_evidence
 from .explanation import (
     ExplanationError,
@@ -101,6 +102,7 @@ class ReviewPrepContext:
     acceptance_basis_id: str = ""
     triage_report_enabled: bool = True
     project_repository: ProjectReviewRepository | None = None
+    inspection: ReviewInspection | None = None
 
 
 @dataclass(frozen=True)
@@ -291,6 +293,8 @@ def _resolve_context(
     *,
     require_review: bool = False,
     allow_report_disabled: bool = False,
+    inspect_unaccepted: bool = False,
+    locked_basis: AcceptanceBasis | None = None,
 ) -> ReviewPrepContext:
     tickets_dir = tickets_dir_from_project_root(project_root)
     tio = TicketIO(tickets_dir, project_root=project_root)
@@ -304,17 +308,27 @@ def _resolve_context(
         require_review=require_review,
         allow_report_disabled=allow_report_disabled,
     )
-    basis = _load_review_basis(tio, slug)
+    basis = locked_basis if locked_basis is not None else _load_review_basis(tio, slug)
     outer = basis.participant("outer")
     feature_branch = outer.ticket_ref.removeprefix("refs/heads/")
     log_dir = tio.logs_dir / slug
+    from .entry import package_dir, read_entry
+
+    inspection = None if inspect_unaccepted else read_entry(log_dir)
+    snapshot_status = str(entry.get("status"))
+    if inspect_unaccepted or (inspection and inspection["disposition"] == "unaccepted"):
+        snapshot_status = "blocked"
     expected_heads = _review_snapshot_heads(
         project_root,
         log_dir,
         slug,
-        str(entry.get("status")),
+        snapshot_status,
         basis,
     )
+    if inspection is not None:
+        if inspection["basis_id"] != basis.basis_id:
+            raise ReviewPrepError("review entry belongs to a different Acceptance Basis")
+        expected_heads = inspection["heads"]
     worktree, head_sha, project_repository = _resolve_review_repositories(
         project_root, basis, expected_heads
     )
@@ -322,7 +336,9 @@ def _resolve_context(
         project_root=project_root,
         slug=slug,
         log_dir=log_dir,
-        runtime_dir=ticket_runtime_dir(log_dir) / "triage-prep",
+        runtime_dir=package_dir(log_dir, inspection)
+        if inspection
+        else ticket_runtime_dir(log_dir) / "triage-prep",
         worktree=worktree,
         ticket_path=tickets_dir / str(entry["file"]),
         base_sha=outer.authoring_sha,
@@ -331,6 +347,7 @@ def _resolve_context(
         acceptance_basis_id=basis.basis_id,
         triage_report_enabled=report_enabled,
         project_repository=project_repository,
+        inspection=inspection,
     )
 
 
@@ -438,6 +455,12 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
             )
         elif candidate.is_file():
             paths.append((relative, candidate))
+    if ctx.inspection is not None:
+        evidence = ctx.log_dir / "acceptance" / "evidence"
+        paths.extend(
+            (str(path.relative_to(ctx.log_dir)), path)
+            for path in sorted(evidence.glob("*/record.json"))
+        )
     return paths
 
 
@@ -450,6 +473,15 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     source change. The agent still receives a copied pre-call ``run.log``.
     """
     digest = hashlib.sha256()
+    if ctx.inspection is not None:
+        from .entry import require_clean
+
+        require_clean(ctx)
+        semantic = {
+            key: ctx.inspection[key]
+            for key in ("basis_id", "basis_receipt", "disposition", "reason", "heads")
+        }
+        digest.update(json.dumps(semantic, sort_keys=True).encode())
     digest.update(_git(ctx.worktree, "rev-parse", "HEAD").strip().encode("ascii"))
     status = _git(
         ctx.worktree,
@@ -486,6 +518,19 @@ def _require_unchanged(ctx: ReviewPrepContext, expected_sha: str, message: str) 
         raise ReviewPrepConcurrentChangeError(message)
 
 
+def _inspection_artifacts_valid(ctx: ReviewPrepContext, manifest: dict[str, Any]) -> bool:
+    artifacts = manifest.get("inspection_artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        return False
+    for relative, expected in artifacts.items():
+        path = ctx.runtime_dir / relative
+        if not path.resolve().is_relative_to(ctx.runtime_dir.resolve()):
+            return False
+        if not path.is_file() or _file_sha256(path) != expected:
+            return False
+    return True
+
+
 def _fresh_outcome(
     ctx: ReviewPrepContext,
     manifest: dict[str, Any] | None,
@@ -493,6 +538,8 @@ def _fresh_outcome(
     source_sha: str,
 ) -> ReviewPrepOutcome | None:
     if not manifest or manifest.get("status") != "ready":
+        return None
+    if ctx.inspection is not None and not _inspection_artifacts_valid(ctx, manifest):
         return None
     expected = {
         "version": _PROMPT_VERSION,
@@ -991,6 +1038,16 @@ def _record_call(
     *,
     exit_code: int,
 ) -> None:
+    if ctx.inspection is not None:
+        _write_json(
+            ctx.runtime_dir / "call.json",
+            {
+                "exit_code": exit_code,
+                "duration_s": duration,
+                "cost_usd": result.cost_usd if result else None,
+            },
+        )
+        return
     state_path = existing_runtime_file(ctx.log_dir.parent, ctx.slug, "booley_state.json")
     if not state_path.is_file():
         return
@@ -1168,7 +1225,11 @@ def _persist_model_review(
     """Write the package, optional HTML, and their verified manifest."""
     html_path = None
     if prepared.explanation is not None:
-        html_path = ctx.log_dir / f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
+        html_path = (
+            ctx.runtime_dir / "explanation.html"
+            if ctx.inspection
+            else ctx.log_dir / f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
+        )
     briefing_path = write_triage_package(
         ctx,
         facts,
@@ -1231,7 +1292,7 @@ async def _prepare_model_review(
         return _persist_model_review(
             ctx,
             prompt_sha,
-            build_review_facts(ctx),
+            facts,
             prepared,
             result,
             started,
@@ -1280,12 +1341,32 @@ async def _prepare_resolved_review(
     return await _prepare_model_review(ctx, exact_prompt, prompt_sha, source_sha, started)
 
 
+def _requested_review_slug(project_root: Path, slug: str) -> str | None:
+    from .entry import assert_idle, operation_path, read_entry, read_json
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is None:
+        return None
+    canonical = Path(board["file"]).stem
+    pending = read_json(operation_path(tio.logs_dir / canonical))
+    if pending and pending.get("action") == "regenerate":
+        return canonical
+    assert_idle(tio.logs_dir / canonical)
+    return canonical if read_entry(tio.logs_dir / canonical) is not None else None
+
+
 async def prepare_review(
     project_root: Path, slug: str, *, force: bool = False
 ) -> ReviewPrepOutcome:
     """Prepare one Ticket's review package; failures are returned, never raised."""
     started = time.monotonic()
     try:
+        from .requests import request_review_command
+
+        canonical = _requested_review_slug(project_root, slug)
+        if canonical is not None:
+            return await request_review_command(project_root, canonical, action="regenerate")
         ctx = await _resolve_stable_context(project_root.resolve(), slug)
     except Exception as exc:
         logger.exception("Triage report setup failed for %s", slug)
@@ -1327,6 +1408,11 @@ async def prepare_review_command(
 ) -> ReviewPrepOutcome:
     """Prepare a review package for a review or blocked ticket."""
     try:
+        from .requests import request_review_command
+
+        canonical = _requested_review_slug(project_root, slug)
+        if canonical is not None:
+            return await request_review_command(project_root, canonical, action="regenerate")
         load_models_config(project_root)
         _resolve_context(
             project_root.resolve(),
@@ -1353,7 +1439,7 @@ def review_briefing_command(
             require_review=True,
             allow_report_disabled=True,
         )
-        if not ctx.triage_report_enabled:
+        if not ctx.triage_report_enabled and ctx.inspection is None:
             facts = build_review_facts(ctx)
             package_value = {
                 **facts,
@@ -1369,7 +1455,7 @@ def review_briefing_command(
                 render_review_briefing(package, failures),
                 tuple(failures),
             )
-        prompt_sha = _prompt_hash(_prompt_text())
+        _prompt, prompt_sha = _review_prompt(ctx)
         source_sha = _source_fingerprint(ctx)
         manifest = _read_manifest(ctx)
         fresh = _fresh_outcome(ctx, manifest, prompt_sha, source_sha)
