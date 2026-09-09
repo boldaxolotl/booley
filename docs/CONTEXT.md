@@ -292,7 +292,7 @@ The interval in which native counters contribute to a Campaign, including reset 
 _Avoid_: waveform slice
 
 **Coverage Criterion**:
-One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND.
+One Target-bound policy combining selected native metric thresholds and an exact test suite with logical AND, satisfied only by a durably persisted passing Campaign; it never starts collection implicitly.
 _Avoid_: Analyst score, inferred coverage goal
 
 **Approved Waiver Set**:

@@ -98,6 +98,11 @@
         "type": "boolean",
         "default": false,
         "description": "Skip zombie process cleanup"
+      },
+      "coverage": {
+        "type": "boolean",
+        "default": false,
+        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
       }
     },
     "required": [

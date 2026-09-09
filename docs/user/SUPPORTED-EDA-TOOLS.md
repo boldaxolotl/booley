@@ -199,3 +199,23 @@ Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this
 matrix. Planned integrations live in
 [ROADMAP.md](../internals/ROADMAP.md#commercial-eda-tools).
+
+### Native coverage capabilities
+
+Coverage requires stable Verilator `v5.052`, full commit
+`ea338be98e1e838d3518809ce8899f85a009963c`; 5.050 is excluded. Explicit collection
+selecting any Icarus Target is an atomic all-Target Preflight error.
+
+| Native record | V1 treatment |
+|---|---|
+| Line/basic block, branch, expression | Scored for points in the Target RTL closure. |
+| Toggle | Directional per-bit points, scored independently. |
+| User-authored cover property | Scored native evidence. |
+| FSM and covergroup | Retained as unscored evidence when parsed; no V1 threshold. |
+| Unknown record class | Retained capability/findings evidence; never silently scored. |
+| Incompatible native format | No normalized points; collection error and gated evaluation blocked. |
+
+Capabilities distinguish `reported` (parsed and retained), `absent` (no records),
+and `unsupported` (cannot produce or safely interpret). Unscored does not mean
+unsupported. Generated-main, declared custom-main, HDL-testbench, and Cocotb
+harnesses are supported; every selected test owns its native database and process.

@@ -1177,8 +1177,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         "elaborate_standalone",
         "sim_pass",
         "cycle_count",
+        "coverage",
     ]
     satisfies_args: ClassVar[dict[str, str]] = {
+        "coverage": "--coverage",
         "elab_pass": "--mode elab-only",
         "elaborate_standalone": "--mode elab-only-standalone",
     }

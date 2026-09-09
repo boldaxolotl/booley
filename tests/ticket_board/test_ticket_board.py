@@ -741,7 +741,7 @@ class TestValidateTicketFields:
             for error in errors
         )
 
-    def test_mandatory_criterion_without_live_tool_is_rejected(self):
+    def test_mandatory_coverage_is_supported_by_explicit_simulation(self):
         fields = {
             "summary": "x",
             "type": "verification",
@@ -762,9 +762,7 @@ class TestValidateTicketFields:
 
         errors = validate_ticket_fields(fields, "## Description\ntext")
 
-        assert any(
-            "coverage" in error and "no enabled Flow or Specialist" in error for error in errors
-        )
+        assert errors == []
 
     def test_rtl_scope_without_mandatory_sim_rejected(self, tmp_path: Path):
         fields = {

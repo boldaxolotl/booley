@@ -48,15 +48,16 @@ The blocker is licenses, not design: the maintainer can't validate a Flow for an
 
 ## Native Coverage Campaigns
 
-Phases 0–6 of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
+The implementation of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
 Verilator-native measurement, immutable Campaigns, deterministic Criteria,
 transactional waivers, canonical persistence, exact pruning, and the report-driven
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
-Phase 7 still owns public Simulation coverage controls, the complete cross-mode
-release matrix, and release documentation. Native FSM and covergroup records
+Simulation collection controls and the Coverage Criterion are public alongside
+the Analyst. The [release gate](coverage-release-gate.md) records cross-mode and
+real-tool verification status. Native FSM and covergroup records
 remain unscored evidence in V1. B-Wave has no coverage measurement role.
 
 ## Continuous Integration (`booley ci`)

@@ -76,15 +76,13 @@ def test_per_target_criteria_use_target_placeholder() -> None:
     assert "{cfg}" not in rendered
 
 
-def test_hidden_criteria_are_omitted() -> None:
-    """``hidden = true`` keeps a criterion out of the reference (still usable in tickets)."""
-    rendered = render_criteria_reference()
-    hidden = [c.name for c in load_base_criteria() if c.hidden]
-    assert hidden, "expected at least one hidden criterion to exercise this path"
-    for name in hidden:
-        assert f"`{name}" not in rendered, (
-            f"criterion {name!r} is marked hidden but still renders in the reference"
-        )
+def test_hidden_criteria_are_omitted(tmp_path: Path) -> None:
+    """A hidden project Criterion is omitted while public coverage is rendered."""
+    config = tmp_path / "criteria.toml"
+    config.write_text('[private_check]\ndescription = "Internal check"\nhidden = true\n')
+    rendered = render_criteria_reference(project_criteria_path=config)
+    assert "`private_check" not in rendered
+    assert "`coverage_{target}`" in rendered
 
 
 def test_grouped_render_has_group_headings() -> None:
@@ -124,3 +122,9 @@ def test_every_cycle_count_threshold_param_is_documented() -> None:
     rendered = render_criteria_params_reference()
     for param in CYCLE_COUNT_PARAMS:
         assert f"`{param}`" in rendered
+
+
+def test_public_coverage_reference_names_explicit_collection() -> None:
+    rendered = render_criteria_reference()
+    row = next(line for line in rendered.splitlines() if "`coverage_{target}`" in line)
+    assert "`sim --coverage`" in row

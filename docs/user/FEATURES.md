@@ -205,12 +205,15 @@ cores. Disable the feature with
 
 Push notifications via [ntfy.sh](https://ntfy.sh) tell you when a ticket completes or blocks, so you don't have to watch the terminal. See [USAGE.md: Push Notifications](USAGE.md#push-notifications).
 
-### Coverage Campaign analysis
+### Native coverage collection and analysis
 
 The Coverage Analyst explains one retained native Coverage Campaign, keeping
 observed counts and stored verdicts separate from causal hypotheses. It can
 suggest tests and Waiver Candidates for human review, but cannot launch
 Simulation, read waveforms, evaluate Criteria, or approve exclusions. Verified
 Target sources are optional, and native-payload pruning leaves the normalized
-Campaign analyzable. Public Simulation collection controls remain behind the
-phase 7 release gate of issue #213.
+Campaign analyzable. Explicit `sim --coverage` (alias `--cov`) collects native
+Verilator evidence with or without a Coverage Criterion. Gated collection applies
+exact-suite metric thresholds and the project-wide Approved Waiver Set; simulation
+and coverage verdicts stay independent. See the [collection and retention
+reference](FLOW_REFERENCE.md#native-coverage-campaigns).
