@@ -85,9 +85,7 @@ def worst_clock(per_clock: dict[str, ClockTiming]) -> ClockTiming | None:
     with_fmax = [timing for timing in per_clock.values() if timing.fmax_mhz is not None]
     if with_fmax:
         return min(with_fmax, key=lambda timing: timing.fmax_mhz)
-    with_path = [
-        timing for timing in per_clock.values() if timing.critical_path_ps is not None
-    ]
+    with_path = [timing for timing in per_clock.values() if timing.critical_path_ps is not None]
     if with_path:
         return max(with_path, key=lambda timing: timing.critical_path_ps)
     with_wns = [timing for timing in per_clock.values() if timing.wns_ns is not None]
