@@ -4921,7 +4921,7 @@ steps:
     sha256: 3cd4d90ea1ec1a9498bb2a92f45c4b3b062477e94541ada59f6a15d445a8c412
   - path: evaluator/control_cases.py
     audience: independent evaluator
-    sha256: f85694a184a350d15b37faf4878cd57c3d74ae952fd0cedc192af39f54813449
+    sha256: d0a4a33c8245a5f22dbdfa296aa778499265125507b80ac6f122ba1bde904e14
   - path: evaluator/controls/receiver.sv
     audience: independent evaluator
     sha256: 0e0cad87d54be013909466f05f87ba82d00f92c7bfed703418fd1389b95179d6
