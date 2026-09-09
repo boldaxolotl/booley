@@ -12,10 +12,13 @@ Production layout:
 
 ```text
 qa/
-  PROTOCOL.md
-  AUTHORING.md
-  QUALIFICATION.md
-  FORMAT.md
+  agents/
+    FORMAT.md
+    PROTOCOL.md
+    RUN.md
+  user/
+    AUTHORING.md
+    QUALIFICATION.md
   profiles.yaml
   coverage.yaml
   scenario.schema.json
@@ -31,8 +34,9 @@ belong at scenario level. Keep lengthy prompts, Ticket payloads, and evaluator
 material in referenced files rather than duplicating them.
 
 Each check has an ID, capability references, stimulus, expectation, public contract
-source, evidence requirement, and capture point. Profiles alone select check IDs;
-checks do not repeat profile membership. Keep navigation references where the documentation path itself matters;
+source, evidence requirement, and capture point. Named check sets in `profiles.yaml`
+select check IDs; profiles compose those sets without copying their contents. Keep
+navigation references where the documentation path itself matters;
 the run records the documentation actually consulted. Authority for expected behavior
 and navigation guidance remain distinguishable without duplicating both everywhere.
 
@@ -66,7 +70,7 @@ Findings without a separate Booley Feedback export.
 
 ## Implemented structural contract
 
-[scenario.schema.json](scenario.schema.json) is the structural authority. Each
+[scenario.schema.json](../scenario.schema.json) is the structural authority. Each
 scenario supplies `title`, ordered `phases` (`id`, `title`, `minutes`), and `budget`
 with deadline, contingency, cleanup minutes and cleanup start. Phase minutes include
 the cleanup phase; contingency is counted once in addition. Taxi names a separate
@@ -89,6 +93,12 @@ validation; these substitutions cannot alter thresholds or disclose private asse
 A restoration step's `recovery` record names `baseline`, prior `detection` check IDs,
 and its `instruction`. It requires its baseline, and cannot depend directly or
 transitively on the detection's successful result. Cleanup has independent reachability.
+
+Profile check sets are flat, disjoint lists: each check appears in one set. A run may
+select several sets, which the validator concatenates into one resolved check list.
+It rejects missing sets, unused sets, duplicate checks, and sets that belong to
+another scenario. Supporting steps are derived from the selected checks and scenario
+ordering rather than repeated in `profiles.yaml`.
 
 The validator is standalone so authoring does not import the system under test.
 Its strict metadata checks reject unknown coverage/profile fields without adding

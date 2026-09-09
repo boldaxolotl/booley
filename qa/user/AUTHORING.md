@@ -1,8 +1,8 @@
 # Authoring QA scenarios
 
-Read [Protocol](PROTOCOL.md) for execution, [Qualification](QUALIFICATION.md) for
-scope and verdicts, and [Format](FORMAT.md) for fields. The
-[worked example](examples/README.md) shows how they fit together.
+Read [Protocol](../agents/PROTOCOL.md) for execution, [Qualification](QUALIFICATION.md)
+for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
+[worked example](../examples/README.md) shows how they fit together.
 
 1. Identify the public behavior being checked and its contract source. Consult the
    capability inventory and extend the coherent journey that already exercises it.
@@ -38,6 +38,6 @@ profile assignment, and evidence contract. Keep every unresolved gap visible.
 Run `python qa/validate.py` and `python -m pytest tests/qa/` after changing assets.
 The former is a static check; the latter exercises rejection and fixture controls.
 Use `--coverage-index <path>` to review the derived capability/check/profile mapping.
-Review literal payloads, public expectation authority, all prerequisite/supporting
-work, platform exclusions and the complete 480-minute allocation. Keep profile
-lists explicit, and update asset hashes after reviewed content changes.
+Review literal payloads, public expectation authority, all prerequisite work,
+platform exclusions and the complete 480-minute allocation. Keep named check sets
+explicit, and update asset hashes after reviewed content changes.

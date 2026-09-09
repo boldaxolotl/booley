@@ -1,4 +1,12 @@
 format_version: 1
+check_sets:
+- id: sample-core
+  scenario_id: sample
+  checks:
+  - sample.baseline
+  - sample.negative
+  - sample.restored
+  - sample.removed
 profiles:
 - id: core
   required: true
@@ -14,14 +22,6 @@ profiles:
     ticket_backend: Codex
     capability_probes:
     - Docker ready
-    checks:
-    - sample.baseline
-    - sample.negative
-    - sample.restored
-    - sample.removed
-    supporting_steps:
-    - prepare
-    - detect
-    - restore
-    - cleanup
+    check_sets:
+    - sample-core
     exclusions: []

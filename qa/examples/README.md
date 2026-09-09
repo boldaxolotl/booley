@@ -18,10 +18,10 @@ instead fails unexpectedly, append its failure and any recovery evidence separat
 core remains failed. If restoration has no result, core is incomplete unless another
 trustworthy failure already makes it failed. If cleanup has no proof, core cannot pass.
 
-The profile file alone selects checks for each scope; scenario checks own their
-capability references. Actual production profiles select all checks required by
-their full journey. Here the selections describe only this slice, not qualification
-of PicoRV32.
+The profile file selects named check sets for each scope; scenario checks own their
+capability references. Actual production profiles select all sets required by their
+full journey. Here the selections describe only this slice, not qualification of
+PicoRV32.
 
 The GUI profile includes baseline/fault/restoration work needed to supply its trace.
 When both example profiles are selected, that supporting work executes once in the

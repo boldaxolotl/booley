@@ -106,7 +106,7 @@ def test_profile_must_select_supporting_checks(tmp_path):
     import yaml
 
     _, profiles = write_suite(tmp_path)
-    profiles["profiles"][0]["runs"][0]["checks"].remove("sample.baseline")
+    profiles["check_sets"][0]["checks"].remove("sample.baseline")
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
@@ -230,8 +230,7 @@ def test_required_check_cannot_disappear_from_all_profiles(tmp_path):
     import yaml
 
     _, profiles = write_suite(tmp_path)
-    profiles["profiles"][0]["runs"][0]["checks"].remove("sample.removed")
-    profiles["profiles"][0]["runs"][0]["supporting_steps"].remove("cleanup")
+    profiles["check_sets"][0]["checks"].remove("sample.removed")
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
@@ -242,6 +241,79 @@ def test_required_check_cannot_disappear_from_all_profiles(tmp_path):
     )
     assert result.returncode == 1
     assert "sample.removed" in result.stderr
+
+
+def test_profile_rejects_unknown_check_set(tmp_path):
+    import yaml
+
+    _, profiles = write_suite(tmp_path)
+    profiles["profiles"][0]["runs"][0]["check_sets"] = ["missing"]
+    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "unknown check set missing" in result.stderr
+
+
+def test_profile_rejects_duplicate_checks_across_sets(tmp_path):
+    import yaml
+
+    _, profiles = write_suite(tmp_path)
+    profiles["check_sets"].append(
+        {"id": "duplicate", "scenario_id": "sample", "checks": ["sample.baseline"]}
+    )
+    profiles["profiles"][0]["runs"][0]["check_sets"].append("duplicate")
+    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "duplicate values" in result.stderr
+
+
+def test_profile_rejects_cross_scenario_check_set(tmp_path):
+    import yaml
+
+    _, profiles = write_suite(tmp_path)
+    profiles["check_sets"][0]["scenario_id"] = "another-scenario"
+    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "cross-scenario check set sample-core" in result.stderr
+
+
+def test_profile_rejects_unused_check_set(tmp_path):
+    import yaml
+
+    _, profiles = write_suite(tmp_path)
+    profiles["check_sets"].append(
+        {"id": "unused", "scenario_id": "sample", "checks": ["sample.unused"]}
+    )
+    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "unused check sets ['unused']" in result.stderr
 
 
 def test_duplicate_yaml_key_cannot_hide_authored_selection(tmp_path):

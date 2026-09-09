@@ -11,17 +11,17 @@ success, rejection, state transition, fault, restoration, persistence, and clean
 claims. Baseline/fault/recovery ordering is expressed inside the scenario. Separately
 authored Coverage Obligations, Cells, Allocations, and Verification Chains are removed.
 
-`coverage.yaml` owns the capability inventory and public sources. Scenario checks
-alone own capability references. `profiles.yaml` alone owns required scenario runs,
-platform/provider identities, selected scenario-qualified check IDs, and capability
-prerequisites. Checks do not repeat profile membership, and the inventory does not
-repeat check assignments. Generate reverse indexes from these references. Resolve
-profiles before execution. No generic dimension-expansion language is required.
+[`coverage.yaml`](../coverage.yaml) owns the capability inventory and public sources.
+Scenario checks alone own capability references. [`profiles.yaml`](../profiles.yaml)
+owns required scenario runs, platform/provider identities, named check sets,
+exclusions, and capability prerequisites. Profiles compose flat check sets instead
+of repeating their contents. The inventory does not repeat check assignments.
+Generate reverse indexes from these references and resolve profiles before execution.
 
-A profile's required run explicitly includes the prerequisite checks and supporting
-steps needed to produce its evidence. Perform that work in the same run; never borrow
-unlisted setup or earlier-run artifacts to skip it. Authors list those prerequisites
-alongside the claims, and validation checks the list is complete. A run selecting
+A profile's required run resolves to the prerequisite checks and steps needed to
+produce its evidence. Perform that work in the same run; never borrow unlisted setup
+or earlier-run artifacts to skip it. Authors select named check sets, and validation
+checks the resolved list is complete. A run selecting
 multiple profiles executes their combined ordered work once, retaining separate
 profile verdicts. No scheduler or automatic prerequisite expansion is required.
 
@@ -110,7 +110,7 @@ otherwise rerun the scenario. This assembles a report from complete runs, not sk
 checks in a new run. A new Booley release always requires fresh runs. No per-cell
 invalidation database is required.
 
-The exact named definitions now live in [profiles.yaml](profiles.yaml):
+The exact named definitions live in [profiles.yaml](../profiles.yaml):
 `core-ubuntu-codex`, `core-windows-codex`, `gui-ubuntu-codex`, `gui-windows-codex`,
 `core-ubuntu-claude`, `gui-ubuntu-claude`, and optional `gui-windows-claude`.
 Standalone GUI runs include all same-run core support. Both Claude runs retain
