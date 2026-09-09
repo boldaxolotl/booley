@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
 from fractions import Fraction
 from pathlib import Path
@@ -12,6 +11,7 @@ from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
+from booley.flows.execution_persistence import AcceptanceRecorder
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -59,20 +59,15 @@ def coverage_project_context(root: Path, state: DevelopmentState) -> CoveragePro
     )
 
 
-def coverage_acceptance(state: DevelopmentState, *, diagnostic: bool) -> CoverageAcceptance | None:
+def coverage_acceptance(
+    state: DevelopmentState,
+    recorder: AcceptanceRecorder,
+    *,
+    diagnostic: bool,
+) -> CoverageAcceptance | None:
     if diagnostic or state._file_path is None:
         return None
-    logs = os.environ.get("BOOLEY_LOGS_DIR")
-    basis = {}
-    ticket = os.environ.get("BOOLEY_TICKET_FILE")
-    if ticket and Path(ticket).is_file():
-        from booley.ticket_board.frontmatter import parse_frontmatter
-
-        metadata, _body = parse_frontmatter(Path(ticket).read_text())
-        basis = metadata.get("acceptance_basis", {})
-    return CoverageAcceptance(
-        state, Path(logs) if logs else None, os.environ.get("BOOLEY_EXECUTION_ID", ""), basis
-    )
+    return CoverageAcceptance(state, recorder)
 
 
 def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, CoverageCriterion]:

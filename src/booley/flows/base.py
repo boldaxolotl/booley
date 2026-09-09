@@ -23,10 +23,12 @@ from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
+from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows import execution
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
+from booley.flows.execution_persistence import FlowExecutionAdapter
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
@@ -165,7 +167,6 @@ class FlowMechanics:
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
-        self._acceptance_basis = None
         location_error = runtime_context.container_only_error(f"booley flow {self.name}")
         if location_error is not None:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=location_error)
@@ -173,45 +174,11 @@ class FlowMechanics:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
-        ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
-        if not ticket_file:
-            return None
-        from booley.runtime.project_dir import resolve_checkout_project_dir
-        from booley.ticket_board.acceptance_basis import BLOCK_REASON, AcceptanceBasisError
-        from booley.ticket_board.acceptance_validation import (
-            assert_ticket_worktree_inputs_unchanged,
-        )
-        from booley.ticket_board.helpers import (
-            TicketSlugError,
-            detect_project_root,
-            resolve_runtime_ticket_slug,
-        )
-        from booley.ticket_board.io import TicketIO
-
-        try:
-            ticket_path = Path(ticket_file)
-            slug = resolve_runtime_ticket_slug(ticket_path)
-            project_root = detect_project_root()
-            basis = TicketIO(
-                resolve_checkout_project_dir(project_root) / "tickets",
-                project_root=project_root,
-            ).load_basis(
-                slug,
-                runtime_ticket_path=ticket_path,
-            )
-            self._acceptance_basis = basis
-            work_dir = Path(self.args.work_dir)
-            assert_ticket_worktree_inputs_unchanged(project_root, basis, work_dir)
-        except TicketSlugError as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"BLOCKED: {BLOCK_REASON}: {exc}",
-            )
-        except (OSError, AcceptanceBasisError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"BLOCKED: {exc}",
-            )
+        execution_state = getattr(self, "context", self)
+        resolved = execution_state.execution_adapter.validate_and_resolve(self.args)
+        if isinstance(resolved, EndpointOutcome):
+            return resolved
+        execution_state.flow_acceptance = resolved
         return None
 
     def _run(self) -> EndpointOutcome:
@@ -447,9 +414,10 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     )
 
     def __init__(self) -> None:
+        from booley.flows.execution_persistence import StandaloneFlowExecution
         from booley.flows.flow_session import FlowSession
 
-        self.context = FlowSession(self)
+        self.context = FlowSession(self, StandaloneFlowExecution())
 
     @property
     def args(self) -> RequestT:
@@ -511,6 +479,14 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     def _state(self, value: DevelopmentState) -> None:
         self.context._state = value
 
+    @property
+    def _flow_acceptance(self) -> ResolvedFlowAcceptance:
+        return self.context.flow_acceptance
+
+    @property
+    def _paired_project_baseline(self) -> PairedProjectBaseline:
+        return self.context.flow_acceptance.paired_project
+
     def read_state(self) -> DevelopmentState:
         return self.context.read_state()
 
@@ -520,27 +496,43 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         self.context._args = parse_request(self, argv)
         return self.args
 
-    def execute(self, request: RequestT) -> ExecutionResult:
+    def execute(
+        self,
+        request: RequestT,
+        *,
+        adapter: FlowExecutionAdapter | None = None,
+    ) -> ExecutionResult:
         """Execute typed input through a fresh, transport-independent session."""
         from dataclasses import replace
 
         from booley.flows.endpoint_cli import apply_environment
+        from booley.flows.execution_persistence import StandaloneFlowExecution
         from booley.flows.flow_session import FlowSession
 
         if not isinstance(request, self.request_type):
             raise TypeError(f"{self.name} requires {self.request_type.__name__}")
-        self.context = FlowSession(self)
+        self.context = FlowSession(self, adapter or StandaloneFlowExecution())
         self.context._args = replace(request)
         apply_environment(self.context._args, self.endpoint_kind)
         return self.context.execute_prepared()
 
-    def execute_cli(self, argv: list[str] | None = None) -> ExecutionResult:
+    def execute_cli(
+        self,
+        argv: list[str] | None = None,
+        *,
+        adapter: FlowExecutionAdapter | None = None,
+    ) -> ExecutionResult:
         from booley.flows.builtin_cli import execute_cli
 
-        return execute_cli(self, argv)
+        return execute_cli(self, argv, adapter=adapter)
 
-    def main(self, argv: list[str] | None = None) -> int:
-        return self.execute_cli(argv).exit_code
+    def main(
+        self,
+        argv: list[str] | None = None,
+        *,
+        adapter: FlowExecutionAdapter | None = None,
+    ) -> int:
+        return self.execute_cli(argv, adapter=adapter).exit_code
 
     def cli(self) -> None:
         from booley.flows.endpoint_cli import cli

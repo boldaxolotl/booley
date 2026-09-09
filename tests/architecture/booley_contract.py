@@ -48,6 +48,10 @@ _D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implement
 _D16_REASON = (
     "Criteria evaluates shared evidence without depending on Flow production or execution"
 )
+_D17_REASON = (
+    "deterministic Flow execution consumes resolved acceptance inputs and records through "
+    "composition without knowing Ticket Board persistence"
+)
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -99,6 +103,12 @@ DIRECTION_RULES = (
         (prefix("booley.criteria"),),
         (prefix("booley.flows"),),
         _D16_REASON,
+    ),
+    DirectionRule(
+        "D17",
+        (prefix("booley.flows"),),
+        (prefix("booley.ticket_board"),),
+        _D17_REASON,
     ),
     DirectionRule(
         "D1",

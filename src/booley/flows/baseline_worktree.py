@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_str
+from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.fusesoc.fusesoc_registry import state_cores_dir
 from booley.runtime.project_repositories import paired_project_repository
@@ -122,13 +123,22 @@ def resolve_ticket_baseline(
 
 
 @contextmanager
-def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
+def baseline_worktree(
+    project_root: Path,
+    ref: str,
+    *,
+    paired_project: PairedProjectBaseline | None = None,
+) -> Iterator[Path]:
     """Yield a fully materialized detached worktree for *ref*, then remove it."""
     project_root = Path(project_root)
     wt_dir = _create_baseline_worktree(project_root, ref)
     paired_baseline: Path | None = None
     try:
-        paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
+        paired_baseline = _install_paired_project_baseline(
+            project_root,
+            wt_dir,
+            paired_project or PairedProjectBaseline.standalone(),
+        )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
@@ -187,12 +197,24 @@ def _cleanup_baseline_worktree(
     _git(project_root, "worktree", "prune", timeout=30)
 
 
-def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path | None:
+def _install_paired_project_baseline(
+    project_root: Path,
+    wt_dir: Path,
+    policy: PairedProjectBaseline,
+) -> Path | None:
     """Check out the paired project repository at its ticket fork point."""
     repository = paired_project_repository(project_root)
     if repository is None:
+        if policy.mode is PairedBaselineMode.TICKET_PINNED:
+            raise BaselineWorktreeError("ticket-pinned paired Project repository is unavailable")
         return None
-    base_sha = _paired_project_base_sha(repository.worktree)
+    if policy.mode is PairedBaselineMode.ABSENT:
+        raise BaselineWorktreeError("unexpected paired Project repository in Ticket execution")
+    base_sha = (
+        policy.sha
+        if policy.mode is PairedBaselineMode.TICKET_PINNED
+        else _paired_project_base_sha(repository.worktree)
+    )
     destination = wt_dir / ".booley_project"
     add = _git(
         repository.worktree,
@@ -216,38 +238,7 @@ def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path |
 
 
 def _paired_project_base_sha(project_worktree: Path) -> str:
-    """Resolve the immutable fork point of a paired ticket project branch."""
-    ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
-    if ticket_file:
-        from booley.runtime.project_dir import resolve_checkout_project_dir
-        from booley.ticket_board.acceptance_targets import resolve_commit
-        from booley.ticket_board.helpers import (
-            TicketSlugError,
-            detect_project_root,
-            resolve_runtime_ticket_slug,
-        )
-        from booley.ticket_board.io import TicketIO
-
-        ticket_path = Path(ticket_file)
-        try:
-            slug = resolve_runtime_ticket_slug(ticket_path)
-        except TicketSlugError as exc:
-            raise BaselineWorktreeError(str(exc)) from exc
-        project_root = detect_project_root()
-        basis = TicketIO(
-            resolve_checkout_project_dir(project_root) / "tickets",
-            project_root=project_root,
-        ).load_basis(
-            slug,
-            runtime_ticket_path=ticket_path,
-        )
-        if basis is not None and basis.project_sha:
-            try:
-                return resolve_commit(project_worktree, basis.project_sha)
-            except ValueError as exc:
-                raise BaselineWorktreeError(
-                    f"recorded paired project Acceptance Basis cannot be resolved: {exc}"
-                ) from exc
+    """Resolve the standalone fork point of a paired Project branch."""
     upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
     if upstream.returncode != 0:
         raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")

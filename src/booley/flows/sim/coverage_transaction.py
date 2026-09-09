@@ -5,8 +5,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
+from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.acceptance_ledger import AcceptanceLedgerError
 
 from .campaign_reports import target_report_directory, write_campaign_json
 from .coverage_campaign import (
@@ -149,7 +149,7 @@ def run_coverage_target(
         validate_coverage_sources(plan)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(plan, result, root, campaign)
-    except (OSError, ValueError, AcceptanceLedgerError) as exc:
+    except (OSError, ValueError, AcceptanceRecordingError) as exc:
         outcome = _transaction_error(plan, root, result, exc, campaign)
     try:
         progress.completed(outcome)

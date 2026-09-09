@@ -1140,7 +1140,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="synth",
-            basis_bound=getattr(self, "_acceptance_basis", None) is not None,
+            basis_bound=self._flow_acceptance.basis_bound,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -1922,7 +1922,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         candidate_refs = self._target_execution_refs
         candidate_evidence = dict(getattr(self, "_recipe_evidence", {}))
         try:
-            with baseline_worktree(project_root, baseline_ref) as worktree:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
                     self._target_pairs,
@@ -2039,7 +2043,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 self.state.criteria,
                 "synthesis_ok_",
                 handles,
-                basis=getattr(self, "_acceptance_basis", None),
+                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
                 flow="synth",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -2155,7 +2159,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if full_sha is not None:
             self._baseline_full_sha = full_sha
         try:
-            with baseline_worktree(project_root, baseline_ref) as wt:
+            with baseline_worktree(
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as wt:
                 self.args.work_dir = wt
                 self._project_root = project_root
                 current_handles = getattr(self, "_target_handles", {})

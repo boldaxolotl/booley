@@ -14,7 +14,6 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
     execute_endpoint,
 )
-from booley.ticket_board.paths import ticket_runtime_dir
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +147,9 @@ def apply_environment(args, endpoint_kind: str) -> None:
     args.state_file = Path(state_env) if state_env else None
     # report-dir: CLI flag wins, then env var, then None
     if args.report_dir is None:
-        logs_env = os.environ.get("BOOLEY_LOGS_DIR", "")
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
         report_leaf = "flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports"
         if runtime_env:
             args.report_dir = Path(runtime_env) / report_leaf
-        elif logs_env:
-            args.report_dir = ticket_runtime_dir(logs_env) / report_leaf
         else:
             args.report_dir = None

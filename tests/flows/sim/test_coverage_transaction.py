@@ -170,6 +170,7 @@ def test_ticket_publishes_campaign_before_independent_acceptance_evidence(tmp_pa
     from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.flows.sim.coverage_acceptance import CoverageAcceptance
     from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
     context = project(tmp_path)
     state = DevelopmentState.load(tmp_path / "state.json")
@@ -185,7 +186,10 @@ def test_ticket_publishes_campaign_before_independent_acceptance_evidence(tmp_pa
     plan = replace(
         prepared.plan.targets[0],
         invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+        acceptance=CoverageAcceptance(
+            state,
+            TicketAcceptanceRecorder(log_dir=tmp_path / "logs"),
+        ),
     )
     outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
     saved = DevelopmentState.load(tmp_path / "state.json")
@@ -229,6 +233,7 @@ def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):
 def test_simulation_report_failure_leaves_prior_criterion_evidence_unchanged(tmp_path):
     from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
     context = project(tmp_path)
     state = DevelopmentState.load(tmp_path / "state.json")
@@ -239,7 +244,10 @@ def test_simulation_report_failure_leaves_prior_criterion_evidence_unchanged(tmp
     plan = replace(
         prepared.plan.targets[0],
         invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+        acceptance=CoverageAcceptance(
+            state,
+            TicketAcceptanceRecorder(log_dir=tmp_path / "logs"),
+        ),
     )
     (tmp_path / "reports/sim/1/targets/sim_0/simulation.json").mkdir(parents=True)
     outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
@@ -316,6 +324,7 @@ def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch
     from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.flows.sim.coverage_acceptance import CoverageAcceptance
     from booley.ticket_board.acceptance_ledger import freeze_acceptance
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
     context = project(tmp_path)
     state_path = tmp_path / "state.json"
@@ -328,7 +337,10 @@ def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch
     plan = replace(
         prepared.plan.targets[0],
         invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+        acceptance=CoverageAcceptance(
+            state,
+            TicketAcceptanceRecorder(log_dir=tmp_path / "logs"),
+        ),
     )
     original = Path.replace
 
@@ -449,6 +461,7 @@ def gated_ticket_plan(tmp_path):
     from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.flows.sim.coverage_acceptance import CoverageAcceptance
     from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
     context = project(tmp_path)
     state_path = tmp_path / "state.json"
@@ -472,6 +485,9 @@ def gated_ticket_plan(tmp_path):
     plan = replace(
         prepared.plan.targets[0],
         invocation_dir=invocation,
-        acceptance=CoverageAcceptance(state, tmp_path / "logs"),
+        acceptance=CoverageAcceptance(
+            state,
+            TicketAcceptanceRecorder(log_dir=tmp_path / "logs"),
+        ),
     )
     return plan, state, state_path

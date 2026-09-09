@@ -318,6 +318,7 @@ def test_rejects_report_and_updates_ui_when_verification_became_stale(
 ) -> None:
     work_dir = tmp_path / "worktree"
     state_path = _stale_sim_state(tmp_path, work_dir)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
 
     exit_code, state = _run_endpoint(
         state_path,

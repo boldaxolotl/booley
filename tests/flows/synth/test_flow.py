@@ -2176,7 +2176,8 @@ class TestMultiConfig:
 
 
 @contextmanager
-def _fake_baseline_worktree(project_root: Path, ref: str):
+def _fake_baseline_worktree(project_root: Path, ref: str, *, paired_project):
+    del paired_project
     """Stand-in for ``baseline_worktree``: yields a real dir under the project
     (so path derivations work) without touching git. Records nothing itself;
     tests that need enter/exit tracking define their own."""
@@ -2282,7 +2283,8 @@ class TestBaselineFlow:
         )
         flow.read_state()
 
-        def boom(project_root, ref):
+        def boom(project_root, ref, *, paired_project):
+            del paired_project
             raise BaselineWorktreeError(
                 "git worktree add for baseline ref 'bogus-ref' failed: unknown revision"
             )
@@ -2410,7 +2412,8 @@ class TestBaselineFlow:
         exited = []
 
         @contextmanager
-        def tracking_worktree(project_root, ref):
+        def tracking_worktree(project_root, ref, *, paired_project):
+            del paired_project
             wt = Path(project_root) / ".booley_project" / ".baseline-wt-track"
             wt.mkdir(parents=True, exist_ok=True)
             try:
