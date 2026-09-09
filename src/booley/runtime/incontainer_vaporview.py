@@ -69,6 +69,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+from booley.runtime import vaporview
 from booley.runtime.vaporview import find_manifests
 
 # Activation event that fires once per window after startup finishes, without
@@ -107,7 +108,7 @@ _WAIT_ENV = "BOOLEY_VAPORVIEW_WAIT_SECONDS"
 
 
 def _agent_home() -> Path:
-    return Path(os.environ.get("HOME", "/home/agent"))
+    return vaporview.session_home()
 
 
 def _patch_wcp_setting_scopes(contributes: dict) -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Callable, Iterable
 from enum import Enum
@@ -20,6 +21,11 @@ class ExtensionState(Enum):
     INSTALLED = "installed"
     MISSING = "missing"
     UNKNOWN = "unknown"
+
+
+def session_home() -> Path:
+    """Resolve the Session Runtime user's home consistently on every host OS."""
+    return Path(os.environ.get("HOME", "/home/agent"))
 
 
 def find_manifests(home: Path) -> list[Path]:

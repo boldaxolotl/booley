@@ -633,7 +633,7 @@ def _extension_missing(cli: str) -> bool:
 
 def _viewer_extension_state() -> vaporview.ExtensionState:
     """Prefer the remote registry, then fall back to available editor CLIs."""
-    remote_state = vaporview.probe_home(Path.home())
+    remote_state = vaporview.probe_home(vaporview.session_home())
     if remote_state is not vaporview.ExtensionState.UNKNOWN:
         return remote_state
     editors = _available_viewer_clis()
