@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from functools import cache
 from pathlib import Path
@@ -17,6 +19,19 @@ GITHUB_REPOSITORY_PATH = "/boldaxolotl/Booley"
 GITHUB_BLOB_PREFIX = "/boldaxolotl/Booley/blob/main/"
 
 
+def _frozen_upstream_documents() -> set[Path]:
+    """Pinned upstream text retains upstream links; never fetch its linked RTL."""
+    spec = REPO_ROOT / "qa/scenarios/uart/spec"
+    manifest = json.loads((spec / "corpus-manifest.json").read_text(encoding="utf-8"))
+    documents = set()
+    for entry in manifest["files"]:
+        path = _repository_target(spec / entry["path"], entry["path"])
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
+        if path.suffix == ".md":
+            documents.add(path)
+    return documents
+
+
 def _markdown_files() -> list[Path]:
     """Return versioned and pending non-ignored Markdown, excluding worktrees."""
     result = subprocess.run(
@@ -26,10 +41,13 @@ def _markdown_files() -> list[Path]:
         capture_output=True,
         text=True,
     )
+    frozen = _frozen_upstream_documents()
     return [
         REPO_ROOT / name
         for name in result.stdout.splitlines()
-        if not name.startswith(".worktrees/") and (REPO_ROOT / name).is_file()
+        if not name.startswith(".worktrees/")
+        and (REPO_ROOT / name).is_file()
+        and (REPO_ROOT / name).resolve() not in frozen
     ]
 
 
@@ -171,6 +189,14 @@ def test_repository_local_markdown_links_resolve() -> None:
             if target is not None and (reason := _destination_failure(target, destination)):
                 failures.append(f"{source}: {destination} -> {reason}")
     assert not failures, "broken repository-local links:\n" + "\n".join(failures)
+
+
+def test_only_frozen_upstream_markdown_is_excluded() -> None:
+    documents = set(_markdown_files())
+    assert not documents.intersection(_frozen_upstream_documents())
+    assert REPO_ROOT / "qa/scenarios/uart/evaluator/CONTRACT.md" in documents
+    assert REPO_ROOT / "qa/scenarios/uart/spec/timing-addendum.md" in documents
+    assert len(_frozen_upstream_documents()) == 5
 
 
 def test_agent_instruction_document_paths_resolve() -> None:

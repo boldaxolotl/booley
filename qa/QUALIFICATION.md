@@ -109,3 +109,10 @@ or editorially equivalent. Record the source run and actual tested suite commit;
 otherwise rerun the scenario. This assembles a report from complete runs, not skipped
 checks in a new run. A new Booley release always requires fresh runs. No per-cell
 invalidation database is required.
+
+The exact named definitions now live in [profiles.yaml](profiles.yaml):
+`core-ubuntu-codex`, `core-windows-codex`, `gui-ubuntu-codex`, `gui-windows-codex`,
+`core-ubuntu-claude`, `gui-ubuntu-claude`, and optional `gui-windows-claude`.
+Standalone GUI runs include all same-run core support. Both Claude runs retain
+complete original PicoRV32 Ticket contracts; duplicate Codex stress probes are not
+added. The current implementation has no full qualification results.

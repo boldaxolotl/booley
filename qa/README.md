@@ -1,30 +1,46 @@
-# Public QA suite design
+# Public Booley QA suite
 
-This directory records the simplified shared contract for
-[Wayfinder #246](https://github.com/boldaxolotl/booley/issues/246).
-The three accepted journeys and their workloads remain unchanged.
+The production assets encode the accepted three journeys and explicit qualification
+profiles. Qualification requires recorded execution evidence for the selected profiles.
 
-- [Protocol](PROTOCOL.md): executing a run and retaining trustworthy results.
-- [Qualification](QUALIFICATION.md): required runs, coverage, and scoped verdicts.
-- [Format](FORMAT.md): scenario and run files, identities, and validation.
-- [Authoring](AUTHORING.md): adding and revising checks.
-- [Handoff](HANDOFF.md): remaining work in
-  [#376](https://github.com/boldaxolotl/booley/issues/376).
-- [Worked example](examples/README.md): normal, fault/recovery, and unavailable
-  GUI checks with illustrative run records.
+| Journey | Production scenario | Accepted design |
+|---|---|---|
+| PicoRV32 published-demo continuity and evolution | [scenario.yaml](scenarios/picorv32/scenario.yaml) | [#374](https://github.com/boldaxolotl/booley/issues/374) |
+| Taxi 10G MAC port and evolution | [scenario.yaml](scenarios/taxi/scenario.yaml) | [#377](https://github.com/boldaxolotl/booley/issues/377) |
+| Documentation-only standalone UART | [scenario.yaml](scenarios/uart/scenario.yaml) | [#375](https://github.com/boldaxolotl/booley/issues/375) |
 
-This is a design handoff, not an executable suite. Production scenario YAML,
-coverage inventory, profile files, schema/validator, independent UART evaluator,
-and execution tooling are not supplied here. Examples confer no coverage credit.
+[Profiles](profiles.yaml) select complete per-run check lists; [coverage](coverage.yaml)
+contains the 62 product capabilities and 16 distinct EDA integration references.
+The 1,072 authored checks preserve the reviewed journey, supplemental and companion
+identities. These counts establish representation, not behavioral sufficiency.
 
-The accepted journey designs remain:
+```sh
+python -m pip install -r qa/requirements-validation.txt
+python qa/validate.py
+python qa/validate.py --scenario picorv32-published-demo-continuity
+python qa/validate.py --coverage-index /tmp/booley-qa-coverage.json
+```
 
-| Journey | Design |
-|---|---|
-| PicoRV32 published-demo continuity and evolution | [#374](https://github.com/boldaxolotl/booley/issues/374) |
-| Taxi 10G MAC port and evolution | [#377](https://github.com/boldaxolotl/booley/issues/377) |
-| OpenTitan UART clean-room greenfield | [#375](https://github.com/boldaxolotl/booley/issues/375) |
+Validation checks structure, references, explicit selections, asset digests, ordered
+prerequisites, fault-recovery reachability and budgets. It executes no scenario.
+The authoring filter cannot produce a whole-suite coverage index.
 
-These shared documents replace the earlier bookkeeping, promotion, format, and
-qualification requirements identified in the issue updates. Journey-specific pins,
-stimuli, thresholds, authority, independent evaluation, and cleanup remain binding.
+Read [Protocol](PROTOCOL.md), [Qualification](QUALIFICATION.md),
+[Format](FORMAT.md), [Authoring](AUTHORING.md) and the [worked example](examples/README.md).
+The [published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
+preserves historical decisions. Current contracts live in the scenario assets,
+[format](FORMAT.md), [profiles](profiles.yaml), and
+[UART oracle derivation](scenarios/uart/evaluator/CONTRACT.md). Regression tests
+retain compact checksums of the reviewed profile membership and exclusions.
+
+UART exact-a/VAL=32 timeout comparisons use the approved public 30–34 bit-time
+window in the timing addendum. Other timing observations remain blocked when the
+public contract cannot establish a verdict. Implementation progress and run results belong in the PR,
+issues, and run records rather than this reference.
+
+Execution requires the exact released Booley package/image and matching docs,
+reference native hosts, authorized disposable resources, provider access, declared
+EDA provisioning, and independent operator evidence storage. GUI profiles require
+actual supported VS Code clients, WCP and a qualified screenshot observer. Missing
+infrastructure leaves the corresponding profiles incomplete; no headless substitute
+or smaller profile is implied. There is no generic runner or unattended campaign here.

@@ -32,5 +32,12 @@ checks pass against it. Do not introduce a separate Known Condition expiry workf
 Flaky failures require cause/classification and targeted validation justified in
 review; there is no universal three-clean-runs-per-cell requirement.
 
-Before handoff, verify that every retained required behavior has a concrete check,
+Before publishing a scenario, verify that every retained required behavior has a concrete check,
 profile assignment, and evidence contract. Keep every unresolved gap visible.
+
+Run `python qa/validate.py` and `python -m pytest tests/qa/` after changing assets.
+The former is a static check; the latter exercises rejection and fixture controls.
+Use `--coverage-index <path>` to review the derived capability/check/profile mapping.
+Review literal payloads, public expectation authority, all prerequisite/supporting
+work, platform exclusions and the complete 480-minute allocation. Keep profile
+lists explicit, and update asset hashes after reviewed content changes.

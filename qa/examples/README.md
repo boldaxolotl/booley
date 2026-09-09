@@ -26,3 +26,10 @@ of PicoRV32.
 The GUI profile includes baseline/fault/restoration work needed to supply its trace.
 When both example profiles are selected, that supporting work executes once in the
 same run. It is not reused from a prior run or silently omitted from a GUI-only run.
+
+The scenario uses the production [JSON Schema](../scenario.schema.json). Result
+interpretation additionally covers these independent cases: a missing selected
+record is blocked; an unexpected failure followed by successful recovery still
+fails its profile; contradictory trustworthy attempts create a flaky Finding and
+a failed profile; and absent cleanup proof leaves the profile incomplete unless a
+failure already takes precedence. The example records are illustrative only.

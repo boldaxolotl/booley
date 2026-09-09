@@ -1,0 +1,41 @@
+{
+  "commit": "615d3c74fadbbf674c8ca05a70f91094989849fb",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "corpus/hw/ip/uart/README.md",
+      "sha256": "c1c47cd45886553b1b9edc376d776eac3d120739d5e6bf50fb9eda13a4963a73",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/README.md"
+    },
+    {
+      "path": "corpus/hw/ip/uart/doc/theory_of_operation.md",
+      "sha256": "8f4ad87b9258900affa09de87fb19e4dcbe5a687899b4c5f4fcbdb6ba3d1eeaa",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/doc/theory_of_operation.md"
+    },
+    {
+      "path": "corpus/hw/ip/uart/doc/programmers_guide.md",
+      "sha256": "14ae66e2a4ae47def172241b7ceec287a426f113555e8a1ba48a2ad4faf3422e",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/doc/programmers_guide.md"
+    },
+    {
+      "path": "corpus/hw/ip/uart/doc/interfaces.md",
+      "sha256": "202ae95a03e6750a4f84225e322bf2cf832d3869a6138bac1dd23cca0616f1d7",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/doc/interfaces.md"
+    },
+    {
+      "path": "corpus/hw/ip/uart/doc/registers.md",
+      "sha256": "3885d3f96fd9592f0aab42a9d6b5bdddf954d8286583dc7fe52a7eb65bbeadd3",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/doc/registers.md"
+    },
+    {
+      "path": "corpus/hw/ip/uart/doc/block_diagram.svg",
+      "sha256": "4bd741bb99ae7adac877a28fbaddef6a6b2ff0fc7fb3e5cbf87d7331d4ddbfdc",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/hw/ip/uart/doc/block_diagram.svg"
+    },
+    {
+      "path": "corpus/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://github.com/lowRISC/opentitan/blob/615d3c74fadbbf674c8ca05a70f91094989849fb/LICENSE"
+    }
+  ]
+}
