@@ -48,7 +48,8 @@ _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {
-    "fpga": f"{_BASELINE_CONTROL}; `--no-cache` forces a fresh implementation",
+    "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
+    "selects portable optimization intent; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
@@ -261,10 +262,11 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        "Call `coverage_analyst --target <sim-target> --scope <rtl-file,...>`. "
-        "The Target supplies the testbench top and runnable tests. Repeatable "
-        "`--steer` adds analyst context; `--dry-run` validates and previews the "
-        "campaign without invoking agents, B-Wave, or the simulator.",
+        "Call `coverage_analyst --campaign <exact-coverage.json> "
+        "[--instruction <question>]`. The read-only Analyst explains retained "
+        "native evidence and proposes advisory next steps. It does not run "
+        "Simulation, read waveforms, evaluate Criteria, or approve waivers. "
+        "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
 
 

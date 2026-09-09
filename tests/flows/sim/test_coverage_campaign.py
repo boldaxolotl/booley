@@ -426,7 +426,6 @@ def test_incompatible_native_format_cannot_expose_normalized_points() -> None:
         ("COV_INCOMPATIBLE_FORMAT_NORMALIZED", "/normalization/status"),
         ("COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT", "/points"),
         ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
-        ("COV_INCOMPATIBLE_FORMAT_EVALUATION", "/evaluation/status"),
     ]
 
 
@@ -545,7 +544,6 @@ def test_incompatible_native_format_requires_blocked_collection_and_evaluation()
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
-        ("COV_INCOMPATIBLE_FORMAT_EVALUATION", "/evaluation/status"),
     ]
 
 

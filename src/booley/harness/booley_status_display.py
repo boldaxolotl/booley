@@ -59,7 +59,7 @@ _STEP_GERUNDS: dict[str, str] = {
     "sim": "simulating",
     "mutation_tester": "mutation testing",
     "synth": "synthesizing",
-    "coverage_analyst": "analyzing coverage",
+    "coverage_analyst": "explaining coverage campaign",
 }
 
 

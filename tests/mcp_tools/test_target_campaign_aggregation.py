@@ -1,13 +1,9 @@
-"""Suite-level evidence aggregation for mutation and coverage."""
+"""Suite-level evidence aggregation for mutation."""
 
 import subprocess
 import types
 from pathlib import Path
 
-from booley.specialists.coverage_analyst import (
-    CoverageAnalystSpecialist,
-    SignalStats,
-)
 from booley.specialists.mutation_tester import (
     MutationSpec,
     MutationTesterSpecialist,
@@ -82,20 +78,3 @@ def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
     verdict = endpoint._classify_variant_suite(runs)
     assert verdict.detected is True
     assert verdict.inconclusive_reason == ""
-
-
-def test_coverage_signal_evidence_merges_across_target_traces() -> None:
-    merged = CoverageAnalystSpecialist._merge_signal_stats(
-        [
-            [SignalStats("tb.dut.ready", transitions=1, value_hist={"0": 2})],
-            [SignalStats("tb.dut.ready", transitions=2, value_hist={"1": 3})],
-        ]
-    )
-
-    assert merged == [
-        SignalStats(
-            "tb.dut.ready",
-            transitions=3,
-            value_hist={"0": 2, "1": 3},
-        )
-    ]

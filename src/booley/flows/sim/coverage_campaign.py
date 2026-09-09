@@ -1303,12 +1303,12 @@ def _validate_incompatible_native_format(
                 "An incompatible native format requires incompatible collection state.",
             )
         )
-    if evaluation["status"] != "blocked":
+    if evaluation["status"] not in {"blocked", "not_requested"}:
         findings.append(
             _error(
                 "COV_INCOMPATIBLE_FORMAT_EVALUATION",
                 "/evaluation/status",
-                "An incompatible native format must block evaluation.",
+                "An incompatible native format must block any requested evaluation.",
             )
         )
     return findings
@@ -1704,3 +1704,21 @@ def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
         ],
         "evaluation": _thaw(campaign.evaluation),
     }
+
+
+def derive_coverage_rollups(points: tuple[CoveragePoint, ...]) -> tuple[CoverageRollup, ...]:
+    """Derive canonical summaries for newly collected immutable observations."""
+    return tuple(
+        _decode_rollup(item)
+        for item in _calculate_rollups({"points": [_encode_point(point) for point in points]})
+    )
+
+
+def freeze_coverage_mapping(value: Mapping[str, object]) -> Mapping[str, FrozenJson]:
+    """Freeze newly assembled Campaign metadata before encoding and validation."""
+    return _freeze_mapping(value)
+
+
+def coverage_mapping_document(value: Mapping[str, FrozenJson]) -> dict[str, object]:
+    """Thaw immutable Campaign metadata for structured Flow reports."""
+    return {key: _thaw(item) for key, item in value.items()}

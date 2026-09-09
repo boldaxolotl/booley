@@ -129,6 +129,7 @@ TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
         {
             TicketState.QUEUED,  # unblock
             TicketState.RUNNING,  # explicit ticket run resumes blocked work
+            TicketState.REVIEW,  # request-review publishes an unaccepted inspection
         }
     ),
     TicketState.REVIEW: frozenset({TicketState.DONE}),  # approve/complete

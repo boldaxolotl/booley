@@ -93,11 +93,8 @@ _PROVIDER_TIER_MODELS: dict[str, dict[str, str]] = {
         "light": "claude-sonnet-5",
     },
     "codex": {
-        # GPT-5.6's Sol/Terra/Luna are durable capability tiers that map onto
-        # Booley's three directly — unlike gpt-5.5, which had no distinct
-        # standard tier and was used for both heavy and standard.
-        "heavy": "gpt-5.6-sol",
-        "standard": "gpt-5.6-terra",
+        "heavy": "gpt-6-astra",
+        "standard": "gpt-5.6-sol",
         "light": "gpt-5.6-luna",
     },
 }
@@ -105,8 +102,8 @@ _PROVIDER_TIER_MODELS: dict[str, dict[str, str]] = {
 _PROVIDER_TIER_EFFORT: dict[str, dict[str, str]] = {
     "codex": {
         "heavy": "high",
-        "standard": "medium",
-        "light": "medium",
+        "standard": "high",
+        "light": "high",
     },
     # NOTE: Claude is intentionally absent — the Agent SDK exposes no clean
     # per-call reasoning-effort knob, so effort_for_tier() returns None for

@@ -388,8 +388,9 @@ through `[eda.vivado]`; it does not require Vivado on the runtime `PATH` from
 the host.
 
 `[flows.fpga]` contains execution policy. Build inputs and target selection
-belong to the invocation and `.core` Target: put `part` and `out_of_context`
-under its `flow_options`, and XDC constraints in a `file_type: xdc` fileset.
+belong to the invocation and `.core` Target: put `part`, `out_of_context`, and
+the portable `ppa_profile` under its `flow_options`, and XDC constraints in a
+`file_type: xdc` fileset.
 
 Name Booley-authored implementation Targets `fpga` or `fpga_<subject>`; that
 axis declares that the FPGA Flow can drive them. `flow_options.tool` still
@@ -416,10 +417,20 @@ targets:
     flow_options:
       tool: vivado
       part: xc7a100tcsg324-1
+      ppa_profile: balanced     # compact | balanced | max_frequency
       out_of_context: true
     filesets: [rtl, fpga_constraints]
     toplevel: top
 ```
+
+`ppa_profile` expresses portable optimization intent. It resolves per-call
+`--ppa-profile`, then Target `flow_options.ppa_profile`, then `balanced`.
+Booley maps `compact` to Vivado's area-oriented synthesis and implementation
+strategies, leaves the existing Vivado defaults untouched for `balanced`, and
+maps `max_frequency` to its characterized performance strategies. Target
+`synth` and `pnr` fields are Edalize engine selectors, not strategy overrides;
+the built-in FPGA Flow neither forwards nor reinterprets them as an expert
+profile surface.
 
 The `file_type: xdc` fileset is the sole constraints source and is mandatory.
 There is no `[flows.fpga].xdc` key. Keeping constraints and the device part on
@@ -427,12 +438,17 @@ the Target prevents one global Flow section from applying the wrong design
 intent to another Target.
 
 Repeated runs use a Booley-owned content cache, not Make timestamps. The cache
-fingerprint covers the resolved Target/EDAM, source/header/constraint bytes,
+fingerprint covers the resolved Target/EDAM, portable profile and concrete
+Vivado mapping, source/header/constraint bytes,
 top, part, parameters/defines, flow options, and the supported Vivado plus
 Edalize/FuseSoC identities. Reuse also re-hashes the routed report set and, for
 a non-OOC Target, its bitstream; a hit is reported explicitly as
 `cached: true`. A miss invokes Make with `-B`, so `Nothing to be done` cannot
 turn old reports into either a false pass or a false failure.
+
+Profiles name optimization intent, not guaranteed outcomes. FPGA area is
+represented by utilization/resource counts; this Flow does not currently
+normalize or compare power.
 
 ### ASIC synthesis (`[flows.synth]`)
 
@@ -1791,3 +1807,11 @@ history. Back up or version `.booley_project/` separately, together with any
 root `FUSESOC_IGNORE` quarantine marker. Booley propagates that marker into
 ticket and baseline worktrees, but a fresh clone cannot reconstruct hidden
 configuration that was never exported.
+
+### Coverage Analyst model role
+
+`coverage_analyst` retains its configured Specialist model role and standard tier
+floor. Its input is one exact canonical `coverage.json` path plus an optional
+`instruction`. It has no per-call coverage policy or waiver-directory settings.
+The model receives normalized evidence and, only when the entire current Target
+closure matches its recorded fingerprints, verified RTL/testbench text.

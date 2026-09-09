@@ -207,10 +207,6 @@ known-first-party = ["booley"]
 #   PLR0915 (developer) — _run_with_console is a tightly-coupled TUI
 #             launch+worker sequence; nested closures + nonlocal state mean
 #             splitting introduces brittle parameter passing.
-#   PLR0911 (coverage_analyst) — _ensure_trace is a series of distinct
-#             pre-flight gates (instance match, $dump scans, backend resolve,
-#             subprocess result classification); each early-return is a
-#             separate diagnostic surface.
 #   PLR0911 (console links) — _resolve_file is an ordered resolution ladder;
 #             early returns make each user-facing fallback explicit.
 #   PLR0911/PLR0912/PLR0915 (bwave) — _translate_to_subcommand maps legacy CLI
@@ -314,6 +310,11 @@ include = [
     # Analyze the complete core package so new boundary modules cannot
     # silently fall out of the checked surface.
     "src/booley/core",
+    "src/booley/specialists/coverage_analysis.py",
+    "src/booley/specialists/coverage_analysis_schema.py",
+    "src/booley/specialists/coverage_input.py",
+    "src/booley/specialists/coverage_analyst.py",
+    "src/booley/runtime/text_only_agent.py",
     # Target selection is the architectural seam shared by every built-in Flow.
     "src/booley/targets",
     "src/booley/flows/lint/flow.py",

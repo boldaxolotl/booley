@@ -979,7 +979,8 @@ class TestSubmissionEcho:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         reports = tmp_path / "runtime" / "flow-reports"
         reports.mkdir(parents=True)
-        (reports / "sim_default.json").write_text(
+        (reports / "sim/1/targets/default").mkdir(parents=True)
+        (reports / "sim/1/targets/default/simulation.json").write_text(
             json.dumps(
                 {
                     "flow": "sim",

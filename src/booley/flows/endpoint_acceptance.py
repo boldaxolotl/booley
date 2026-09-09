@@ -63,6 +63,9 @@ def set_criterion(
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
     """Append normalized strict-Ticket outcomes before mutable state is saved."""
+    from booley.review.execution_context import validate_recording
+
+    validate_recording(getattr(endpoint.args, "work_dir", None))
     if not changes or not endpoint.state.strict_criteria:
         return
     raw_logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
@@ -299,6 +302,10 @@ def _criterion_target_matches(
 
 def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     """Reject an unbound Ticket-mode Target before job admission/EDA."""
+    # Explicit native collection also supports ungated Targets (#213). Coverage
+    # preflight has already validated the complete selection before admission.
+    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
+        return None
     if (
         not endpoint.state.strict_criteria
         or not endpoint.satisfies

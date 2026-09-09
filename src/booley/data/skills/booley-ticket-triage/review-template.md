@@ -29,7 +29,7 @@
 
 #### Changed files
 
-- [<path>](/absolute/path/to/changed/file) — <modified/added/renamed/deleted; diff opened>
+- [<path>](/absolute/path/to/changed/file) — <modified/added/renamed/deleted; diff opened / omitted (compiled artifact) / not opened (reason)>
 
 #### Criteria
 

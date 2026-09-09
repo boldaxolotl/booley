@@ -197,7 +197,7 @@ def _criteria(
         return []
     rows = []
     for name, value in raw.items():
-        if name.startswith("_") or not isinstance(value, dict):
+        if (name.startswith("_") and name != "_report_submitted") or not isinstance(value, dict):
             continue
         category = _category(name)
         rows.append(
@@ -209,6 +209,7 @@ def _criteria(
                 "outcome": _criterion_outcome(value),
                 "freshness": _criterion_freshness(value),
                 "metric": _criterion_metric(value),
+                "availability": value.get("availability", "available"),
                 "report_path": _criterion_report_path(
                     name,
                     value,
@@ -670,7 +671,8 @@ def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
 def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
     """Collect and materialize exhaustive mechanical review facts once."""
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
-    state = _read_json(state_path, {})
+    inspection = getattr(ctx, "inspection", None)
+    state = inspection["state"] if inspection else _read_json(state_path, {})
     if not isinstance(state, dict):
         raise TriagePackageError(f"invalid state file: {state_path}")
     scope = _scope(ctx)
@@ -699,6 +701,21 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
     return {
         "version": TRIAGE_PACKAGE_VERSION,
         "kind": "review",
+        "inspection": (
+            {
+                key: inspection[key]
+                for key in (
+                    "schema",
+                    "disposition",
+                    "reason",
+                    "blocked_reason",
+                    "heads",
+                    "basis_id",
+                )
+            }
+            if inspection
+            else None
+        ),
         "slug": ctx.slug,
         "feature_branch": ctx.feature_branch,
         "base_sha": ctx.base_sha,
@@ -807,6 +824,16 @@ def write_triage_package(
     explanation: StructuredExplanation | None = None,
 ) -> Path:
     """Persist one machine-readable package consumed by interactive triage."""
+    inspection = facts.get("inspection")
+    if inspection and inspection["disposition"] == "unaccepted":
+        assessment = {
+            **assessment,
+            "recommendation": "hold",
+            "decision_blockers": [
+                "Not accepted: finish ticket verification and finalize-review before approval.",
+                *assessment.get("decision_blockers", []),
+            ],
+        }
     package_value = {
         **facts,
         "assessment": assessment,
@@ -834,11 +861,52 @@ def load_triage_package(path: Path) -> ReviewPackage:
         raise TriagePackageError(f"invalid or unsupported triage package {path}: {exc}") from exc
 
 
+# Text-encoded memory images are build outputs too; binary detection alone misses them.
+_COMPILED_SUFFIXES = frozenset(
+    {
+        ".bin",
+        ".elf",
+        ".o",
+        ".obj",
+        ".a",
+        ".so",
+        ".dll",
+        ".exe",
+        ".pyc",
+        ".hex",
+        ".ihex",
+        ".srec",
+        ".s19",
+        ".s28",
+        ".s37",
+        ".mem",
+        ".vmem",
+        ".mif",
+        ".coe",
+        ".uf2",
+        ".bit",
+        ".bitstream",
+        ".rbf",
+        ".sof",
+        ".pof",
+    }
+)
+
+
+def _diff_omission(row: Mapping[str, Any]) -> str | None:
+    for key in ("path", "old_path"):
+        if PurePosixPath(str(row.get(key) or "")).suffix.lower() in _COMPILED_SUFFIXES:
+            return "compiled artifact"
+    if row.get("presentation") == "binary":
+        return "binary file"
+    return None
+
+
 def open_package_diffs(package: Mapping[str, Any]) -> list[str]:
-    """Open every prepared diff and return paths whose launch failed."""
+    """Open source diffs and return paths whose launch failed, excluding artifacts."""
     from booley.config.editor import resolve_editor
 
-    rows = package.get("changed_files", [])
+    rows = [row for row in package.get("changed_files", []) if not _diff_omission(row)]
     editor = resolve_editor()
     if editor is None or editor.diff is None:
         return [str(row.get("path", "unknown")) for row in rows]
@@ -1053,6 +1121,9 @@ def _change_description(row: Mapping[str, Any], opened: bool) -> str:
     action = {"A": "added", "D": "deleted", "M": "modified"}.get(status[:1], "changed")
     if status.startswith("R"):
         action = f"renamed from {_markdown_text(row.get('old_path'))}"
+    omission = _diff_omission(row)
+    if omission:
+        return f"{action}; diff omitted ({omission})"
     return f"{action}; diff {'opened' if opened else 'unavailable'}"
 
 
@@ -1192,6 +1263,16 @@ def _render_economics(lines: list[str], package: Mapping[str, Any]) -> None:
 def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
     """Render the fixed interactive review template from a validated package."""
     lines = [f"### {_markdown_text(package['slug'])}"]
+    inspection = package.get("inspection")
+    if inspection:
+        lines.extend(
+            [
+                "",
+                f"**Acceptance: {inspection['disposition']}**",
+                f"Review reason: {inspection['reason']}",
+                f"Original block: {inspection['blocked_reason']}",
+            ]
+        )
     _render_reports(lines, package)
     _render_decision(lines, package)
     _render_findings(lines, package, diff_failures)
@@ -1204,5 +1285,8 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     _render_recipe_comparisons(lines, package)
     _render_commits(lines, package)
     _render_economics(lines, package)
-    lines.extend(["", "Choose: **approve** / **fix here** / **reset** / **archive** / **skip**."])
+    actions = "**approve** / **fix here** / **reset** / **archive** / **skip**"
+    if inspection and inspection["disposition"] == "unaccepted":
+        actions = "**fix here** / **refresh-review** / **finalize-review** / **hold** / **reset** / **archive**"
+    lines.extend(["", f"Choose: {actions}."])
     return "\n".join(lines)

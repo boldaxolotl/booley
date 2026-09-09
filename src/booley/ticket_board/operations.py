@@ -1014,6 +1014,13 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
+    from booley.review.entry import ReviewEntryError, assert_idle
+
+    try:
+        assert_idle(log_dir)
+    except ReviewEntryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return None
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:

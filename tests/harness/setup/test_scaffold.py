@@ -376,6 +376,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
     assert fpga["flow_options"] == {
         "tool": "vivado",
         "part": "xc7a200tfbg484-1",
+        "ppa_profile": "balanced",
         "out_of_context": True,
         "booley": {"doctor": ["fpga"]},
     }
