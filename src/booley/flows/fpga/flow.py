@@ -33,6 +33,16 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
+from booley.evidence.fields import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_TARGET_DETAIL,
+    CANDIDATE_TARGET_DETAIL,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_SNAPSHOT_DETAIL,
+)
+from booley.evidence.timing import per_clock_from_json, worst_clock
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
 from booley.flows.plan import (
@@ -63,7 +73,6 @@ from ..baseline_worktree import (
     git_short_sha,
     resolve_ticket_baseline,
 )
-from ..clock_timing import per_clock_from_json, worst_clock
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
@@ -85,15 +94,6 @@ from ..implementation_report import (
     build_implementation_aggregate,
 )
 from ..invocation import resolve_timeout_ms
-from ..recipe_evidence import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    BASELINE_TARGET_DETAIL,
-    CANDIDATE_TARGET_DETAIL,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_SNAPSHOT_DETAIL,
-)
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,

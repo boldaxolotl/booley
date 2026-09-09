@@ -2343,7 +2343,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, targets: list[str]
     ) -> tuple[str | None, list[str], str | None]:
         """Return the pinned ref and selected Targets needing relative evidence."""
-        from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+        from booley.evidence.fields import BASELINE_REF_PARAM
 
         refs: set[str] = set()
         selected: list[str] = []

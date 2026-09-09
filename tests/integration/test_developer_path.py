@@ -143,10 +143,8 @@ def _stamp_verification_fingerprints(state_path: Path, work_dir: Path) -> None:
     check_criteria_acceptance() marks unstamped passing criteria stale-unmet.
     The mock agent bypasses tools, so it must stamp explicitly.
     """
-    from booley.criteria.state import (
-        SOURCE_FINGERPRINT_DETAIL_KEY,
-        compute_source_fingerprint,
-    )
+    from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+    from booley.flows.source_fingerprint import compute_source_fingerprint
     from booley.ticket_board.criteria_acceptance import (
         _verification_fingerprint_categories,
     )

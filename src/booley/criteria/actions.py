@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from booley.flows.source_fingerprint import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 
 
 @lru_cache(maxsize=1)

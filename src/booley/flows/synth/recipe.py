@@ -9,6 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool, require_opt_str
+from booley.evidence.fields import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_DETAIL,
+    RECIPE_SNAPSHOT_PARAM,
+)
+from booley.evidence.recipe import jsonable, recipe_changes, recipe_snapshot_fingerprint
 from booley.flows.synth.backends.yosys.core import (
     DEFAULT_FRONTEND,
     resolve_frontend,
@@ -18,19 +29,6 @@ from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.request import SynthRequest
 
-from ..recipe_evidence import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    BASELINE_REF_PARAM,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_FINGERPRINT_PARAM,
-    RECIPE_SNAPSHOT_DETAIL,
-    RECIPE_SNAPSHOT_PARAM,
-    jsonable,
-    recipe_changes,
-    recipe_snapshot_fingerprint,
-)
 from .ppa_config import append_ppa_args
 
 __all__ = [

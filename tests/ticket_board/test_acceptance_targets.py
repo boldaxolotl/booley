@@ -645,10 +645,10 @@ def test_comparison_basis_reports_resolution_and_recipe_changes(
         lambda *_args: ({"tool": "a"}, {"tool": "b"}),
     )
     monkeypatch.setattr(
-        "booley.flows.recipe_evidence.implementation_comparison_basis", lambda value: value
+        "booley.evidence.recipe.implementation_comparison_basis", lambda value: value
     )
     monkeypatch.setattr(
-        "booley.flows.recipe_evidence.recipe_changes",
+        "booley.evidence.recipe.recipe_changes",
         lambda _left, _right: [{"path": "tool"}],
     )
     assert (
@@ -678,9 +678,9 @@ def test_comparison_snapshots_dispatch_by_flow(
     monkeypatch.setattr(acceptance_targets, "_missing_target_sources", lambda *_args: [])
     monkeypatch.setattr(acceptance_targets, "_dry_resolve_binding", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
-        "booley.flows.recipe_evidence.implementation_comparison_basis", lambda value: value
+        "booley.evidence.recipe.implementation_comparison_basis", lambda value: value
     )
-    monkeypatch.setattr("booley.flows.recipe_evidence.recipe_changes", lambda *_args: [])
+    monkeypatch.setattr("booley.evidence.recipe.recipe_changes", lambda *_args: [])
     assert acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build") == []
     other = acceptance_targets.CriterionTarget(
         "mandatory", "sim_pass", "candidate", "sim", False, "baseline"
@@ -709,9 +709,9 @@ def test_comparison_snapshots_dispatch_fpga(
     monkeypatch.setattr(acceptance_targets, "_missing_target_sources", lambda *_args: [])
     monkeypatch.setattr(acceptance_targets, "_dry_resolve_binding", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
-        "booley.flows.recipe_evidence.implementation_comparison_basis", lambda value: value
+        "booley.evidence.recipe.implementation_comparison_basis", lambda value: value
     )
-    monkeypatch.setattr("booley.flows.recipe_evidence.recipe_changes", lambda *_args: [])
+    monkeypatch.setattr("booley.evidence.recipe.recipe_changes", lambda *_args: [])
     assert acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build") == []
 
 
