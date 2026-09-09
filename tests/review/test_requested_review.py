@@ -183,7 +183,7 @@ def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
     assert _completion_acceptance_valid(tio, "demo") is None
     outcome = asyncio.run(request_review_command(root, "demo", action="finalize"))
     assert not outcome.ready
-    assert "acceptance is" in outcome.message
+    assert "mandatory criterion" in outcome.message
     assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
 
 
@@ -540,6 +540,7 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     assert outcome.ready, outcome.message
     again = asyncio.run(request_review_command(root, "demo", action="finalize"))
     assert again.ready and again.package_path == outcome.package_path
+    _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch)
     from booley.ticket_board.operations import _completion_acceptance_valid
 
     assert _completion_acceptance_valid(tio, "demo") is not None
@@ -548,3 +549,83 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
 
     assert op_complete(tio, "demo", no_merge=True, no_cleanup=True)
     assert tio.find_ticket("demo")["status"] == "done"
+
+
+@pytest.mark.parametrize("damage", ["missing", "downgraded"])
+def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+
+    root, tio, _ = blocked
+    state_path = tio.logs_dir / "demo" / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text())
+    state["criteria"] = {
+        "implementation_done": {"met": True, "mandatory": True},
+        "_report_submitted": {"met": True, "mandatory": True},
+    }
+    if damage == "downgraded":
+        state["criteria"]["review_rtl_bugs_done"] = {"met": True, "mandatory": False}
+    state_path.write_text(json.dumps(state))
+    request = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+    assert request.ready, request.message
+    result = asyncio.run(request_review_command(root, "demo", action="finalize"))
+    assert not result.ready
+    assert "review_rtl_bugs_done" in result.message
+    assert read_acceptance(tio.logs_dir / "demo").kind == "unavailable"
+    assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
+
+
+@pytest.mark.parametrize("field", ["state", "heads", "basis_id", "basis_receipt", "execution_id"])
+def test_review_entry_rejects_missing_required_fields(blocked, field):
+    from booley.review.entry import ReviewEntryError, criteria_projection, digest, entry_path
+
+    root, tio, _ = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    log_dir = tio.logs_dir / "demo"
+    row = dict(read_entry(log_dir))
+    del row[field]
+    entry_path(log_dir).write_text(json.dumps({"entry": row, "sha256": digest(row)}))
+    with pytest.raises(ReviewEntryError, match="invalid review entry"):
+        criteria_projection(log_dir)
+
+
+@pytest.mark.parametrize("bad", ["true", 1, None, {}])
+def test_review_entry_rejects_invalid_criterion_flags(blocked, bad):
+    from booley.review.entry import ReviewEntryError, digest, entry_path
+
+    root, tio, _ = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    log_dir = tio.logs_dir / "demo"
+    row = read_entry(log_dir)
+    row["state"]["criteria"]["review_rtl_bugs_done"]["mandatory"] = bad
+    entry_path(log_dir).write_text(json.dumps({"entry": row, "sha256": digest(row)}))
+    with pytest.raises(ReviewEntryError, match="mandatory"):
+        read_entry(log_dir)
+
+
+def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
+    from booley.review import requests
+    from booley.review.entry import package_dir
+
+    log_dir = tio.logs_dir / "demo"
+    frozen = (log_dir / "acceptance" / "accepted.json").read_bytes()
+    for prepare in (prep.prepare_review_command, prep.prepare_review):
+        generation = package_dir(log_dir, read_entry(log_dir))
+        (generation / "briefing.json").unlink()
+        assert prep.review_briefing_command(root, "demo", open_diffs=False).status != "ready"
+        bind = requests.bind_review_package
+
+        def interrupted(*args, bind=bind, **kwargs):
+            bind(*args, **kwargs)
+            raise OSError("interrupted after package binding")
+
+        if interrupt:
+            monkeypatch.setattr(requests, "bind_review_package", interrupted)
+            failed = asyncio.run(prepare(root, "demo", force=True))
+            assert not failed.ready
+            monkeypatch.setattr(requests, "bind_review_package", bind)
+        repaired = asyncio.run(prepare(root, "demo", force=True))
+        assert repaired.ready, repaired.message
+        assert repaired.package_path != outcome.package_path
+        assert prep.review_briefing_command(root, "demo", open_diffs=False).status == "ready"
+        assert (log_dir / "acceptance" / "accepted.json").read_bytes() == frozen
+        outcome = repaired

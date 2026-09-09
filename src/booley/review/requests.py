@@ -7,11 +7,11 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from booley.core.boundary import require_dict
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import CriteriaTemplate
+from booley.criteria.templates import CriteriaTemplate, extract_sim_targets
 from booley.harness.job_fence import active_ticket_jobs
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -29,11 +29,13 @@ from booley.ticket_board.persistence import atomic_replace_bytes
 from . import preparation as prep
 from .entry import (
     ReviewEntryError,
+    ReviewInspection,
     assert_idle,
     digest,
     entry_path,
     operation_path,
     package_dir,
+    parse_inspection,
     read_entry,
     read_json,
     require_clean,
@@ -65,7 +67,7 @@ def _capture_state(ctx: prep.ReviewPrepContext, basis: Any) -> dict[str, Any]:
     )
     state = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
-    expected = template.expand([])
+    expected = template.expand(extract_sim_targets(declarations))
     from booley.config.project_config import is_run_report_enabled
 
     if is_run_report_enabled():
@@ -82,7 +84,9 @@ def _capture_state(ctx: prep.ReviewPrepContext, basis: Any) -> dict[str, Any]:
     return {**state, "criteria": criteria}
 
 
-def _capture(tio: TicketIO, slug: str, reason: str, disposition: str) -> prep.ReviewPrepContext:
+def _capture(
+    tio: TicketIO, slug: str, reason: str, disposition: Literal["unaccepted", "accepted"]
+) -> prep.ReviewPrepContext:
     ctx = prep._resolve_context(
         tio._project_root,
         slug,
@@ -97,7 +101,7 @@ def _capture(tio: TicketIO, slug: str, reason: str, disposition: str) -> prep.Re
     heads = {"outer": ctx.head_sha}
     if ctx.project_repository is not None:
         heads["project"] = ctx.project_repository.head_sha
-    row = {
+    row: ReviewInspection = {
         "schema": 1,
         "generation": uuid.uuid4().hex,
         "basis_id": basis.basis_id,
@@ -109,6 +113,7 @@ def _capture(tio: TicketIO, slug: str, reason: str, disposition: str) -> prep.Re
         "reason": reason,
         "blocked_reason": str(board.get("blocked_reason") or ""),
         "state": {},
+        "capture_sha": "",
         "created_at": utc_now_rfc3339(),
     }
     captured = replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
@@ -125,7 +130,7 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
     accepted = read_acceptance(tio.logs_dir / slug)
     if accepted.kind == "corrupt":
         raise ReviewEntryError(f"accepted snapshot is corrupt: {accepted.reason}")
-    if accepted.kind == "accepted":
+    if accepted.kind == "accepted" and action != "regenerate":
         raise ReviewEntryError("already accepted; use the accepted review/complete workflow")
     if action == "request":
         if board["status"] != "blocked" and not (repair and board["status"] == "review"):
@@ -143,6 +148,15 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     from booley.ticket_board.operations import _handoff_basis_heads
 
     assert ctx.inspection is not None
+    raw = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
+    actual = require_dict(raw.get("criteria", {}), field="criteria")
+    for key, expected in ctx.inspection["state"]["criteria"].items():
+        if expected.get("mandatory"):
+            observed = require_dict(actual.get(key, {}), field=f"criterion {key}")
+            if observed.get("mandatory") is not True or observed.get("met") is not True:
+                raise ReviewEntryError(
+                    f"mandatory criterion {key!r} is missing, downgraded or unmet"
+                )
     verdict = check_criteria_acceptance(
         ctx.log_dir / ".runtime" / "booley_state.json",
         work_dir=ctx.worktree,
@@ -217,7 +231,9 @@ def _publish_acceptance(ctx: prep.ReviewPrepContext, operation: dict[str, Any]) 
     atomic_replace_bytes(
         ctx.log_dir / ".runtime" / "triage-prep" / "manifest.json", manifest.read_bytes()
     )
-    bind_review_package(ctx.log_dir, snapshot)
+    bind_review_package(
+        ctx.log_dir, snapshot, replace_existing=operation["action"] == "regenerate"
+    )
 
 
 def _commit(tio: TicketIO, ctx: prep.ReviewPrepContext, operation: dict[str, Any]) -> None:
@@ -269,7 +285,7 @@ def _recover(tio: TicketIO, slug: str) -> prep.ReviewPrepOutcome | None:
 
 
 def _recover_publication(tio, slug, operation):
-    row = operation["entry"]
+    row = parse_inspection(operation["entry"])
     ctx = prep._resolve_context(
         tio._project_root,
         slug,
@@ -324,21 +340,22 @@ def _seal_package(ctx: prep.ReviewPrepContext) -> None:
 
 async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep.ReviewPrepOutcome:
     action = operation["action"]
-    disposition = "accepted" if action == "finalize" else "unaccepted"
+    prior = read_entry(tio.logs_dir / slug)
+    disposition: Literal["unaccepted", "accepted"] = (
+        "accepted" if action == "finalize" else "unaccepted"
+    )
+    if action == "regenerate" and prior is not None:
+        disposition = prior["disposition"]
     ctx = _capture(tio, slug, operation["reason"], disposition)
     assert ctx.inspection is not None
     if ctx.triage_report_enabled:
         prep.load_models_config(tio._project_root)
-    if action == "regenerate":
-        prior = read_entry(ctx.log_dir)
-        if (
-            prior is None
-            or prior["heads"] != ctx.inspection["heads"]
-            or prior["state"] != ctx.inspection["state"]
-        ):
-            raise ReviewEntryError(
-                "inspection changed; use board refresh-review to select new inputs"
-            )
+    if action == "regenerate" and (
+        prior is None
+        or prior["heads"] != ctx.inspection["heads"]
+        or prior["state"] != ctx.inspection["state"]
+    ):
+        raise ReviewEntryError("inspection changed; use board refresh-review to select new inputs")
     if action == "finalize":
         _acceptance_ready(tio, ctx)
         # Acceptance validation can mark stale evidence: capture its final projection.
@@ -360,7 +377,7 @@ async def _generate(tio: TicketIO, slug: str, operation: dict[str, Any]) -> prep
     with tio._ticket_lock(slug, review_operation=True):
         _check_capture(tio, ctx, source_sha)
         operation.update(
-            phase="accepting" if action == "finalize" else "publishing",
+            phase="accepting" if disposition == "accepted" else "publishing",
             entry=ctx.inspection,
             source_sha=source_sha,
             accepted_at=utc_now_rfc3339(),

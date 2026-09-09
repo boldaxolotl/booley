@@ -19,7 +19,7 @@ from typing import Any, Literal
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .persistence import WriteOnceConflictError, atomic_write_once
+from .persistence import WriteOnceConflictError, atomic_replace_bytes, atomic_write_once
 
 SCHEMA_VERSION = 1
 
@@ -250,7 +250,9 @@ def freeze_acceptance(
     return _snapshot_from_payload(payload, digest)
 
 
-def bind_review_package(log_dir: Path, snapshot: AcceptanceSnapshot) -> bool:
+def bind_review_package(
+    log_dir: Path, snapshot: AcceptanceSnapshot, *, replace_existing: bool = False
+) -> bool:
     """Bind an already verified review package to its accepted snapshot."""
     root = Path(log_dir)
     manifest_path = root / ".runtime" / "triage-prep" / "manifest.json"
@@ -274,7 +276,15 @@ def bind_review_package(log_dir: Path, snapshot: AcceptanceSnapshot) -> bool:
             "briefing_sha256": hashlib.sha256(briefing_bytes).hexdigest(),
         }
     )
-    _write_once(root / "acceptance" / "review-package.json", binding + b"\n")
+    path = root / "acceptance" / "review-package.json"
+    if replace_existing:
+        # The caller holds the Ticket publication lock; acceptance stays write-once.
+        accepted = read_acceptance(root)
+        if accepted.snapshot != snapshot:
+            raise AcceptanceLedgerError("cannot rebind a different accepted snapshot")
+        atomic_replace_bytes(path, binding + b"\n")
+    else:
+        _write_once(path, binding + b"\n")
     return True
 
 

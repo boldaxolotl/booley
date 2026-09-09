@@ -45,6 +45,7 @@ from booley.ticket_board.ticket_repositories import (
 )
 
 from .artifact import ReviewPackage
+from .entry import ReviewInspection
 from .evidence import ReviewEvidenceError, ReviewEvidencePackage, build_review_evidence
 from .explanation import (
     ExplanationError,
@@ -101,7 +102,7 @@ class ReviewPrepContext:
     acceptance_basis_id: str = ""
     triage_report_enabled: bool = True
     project_repository: ProjectReviewRepository | None = None
-    inspection: dict[str, Any] | None = None
+    inspection: ReviewInspection | None = None
 
 
 @dataclass(frozen=True)
@@ -1340,24 +1341,32 @@ async def _prepare_resolved_review(
     return await _prepare_model_review(ctx, exact_prompt, prompt_sha, source_sha, started)
 
 
+def _requested_review_slug(project_root: Path, slug: str) -> str | None:
+    from .entry import assert_idle, operation_path, read_entry, read_json
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    board = tio.find_ticket(slug)
+    if board is None:
+        return None
+    canonical = Path(board["file"]).stem
+    pending = read_json(operation_path(tio.logs_dir / canonical))
+    if pending and pending.get("action") == "regenerate":
+        return canonical
+    assert_idle(tio.logs_dir / canonical)
+    return canonical if read_entry(tio.logs_dir / canonical) is not None else None
+
+
 async def prepare_review(
     project_root: Path, slug: str, *, force: bool = False
 ) -> ReviewPrepOutcome:
     """Prepare one Ticket's review package; failures are returned, never raised."""
     started = time.monotonic()
     try:
-        from .entry import assert_idle
+        from .requests import request_review_command
 
-        tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-        entry = tio.find_ticket(slug)
-        if entry is not None:
-            canonical = Path(entry["file"]).stem
-            assert_idle(tio.logs_dir / canonical)
-            from .entry import read_entry
-            from .requests import request_review_command
-
-            if read_entry(tio.logs_dir / canonical) is not None:
-                return await request_review_command(project_root, canonical, action="regenerate")
+        canonical = _requested_review_slug(project_root, slug)
+        if canonical is not None:
+            return await request_review_command(project_root, canonical, action="regenerate")
         ctx = await _resolve_stable_context(project_root.resolve(), slug)
     except Exception as exc:
         logger.exception("Triage report setup failed for %s", slug)
@@ -1399,14 +1408,11 @@ async def prepare_review_command(
 ) -> ReviewPrepOutcome:
     """Prepare a review package for a review or blocked ticket."""
     try:
-        from .entry import read_entry
         from .requests import request_review_command
 
-        tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-        entry = tio.find_ticket(slug)
-        canonical_slug = Path(entry["file"]).stem if entry else slug
-        if read_entry(tio.logs_dir / canonical_slug) is not None:
-            return await request_review_command(project_root, canonical_slug, action="regenerate")
+        canonical = _requested_review_slug(project_root, slug)
+        if canonical is not None:
+            return await request_review_command(project_root, canonical, action="regenerate")
         load_models_config(project_root)
         _resolve_context(
             project_root.resolve(),
