@@ -1033,6 +1033,22 @@ def _step_project_image(ctx: InitContext) -> None:
     _build_and_configure_image(ctx, docker_dir, generated)
 
 
+def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
+    """Present every cleanup outcome without hiding the image reconciliation result."""
+    if result.cleanup.pending:
+        warn("obsolete Session Image tags can be removed: " + ", ".join(result.cleanup.pending))
+        ctx.record("docker_image", "warn", "obsolete Session Image tags remain")
+    if result.cleanup.removed:
+        ok("removed obsolete Session Image tags: " + ", ".join(result.cleanup.removed))
+        ctx.record("docker_image", "ok", "removed obsolete Session Image tags")
+    if result.cleanup.retained_required:
+        warn(
+            "retained obsolete Session Image tags required by containers: "
+            + ", ".join(result.cleanup.retained_required)
+        )
+        ctx.record("docker_image", "warn", "obsolete Session Image tags are in use")
+
+
 def _step_image_lifecycle(
     ctx: InitContext, *, base_result: LifecycleResult | None = None
 ) -> LifecycleResult | None:
@@ -1062,19 +1078,16 @@ def _step_image_lifecycle(
     if result.status is ImageLifecycleStatus.STALE:
         for diagnostic in result.diagnostics:
             warn(diagnostic.message)
+        _report_image_cleanup(ctx, result)
         ctx.record("docker_image", "warn", "Session Image provenance is stale")
         return result
+    _report_image_cleanup(ctx, result)
     if result.cleanup.pending:
-        warn("obsolete Session Image tags can be removed: " + ", ".join(result.cleanup.pending))
-        ctx.record("docker_image", "warn", "obsolete Session Image tags remain")
         return result
     if result.changed_images:
         ok("reconciled Session Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
-    elif result.cleanup.removed:
-        ok("removed obsolete Session Image tags: " + ", ".join(result.cleanup.removed))
-        ctx.record("docker_image", "ok", "removed obsolete Session Image tags")
-    else:
+    elif not result.cleanup.removed:
         skip(f"Session Image {result.selected_reference} is current")
         ctx.record("docker_image", "skip", "current")
     return result

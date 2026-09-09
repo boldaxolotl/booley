@@ -61,9 +61,10 @@ host resources while preserving caches and user-owned files.
 Bootstrap treats stable release tags in the official
 `ghcr.io/boldaxolotl/booley-sandbox` repository as temporary acquisition names.
 After the verified image is available under the canonical `booley-sandbox`
-name, Bootstrap removes those version tags without forced deletion or parent
-pruning. Retag an official image under your own repository name if you need to
-keep a separately named pinned copy.
+name, Bootstrap removes every such version tag—including the tag for the current
+release—without forced deletion or parent pruning. The verified image remains
+available through its canonical local name. Retag an official image under your
+own repository name if you need to keep a separately named pinned copy.
 
 Skipping the explicit command is supported: ordinary `booley init` performs
 the same reconciliation before it changes a Project.

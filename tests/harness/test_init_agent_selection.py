@@ -10,7 +10,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime.image_lifecycle import ImageCleanup
+from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -455,6 +455,55 @@ def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch)
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert ctx.results[-1] == init_cmd.StepResult(
         "docker_image", "ok", "removed obsolete Session Image tags"
+    )
+
+
+def test_image_lifecycle_step_reports_cleanup_alongside_stale_image(tmp_path, monkeypatch):
+    pending = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
+    retained = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.4"
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.STALE,
+        diagnostics=(Diagnostic("stale", "flavor provenance is stale"),),
+        cleanup=ImageCleanup(pending=(pending,), retained_required=(retained,)),
+    )
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert (
+        init_cmd.StepResult("docker_image", "warn", "obsolete Session Image tags remain")
+        in ctx.results
+    )
+    assert (
+        init_cmd.StepResult("docker_image", "warn", "obsolete Session Image tags are in use")
+        in ctx.results
+    )
+    assert ctx.results[-1] == init_cmd.StepResult(
+        "docker_image", "warn", "Session Image provenance is stale"
+    )
+
+
+def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, monkeypatch):
+    release = "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5"
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.CHANGED,
+        changed_images=("booley-sandbox-riscv",),
+        cleanup=ImageCleanup(removed=(release,)),
+    )
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert (
+        init_cmd.StepResult("docker_image", "ok", "removed obsolete Session Image tags")
+        in ctx.results
+    )
+    assert ctx.results[-1] == init_cmd.StepResult(
+        "docker_image", "ok", "selected booley-sandbox-riscv"
     )
 
 

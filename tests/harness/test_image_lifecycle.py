@@ -144,6 +144,27 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     return values
 
 
+def _current_registry_base() -> tuple[str, dict[str, str]]:
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    node = lifecycle._base_node(payload)
+    image_id = "sha256:" + "a" * 64
+    labels = _labels(payload="payload-new", recipe=node.build.recipe_fingerprint)
+    labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT: (
+                "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+            ),
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
+        }
+    )
+    return image_id, labels
+
+
 def test_host_scope_never_reads_project_configuration(monkeypatch):
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
@@ -162,23 +183,7 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
 def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = lifecycle.PayloadProvenance(
-        lifecycle.PROVENANCE_SCHEMA,
-        "0.2.6",
-        "payload-new",
-    )
-    node = lifecycle._base_node(payload)
-    image_id = "sha256:" + "a" * 64
-    labels = _labels(payload="payload-new", recipe=node.build.recipe_fingerprint)
-    labels.update(
-        {
-            lifecycle.LABEL_BUILD_ORIGIN: "registry",
-            lifecycle.LABEL_PARENT_ARTIFACT: (
-                "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
-            ),
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
-        }
-    )
+    image_id, labels = _current_registry_base()
     current_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
     prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
     docker = FakeDocker(
@@ -205,23 +210,7 @@ def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
 def test_host_check_reports_release_cleanup_without_mutating(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = lifecycle.PayloadProvenance(
-        lifecycle.PROVENANCE_SCHEMA,
-        "0.2.6",
-        "payload-new",
-    )
-    node = lifecycle._base_node(payload)
-    image_id = "sha256:" + "a" * 64
-    labels = _labels(payload="payload-new", recipe=node.build.recipe_fingerprint)
-    labels.update(
-        {
-            lifecycle.LABEL_BUILD_ORIGIN: "registry",
-            lifecycle.LABEL_PARENT_ARTIFACT: (
-                "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
-            ),
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
-        }
-    )
+    image_id, labels = _current_registry_base()
     prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
     docker = FakeDocker(
         {
@@ -1118,7 +1107,10 @@ def test_docker_image_inventory_rejects_malformed_rows(
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
     )
 
-    with pytest.raises(lifecycle.ImageLifecycleError, match="malformed image inventory"):
+    with pytest.raises(
+        lifecycle.ImageLifecycleError,
+        match=r"malformed image inventory row 1:",
+    ):
         lifecycle._DockerCli().image_references()
 
 

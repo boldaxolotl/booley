@@ -666,6 +666,7 @@ def _release_cleanup_candidates(
     managed_reference: str,
     inventory: tuple[ImageReference, ...],
 ) -> tuple[ImageReference, ...]:
+    """Return disposable official acquisition tags, including the current version."""
     candidates = (
         item for item in inventory if _release_tag(item.reference, managed_reference) is not None
     )
@@ -989,16 +990,20 @@ class _DockerCli:
 
 def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
     references: dict[str, str] = {}
-    for line in output.splitlines():
+    for row_number, line in enumerate(output.splitlines(), start=1):
         try:
             document = require_dict(json.loads(line), field="Docker image inventory row")
             repository = require_str(document, "Repository")
             tag = require_str(document, "Tag")
             image_id = require_str(document, "ID")
         except (BoundaryError, json.JSONDecodeError) as exc:
-            raise ImageLifecycleError("Docker returned malformed image inventory") from exc
+            raise ImageLifecycleError(
+                f"Docker returned malformed image inventory row {row_number}: {exc}"
+            ) from exc
         if not is_local_image_id(image_id):
-            raise ImageLifecycleError("Docker returned malformed image inventory")
+            raise ImageLifecycleError(
+                f"Docker returned malformed image inventory row {row_number}: invalid image ID"
+            )
         reference = f"{repository}:{tag}"
         previous = references.setdefault(reference, image_id)
         if previous != image_id:
