@@ -784,3 +784,35 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect preflight logs for per-file warnings |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
+
+### Report-driven Coverage Analyst
+
+`coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
+path) and optional `instruction`. It returns advisory `booley.coverage-analysis/v1`
+data: immutable observed evidence, model-authored hypotheses and recommendations,
+explicit limitations, source-access status, and screened Waiver Candidates.
+No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
+malformed/model-incomplete output is an execution error; a valid advisory report
+succeeds even when its Campaign records simulation failure or a coverage miss.
+
+The wrapper checks canonical invocation/Target identity and a matching completed
+Simulation projection before model invocation. The deep module is
+`analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
+constructor injection substitutes only the external text-model boundary.
+`coverage_analyst(campaign: Path, instruction="")` is the default public composition.
+Sources are an immutable complete fingerprint-verified snapshot, never file tools.
+Native availability sidecars do not alter normalized measurement truth.
+
+Stored evaluation maps directly to closure recommendations:
+`pass` → `coverage_ready`, `fail` → `coverage_not_ready`,
+`blocked` → `coverage_evidence_blocked`, and
+`not_requested` → `ungated_no_recommendation`.
+Candidates identify exact points and remain `not_approved`: non-RTL/unscored,
+unknown, duplicate, or invalid-reason candidates are `forbidden`; missing source
+verification, evidence, or required proof reference is `investigate`; otherwise
+`ready_for_human_review` requests human validation, never approval.
+
+Text-only Codex calls use a private exact-model catalog to remove model-provided
+shell/patch/search tools and explicit startup settings to disable other tools,
+apps, plugins and subagents. Claude uses an empty built-in tool list and MCP set.
+Both receive an empty temporary working directory and no project skills.

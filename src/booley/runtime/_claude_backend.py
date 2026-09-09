@@ -478,6 +478,11 @@ def _build_sdk_options(
         permission_mode="bypassPermissions",
     )
 
+    if params.text_only:
+        options.tools = []
+        options.mcp_servers = {}
+        options.setting_sources = []
+
     env_overrides = _claude_env_overrides(auth_mode)
     if env_overrides:
         options.env = env_overrides
@@ -508,9 +513,10 @@ def _build_sdk_options(
     if params.resume_session:
         options.continue_conversation = True
 
-    _apply_mcp_servers(options, params)
+    if not params.text_only:
+        _apply_mcp_servers(options, params)
 
-    options.setting_sources = ["project"] if params.needs_skills else []
+    options.setting_sources = ["project"] if params.needs_skills and not params.text_only else []
     options.debug_stderr = None
     return options
 

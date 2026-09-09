@@ -98,8 +98,13 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
+| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
 | `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `mutation_score` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `review_*` | — |
+
+#### `coverage_analyst`
+
+Call `coverage_analyst --campaign <exact-coverage.json> [--instruction <question>]`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 

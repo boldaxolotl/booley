@@ -10,8 +10,7 @@ substrings, and ``tests/bwave/test_contract.py`` pins them
 cross-process against the built binary.
 
 Change anything here ONLY together with the Rust side — a reworded
-diagnostic that loses a marker silently turns e.g. coverage_analyst's
-discovery fallback into a hard error.
+diagnostic that loses a marker can change Python consumers' error classification.
 """
 
 from __future__ import annotations
@@ -41,8 +40,7 @@ EXIT_ENV = 1
 EXIT_USAGE = 2
 
 # Substring of the Rust total-miss diagnostic ("ERROR: no signals match
-# pattern(s) ..."). coverage_analyst keys its discovery fallback on
-# rc == EXIT_USAGE plus this marker. Compare against lowercased stderr.
+# pattern(s) ..."). Compare against lowercased stderr and EXIT_USAGE.
 NO_MATCH_MARKER = "no signals match"
 
 # Substring of the zero-signal-store diagnostic ("ERROR: waveform store has

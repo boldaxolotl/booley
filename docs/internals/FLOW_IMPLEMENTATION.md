@@ -1021,3 +1021,13 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,
 quarantines, invocation locks, or number tombstones.
+
+### Coverage Analysis after Simulation
+
+The Coverage Analyst consumes the exact retained Target `coverage.json` and its
+matching completed Simulation projection. It is a separate advisory invocation;
+it never calls Simulation or publishes Acceptance Evidence. Phase 5's native
+pruning leaves its input usable, while full pruning removes that input. The
+Analyst's versioned output and text-only model boundary are documented in
+[MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). Public Simulation
+coverage controls remain reserved for phase 7 of issue #213.

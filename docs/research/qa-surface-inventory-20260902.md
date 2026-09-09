@@ -319,7 +319,7 @@ clearly supported.
 - `coverage_analyst` and `tb_coder` exist in the tree but are deliberately
   removed from MCP discovery until they mature
   ([registry exclusion](../../src/booley/mcp/registry.py),
-  [coverage roadmap](../internals/ROADMAP.md#coverage-measurement)).
+  [coverage roadmap](../internals/ROADMAP.md#native-coverage-campaigns)).
 - `booley_sleep` is a diagnostic endpoint exposed only through
   `BOOLEY_MCP_DEBUG_TOOLS`; it measures client timeout behavior and is not a
   product workflow ([MCP server](../../src/booley/mcp/server.py)).

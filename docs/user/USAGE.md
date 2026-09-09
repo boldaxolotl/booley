@@ -293,8 +293,13 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
+| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
 | `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `mutation_score` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `review_*` | — |
+
+#### `coverage_analyst`
+
+Call `coverage_analyst --campaign <exact-coverage.json> [--instruction <question>]`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -335,7 +340,7 @@ isolation, and restores the pristine source. A completed run publishes one
 atomic campaign manifest with a durable baseline log, every mutant log, each
 source variant, and the first public test that killed each detected mutant.
 
-The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `coverage_analyst` and `tb_coder` also exist but are hidden until they mature (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
+The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `tb_coder` also exists but is hidden until it matures (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
 
 ### Running a Booley Flow directly
 
