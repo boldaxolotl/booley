@@ -47,7 +47,7 @@ from typing import NamedTuple, NoReturn
 from booley.bwave import wcp as bwave_wcp
 from booley.bwave.contract import NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
-from booley.runtime import runtime_context
+from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -585,7 +585,7 @@ def _apply_limit_default(cmd_args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # Subcommand: open (Waveform Viewer, ADR 0040 / ADR 0035)
 # ---------------------------------------------------------------------------
-_VAPORVIEW_EXTENSION = "lramseyer.vaporview"
+_VAPORVIEW_EXTENSION = vaporview.EXTENSION_ID
 # Probe order: `code` first, then `cursor`. shutil.which resolves Windows
 # `code.cmd` via PATHEXT, so no platform branching is needed.
 _VIEWER_CLIS = ("code", "cursor")
@@ -628,21 +628,42 @@ def _extension_missing(cli: str) -> bool:
     (timeout, nonzero exit, OSError) return False — never block a launch
     that might work over a flaky probe.
     """
-    try:
-        result = subprocess.run(
-            [cli, "--list-extensions"],
-            capture_output=True,
-            text=True,
-            timeout=_VIEWER_LAUNCH_TIMEOUT,
-            check=False,
+    return vaporview.probe_editor(cli) is vaporview.ExtensionState.MISSING
+
+
+def _viewer_extension_state() -> vaporview.ExtensionState:
+    """Prefer the remote registry, then fall back to available editor CLIs."""
+    remote_state = vaporview.probe_home(Path.home())
+    if remote_state is not vaporview.ExtensionState.UNKNOWN:
+        return remote_state
+    editors = _available_viewer_clis()
+    return vaporview.aggregate_states(vaporview.probe_editor(editor) for editor in editors)
+
+
+def _available_viewer_clis() -> list[str]:
+    """Resolve editor CLIs in preference order."""
+    return [hit for name in _VIEWER_CLIS if (hit := shutil.which(name))]
+
+
+def _scoped_setup_hint() -> str:
+    """Diagnose extension absence before suggesting an extension-host reload."""
+    state = _viewer_extension_state()
+    if state is vaporview.ExtensionState.MISSING:
+        editors = _available_viewer_clis()
+        editor = Path(editors[0]).stem if editors else "code"
+        return (
+            "ERROR: VaporView extension is not installed, so scoped `bwave gui` "
+            "cannot start its WCP control server.\n"
+            f"{vaporview.install_guidance(editor=editor)}"
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    if result.returncode != 0:
-        return False
-    # Extension IDs are case-insensitive to VS Code.
-    installed = {line.strip().lower() for line in result.stdout.splitlines()}
-    return _VAPORVIEW_EXTENSION not in installed
+    hint = bwave_wcp.setup_hint()
+    if state is vaporview.ExtensionState.UNKNOWN:
+        return (
+            f"{hint}\n"
+            "  Note: could not determine whether the VaporView extension is installed; "
+            "a failed editor query is not treated as proof that it is missing."
+        )
+    return hint
 
 
 def _resolve_gui_target(target: str | None) -> tuple[str, str]:
@@ -1084,7 +1105,7 @@ def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
     except bwave_wcp.WcpError as exc:
         sys.exit(f"{bwave_wcp.setup_hint()}\n  (probe failure: {exc})")
     if client is None:
-        sys.exit(bwave_wcp.setup_hint())
+        sys.exit(_scoped_setup_hint())
 
     uri = Path(trace_abs).as_uri()
     lines = [f"Waveform Viewer scoped to {trace_abs}:"]
