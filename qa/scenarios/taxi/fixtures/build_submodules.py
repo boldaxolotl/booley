@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -29,7 +30,7 @@ def git(root: Path, *args: str) -> str:
             "-c",
             "core.autocrlf=false",
             "-c",
-            "core.hooksPath=/dev/null",
+            f"core.hooksPath={os.devnull}",
             "-C",
             str(root),
             *args,
@@ -166,9 +167,8 @@ def outer_sources(root: Path, sources: Path, histories: dict) -> dict:
     return {"outer": outer, "paired": paired}
 
 
-def construct(root: Path) -> dict:
-    """Create a fresh owned directory and freeze complete A/B object identities."""
-    root.mkdir(parents=True, exist_ok=False)
+def populate(root: Path) -> dict:
+    """Freeze complete A/B object identities within the attempt-owned directory."""
     sources = root / "sources"
     histories = {"leaf": leaf_sources(sources / "leaf")}
     histories["data"] = data_sources(sources / "data", sources / "leaf", histories["leaf"])
@@ -183,6 +183,19 @@ def construct(root: Path) -> dict:
     manifest = {"object_format": "sha1", **histories, "files": hashes}
     put(root, "manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
+
+
+def construct(root: Path) -> dict:
+    """Retain a complete fixture, cleaning only this attempt's state on failure."""
+    root.mkdir(parents=True, exist_ok=False)
+    complete = False
+    try:
+        manifest = populate(root)
+        complete = True
+        return manifest
+    finally:
+        if not complete:
+            shutil.rmtree(root)
 
 
 def main() -> None:

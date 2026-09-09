@@ -88,7 +88,7 @@ branch-push authority prescribed by the repository rules.
   IDs, observation windows, finite timeouts and evidence paths.
 - [ ] Implement and qualify independent evaluator controls, source isolation and
   complete same-seed rerun before claiming UART conformance.
-- [ ] Validate unique references, earlier-check prerequisites, source/asset paths,
+- [x] Validate unique references, earlier-check prerequisites, source/asset paths,
   selected supporting work, fixed profile exclusions and 480-minute sums.
 - [ ] Review expected negative pass, unexpected failure then recovery, missing
   result, unavailable GUI, flake, unresolved scoped Finding and cleanup failure.
@@ -100,9 +100,10 @@ branch-push authority prescribed by the repository rules.
   A valid mapping or parser result never substitutes for execution.
 - [ ] Preserve failed attempts, missing work, deviations and cleanup evidence for
   direct Consolidate Findings ingestion; never send the run through Feedback.
-- [ ] Keep absent GUI/client infrastructure and measured runtime limitations
+- [x] Keep absent GUI/client infrastructure and measured runtime limitations
   visible. Do not declare full qualification while required work is unavailable.
 
-These unchecked items are later implementation/execution work, not claims that
-code already exists. No branch push, pull request, scenario execution or external
+Unchecked items still include implementation or execution work; see
+[implementation status](IMPLEMENTATION.md) for completed portions and remaining gaps.
+Checked validation and visibility items do not establish qualification. No branch push, pull request, scenario execution or external
 OpenTitan report submission is implied by preparing this planning package.

@@ -1,11 +1,12 @@
 """Run positive, one-bit corruption and restored controls through the real adapter."""
 
 import argparse
-import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cases import case, evaluator_identity
+from publication import publish_new
 from run import HERE, case_result, launch
 
 
@@ -15,6 +16,7 @@ def controls(output: Path) -> dict:
     source = (HERE / "controls/transport.sv").read_text()
     expected = {"positive": "pass", "corrupt": "fail", "restored": "pass"}
     results = {}
+    phase_deadline = time.time() + 1800
     deadline = time.monotonic() + 1800
     for family in ["mmio", "serial"]:
         stimulus = (
@@ -32,12 +34,7 @@ def controls(output: Path) -> dict:
         for variant, verdict in expected.items():
             directory = output / f"{family}-{variant}"
             directory.mkdir()
-            content = source.replace(
-                f"CORRUPT_{family.upper()} = 0",
-                f"CORRUPT_{family.upper()} = {int(variant == 'corrupt')}",
-            )
-            fixture = directory / "transport.sv"
-            fixture.write_text(content)
+            fixture = write_variant(directory, source, family, variant)
             build = directory / "build"
             code = launch(
                 ["--build", str(build), "--sources", str(fixture)],
@@ -50,10 +47,27 @@ def controls(output: Path) -> dict:
             results[f"{family}-{variant}"] = result
             if result["status"] != verdict:
                 raise RuntimeError(f"Control {family}/{variant} expected {verdict}: {result}")
-    (output / "controls.json").write_text(
-        json.dumps({"evaluator_sha256": evaluator_identity(), "results": results}, indent=2) + "\n"
+    publish_new(
+        output / "controls.json",
+        {
+            "evaluator_sha256": evaluator_identity(),
+            "results": results,
+            "phase_deadline": datetime.fromtimestamp(phase_deadline, UTC)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+        },
     )
     return results
+
+
+def write_variant(directory: Path, source: str, family: str, variant: str) -> Path:
+    content = source.replace(
+        f"CORRUPT_{family.upper()} = 0",
+        f"CORRUPT_{family.upper()} = {int(variant == 'corrupt')}",
+    )
+    fixture = directory / "transport.sv"
+    fixture.write_text(content)
+    return fixture
 
 
 def main() -> None:

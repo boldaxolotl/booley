@@ -13,14 +13,12 @@ inputs:
   kind: git
   value: b8fe2370cb9aa7d93617850169f42f07821865d6
   source: https://github.com/boldaxolotl/booley-prj-picorv32/tree/b8fe2370cb9aa7d93617850169f42f07821865d6
-  verification: |-
-    Verify exact object, clean source and per-file hashes; retain before preparation. UART reads only the seven allowlisted documentation files.
+  verification: Verify exact object, clean source and per-file hashes; retain before preparation.
 - id: upstream
   kind: git
   value: a473fc8fca393771d83b0ffcf0b14db3393339d8
   source: https://github.com/YosysHQ/picorv32/tree/a473fc8fca393771d83b0ffcf0b14db3393339d8
-  verification: |-
-    Verify exact object, clean source and per-file hashes; retain before preparation. UART reads only the seven allowlisted documentation files.
+  verification: Verify exact object, clean source and per-file hashes; retain before preparation.
 authority:
 - |-
   Act only inside declared run-owned Projects, branches, fixture roots and runtimes; ledger every resource before mutation.
@@ -30,8 +28,6 @@ authority:
   No external push, issue submission or permanent Booley repair. No source inspection before observing a product failure. No private internals as product proof.
 - |-
   Keep credentials outside Projects and evidence; preserve borrowed installations, credentials, shared images/caches and unrelated state.
-- UART evaluator, seed and generated cases remain operator-held outside Developer filesystem, runtime, mounts and
-  network.
 - |-
   Recovery stays within this live run and phase allowance; no coordinator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
 budget:

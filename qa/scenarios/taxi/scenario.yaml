@@ -13,8 +13,7 @@ inputs:
   kind: git
   value: cc70b270b910d369ab1ad7b3855e76399fd461f1
   source: https://github.com/fpganinja/taxi/tree/cc70b270b910d369ab1ad7b3855e76399fd461f1
-  verification: |-
-    Verify exact object, clean source and per-file hashes; retain before preparation. UART reads only the seven allowlisted documentation files.
+  verification: Verify exact object, clean source and per-file hashes; retain before preparation.
 authority:
 - |-
   Act only inside declared run-owned Projects, branches, fixture roots and runtimes; ledger every resource before mutation.
@@ -24,8 +23,6 @@ authority:
   No external push, issue submission or permanent Booley repair. No source inspection before observing a product failure. No private internals as product proof.
 - |-
   Keep credentials outside Projects and evidence; preserve borrowed installations, credentials, shared images/caches and unrelated state.
-- UART evaluator, seed and generated cases remain operator-held outside Developer filesystem, runtime, mounts and
-  network.
 - |-
   Recovery stays within this live run and phase allowance; no coordinator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
 budget:
@@ -3975,6 +3972,12 @@ steps:
   - path: probes/W-02.md
     audience: coordinator
     sha256: c1c5d702c55b9dba538f9cf7aa7ebe13e10fd54abec2e232f4efe5debee52018
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-02.marker-wrapper-diff
   phase: interactive
   action: |-
@@ -4000,6 +4003,12 @@ steps:
   - path: probes/W-02.md
     audience: coordinator
     sha256: c1c5d702c55b9dba538f9cf7aa7ebe13e10fd54abec2e232f4efe5debee52018
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-02.marker-wrapper-value
   phase: interactive
   action: |-
@@ -4025,6 +4034,12 @@ steps:
   - path: probes/W-02.md
     audience: coordinator
     sha256: c1c5d702c55b9dba538f9cf7aa7ebe13e10fd54abec2e232f4efe5debee52018
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-02.marker-wrapper-wave
   phase: interactive
   action: |-
@@ -4050,6 +4065,12 @@ steps:
   - path: probes/W-02.md
     audience: coordinator
     sha256: c1c5d702c55b9dba538f9cf7aa7ebe13e10fd54abec2e232f4efe5debee52018
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-02.trace-same-path
   phase: interactive
   action: |-
@@ -4075,6 +4096,12 @@ steps:
   - path: probes/W-02.md
     audience: coordinator
     sha256: c1c5d702c55b9dba538f9cf7aa7ebe13e10fd54abec2e232f4efe5debee52018
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.docs-list
   phase: interactive
   action: |-
@@ -4100,6 +4127,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.docs-search
   phase: interactive
   action: |-
@@ -4125,6 +4158,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.docs-show
   phase: interactive
   action: |-
@@ -4150,6 +4189,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-diff-rejected
   phase: interactive
   action: |-
@@ -4175,6 +4220,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-distance-rejected
   phase: interactive
   action: |-
@@ -4200,6 +4251,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-find-supported
   phase: interactive
   action: |-
@@ -4225,6 +4282,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-list-supported
   phase: interactive
   action: |-
@@ -4250,6 +4313,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-sample-rejected
   phase: interactive
   action: |-
@@ -4275,6 +4344,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-signal-rejected
   phase: interactive
   action: |-
@@ -4300,6 +4375,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-stats-supported
   phase: interactive
   action: |-
@@ -4325,6 +4406,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-stuck-rejected
   phase: interactive
   action: |-
@@ -4350,6 +4437,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-value-supported
   phase: interactive
   action: |-
@@ -4375,6 +4468,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.json-wave-rejected
   phase: interactive
   action: |-
@@ -4400,6 +4499,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.query-ambiguous
   phase: interactive
   action: |-
@@ -4425,6 +4530,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.query-limit
   phase: interactive
   action: |-
@@ -4450,6 +4561,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.query-pattern-miss
   phase: interactive
   action: |-
@@ -4475,6 +4592,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.schema
   phase: interactive
   action: |-
@@ -4500,6 +4623,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.skill
   phase: interactive
   action: |-
@@ -4525,6 +4654,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-03.version
   phase: interactive
   action: |-
@@ -4550,6 +4685,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.async-bare-time
   phase: interactive
   action: |-
@@ -4575,6 +4716,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.bad-literal
   phase: interactive
   action: |-
@@ -4600,6 +4747,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.literal-slice
   phase: interactive
   action: |-
@@ -4625,6 +4778,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-build-rejected
   phase: interactive
   action: |-
@@ -4650,6 +4809,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-diff-rejected
   phase: interactive
   action: |-
@@ -4675,6 +4840,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-distance-rejected
   phase: interactive
   action: |-
@@ -4700,6 +4871,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-docs-rejected
   phase: interactive
   action: |-
@@ -4725,6 +4902,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-find-rejected
   phase: interactive
   action: |-
@@ -4750,6 +4933,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-list-rejected
   phase: interactive
   action: |-
@@ -4775,6 +4964,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-sample-rejected
   phase: interactive
   action: |-
@@ -4800,6 +4995,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-schema-rejected
   phase: interactive
   action: |-
@@ -4825,6 +5026,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-signal-rejected
   phase: interactive
   action: |-
@@ -4850,6 +5057,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-skill-rejected
   phase: interactive
   action: |-
@@ -4875,6 +5088,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-stats-rejected
   phase: interactive
   action: |-
@@ -4900,6 +5119,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-stuck-rejected
   phase: interactive
   action: |-
@@ -4925,6 +5150,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-value-rejected
   phase: interactive
   action: |-
@@ -4950,6 +5181,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-async-bare
   phase: interactive
   action: |-
@@ -4975,6 +5212,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-async-column
   phase: interactive
   action: |-
@@ -5000,6 +5243,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-negative
   phase: interactive
   action: |-
@@ -5025,6 +5274,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-outside
   phase: interactive
   action: |-
@@ -5050,6 +5305,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-render
   phase: interactive
   action: |-
@@ -5075,6 +5336,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-repeat
   phase: interactive
   action: |-
@@ -5100,6 +5367,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.marker-wave-shared-time
   phase: interactive
   action: |-
@@ -5125,6 +5398,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.query-input-recovery
   phase: interactive
   action: |-
@@ -5150,6 +5429,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.reset-include
   phase: interactive
   action: |-
@@ -5175,6 +5460,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.reset-skip
   phase: interactive
   action: |-
@@ -5200,6 +5491,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.time-units
   phase: interactive
   action: |-
@@ -5225,6 +5522,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.unknown-signal
   phase: interactive
   action: |-
@@ -5250,6 +5553,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-build-rejected
   phase: interactive
   action: |-
@@ -5275,6 +5584,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-diff-rejected
   phase: interactive
   action: |-
@@ -5300,6 +5615,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-distance-malformed
   phase: interactive
   action: |-
@@ -5325,6 +5646,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-distance-semantic
   phase: interactive
   action: |-
@@ -5350,6 +5677,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-find-malformed
   phase: interactive
   action: |-
@@ -5375,6 +5708,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-find-semantic
   phase: interactive
   action: |-
@@ -5400,6 +5739,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-list-rejected
   phase: interactive
   action: |-
@@ -5425,6 +5770,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-sample-malformed
   phase: interactive
   action: |-
@@ -5450,6 +5801,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-sample-semantic
   phase: interactive
   action: |-
@@ -5475,6 +5832,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-signal-rejected
   phase: interactive
   action: |-
@@ -5500,6 +5863,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-stats-rejected
   phase: interactive
   action: |-
@@ -5525,6 +5894,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-stuck-rejected
   phase: interactive
   action: |-
@@ -5550,6 +5925,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-value-malformed
   phase: interactive
   action: |-
@@ -5575,6 +5956,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-value-semantic
   phase: interactive
   action: |-
@@ -5600,6 +5987,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-wave-malformed
   phase: interactive
   action: |-
@@ -5625,6 +6018,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.virtual-wave-semantic
   phase: interactive
   action: |-
@@ -5650,6 +6049,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-04.width-mismatch
   phase: interactive
   action: |-
@@ -5675,6 +6080,12 @@ steps:
   - path: probes/W-04.md
     audience: coordinator
     sha256: 0cc1f1b141440135bf55e3dc1c8afadf9a2206da6e231acb7bacb3d4f87d7c55
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.I-01.client-session
   phase: interactive
   action: |-
@@ -5750,6 +6161,12 @@ steps:
   - path: probes/W-03.md
     audience: coordinator
     sha256: 3187bf28a1f7157069e07ec42d277cd059bd9c4cca35665cd3de79fc4f707ffb
+  - path: fixtures/known-trace.vcd
+    audience: coordinator
+    sha256: 17c9609e8b2025e01928858a4318967fced8d1bac58dce672d082d30f4e69527
+  - path: fixtures/known-trace-events.json
+    audience: coordinator
+    sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
 - id: inventory.W-05.gui-append
   phase: interactive
   action: |-
@@ -5974,7 +6391,7 @@ steps:
     sha256: 94d2fa5cbcfe6db62b7395a11b28feffb767c7dd09f9da4527dd0381c3cab7dc
   - path: fixtures/build_submodules.py
     audience: coordinator
-    sha256: 8add6238c045ba197112ee5b8120acd408f8296d2d91223e84aa9675c72516c4
+    sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
   - path: fixtures/fixture.core
     audience: coordinator
     sha256: ed778a3ffef66a2ed59f80ff831c0e55431520a8d8d8cb817dcdc45429b8ee9a

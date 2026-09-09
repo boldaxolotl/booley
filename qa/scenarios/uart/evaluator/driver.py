@@ -73,10 +73,9 @@ class Driver:
         if self.cycle in self.rx_schedule:
             self.dut.rx_i.value = self.rx_schedule[self.cycle]
         await Timer(1, unit="ns")
-        sampled = {
-            name: self.value(name)
-            for name in ["req_ready_o", "rsp_valid_o", "rsp_rdata_o", "rsp_error_o"]
-        }
+        sampled = {name: self.value(name) for name in ["req_ready_o", "rsp_valid_o"]}
+        for name in ["rsp_rdata_o", "rsp_error_o"]:
+            sampled[name] = self.value(name) if sampled["rsp_valid_o"] else 0
         self.dut.clk_i.value = 1
         await Timer(9, unit="ns")
         self.trace.write(f"#{self.cycle * 20 + 10}\n")

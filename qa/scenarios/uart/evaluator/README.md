@@ -8,8 +8,10 @@ the implementing Developer. Source isolation must be demonstrated by the run's
 actual filesystem/mount/network evidence; path separation alone does not prove it.
 
 The evaluator reads only the frozen public corpus and addenda. Its simulator
-adapter compiles an explicit, hash-verified list of RTL files from the accepted
-Git commit. It does not compile the candidate testbench or trust its pass sentinel.
+adapter compiles an owned snapshot of explicit, hash-verified RTL from the accepted
+Git commit. Literal includes must resolve to explicit hashed `include_files`;
+absolute, escaping, ambiguous and macro includes are rejected. Include directives
+are rewritten only to the corresponding operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
 Cocotb and Icarus must be provisioned in the isolated operator environment before
 the run. The exercised control environment used cocotb 2.1.0 and the exact local
 image recorded in the implementation validation record; this is not a product
@@ -28,7 +30,8 @@ python run.py --candidate /operator/run/candidate-inputs.json \
 
 The shown seed is illustrative. Supply the run's own 128-bit seed and freeze it
 before candidate evaluation. `candidate-inputs.json` contains `root`, the exact
-accepted `commit`, and an explicit `sources` list of `{path, sha256}` records.
+accepted `commit`, an explicit `sources` list of `{path, sha256}` records, and
+optional `include_files` records for headers. Paths are relative to the root.
 The root must be disjoint from this evaluator. Copy the entire original manifest
 unchanged for both repair evaluations. Modified/missing cases, changed evaluator
 or public-input digests, and controls for another evaluator are rejected.
@@ -36,7 +39,8 @@ or public-input digests, and controls for another evaluator are rejected.
 Each case resets the device and emits separate stimulus, observations, external-pin
 VCD and execution log files. Operational compile/case limits are 300/30 seconds;
 the source-clock ceiling is 1,048,576. Budget ceilings do not demonstrate feasibility.
-The coordinator clips controls plus evaluation to the shared 30-minute phase,
+Controls record a shared wall-clock deadline; the initial evaluation uses only its
+remaining time. The coordinator further clips controls plus evaluation to the shared 30-minute phase,
 repairs plus full reruns to 45 minutes each, and all work to the cleanup boundary.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
@@ -45,8 +49,9 @@ separate MMIO/serial one-bit corruption, and restored runs qualify those observa
 paths; they do not establish full UART functionality. Keep the original failed
 control attempts alongside successful corrections.
 
-The depth/event-reset timeout comparisons still need paired stimulus implementation
-and review. Those cases currently return blocked, so this evaluator cannot yet
-establish complete conformance. Natural interrupt-source identity, full RX sampling
-phase coverage, and complete invalid-address side-effect observations also require
-further control coverage. No production UART candidate has been evaluated here.
+Depth/event-reset timeout cases retain paired stimuli and timestamps but remain
+blocked: the public text does not supply a universal phase-comparison tolerance.
+Natural interrupt sources and both active/inactive level injection are exercised.
+Full RX sampling phase coverage, complete invalid-address side-effect observations,
+and behavioral controls for these additional oracles still require qualification.
+No production UART candidate has been evaluated here.

@@ -31,11 +31,27 @@ async def field(driver: Driver, parameters: dict) -> None:
     elif access == "rw1c":
         await event_field(driver, parameters, mask)
     else:
+        await readonly_field(driver, parameters, mask)
+
+
+async def readonly_field(driver: Driver, parameters: dict, mask: int) -> None:
+    name = parameters["register"]
+    address = REGISTERS[name][0]
+    if name == "RDATA":
+        await driver.configure()
+        await driver.receive([0x55, 0xAA])
+        await driver.write(address, 0xFFFFFFFF)
+        await driver.read(0x24, 2 << 16, 0xFF0000)
+        await driver.read(address, 0x55, 0xFF)
+        await driver.read(address, 0xAA, 0xFF)
+        await driver.read(0x24, 0, 0xFF0000)
+    elif name == "VAL":
+        await history(driver, {"forbidden_write": True})
+    else:
         before = await driver.read(address)
         await driver.write(address, 0xFFFFFFFF)
         after = await driver.read(address)
-        if parameters["register"] not in ["RDATA", "VAL"]:
-            driver.expect(after & mask, before & mask, "RO writes have no effect")
+        driver.expect(after & mask, before & mask, "RO writes have no effect")
 
 
 async def event_field(driver: Driver, parameters: dict, mask: int) -> None:
@@ -235,29 +251,104 @@ async def fifo_behavior(driver: Driver, parameters: dict) -> None:
 async def irq(driver: Driver, parameters: dict) -> None:
     bit, mode = parameters["bit"], parameters["mode"]
     mask = 1 << bit
-    await driver.write(4, 0 if mode == "mask" else mask)
+    await driver.configure(control=2)
+    await driver.write(4, 0 if mode in ["mask", "enable"] else mask)
+    if mode == "inject":
+        await injected_irq(driver, bit)
+        return
     start = len(driver.irqs)
-    await driver.write(8, mask)
-    await driver.wait(64)
-    if mode == "mask":
-        driver.expect(
-            any(value & mask for value in driver.irqs[start:]), False, "Masked IRQ output"
-        )
+    await natural_irq(driver, bit)
+    await driver.read(0, mask, mask)
+    driver.expect(
+        any(value & ~mask for value in driver.irqs[start:]),
+        False,
+        "No cross-bit enabled IRQ output",
+    )
+    driver.expect(
+        any(value & mask for value in driver.irqs[start:]),
+        mode == "identity",
+        "Natural source respects enable mask",
+    )
+    if mode == "enable":
+        await driver.write(4, mask)
+        await driver.wait(64)
+        driver.expect(driver.irqs[-1] & mask, mask, "Enable exposes existing source state")
+        await driver.write(4, 0)
+        await driver.wait(64)
+        driver.expect(driver.irqs[-1] & mask, 0, "Disable masks without clearing source")
+        await driver.read(0, mask, mask)
+    if bit not in [0, 1, 8]:
+        await driver.write(0, mask)
+        await driver.read(0, 0, mask)
+
+
+async def natural_irq(driver: Driver, bit: int) -> None:
+    if bit in [0, 8]:
+        await driver.write(0x1C, 0x55)
+        await driver.configure()
+        await driver.wait(14 * 64)
+    elif bit == 1:
+        await driver.receive([0x55])
+    elif bit == 2:
+        await driver.transmit([0x55])
+    elif bit == 3:
+        await driver.receive([*range(64), 0xFE])
+    elif bit in [4, 7]:
+        parity_mode = "even" if bit == 7 else "disabled"
+        await driver.configure(parity=parity_mode)
+        end = driver.schedule_rx([0], 0x4000, parity_mode, bad_parity=bit == 7, bad_stop=bit == 4)
+        await driver.wait(end - driver.cycle + 128)
+    elif bit == 5:
+        driver.dut.rx_i.value = 0
+        await driver.wait(22 * 64)
+        driver.dut.rx_i.value = 1
+        await driver.wait(64)
     else:
+        await driver.write(0x30, (1 << 31) | 32)
+        await driver.receive([0x55])
+        await await_timeout(driver, 4096 * 64)
+
+
+async def injected_irq(driver: Driver, bit: int) -> None:
+    mask = 1 << bit
+    states = [False, True] if bit in [0, 1, 8] else [False]
+    for active in states:
+        if bit in [0, 8]:
+            await driver.write(0x20, 2)
+            if not active:
+                await driver.write(0x1C, 0x55)
+        elif bit == 1:
+            await driver.write(0x20, 1)
+            if active:
+                await driver.receive([0x55])
+        start = len(driver.irqs)
+        await driver.write(8, mask)
+        await driver.wait(64)
         driver.expect(
-            any(value & mask for value in driver.irqs[start:]), True, "Injected IRQ identity"
+            any(value & mask for value in driver.irqs[start:]),
+            True,
+            "Injection visible to independent per-clock monitor",
         )
         driver.expect(
             any(value & ~mask for value in driver.irqs[start:]),
             False,
-            "No cross-bit IRQ corruption",
+            "Injection has no cross-bit enabled effect",
         )
-    if bit in [0, 1, 8]:
-        await driver.read(0, mask if bit in [0, 8] else 0, mask)
-    else:
-        await driver.read(0, mask, mask)
-        await driver.write(0, mask)
-        await driver.read(0, 0, mask)
+        await driver.read(0, mask if active or bit not in [0, 1, 8] else 0, mask)
+        if bit in [0, 1, 8]:
+            await driver.write(0, mask)
+            await driver.read(0, mask if active else 0, mask)
+        else:
+            await driver.write(0, mask)
+            await driver.read(0, 0, mask)
+
+
+async def await_timeout(driver: Driver, horizon: int) -> int:
+    """Observe an event; exhaustion is not a newly invented circuit deadline."""
+    for _ in range(horizon):
+        if await driver.read(0) & 64:
+            return driver.last_acceptance
+    raise ObservationBlockedError("No timeout event within operational observation horizon")
 
 
 async def error(driver: Driver, parameters: dict) -> None:
@@ -289,31 +380,84 @@ async def break_error(driver: Driver, parameters: dict) -> None:
     await driver.read(0, 0, 32)
     driver.dut.rx_i.value = 1
     await driver.wait(64)
+    driver.dut.rx_i.value = 0
+    await driver.wait(threshold + 256)
+    await driver.read(0, 32, 32)
+    await driver.write(0, 32)
+    driver.dut.rx_i.value = 1
+    await driver.wait(128)
     await rx(driver, {"payload": parameters["payload"], "nco": 0x4000, "parity": parity_mode})
 
 
 async def timeout(driver: Driver, parameters: dict) -> None:
+    mode = parameters["mode"]
     await driver.configure()
     await driver.write(4, 64)
-    await driver.write(
-        0x30, parameters["value"] | (0 if parameters["mode"] == "disabled" else 1 << 31)
-    )
+    await driver.write(0x30, parameters["value"] | (0 if mode == "disabled" else 1 << 31))
     await driver.receive(parameters["payload"])
-    start = len(driver.irqs)
-    await driver.wait(parameters["bit_horizon"] * 64)
-    seen = any(value & 64 for value in driver.irqs[start:])
-    if parameters["mode"] == "disabled":
-        driver.expect(seen, False, "Timeout disabled over declared observation horizon")
-    elif not seen:
-        raise ObservationBlockedError(
-            "No timeout event within operational horizon; no public universal event deadline"
+    if mode == "disabled":
+        start = len(driver.irqs)
+        await driver.wait(parameters["bit_horizon"] * 64)
+        driver.expect(
+            any(value & 64 for value in driver.irqs[start:]),
+            False,
+            "Timeout disabled over declared observation horizon",
         )
-    elif parameters["mode"] == "enabled":
-        await driver.read(0, 64, 64)
+        return
+    await await_timeout(driver, parameters["bit_horizon"] * 64)
+    await driver.read(0, 64, 64)
+    if mode in ["enabled", "w1c", "good-recovery"]:
+        await driver.write(0, 64)
+        await driver.read(0, 0, 64)
+        if mode == "good-recovery":
+            await driver.write(0x30, 0)
+            await drain(driver, "rx", parameters["payload"])
+            await rx(driver, {"payload": [0xA5], "nco": 0x4000})
+        return
+    observations = []
+    for intervene in [False, True]:
+        observations.append(await timeout_trial(driver, parameters, intervene))
+    driver.observations.append({"timeout_pair": observations, "mode": mode})
+    raise ObservationBlockedError(
+        "Paired timeout stimuli retained; public phase variation has no universal "
+        "comparison tolerance, so these timestamps alone cannot establish conformance"
+    )
+
+
+async def timeout_trial(driver: Driver, parameters: dict, intervene: bool) -> dict:
+    await driver.reset()
+    await driver.configure()
+    mode = parameters["mode"]
+    payload = list(range(64)) if mode == "full-drop-no-reset" else [0x55, 0xAA]
+    await driver.receive(payload)
+    await driver.write(0x30, (1 << 31) | parameters["value"])
+    first = await await_timeout(driver, parameters["bit_horizon"] * 64)
+    await driver.write(0, 64)
+    await driver.wait(8 * 64)
+    before = await driver.read(0x24)
+    intervention = driver.cycle
+    if intervene and mode == "read-depth-reset":
+        await driver.read(0x18, payload[0], 0xFF)
+    elif intervene and mode in ["receive-depth-reset", "full-drop-no-reset"]:
+        await driver.receive([0xA5])
+    elif intervene and mode == "event-reset":
+        # W1C timing must not substitute for the event that reset the counter.
+        await driver.write(0, 64)
     else:
-        raise ObservationBlockedError(
-            "Depth/event-reset timing requires paired externally distinguishable observations"
-        )
+        await driver.wait(12 * 64)
+    after = await driver.read(0x24)
+    second = await await_timeout(driver, parameters["bit_horizon"] * 64)
+    if intervene and mode == "full-drop-no-reset":
+        driver.expect(after & 0xFF0000, before & 0xFF0000, "Dropped byte preserves full depth")
+        await drain(driver, "rx", payload)
+    return {
+        "intervene": intervene,
+        "first_event_read": first,
+        "intervention": intervention,
+        "second_event_read": second,
+        "before_depth": before,
+        "after_depth": after,
+    }
 
 
 async def noise_filter(driver: Driver, parameters: dict) -> None:
@@ -378,6 +522,8 @@ async def history(driver: Driver, parameters: dict) -> None:
         driver.rx_schedule[driver.cycle + index * 4] = bit
     end = driver.cycle + len(complete) * 4
     while driver.cycle < end:
+        if parameters.get("forbidden_write"):
+            await driver.write(0x2C, 0xFFFFFFFF)
         value = await driver.read(0x2C)
         reads.append((driver.last_acceptance - start, value))
     settled = [(cycle, value) for cycle, value in reads if cycle >= 80]

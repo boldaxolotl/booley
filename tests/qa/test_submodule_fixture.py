@@ -34,3 +34,16 @@ def test_companion_freezes_two_distinct_recursive_histories(tmp_path):
     assert "16'h2468" in (data / "rtl/data.sv").read_text()
     assert "qa_leaf" in (data / "rtl/data.sv").read_text()
     assert "8'h34" in (data / "nested/leaf/rtl/leaf.sv").read_text()
+
+
+def test_failed_construction_can_be_retried_without_manual_cleanup(tmp_path, monkeypatch):
+    import pytest
+    from qa.scenarios.taxi.fixtures import build_submodules
+
+    root = tmp_path / "fixture"
+    with monkeypatch.context() as patch:
+        patch.setenv("PATH", "")
+        with pytest.raises(FileNotFoundError):
+            build_submodules.construct(root)
+    assert not root.exists()
+    assert build_submodules.construct(root)["outer"]["B"]

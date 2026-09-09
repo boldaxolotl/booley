@@ -28,12 +28,26 @@ Still incomplete:
   public-entry-point injection mechanisms and behavioral control tests.
 - Prerequisites and evidence need a final per-check semantic review. Reference
   validation cannot establish that every combined stimulus proves each named outcome.
-- UART paired timeout reset/nonreset stimuli, natural interrupt-source coverage and
-  some RX phase/address side-effect controls remain incomplete. The evaluator reports
-  its unimplemented timeout comparisons blocked rather than fabricating a pass.
+- UART timeout pairs now retain depth-change, event-reset and full-drop observations,
+  but lack a defensible universal comparison tolerance and remain blocked. Natural
+  interrupt sources are exercised; RX phase/address side-effect control coverage and
+  the additional oracles still need independent behavioral qualification.
 - Required GUI/native Windows/provider/Vivado infrastructure and every real profile
   execution remain unqualified. Eight-hour feasibility has not been measured.
 
 Do not check off full implementation or qualification in the reviewed handoff until
 these corresponding items are actually complete. Preserve all original profile
 selections and quantitative limits while resolving the gaps.
+
+The follow-up review fixed unvalidated RTL includes/live-source races, partial
+manifest publication, fixture failure cleanup, source-inventory overwrite, RO
+RDATA/VAL write observations, and second-break rearm coverage. Regression tests
+also compare every profile selection and platform exclusion against the frozen
+reviewed lists, independently of production profile construction.
+
+Final local verification for this checkpoint: 25 focused tests passed; pinned
+Ruff 0.16.6 passed across `src/`, `tests/` and `qa/`; whole-suite authoring
+validation emitted the reverse coverage index successfully. All seven profile
+memberships and exclusions match the reviewed lists. Six real UART control
+verdicts passed again against the final evaluator identity, with evidence at
+`/tmp/qa-submodule-controls/uart-controls-4`. No full profile was executed.

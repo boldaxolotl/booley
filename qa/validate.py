@@ -14,6 +14,29 @@ import yaml
 from jsonschema import Draft202012Validator
 
 
+def read_yaml(path: Path) -> object:
+    """Reject duplicate keys and alias indirection before interpreting authored data."""
+    text = path.read_text(encoding="utf-8")
+    if any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(text)):
+        raise ValueError(f"{path}: YAML aliases are not explicit authored selections")
+    tree = yaml.compose(text)
+    pending = [tree] if tree else []
+    while pending:
+        node = pending.pop()
+        if isinstance(node, yaml.MappingNode):
+            keys = set()
+            for key, value in node.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    raise ValueError(f"{path}: YAML mapping keys must be scalar strings")
+                if key.value in keys:
+                    raise ValueError(f"{path}: duplicate YAML key {key.value}")
+                keys.add(key.value)
+                pending.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            pending.extend(node.value)
+    return yaml.safe_load(text)
+
+
 def record(value: object, fields: dict, context: str) -> dict:
     """Validate a small metadata record without another schema family."""
     if not isinstance(value, dict):
@@ -43,7 +66,7 @@ def strings(values: list, context: str, nonempty: bool = True) -> None:
 
 
 def metadata(root: Path, filename: str, field: str) -> dict:
-    data = yaml.safe_load((root / filename).read_text(encoding="utf-8"))
+    data = read_yaml(root / filename)
     record(data, {"format_version": int, field: list}, filename)
     if data["format_version"] != 1 or not data[field]:
         raise ValueError(f"{filename}: expected format_version 1 and nonempty {field}")
@@ -283,7 +306,7 @@ def load_scenarios(root: Path) -> dict:
     schema = json.loads((Path(__file__).parent / "scenario.schema.json").read_text())
     scenarios = {}
     for path in sorted((root / "scenarios").glob("*/scenario.yaml")):
-        scenario = yaml.safe_load(path.read_text())
+        scenario = read_yaml(path)
         errors = list(Draft202012Validator(schema).iter_errors(scenario))
         if errors:
             raise ValueError(f"{path}: " + "; ".join(e.message for e in errors))
@@ -350,6 +373,9 @@ def main() -> int:
         if args.coverage_index:
             if args.scenario:
                 raise ValueError("coverage index requires whole-suite validation; omit --scenario")
+            destination = args.coverage_index.resolve()
+            if destination.is_relative_to(args.root.resolve()):
+                raise ValueError("coverage index must be outside authored suite inputs")
             publish_index(args.coverage_index, index)
         print(
             "Authoring validation passed; no scenarios executed."

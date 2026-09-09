@@ -65,3 +65,64 @@ def test_serial_oracle_rejects_unrequested_extra_frame():
 
     frame = [bit for bit in [0, 1, 0, 1, 0, 1, 0, 1, 0, 1] for _ in range(64)]
     assert check_tx([1] * 8 + frame + frame, [0x55], 0x4000)["status"] == "fail"
+
+
+def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path):
+    import hashlib
+    import subprocess
+
+    import pytest
+    from qa.scenarios.uart.evaluator.inputs import snapshot
+
+    root = tmp_path / "candidate"
+    root.mkdir()
+    (root / "uart.sv").write_text('`include "constants.svh"\nmodule qa_uart; endmodule\n')
+    (root / "constants.svh").write_text("`define CONSTANT 1\n")
+    for args in [
+        ["init"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=QA",
+            "-c",
+            "user.email=qa@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "accepted",
+        ],
+    ]:
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    entries = [
+        {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}
+        for name in ["uart.sv", "constants.svh"]
+    ]
+    candidate = {"root": str(root), "commit": commit, "sources": entries[:1]}
+    with pytest.raises(ValueError, match="explicitly hashed"):
+        snapshot(candidate, tmp_path / "operator", tmp_path / "missing")
+    candidate["include_files"] = entries[1:]
+    snapshot(candidate, tmp_path / "operator", tmp_path / "frozen")
+    (root / "constants.svh").write_text("`define CONSTANT 2\n")
+    assert (tmp_path / "frozen/constants.svh").read_text() == "`define CONSTANT 1\n"
+    with pytest.raises(ValueError, match="committed digest"):
+        snapshot(candidate, tmp_path / "operator", tmp_path / "changed")
+
+
+def test_manifest_publication_retains_existing_and_never_leaves_partial_json(tmp_path):
+    import pytest
+    from qa.scenarios.uart.evaluator.publication import publish_new
+
+    path = tmp_path / "manifest.json"
+    with pytest.raises(TypeError):
+        publish_new(path, {"not_serializable": object()})
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []
+    publish_new(path, {"seed": "first"})
+    original = path.read_bytes()
+    with pytest.raises(FileExistsError):
+        publish_new(path, {"seed": "second"})
+    assert path.read_bytes() == original

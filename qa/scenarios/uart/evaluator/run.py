@@ -9,9 +9,11 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from cases import evaluator_identity, materialize
+from inputs import snapshot
 
 HERE = Path(__file__).resolve().parent
 
@@ -20,52 +22,20 @@ def identity(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def candidate_sources(manifest: dict) -> list[Path]:
-    """Validate explicit RTL inputs; never discover or import candidate tests."""
-    root = Path(manifest["root"]).resolve(strict=True)
-    if root.is_relative_to(HERE) or HERE.is_relative_to(root):
-        raise ValueError("Candidate Project and operator evaluator must be disjoint")
-    result = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if result.stdout.strip() != manifest["commit"]:
-        raise ValueError("Candidate checkout does not match accepted commit")
-    sources = []
-    for item in manifest["sources"]:
-        path = (root / item["path"]).resolve(strict=True)
-        if not path.is_relative_to(root) or path.suffix not in [".v", ".sv"]:
-            raise ValueError("RTL source must be a contained .v/.sv file")
-        if identity(path) != item["sha256"]:
-            raise ValueError(f"Candidate source digest mismatch: {path}")
-        committed = subprocess.run(
-            ["git", "-C", str(root), "show", f"{manifest['commit']}:{item['path']}"],
-            check=True,
-            capture_output=True,
-            timeout=10,
-        ).stdout
-        if hashlib.sha256(committed).hexdigest() != item["sha256"]:
-            raise ValueError(f"Candidate bytes differ from committed source: {path}")
-        sources.append(path)
-    if not sources or len(sources) != len(set(sources)):
-        raise ValueError("Expected a nonempty unique explicit candidate RTL source list")
-    return sources
-
-
 def launch(args: list[str], log: Path, seconds: float) -> int:
     """Bound simulator work and terminate the entire owned process tree on timeout."""
     if seconds <= 0:
         return 124
-    with log.open("w", encoding="utf-8") as stream, subprocess.Popen(
-        [sys.executable, str(HERE / "worker.py"), *args],
-        stdout=stream,
-        stderr=subprocess.STDOUT,
-        start_new_session=os.name != "nt",
-        env={**os.environ, "PYTHONPATH": str(HERE), "PYTHONSAFEPATH": "1"},
-    ) as process:
+    with (
+        log.open("w", encoding="utf-8") as stream,
+        subprocess.Popen(
+            [sys.executable, str(HERE / "worker.py"), *args],
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name != "nt",
+            env={**os.environ, "PYTHONPATH": str(HERE), "PYTHONSAFEPATH": "1"},
+        ) as process,
+    ):
         try:
             return process.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
@@ -138,11 +108,16 @@ def evaluate(candidate: dict, manifest: dict, output: Path, seconds: int, contro
         or any(not re.fullmatch(r"[a-zA-Z0-9_.-]+", name) for name in ids)
     ):
         raise ValueError("Case manifest must have unique sorted safe full IDs")
-    sources = candidate_sources(candidate)
     output.mkdir(parents=True, exist_ok=False)
+    sources = snapshot(candidate, HERE, output / "sources")
     (output / "candidate.json").write_text(json.dumps(candidate, indent=2) + "\n")
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    deadline = time.monotonic() + seconds
+    remaining = (
+        min(seconds, datetime.fromisoformat(controls["phase_deadline"]).timestamp() - time.time())
+        if seconds == 1800
+        else seconds
+    )
+    deadline = time.monotonic() + remaining
     build = output / "build"
     code = launch(
         ["--build", str(build), "--sources", *map(str, sources)],

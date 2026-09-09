@@ -200,7 +200,7 @@ def test_profile_schema_rejects_misspelled_provider(tmp_path):
 
 def test_coverage_index_is_derived_after_validation(tmp_path):
     write_suite(tmp_path)
-    destination = tmp_path / "index.json"
+    destination = tmp_path.parent / (tmp_path.name + "-index.json")
     result = subprocess.run(
         [
             sys.executable,
@@ -242,3 +242,40 @@ def test_required_check_cannot_disappear_from_all_profiles(tmp_path):
     )
     assert result.returncode == 1
     assert "sample.removed" in result.stderr
+
+
+def test_duplicate_yaml_key_cannot_hide_authored_selection(tmp_path):
+    write_suite(tmp_path)
+    path = tmp_path / "profiles.yaml"
+    path.write_text(path.read_text() + "\nprofiles: []\n")
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "duplicate YAML key" in result.stderr
+
+
+def test_coverage_index_cannot_replace_authored_inventory(tmp_path):
+    write_suite(tmp_path)
+    destination = tmp_path / "coverage.yaml"
+    before = destination.read_bytes()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(tmp_path),
+            "--coverage-index",
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert destination.read_bytes() == before

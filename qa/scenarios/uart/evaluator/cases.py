@@ -445,9 +445,9 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     manifest = materialize(args.seed)
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(manifest, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    from publication import publish_new
+
+    publish_new(args.output, manifest)
 
 
 if __name__ == "__main__":

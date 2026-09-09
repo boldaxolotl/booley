@@ -4386,19 +4386,19 @@ steps:
   assets:
   - path: evaluator/cases.py
     audience: independent evaluator
-    sha256: 01667856e94cc9c7345a697a966c95fcc1de5363a734630a08880869fd874e8a
+    sha256: cebb0d0e687b046f316fc978793553f0f05f52f17dfedf35b32d9549a2ea9387
   - path: evaluator/controls/transport.sv
     audience: independent evaluator
     sha256: 3cd4d90ea1ec1a9498bb2a92f45c4b3b062477e94541ada59f6a15d445a8c412
   - path: evaluator/controls.py
     audience: independent evaluator
-    sha256: 17a53b908435aa335a723c86e1826245e9d01345f4cb5b8a1c4fb1f208a35313
+    sha256: 6d27a4bffc3fddf6804c7c3333ae19eb16ad3f2ad91f625d10bfa001fdb279b2
   - path: evaluator/driver.py
     audience: independent evaluator
-    sha256: 239d403e3b1b9514c3616c15295243b89f5d0583d6c2d9db1cb4379cb77431b1
+    sha256: 429495a6b9766c28af5a35d6dc1637ceb95ba37b35ba6ca1af355b03f4cac9d7
   - path: evaluator/exercises.py
     audience: independent evaluator
-    sha256: b836494ee8a95402bcede4fa1d25370106e4081d794e08704a7e6c88cd02977b
+    sha256: f112fe60ad6323ae27e5cf4dbecde82d0271a8a7ea10a7ae2d2a088b6d6ae3f7
   - path: evaluator/observe.py
     audience: independent evaluator
     sha256: 38efe264b78db70ba051c275cf4160a03d01cb9b815e361fe70354ba1da8488e
@@ -4407,10 +4407,19 @@ steps:
     sha256: 5a2e9fd37002ed2c611c20e54bfdb84218f731f3bbf00508167ab8e2b136fc3c
   - path: evaluator/run.py
     audience: independent evaluator
-    sha256: 6db4369c9a10a1d0051ad9250985ca26b9f401de680b87a1255c76a8d2481931
+    sha256: 1b4bf4b731fbd206be607f3a2259edaa7bc5f20296d031a60bc07426dc86864e
   - path: evaluator/worker.py
     audience: independent evaluator
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
+  - path: evaluator/README.md
+    audience: independent evaluator
+    sha256: 2e622d46889b29cc0c28c58e46c999ae8317c674f47206825b45e797a16cf82c
+  - path: evaluator/inputs.py
+    audience: independent evaluator
+    sha256: fafed8139d6b95a72c536b48ebc4ac54ea1de4dde9baf8039e4c2e95603897ef
+  - path: evaluator/publication.py
+    audience: independent evaluator
+    sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
 - id: evaluator-candidate
   phase: evaluate
   action: Build accepted commit in disposable operator checkout.
