@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.flows.clock_timing import ClockTiming, per_clock_to_json
+from booley.evidence.timing import ClockTiming, per_clock_to_json
 
 
 @dataclass

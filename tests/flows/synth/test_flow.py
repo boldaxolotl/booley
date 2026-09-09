@@ -22,8 +22,8 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows.base import SubprocessResult
-from booley.flows.clock_timing import ClockTiming, make_clock_timing
 from booley.flows.edam import work_root_for, work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
 from booley.flows.synth.backends import pipeline as syn_make

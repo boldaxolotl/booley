@@ -1,1 +1,1 @@
-"""Dependency-neutral values shared by evidence producers and consumers."""
+"""Dependency-neutral values and serialization for acceptance evidence."""

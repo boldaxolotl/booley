@@ -223,6 +223,30 @@ def test_flow_ticket_board_rule_catches_all_static_import_locations(tmp_path, st
     (root / "flows" / "seed.py").write_text(statement)
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
-    assert "D16" in report
+    assert "D17" in report
     assert "booley.flows.seed" in report
     assert "booley.ticket_board.paths" in report
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.flows.execution\n",
+        "def helper():\n    from booley.flows import execution\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    from booley.flows.execution import run\n",
+    ],
+)
+def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statement):
+    root = tmp_path / "booley"
+    for package in (root, root / "criteria", root / "flows"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "flows" / "execution.py").write_text("def run(): pass\n")
+    (root / "criteria" / "policy.py").write_text(statement)
+
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+    assert "D16" in report
+    assert "booley.criteria.policy" in report
+    assert "booley.flows.execution" in report

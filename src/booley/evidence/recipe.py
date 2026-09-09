@@ -1,4 +1,4 @@
-"""Shared normalized-recipe evidence for implementation QoR criteria."""
+"""Normalized recipe values used by producers and acceptance policy."""
 
 from __future__ import annotations
 
@@ -8,17 +8,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-RECIPE_FINGERPRINT_PARAM = "_recipe_fingerprint"
-RECIPE_FINGERPRINT_DETAIL = "_recipe_fingerprint"
-RECIPE_SNAPSHOT_PARAM = "_recipe_snapshot"
-RECIPE_SNAPSHOT_DETAIL = "_recipe_snapshot"
-BASELINE_RECIPE_FINGERPRINT_DETAIL = "_baseline_recipe_fingerprint"
-BASELINE_RECIPE_SNAPSHOT_DETAIL = "_baseline_recipe_snapshot"
-BASELINE_REF_PARAM = "_baseline_ref"
-BASELINE_REF_DETAIL = "_baseline_ref"
-BASELINE_TARGET_DETAIL = "_baseline_target"
-CANDIDATE_TARGET_DETAIL = "_candidate_target"
-
 
 def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
     """Hash one normalized implementation-recipe snapshot."""
@@ -27,12 +16,7 @@ def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 
 def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    """Project the measurement methodology that a paired comparison must share.
-
-    Parameters, defines, and filesets deliberately stay outside this projection:
-    changing those design inputs is the reason Target pairs exist. Technology,
-    constraints, top identity, and Flow methodology remain comparison inputs.
-    """
+    """Project the measurement methodology that a paired comparison must share."""
     if snapshot.get("flow") == "fpga":
         flow_options = snapshot.get("flow_options")
         options = flow_options if isinstance(flow_options, Mapping) else {}

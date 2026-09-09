@@ -46,6 +46,9 @@ _D12_REASON = (
 )
 _D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implementations"
 _D16_REASON = (
+    "Criteria evaluates shared evidence without depending on Flow production or execution"
+)
+_D17_REASON = (
     "deterministic Flow execution consumes resolved acceptance inputs and records through "
     "composition without knowing Ticket Board persistence"
 )
@@ -97,9 +100,15 @@ DIRECTION_RULES = (
     ),
     DirectionRule(
         "D16",
+        (prefix("booley.criteria"),),
+        (prefix("booley.flows"),),
+        _D16_REASON,
+    ),
+    DirectionRule(
+        "D17",
         (prefix("booley.flows"),),
         (prefix("booley.ticket_board"),),
-        _D16_REASON,
+        _D17_REASON,
     ),
     DirectionRule(
         "D1",

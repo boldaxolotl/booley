@@ -109,6 +109,7 @@ def _probe_finds(monkeypatch, present: set[str]) -> None:
     `code --list-extensions`; the probe itself is tested separately below.
     """
     from booley.bwave import cli as bwave
+    from booley.runtime.vaporview import ExtensionState
 
     monkeypatch.setattr(
         bwave.shutil,
@@ -116,6 +117,7 @@ def _probe_finds(monkeypatch, present: set[str]) -> None:
         lambda name: name if name in present else None,
     )
     monkeypatch.setattr(bwave, "_extension_missing", lambda cli: False)
+    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.INSTALLED)
 
 
 @pytest.fixture()
@@ -1025,6 +1027,114 @@ def test_scoped_open_without_wcp_hard_errors(tmp_path, monkeypatch, fake_rust, l
     assert "BOOLEY_WCP_PORT" in msg
     assert exc.value.code
     assert launched == []  # never degrade a scoped request to a bare launch
+
+
+def test_scoped_open_missing_extension_leads_with_install(
+    tmp_path, monkeypatch, fake_rust, launched
+):
+    from booley.bwave import cli as bwave
+    from booley.runtime.vaporview import ExtensionState
+
+    _seed_default(tmp_path)
+    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.MISSING)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    msg = str(exc.value)
+    assert "VaporView extension is not installed" in msg
+    assert "--install-extension" in msg
+    assert "Install from VSIX" in msg
+    assert "Most likely" not in msg
+    assert launched == []
+
+
+def test_scoped_open_empty_remote_registry_beats_unavailable_editor_probe(
+    tmp_path, monkeypatch, fake_rust
+):
+    from booley.bwave import cli as bwave
+
+    _seed_default(tmp_path)
+    home = tmp_path / "home"
+    (home / ".vscode-server" / "extensions").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(bwave.shutil, "which", lambda name: None)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    msg = str(exc.value)
+    assert "VaporView extension is not installed" in msg
+    assert "Most likely" not in msg
+
+
+def test_scoped_open_cursor_only_names_cursor_installer(tmp_path, monkeypatch, fake_rust):
+    from booley.bwave import cli as bwave
+    from booley.runtime.vaporview import ExtensionState
+
+    _seed_default(tmp_path)
+    monkeypatch.setattr(bwave.shutil, "which", lambda name: "cursor" if name == "cursor" else None)
+    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.MISSING)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    assert "cursor --install-extension lramseyer.vaporview" in str(exc.value)
+
+
+def test_scoped_open_installed_extension_retains_reload_guidance(
+    tmp_path, monkeypatch, fake_rust, launched
+):
+    from booley.bwave import cli as bwave
+    from booley.runtime.vaporview import ExtensionState
+
+    _seed_default(tmp_path)
+    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.INSTALLED)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    assert 'Most likely: run "Developer: Reload Window"' in str(exc.value)
+    assert launched == []
+
+
+def test_scoped_open_unknown_extension_state_does_not_claim_it_is_missing(
+    tmp_path, monkeypatch, fake_rust, launched
+):
+    from booley.bwave import cli as bwave
+    from booley.runtime.vaporview import ExtensionState
+
+    _seed_default(tmp_path)
+    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.UNKNOWN)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    msg = str(exc.value)
+    assert "could not determine whether the VaporView extension is installed" in msg
+    assert "VaporView extension is not installed" not in msg
+    assert launched == []
+
+
+def test_scoped_protocol_failure_retains_wcp_setup_guidance(
+    tmp_path, monkeypatch, fake_rust, launched
+):
+    from booley.bwave import cli as bwave
+
+    _seed_default(tmp_path)
+
+    def fail_probe():
+        raise bwave.bwave_wcp.WcpProtocolError("bad greeting")
+
+    monkeypatch.setattr(bwave.bwave_wcp, "try_connect", fail_probe)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["tb.dut.fifo.*"])
+
+    msg = str(exc.value)
+    assert 'Most likely: run "Developer: Reload Window"' in msg
+    assert "probe failure: bad greeting" in msg
+    assert launched == []
 
 
 def test_glob_without_match_errors_before_wcp(tmp_path, monkeypatch, fake_rust, capsys):

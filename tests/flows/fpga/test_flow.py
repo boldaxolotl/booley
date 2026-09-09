@@ -17,19 +17,19 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import (
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_PARAM,
+)
+from booley.evidence.timing import ClockTiming
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
-from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
 from booley.flows.implementation_comparison import (
     TargetExecutionRef,
     target_pair_plans_for_handles,
-)
-from booley.flows.recipe_evidence import (
-    BASELINE_REF_PARAM,
-    RECIPE_FINGERPRINT_PARAM,
-    RECIPE_SNAPSHOT_PARAM,
 )
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
