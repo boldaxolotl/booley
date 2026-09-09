@@ -209,29 +209,38 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
     data = root / ".booley_project"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
+    ready = tmp_path / "handlers-ready"
     script = (
         "import signal,time\n"
+        "time.sleep(0.3)\n"
         "signal.signal(signal.SIGINT,signal.SIG_IGN)\n"
         "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        f"open({str(ready)!r}, 'w').close()\n"
         "time.sleep(120)\n"
     )
 
+    interrupted_at: list[float] = []
+
     def interrupt_twice() -> None:
-        time.sleep(0.2)
-        os.kill(os.getpid(), signal.SIGINT)
+        _interrupt_when(ready.exists)
+        if not ready.exists():
+            return
+        interrupted_at.append(time.monotonic())
         time.sleep(0.05)
         os.kill(os.getpid(), signal.SIGINT)
 
     interrupter = threading.Thread(target=interrupt_twice, daemon=True)
     interrupter.start()
-    started = time.monotonic()
     result = runtime_attachment.run_command(
         root, "session-name", [sys.executable, "-c", script], tty=False
     )
 
+    interrupter.join(timeout=2)
+    assert ready.exists()
+    assert len(interrupted_at) == 1
     assert result.exit_code == 130
     assert result.tree_terminal is True
-    assert time.monotonic() - started < 2
+    assert time.monotonic() - interrupted_at[0] < 2
 
 
 def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, monkeypatch) -> None:
