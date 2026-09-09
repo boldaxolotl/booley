@@ -68,6 +68,17 @@ def write_suite(root):
     )
 
 
+def run_validator(root):
+    """Run the suite validator against disposable authored data."""
+    return subprocess.run(
+        [sys.executable, str(VALIDATOR), "--root", str(root)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
 def test_prerequisites_reject_later_checks_and_step_ids(tmp_path):
     import yaml
 
@@ -249,13 +260,7 @@ def test_profile_rejects_unknown_check_set(tmp_path):
     _, profiles = write_suite(tmp_path)
     profiles["profiles"][0]["runs"][0]["check_sets"] = ["missing"]
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
-    result = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "unknown check set missing" in result.stderr
 
@@ -269,13 +274,7 @@ def test_profile_rejects_duplicate_checks_across_sets(tmp_path):
     )
     profiles["profiles"][0]["runs"][0]["check_sets"].append("duplicate")
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
-    result = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "duplicate values" in result.stderr
 
@@ -286,13 +285,7 @@ def test_profile_rejects_cross_scenario_check_set(tmp_path):
     _, profiles = write_suite(tmp_path)
     profiles["check_sets"][0]["scenario_id"] = "another-scenario"
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
-    result = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "cross-scenario check set sample-core" in result.stderr
 
@@ -305,13 +298,7 @@ def test_profile_rejects_unused_check_set(tmp_path):
         {"id": "unused", "scenario_id": "sample", "checks": ["sample.unused"]}
     )
     (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
-    result = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "unused check sets ['unused']" in result.stderr
 
