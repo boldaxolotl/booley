@@ -18,7 +18,8 @@ abstraction solely to improve graph metrics.
 ## Baseline
 
 Issue baseline and implementation start: `8f1820dbd6a107f0fff988497cd71516861f1e7c`.
-Captured 09 SEP 2026.
+The after state was measured at the reviewed implementation revision
+`516149b36c929b4d8f51ab12c8a6c7e6ef3caf38`. Both were captured 09 SEP 2026.
 
 | Diagnostic | Before | After |
 | --- | ---: | ---: |
@@ -45,6 +46,24 @@ The ten baseline edges are:
 The legacy cyclic package group did not broaden. The Config/Runtime mutual pair
 disappeared because Runtime still consumes Config values but Config no longer
 imports Runtime mechanisms.
+
+## Exact replacement edges
+
+The analyzer reports the following normalized production replacements for each
+removed edge (all names are below `booley`):
+
+| Removed edge | Exact replacement edge(s) |
+| --- | --- |
+| `config.agent → runtime.agent_backend` | `runtime.agent_config → config.agent`; `runtime.agent_config → runtime.agent_backend` |
+| `config.agent → runtime.job_slots` | `config.agent → config.jobs`; `runtime.job_slots → config.jobs` |
+| `config.agent → runtime.project_image` | `config.agent → config.sandbox`; `runtime.project_image → config.sandbox` |
+| `config.guidance_links → runtime.git` | `harness.setup.guidance_links → runtime.git` |
+| `config.guidance_links → runtime.init_plan` | `harness.setup.guidance_links → runtime.init_plan` |
+| `config.guidance_links → runtime.project_dir` | `harness.setup.guidance_links → runtime.project_dir` |
+| `config.host_config → runtime.auth_token` | `config.host_config → core.user_paths`; `runtime.auth_token → core.user_paths` |
+| `config.project_config → runtime.checkout_role` | `config.project_config → core.checkout_role`; `runtime.checkout_role → core.checkout_role` |
+| `config.project_config → runtime.project_dir` | `config.project_config → core.project_dir`; `runtime.project_dir → core.project_dir` |
+| `config.settings → runtime._retry` | No production replacement edge: the facade was removed and its test consumers import `runtime._retry` directly. |
 
 ## Ownership and interface migrations
 
@@ -99,9 +118,8 @@ that previously leaked into Config; they are not new cyclic dependencies.
 - D16 forbids the direction with no waiver or composition exception. Seed tests
   prove that ordinary, function-local, and `TYPE_CHECKING` imports are caught.
 - `pytest -q tests/architecture`: 91 passed.
-- Focused Config/Runtime, path, setup, image, CLI, Doctor, and MCP-related test
-  selections: 1,295 passed.
+- Focused review-regression and architecture selection: 862 passed.
 - `pyright`: 0 errors, 0 warnings.
 - `ruff check src/ tests/`: passed.
 - `ruff format --check .`: passed.
-- Complete test suite: 10,666 passed, 56 skipped.
+- Complete test suite: 10,667 passed, 56 skipped.
