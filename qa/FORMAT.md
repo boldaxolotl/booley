@@ -62,3 +62,32 @@ can read the small files directly; event replay, supersession projection engines
 and digest-bound report generation are not prerequisites. Keep original observations
 and explicit correction links visible. Findings must be usable directly by Consolidate
 Findings without a separate Booley Feedback export.
+
+## Implemented structural contract
+
+[scenario.schema.json](scenario.schema.json) is the structural authority. Each
+scenario supplies `title`, ordered `phases` (`id`, `title`, `minutes`), and `budget`
+with deadline, contingency, cleanup minutes and cleanup start. Phase minutes include
+the cleanup phase; contingency is counted once in addition. Taxi names a separate
+`final` phase and latest final-regression start. Step prerequisites name earlier
+check IDs, not recovery points or future outcomes.
+
+Inputs are named records (`id`, `kind`, `value`, `source`, `verification`). `git`
+and `sha256` inputs require full literal lowercase hashes. `pre-run` inputs describe
+an exact identity that must be selected and recorded before execution; this never
+permits changing an already pinned IP, workload or threshold.
+
+Assets carry a scenario-relative contained file `path`, explicit `audience`, and
+an optional SHA-256 checked against current bytes. Production assets record their
+digests. Templates must list permitted `substitutions`: `run_root`, `artifact_root`,
+`ticket_id`, `commit_id`, `release`, `provider`. An unlisted `{{variable}}` fails
+validation; these substitutions cannot alter thresholds or disclose private assets.
+
+A restoration step's `recovery` record names `baseline`, prior `detection` check IDs,
+and its `instruction`. It requires its baseline, and cannot depend directly or
+transitively on the detection's successful result. Cleanup has independent reachability.
+
+The validator is standalone so authoring does not import the system under test.
+Its strict metadata checks reject unknown coverage/profile fields without adding
+another persistent schema family. HTTPS authorities are syntax-checked offline;
+review and release-matched execution must verify their actual content and currency.

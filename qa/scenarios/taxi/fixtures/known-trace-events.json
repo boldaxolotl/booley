@@ -1,0 +1,47 @@
+{
+  "timescale": "1ns",
+  "rising_edges_ns": [
+    5,
+    15,
+    25,
+    35,
+    45,
+    55,
+    65
+  ],
+  "handshake_edges_ns": [
+    25,
+    45
+  ],
+  "handshake_sample_distance": 2,
+  "sampled_data": [
+    0,
+    17,
+    17,
+    34,
+    51,
+    51,
+    51
+  ],
+  "sampled_valid": [
+    0,
+    1,
+    1,
+    0,
+    1,
+    1,
+    0
+  ],
+  "sampled_ready": [
+    0,
+    0,
+    1,
+    1,
+    1,
+    0,
+    0
+  ],
+  "reset_edges_ns": [
+    5
+  ]
+}

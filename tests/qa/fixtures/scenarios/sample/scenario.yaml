@@ -1,0 +1,82 @@
+format_version: 1
+scenario_id: sample
+title: Release smoke
+source: https://example.com/release
+authority:
+- Owned temporary root only
+inputs:
+- id: release
+  kind: pre-run
+  value: Exact published release
+  source: https://example.com/release
+  verification: Record package digest
+budget:
+  deadline_minutes: 480
+  cleanup_minutes: 20
+  contingency_minutes: 15
+  cleanup_start_minutes: 460
+phases:
+- id: work
+  title: Installation
+  minutes: 445
+- id: cleanup
+  title: Cleanup
+  minutes: 20
+steps:
+- id: prepare
+  phase: work
+  action: Install the release
+  checks:
+  - id: baseline
+    capabilities:
+    - H-01
+    stimulus: Read the version
+    expected: The installed version equals the frozen release
+    authority_ref: https://example.com/release
+    evidence: Version output, executable path and package digest
+    capture: evidence/baseline
+- id: detect
+  phase: work
+  action: Remove the executable
+  requires:
+  - baseline
+  checks:
+  - id: negative
+    capabilities:
+    - H-01
+    stimulus: Read the version
+    expected: The installed version equals the frozen release
+    authority_ref: https://example.com/release
+    evidence: Version output, executable path and package digest
+    capture: evidence/negative
+- id: restore
+  phase: work
+  action: Restore exact executable
+  requires:
+  - baseline
+  checks:
+  - id: restored
+    capabilities:
+    - H-01
+    stimulus: Read the version
+    expected: The installed version equals the frozen release
+    authority_ref: https://example.com/release
+    evidence: Version output, executable path and package digest
+    capture: evidence/restored
+  recovery:
+    baseline: baseline
+    detection:
+    - negative
+    instruction: Restore recorded bytes
+- id: cleanup
+  phase: cleanup
+  action: Release owned state
+  checks:
+  - id: removed
+    capabilities:
+    - H-01
+    stimulus: Read the version
+    expected: The installed version equals the frozen release
+    authority_ref: https://example.com/release
+    evidence: Version output, executable path and package digest
+    capture: evidence/removed
