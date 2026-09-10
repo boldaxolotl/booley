@@ -1,8 +1,68 @@
 # Authoring QA scenarios
 
-Read [Protocol](../agents/PROTOCOL.md) for execution, [Qualification](QUALIFICATION.md)
-for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
+This guide owns the Scenario definition contract. Read
+[Protocol](../agents/PROTOCOL.md) for execution,
+[Qualification](QUALIFICATION.md) for scope and verdicts, and the [run record
+format](../agents/FORMAT.md) for the files produced during a Scenario Run. The
 [worked example](../examples/README.md) shows how they fit together.
+
+## Scenario definition contract
+
+[scenario.schema.json](../scenario.schema.json) is the structural authority. Use
+`format_version: 1`. Keep Scenario IDs and local Step and Check IDs stable; qualify
+external Check references with the Scenario ID. A revision to the same Check retains
+its ID, while a different Check receives a new ID. Never repurpose IDs. The repository
+commit freezes the Scenario, protocol, and Capability Coverage definitions used by a
+Scenario Run.
+
+Each Scenario supplies inputs, shared budgets, named check sets, Configured Scenarios,
+and ordered phases and Steps. Each phase records its `id`, `title`, and `minutes`; the
+Scenario budget records its deadline, contingency, cleanup minutes, and cleanup start.
+Phase minutes include cleanup, while contingency is counted once in addition. A Step
+records its ID, action, Checks, and any prerequisites, authority, timeout or retry
+restrictions, recovery instructions, owned resources, and phase recovery point.
+Shared behavior comes from the protocol; Scenario instructions may tighten it. Keep
+lengthy prompts, Ticket payloads, and evaluator material in referenced assets.
+
+Each Check records its ID, capability references, stimulus, expectation, public
+contract source, evidence requirement, and capture point. Keep expectation authority
+distinct from documentation used only for navigation. A Scenario Run records which
+documentation it actually consulted.
+
+Inputs are named records with `id`, `kind`, `value`, `source`, and `verification`.
+`git` and `sha256` inputs use full literal lowercase hashes. A `pre-run` input fixes an
+identity before execution; it does not permit changing a pinned IP, workload, or
+threshold.
+
+Assets record a contained `path`, an explicit `audience`, and, for production assets,
+a SHA-256 digest. `base` defaults to `scenario`; `base: shared` resolves within
+`qa/shared/`. Paths and symlinks must remain inside the selected base. Every Step
+lists the shared assets it uses. Templates list their allowed `substitutions`:
+`run_root`, `artifact_root`, `ticket_id`, `commit_id`, `product_revision`, and
+`provider`; any unlisted template variable fails validation. Substitutions cannot
+change thresholds or disclose private assets.
+
+A restoration Step's `recovery` record identifies its `baseline`, prior `detection`
+Check IDs, and `instruction`. It requires the baseline and remains independent of the
+detection's successful result: it cannot depend directly or transitively on that
+result. Cleanup must remain independently reachable.
+
+Check sets are flat and disjoint. A Configured Scenario may select several sets; the
+validator resolves them into one ordered Check list and derives supporting Steps. Each
+Configured Scenario declares whether it is required, binds `host_os`,
+`cpu_architecture`, `native_host`, `agent_provider`, `interactive_mode_client`, and
+`ticket_mode_backend`, and lists its pre-run requirements, check sets, and justified
+exclusions. `run.json` records the actual execution values and observed identities.
+The validator rejects missing or unused sets, duplicate Checks, unknown exclusions,
+and unknown coverage, Scenario, or Configured Scenario fields.
+
+The standalone validator checks fields, unique IDs, references, earlier
+prerequisites, asset containment and hashes, Configured Scenario selections,
+supporting work, budgets, recovery, and Capability Coverage without importing the
+Booley product under test. It checks HTTPS authority syntax; Human Maintainer review
+and build-matched execution establish the authority's meaning and currency.
+
+## Authoring workflow
 
 1. Identify the public behavior and its contract source. Consult the
    [capability inventory](../coverage.yaml), then extend the Scenario that covers it.
