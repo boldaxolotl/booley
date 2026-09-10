@@ -18,6 +18,149 @@
       "type": "string",
       "minLength": 1
     },
+    "check_sets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "id",
+          "checks"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "configured_scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "host_os": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "cpu_architecture": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "native_host": {
+                "type": "boolean"
+              },
+              "agent_provider": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "interactive_mode_client": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "ticket_mode_backend": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "host_os",
+              "cpu_architecture",
+              "native_host",
+              "agent_provider",
+              "interactive_mode_client",
+              "ticket_mode_backend"
+            ],
+            "additionalProperties": false
+          },
+          "pre_run_requirements": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "check_sets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "exclusions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "check": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "check",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "id",
+          "required",
+          "parameters",
+          "pre_run_requirements",
+          "check_sets",
+          "exclusions"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "inputs": {
       "type": "array",
       "items": {
@@ -326,7 +469,7 @@
                       "artifact_root",
                       "ticket_id",
                       "commit_id",
-                      "release",
+                      "product_revision",
                       "provider"
                     ]
                   },
@@ -369,6 +512,8 @@
     "scenario_id",
     "title",
     "source",
+    "check_sets",
+    "configured_scenarios",
     "inputs",
     "authority",
     "budget",

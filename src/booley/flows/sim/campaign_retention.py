@@ -16,7 +16,8 @@ from .campaign_reports import (
     target_report_directory,
     write_campaign_json,
 )
-from .coverage_campaign import CoverageCampaign, DurableTargetIdentity, decode_coverage_campaign
+from .coverage_campaign import CoverageCampaign
+from .coverage_campaign_store import LoadedCoverageCampaign, load_coverage_campaign
 
 
 class CampaignRetentionError(ValueError):
@@ -50,7 +51,7 @@ def _read_object(path: Path) -> dict[str, object]:
 
 def _target(
     root: Path, selector: str, *, require_projection: bool = True
-) -> tuple[Path, CoverageCampaign]:
+) -> tuple[Path, LoadedCoverageCampaign]:
     if not isinstance(selector, str) or not selector or selector in {".", "..", "latest"}:
         raise CampaignRetentionError("Select one exact Target selector")
     progress = _read_object(root / "progress.json")
@@ -62,15 +63,12 @@ def _target(
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
-    document = _read_object(target / "coverage.json")
-    identity = document.get("target")
-    if not isinstance(identity, dict) or not isinstance(identity.get("identity"), str):
-        raise CampaignRetentionError("Campaign has no durable Target identity")
-    campaign = decode_coverage_campaign(document, DurableTargetIdentity(identity["identity"]))
+    loaded = load_coverage_campaign(target / "coverage.json")
+    campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
         raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
     if not require_projection:
-        return target, campaign
+        return target, loaded
     projection = _read_object(target / "simulation.json")
     if (
         projection.get("target_identity") != campaign.target.identity
@@ -79,7 +77,7 @@ def _target(
         raise CampaignRetentionError(
             "Simulation projection is missing or belongs to another Target"
         )
-    return target, campaign
+    return target, loaded
 
 
 def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str, object]]:
@@ -116,13 +114,16 @@ def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Pa
 
 def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
-    directory, campaign = _target(root, target)
+    directory, loaded = _target(root, target)
+    campaign = loaded.campaign
     artifacts = _native_manifest(directory, campaign)
+    point_store = loaded.summary.point_store
     sidecar = directory / "availability.json"
     document = {
         "$schema": "booley.coverage-availability/v1",
         "campaign_id": campaign.campaign_id,
-        "campaign_sha256": hashlib.sha256((directory / "coverage.json").read_bytes()).hexdigest(),
+        "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
+        "point_store_sha256": point_store.sha256 if point_store is not None else None,
         "artifacts": artifacts,
         "status": "pruning",
     }

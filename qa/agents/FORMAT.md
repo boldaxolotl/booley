@@ -1,9 +1,10 @@
 # Scenario and run format
 
-The repository commit freezes the protocol, profiles, coverage, and scenarios.
-Use `format_version: 1` to identify the structured file shape. Keep stable scenario
-IDs and scenario-qualified step/check IDs. A revision to the same check retains its
-ID; a different check gets another ID. Never repurpose IDs. Git provides history;
+The repository commit freezes the protocol, coverage, and Scenarios.
+Use `format_version: 1` to identify the structured file shape. Keep stable Scenario
+IDs and stable local Step/Check IDs. External references qualify a Check ID with its
+Scenario ID. A revision to the same Check retains its ID; a different Check gets
+another ID. Never repurpose IDs. Git provides history;
 separate retirement and successor registries are unnecessary.
 
 ## Scenario files
@@ -19,7 +20,6 @@ qa/
   user/
     AUTHORING.md
     QUALIFICATION.md
-  profiles.yaml
   coverage.yaml
   scenario.schema.json
   shared/probes/
@@ -33,16 +33,16 @@ inherited from the protocol; override only to tighten it. Inputs and shared budg
 belong at scenario level. Keep lengthy prompts, Ticket payloads, and evaluator
 material in referenced files rather than duplicating them.
 
-Each check has an ID, capability references, stimulus, expectation, public contract
-source, evidence requirement, and capture point. Named check sets in `profiles.yaml`
-select check IDs; profiles compose those sets without copying their contents. Keep
-navigation references where the documentation path itself matters;
+Each Check has an ID, capability references, stimulus, expectation, public contract
+source, evidence requirement, and capture point. Each Scenario owns named check sets
+and the Configured Scenarios that select them. Keep navigation references where
+the documentation path itself matters;
 the run records the documentation actually consulted. Authority for expected behavior
 and navigation guidance remain distinguishable without duplicating both everywhere.
 
 Use one modest scenario JSON Schema and a small reference/completeness validator.
 Validate unique IDs, required fields, valid earlier prerequisites, file/check/source
-references, profile selections including required supporting work, and capability coverage. Do not add a general DAG
+references, Configured Scenario selections including required supporting work, and capability coverage. Do not add a general DAG
 scheduler, coverage-expression language, or typed event schema family. Validators
 cannot decide whether an expectation or oracle is meaningful; review does that.
 
@@ -50,15 +50,15 @@ cannot decide whether an expectation or oracle is meaningful; review does that.
 
 | File | Minimum content |
 |---|---|
-| `run.json` | Immutable run ID, profile, identities, initial inputs, authority, deadline, capability probes |
+| `run.json` | Unique execution ID, Configured Scenario ID, declared parameters, exact identities, initial inputs, authority, deadline, and pre-run observations |
 | `results.jsonl` | Append-only records: result ID, step/check ID, timestamp, attempt, status, expected/observed outcome, evidence references; producing-step identities and recovery/correction links when applicable |
 | `findings.jsonl` | Original findings and appended status updates, stable source IDs, kind/classification, original text, result links, evidence and reproduction data as appropriate |
 | `resources.json` | Current explicit ownership and intended/actual cleanup disposition; sufficient identification to reconcile interrupted creation |
 | `evidence/` | Immutable artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
-| `summary.md` | Profile verdicts, tested identities, operational completion, missing/failed work, findings, deviations, and cleanup |
+| `summary.md` | Scenario Run Outcome, aggregate Qualification where applicable, tested identities, execution status, missing/failed work, findings, deviations, and cleanup |
 
 The containing directory supplies the run ID to result/finding records; external
-references use run ID plus record ID. Common release and Session Image inputs need not repeat
+references use run ID plus record ID. Common product revision and Session Image inputs need not repeat
 on every result. Changes created by steps are recorded as outputs, not by mutating
 the original run declaration. Retain evidence outside disposable Project state.
 
@@ -87,21 +87,27 @@ checked against current bytes. `base` defaults to `scenario`; `base: shared` res
 within `qa/shared/`. Both bases reject paths and symlinks that escape their allowed
 directories. Each owning step explicitly lists shared assets, including any separate
 shared contract it needs. Production assets record their digests. Templates must list permitted `substitutions`: `run_root`, `artifact_root`,
-`ticket_id`, `commit_id`, `release`, `provider`. An unlisted `{{variable}}` fails
+`ticket_id`, `commit_id`, `product_revision`, `provider`. An unlisted `{{variable}}` fails
 validation; these substitutions cannot alter thresholds or disclose private assets.
 
 A restoration step's `recovery` record names `baseline`, prior `detection` check IDs,
 and its `instruction`. It requires its baseline, and cannot depend directly or
 transitively on the detection's successful result. Cleanup has independent reachability.
 
-Profile check sets are flat, disjoint lists: each check appears in one set. A run may
-select several sets, which the validator concatenates into one resolved check list.
-It rejects missing sets, unused sets, duplicate checks, and sets that belong to
-another scenario. Supporting steps are derived from the selected checks and scenario
-ordering rather than repeated in `profiles.yaml`.
+Scenario check sets are flat and disjoint: each Check appears in one set. A
+Configured Scenario may select several sets, which the validator concatenates into one
+resolved Check list. It rejects missing sets, unused sets, duplicate Checks, and
+unknown exclusions. Supporting Steps are derived from the selected Checks and
+Scenario ordering.
 
-The validator is standalone so authoring does not import the installed Booley release
+Each Configured Scenario declares whether it is required, binds `host_os`,
+`cpu_architecture`, `native_host`, `agent_provider`, `interactive_mode_client`, and
+`ticket_mode_backend`, and lists its pre-run requirements, check sets, and justified
+exclusions. These are required execution parameters; `run.json` records their actual
+values and the exact identities observed during execution.
+
+The validator is standalone so authoring does not import the tested Booley product revision
 under test.
-Its strict metadata checks reject unknown coverage/profile fields without adding
+Its strict metadata checks reject unknown coverage, Scenario, and Configured Scenario fields without adding
 another persistent schema family. HTTPS authorities are syntax-checked offline;
-review and release-matched execution must verify their actual content and currency.
+review and build-matched execution must verify their actual content and currency.

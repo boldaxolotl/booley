@@ -11,4 +11,4 @@ Checked the booley configuration.
 Co-Authored-By: QA Fixture <qa-fixture@example.invalid>
 ```
 
-Require `booley` absent from final subject/body; retained `Keep this rationale intact.` and retained rewritten configuration sentence; no `Co-Authored-By` or attribution address. Preserve original and stored commit messages plus hook diagnostics. Do not require a particular substitute token unless the tested published release documents it. Restore/discard the disposable commit after evidence capture.
+Require `booley` absent from final subject/body; retained `Keep this rationale intact.` and retained rewritten configuration sentence; no `Co-Authored-By` or attribution address. Preserve original and stored commit messages plus hook diagnostics. Do not require a particular substitute token unless the documentation matching the tested build specifies it. Restore/discard the disposable commit after evidence capture.

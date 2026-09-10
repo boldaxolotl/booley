@@ -320,9 +320,8 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
 def test_real_coverage_flow_publishes_canonical_campaign(
     tmp_path: Path, harness: str, trace: bool
 ) -> None:
-    import json
-
-    from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
@@ -344,9 +343,9 @@ def test_real_coverage_flow_publishes_canonical_campaign(
     )
     assert result.exit_code == 0, result.outcome
     path = tmp_path / result.outcome.detail["targets"]["sim"]["coverage_campaign"]
-    campaign = decode_coverage_campaign(
-        json.loads(path.read_text()), DurableTargetIdentity("booley:smoke:coverage:1#sim")
-    )
+    campaign = load_coverage_campaign(
+        path, DurableTargetIdentity("booley:smoke:coverage:1#sim")
+    ).campaign
     assert campaign.collection["status"] == "complete"
     assert campaign.evaluation["status"] == "not_requested"
     assert campaign.build["trace"] is trace

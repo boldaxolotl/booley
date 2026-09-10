@@ -800,15 +800,18 @@ for the ordered persistence and Criterion-evidence transaction.
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
-path) and optional `instruction`. It returns advisory `booley.coverage-analysis/v1`
-data: immutable observed evidence, model-authored hypotheses and recommendations,
+path) and optional `instruction`. Retained V1 input returns
+`booley.coverage-analysis/v1`; V2 input returns `booley.coverage-analysis/v2`
+with separate `campaign_manifest` and fully validated `points` observed evidence.
+Both carry immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, and screened Waiver Candidates.
 No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity and a matching completed
-Simulation projection before model invocation. The deep module is
+The wrapper checks canonical invocation/Target identity, the complete V2
+manifest/point-store relationship, and a matching completed Simulation projection
+before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
 constructor injection substitutes only the external text-model boundary.
 `coverage_analyst(campaign: Path, instruction="")` is the default public composition.

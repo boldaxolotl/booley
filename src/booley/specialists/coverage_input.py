@@ -3,18 +3,18 @@
 import json
 from pathlib import Path
 
-from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    DurableTargetIdentity,
-    decode_coverage_campaign,
+from booley.flows.sim.coverage_campaign import CoverageCampaign
+from booley.flows.sim.coverage_campaign_store import (
+    LoadedCoverageCampaign,
+    load_coverage_campaign,
 )
 
 from .coverage_analysis import CoverageAnalysisError, CoverageSourceClosure
 
 
-def read_coverage_campaign(path: Path) -> CoverageCampaign:
+def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
     """Require an exact canonical path and a matching completed Target projection."""
     path = path.absolute()
     try:
@@ -26,9 +26,8 @@ def read_coverage_campaign(path: Path) -> CoverageCampaign:
             raise CoverageAnalysisError(
                 "Campaign must belong to one numbered Simulation invocation"
             )
-        document = require_dict(json.loads(path.read_text(encoding="utf-8")))
-        identity = require_str(require_dict(document.get("target")), "identity")
-        campaign = decode_coverage_campaign(document, DurableTargetIdentity(identity))
+        loaded = load_coverage_campaign(path)
+        campaign = loaded.campaign
         if str(
             campaign.invocation["id"]
         ) != invocation.name or path.parent != target_report_directory(
@@ -36,7 +35,7 @@ def read_coverage_campaign(path: Path) -> CoverageCampaign:
         ):
             raise CoverageAnalysisError("Campaign identity disagrees with its exact path")
         _projection(path.parent / "simulation.json", campaign)
-        return campaign
+        return loaded
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
             f"Cannot analyze Campaign at {path}: {exc}. Use an exact retained, completed Target Campaign; fully pruned invocations cannot be analyzed."
