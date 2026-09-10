@@ -200,6 +200,17 @@ class CoverageRollup:
 
 
 @dataclass(frozen=True)
+class CoverageCampaignSummaryFields:
+    """Validated Campaign fields that do not depend on Coverage Points."""
+
+    campaign_id: str
+    target: CoverageTarget
+    rollups: tuple[CoverageRollup, ...]
+    collection: Mapping[str, FrozenJson]
+    evaluation: Mapping[str, FrozenJson]
+
+
+@dataclass(frozen=True)
 class CoverageCampaign:
     """One indivisible normalized coverage record for one Target invocation."""
 
@@ -1595,7 +1606,7 @@ def decode_coverage_campaign(
 def validate_coverage_campaign_summary(
     document: Mapping[str, object],
     expected_target: DurableTargetIdentity,
-) -> None:
+) -> CoverageCampaignSummaryFields:
     """Validate Campaign semantics that do not require Coverage Points."""
     probe = dict(document)
     probe["$schema"] = _SCHEMA
@@ -1613,6 +1624,17 @@ def validate_coverage_campaign_summary(
     all_findings = structural_findings + tuple(findings)
     if all_findings:
         raise CoverageCampaignValidationError(all_findings)
+    target = probe["target"]
+    rollups = probe["rollups"]
+    assert isinstance(target, Mapping)
+    assert isinstance(rollups, list)
+    return CoverageCampaignSummaryFields(
+        campaign_id=str(probe["campaign_id"]),
+        target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
+        rollups=tuple(_decode_rollup(item) for item in rollups),
+        collection=_freeze_mapping(probe["collection"]),
+        evaluation=_freeze_mapping(probe["evaluation"]),
+    )
 
 
 def _encode_capability(capability: CoverageCapability) -> dict[str, object]:

@@ -48,6 +48,32 @@ def _json_value(value: object) -> object:
     raise TypeError(f"Not JSON data: {type(value).__name__}")
 
 
+@dataclass(frozen=True)
+class _AnalysisEnvelope:
+    schema: str
+    model_campaign: Mapping[str, object]
+    observed_evidence: object
+
+
+def _analysis_envelope(
+    observed: dict[str, object], summary: CoverageCampaignSummary | None
+) -> _AnalysisEnvelope:
+    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V2:
+        return _AnalysisEnvelope("booley.coverage-analysis/v1", {"campaign": observed}, observed)
+    manifest = _json_value(summary.document)
+    points = observed["points"]
+    assert summary.point_store is not None
+    return _AnalysisEnvelope(
+        "booley.coverage-analysis/v2",
+        {"campaign_manifest": manifest, "points": points},
+        {
+            "campaign_manifest": manifest,
+            "points": points,
+            "point_store_sha256": summary.point_store.sha256,
+        },
+    )
+
+
 class CoverageAnalyzer:
     """Compose analysis with one external, text-only model call."""
 
@@ -64,20 +90,7 @@ class CoverageAnalyzer:
     ) -> CoverageAnalysisReport:
         observed = encode_coverage_campaign(campaign)
         decode_coverage_campaign(observed, DurableTargetIdentity(campaign.target.identity))
-        analysis_schema = "booley.coverage-analysis/v1"
-        model_campaign: dict[str, object] = {"campaign": observed}
-        observed_evidence: object = observed
-        if summary is not None and summary.source_schema == CAMPAIGN_SCHEMA_V2:
-            manifest = _json_value(summary.document)
-            points = observed["points"]
-            digest = summary.point_store.sha256 if summary.point_store is not None else None
-            analysis_schema = "booley.coverage-analysis/v2"
-            model_campaign = {"campaign_manifest": manifest, "points": points}
-            observed_evidence = {
-                "campaign_manifest": manifest,
-                "points": points,
-                "point_store_sha256": digest,
-            }
+        envelope = _analysis_envelope(observed, summary)
         eligibility, limitations = _eligibility(campaign)
         sources = _verified_snapshot(campaign, sources)
         if sources is None:
@@ -87,7 +100,7 @@ class CoverageAnalyzer:
         response = self._model(
             json.dumps(
                 {
-                    **model_campaign,
+                    **envelope.model_campaign,
                     "sources": sources.files if sources else None,
                     "instruction": instruction,
                 },
@@ -101,14 +114,14 @@ class CoverageAnalyzer:
         return CoverageAnalysisReport(
             freeze_coverage_mapping(
                 {
-                    "$schema": analysis_schema,
+                    "$schema": envelope.schema,
                     "campaign_id": campaign.campaign_id,
                     "target": observed["target"],
                     "eligibility": eligibility,
                     "source_access": "report_only" if sources is None else "verified",
                     "limitations": limitations,
                     "closure_recommendation": _RECOMMENDATIONS[str(campaign.evaluation["status"])],
-                    "observed_evidence": observed_evidence,
+                    "observed_evidence": envelope.observed_evidence,
                     **response,
                 }
             )

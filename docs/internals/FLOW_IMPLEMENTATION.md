@@ -968,7 +968,8 @@ The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers validate its path, schema, byte counts, point count, digest, every
 point, recomputed rollups, and evaluation before accepting point-dependent
-evidence. Summary readers validate manifest-local facts without opening point
+evidence. Contract failures expose stable `COV_*` error codes. Summary readers
+validate manifest-local facts without opening point
 storage. Campaign and Simulation publication precede Acceptance Evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic

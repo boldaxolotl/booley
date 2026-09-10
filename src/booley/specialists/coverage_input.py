@@ -3,12 +3,9 @@
 import json
 from pathlib import Path
 
-from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    DurableTargetIdentity,
-)
+from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign,
@@ -29,9 +26,7 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             raise CoverageAnalysisError(
                 "Campaign must belong to one numbered Simulation invocation"
             )
-        document = require_dict(json.loads(path.read_text(encoding="utf-8")))
-        identity = require_str(require_dict(document.get("target")), "identity")
-        loaded = load_coverage_campaign(path, DurableTargetIdentity(identity))
+        loaded = load_coverage_campaign(path)
         campaign = loaded.campaign
         if str(
             campaign.invocation["id"]

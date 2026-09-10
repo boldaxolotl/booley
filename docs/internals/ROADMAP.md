@@ -55,6 +55,8 @@ Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
 V2 Campaign persistence keeps statistics in that small manifest and lossless points
 in an integrity-linked compressed point store; retained V1 Campaigns remain readable.
+The Coverage Analyst still receives every validated point. A deterministic, disclosed bounded
+evidence packet or query-driven Analyst remains future work; V2 does not silently sample evidence.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
 Simulation collection controls and the Coverage Criterion are public alongside

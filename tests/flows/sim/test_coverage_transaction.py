@@ -389,6 +389,7 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     import os
 
     from booley.criteria.state import DevelopmentState
+    from booley.flows.sim import coverage_campaign_store
     from booley.flows.sim.coverage_progress import CoverageProgress
     from booley.ticket_board.acceptance_ledger import freeze_acceptance
 
@@ -397,10 +398,11 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert prior.exit_code == 0
     invocation = tmp_path / "reports/sim/2"
     plan = replace(plan, invocation_dir=invocation)
-    replace_file, link_file = persistence_fault(boundary)
+    replace_file, link_file, commit_file = persistence_fault(boundary)
     with monkeypatch.context() as patch:
         patch.setattr(Path, "replace", replace_file)
         patch.setattr(os, "link", link_file)
+        patch.setattr(coverage_campaign_store, "_commit_new", commit_file)
         outcome = run_coverage_target(
             plan, NativeExecution(verdict="fail", hits=0), CoverageProgress(invocation, ("sim_0",))
         )
@@ -442,7 +444,10 @@ def test_target_transaction_never_resumes_existing_native_state(tmp_path):
 def persistence_fault(boundary):
     import os
 
+    from booley.flows.sim import coverage_campaign_store
+
     original_replace, original_link = Path.replace, os.link
+    original_commit = coverage_campaign_store._commit_new
     evidence_count = 0
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
@@ -459,8 +464,6 @@ def persistence_fault(boundary):
 
     def link_file(source, destination, **kwargs):
         nonlocal evidence_count
-        if Path(destination).name == filenames.get(boundary):
-            raise OSError(f"injected {boundary} failure")
         if Path(destination).name == "record.json":
             evidence_count += 1
             if (boundary == "first_evidence" and evidence_count == 1) or (
@@ -469,7 +472,12 @@ def persistence_fault(boundary):
                 raise OSError("injected evidence failure")
         return original_link(source, destination, **kwargs)
 
-    return replace_file, link_file
+    def commit_file(temporary, final):
+        if final.name == filenames.get(boundary):
+            raise OSError(f"injected {boundary} failure")
+        return original_commit(temporary, final)
+
+    return replace_file, link_file, commit_file
 
 
 def gated_ticket_plan(tmp_path):
