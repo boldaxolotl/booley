@@ -3222,7 +3222,7 @@ steps:
     stimulus: 'Reach `destination: done`.'
     expected: 'Reach `destination: done`.'
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Board terminal state and acceptance evidence.
+    evidence: Board terminal state and Criteria Satisfaction Record.
     capture: evidence/picorv32-published-demo-continuity.ticket1.done
   requires:
   - inputs.project-pin
@@ -4965,7 +4965,7 @@ steps:
     stimulus: 'Reach `destination: done`.'
     expected: 'Reach `destination: done`.'
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Board terminal state and acceptance evidence.
+    evidence: Board terminal state and Criteria Satisfaction Record.
     capture: evidence/picorv32-published-demo-continuity.ticket2.done
   requires:
   - inputs.project-pin
@@ -5323,17 +5323,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `baseline-mismatch` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-mismatch
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-mismatch` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-mismatch` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5348,17 +5348,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `baseline-missing` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-missing
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-missing` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-missing` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5373,17 +5373,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `baseline-recovery` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-recovery
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-recovery` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-recovery` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5398,17 +5398,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `threshold-absolute` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-absolute
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-absolute` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-absolute` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5423,17 +5423,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `threshold-clock` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-clock
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-clock` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-clock` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5448,17 +5448,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `threshold-directed` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-directed
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-directed` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-directed` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5473,17 +5473,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `threshold-relative` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-relative
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-relative` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-relative` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.

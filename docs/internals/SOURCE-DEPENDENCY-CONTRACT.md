@@ -18,7 +18,7 @@ The package layout maps to the canonical concepts indexed by the
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint. |
-| Acceptance evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
+| Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
 | Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, and execution records. |
@@ -124,7 +124,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 | D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
 
-## Acceptance evidence ownership
+## Criterion evidence ownership
 
 `booley.evidence` is the dependency-neutral owner of values that cross from an
 evidence producer into Criteria policy. `evidence.fields` owns the persisted key

@@ -1,4 +1,4 @@
-"""Durable Ticket acceptance evidence and snapshots."""
+"""Durable Ticket Criterion evidence and Criteria Satisfaction Records."""
 
 import hashlib
 import json
@@ -240,7 +240,7 @@ def test_read_acceptance_reports_invalid_reference_and_snapshot_shapes(tmp_path)
 
     invalid_snapshot = read_acceptance(log_dir)
     assert invalid_snapshot.kind == "corrupt"
-    assert "invalid acceptance snapshot" in invalid_snapshot.reason
+    assert "invalid Criteria Satisfaction Record" in invalid_snapshot.reason
 
 
 def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):

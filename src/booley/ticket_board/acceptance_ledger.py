@@ -1,4 +1,4 @@
-"""Durable acceptance evidence for Ticket lifecycle transitions.
+"""Durable Criterion evidence and Criteria Satisfaction Records.
 
 Live ``booley_state.json`` remains useful for execution and display, but an
 accepted Ticket is represented by a content-addressed snapshot outside the
@@ -26,7 +26,7 @@ SCHEMA_VERSION = 1
 
 
 class AcceptanceLedgerError(RuntimeError):
-    """Durable acceptance evidence could not be written safely."""
+    """Durable Criterion evidence could not be written safely."""
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ def _snapshot_from_payload(payload: Mapping[str, Any], digest: str) -> Acceptanc
             evidence=tuple(dict(value) for value in payload.get("evidence", [])),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise AcceptanceLedgerError(f"invalid acceptance snapshot: {exc}") from exc
+        raise AcceptanceLedgerError(f"invalid Criteria Satisfaction Record: {exc}") from exc
 
 
 def _participant_heads(value: Any) -> dict[str, str]:
@@ -129,7 +129,7 @@ def _allocate_sequence(root: Path, transaction_id: str) -> tuple[int, Path]:
         except FileExistsError:
             continue
         return sequence, directory
-    raise AcceptanceLedgerError(f"acceptance evidence sequence exhausted beneath {root}")
+    raise AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
 
 
 def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
@@ -152,7 +152,7 @@ def _read_evidence_records(log_dir: Path, state: DevelopmentState) -> list[dict[
             if not isinstance(criterion, str) or role not in {"baseline", "candidate"}:
                 raise ValueError("record has invalid criterion identity or role")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise AcceptanceLedgerError(f"corrupt acceptance evidence {directory}: {exc}") from exc
+            raise AcceptanceLedgerError(f"corrupt Criterion evidence {directory}: {exc}") from exc
         records.append(payload)
     return records
 
@@ -179,7 +179,7 @@ def _validate_state_projection(log_dir: Path, state: DevelopmentState) -> None:
         entry = state.criteria.get(criterion)
         if entry is None or entry.met is not payload.get("met"):
             raise AcceptanceLedgerError(
-                f"mutable Criterion {criterion!r} disagrees with its latest acceptance evidence"
+                f"mutable Criterion {criterion!r} disagrees with its latest evidence"
             )
 
 
@@ -242,7 +242,7 @@ def freeze_acceptance(
     participant_heads: Mapping[str, str],
     accepted_at: str | None = None,
 ) -> AcceptanceSnapshot:
-    """Freeze and select one accepted snapshot for the current Ticket epoch."""
+    """Freeze and select one Criteria Satisfaction Record for the current Ticket epoch."""
     _validate_state_projection(log_dir, state)
     payload = {
         "schema": SCHEMA_VERSION,
@@ -273,7 +273,7 @@ def freeze_acceptance(
 def bind_review_package(
     log_dir: Path, snapshot: AcceptanceSnapshot, *, replace_existing: bool = False
 ) -> bool:
-    """Bind an already verified review package to its accepted snapshot."""
+    """Bind an already verified review package to its Criteria Satisfaction Record."""
     root = Path(log_dir)
     manifest_path = root / ".runtime" / "triage-prep" / "manifest.json"
     if not manifest_path.exists():
@@ -301,7 +301,7 @@ def bind_review_package(
         # The caller holds the Ticket publication lock; acceptance stays write-once.
         accepted = read_acceptance(root)
         if accepted.snapshot != snapshot:
-            raise AcceptanceLedgerError("cannot rebind a different accepted snapshot")
+            raise AcceptanceLedgerError("cannot rebind a different Criteria Satisfaction Record")
         atomic_replace_bytes(path, binding + b"\n")
     else:
         _write_once(path, binding + b"\n")
@@ -341,15 +341,15 @@ def _validate_manifest_identity(manifest: Mapping[str, Any], snapshot: Acceptanc
     if "project_head_sha" in manifest:
         heads["project"] = manifest.get("project_head_sha")
     if _participant_heads(heads) != snapshot.participant_heads:
-        raise ValueError("review package heads disagree with the accepted snapshot")
+        raise ValueError("review package heads disagree with the Criteria Satisfaction Record")
 
 
 def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
-    """Read and integrity-check the accepted snapshot for one Ticket."""
+    """Read and integrity-check the Criteria Satisfaction Record for one Ticket."""
     root = Path(log_dir) / "acceptance"
     reference_path = root / "accepted.json"
     if not reference_path.exists():
-        return AcceptanceReadResult("unavailable", reason="accepted snapshot is unavailable")
+        return AcceptanceReadResult("unavailable", reason="Criteria Satisfaction Record is unavailable")
     try:
         reference = json.loads(reference_path.read_text(encoding="utf-8"))
         digest = reference["snapshot_digest"]
@@ -358,7 +358,7 @@ def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
         payload = json.loads((root / "snapshots" / f"{digest}.json").read_text(encoding="utf-8"))
         actual = hashlib.sha256(_canonical(payload)).hexdigest()
         if actual != digest:
-            raise ValueError("accepted snapshot digest mismatch")
+            raise ValueError("Criteria Satisfaction Record digest mismatch")
         return AcceptanceReadResult("accepted", _snapshot_from_payload(payload, digest))
     except (
         AcceptanceLedgerError,

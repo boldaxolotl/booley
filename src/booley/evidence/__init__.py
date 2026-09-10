@@ -1,1 +1,1 @@
-"""Dependency-neutral values and serialization for acceptance evidence."""
+"""Dependency-neutral values and serialization for Criterion evidence."""

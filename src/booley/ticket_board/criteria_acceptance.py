@@ -288,7 +288,7 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
         _invalidate_submitted_report(state, now=now)
         state.save()
         logger.warning(
-            "Rejected insufficient acceptance evidence for %s: %s",
+            "Rejected insufficient Criterion evidence for %s: %s",
             state.slug,
             ", ".join(rejected),
         )
