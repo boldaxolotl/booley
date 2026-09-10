@@ -5967,7 +5967,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.baseline-missing
   phase: ticket2
   action: |-
@@ -5992,7 +5992,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.baseline-recovery
   phase: ticket2
   action: |-
@@ -6017,7 +6017,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-absolute
   phase: ticket2
   action: |-
@@ -6042,7 +6042,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-clock
   phase: ticket2
   action: |-
@@ -6067,7 +6067,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-directed
   phase: ticket2
   action: |-
@@ -6092,7 +6092,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-relative
   phase: ticket2
   action: |-
@@ -6117,7 +6117,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.ST-03.body-reject
   phase: ticket2
   action: |-
