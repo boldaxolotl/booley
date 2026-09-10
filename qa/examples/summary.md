@@ -1,6 +1,7 @@
 # Illustrative report — no execution claim
 
-Run: `example-run`; scenario: `example-wishbone`; inputs: [run.json](run.json).
+Run: `example-run-20260908T120000Z`; Profile run definition: `example-run`; scenario:
+`example-wishbone`; inputs: [run.json](run.json).
 
 | Scope | Verdict | Evidence |
 |---|---|---|

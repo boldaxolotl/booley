@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley QA Run"
+  short_description: "Execute an evidence-producing public QA run"
+  default_prompt: "Use $booley-qa-run to execute a named public QA Profile run definition."
+
+policy:
+  allow_implicit_invocation: false

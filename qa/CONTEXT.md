@@ -22,8 +22,9 @@ The ordered, versioned declaration of one Journey's inputs, Steps, Checks, evide
 _Avoid_: script, test, run
 
 **Scenario Operator**:
-The authority-bearing coordinator of one QA Run.
-_Avoid_: test runner, autonomous campaign, delegate
+The agent that executes one QA Run, owns its sequencing and evidence record, and may
+assign bounded work to sub-agents.
+_Avoid_: coordinator, test runner, autonomous campaign, delegate
 
 **Step**:
 One ordered unit of work in a Scenario. A Step may own multiple Checks and the resources or recovery instructions needed to perform them.
@@ -41,9 +42,9 @@ _Avoid_: configuration, environment, filter
 One evidence-producing execution of Profile work against exact product, suite, input, and environment identities.
 _Avoid_: Job, Ticket run, test invocation
 
-**Run Result**:
+**Check Result**:
 One immutable observation of a Check attempt within a QA Run.
-_Avoid_: Criterion result, verdict, summary
+_Avoid_: Run Result, Criterion result, verdict, summary
 
 **Capability**:
 One supported, publicly sourced product behavior inventoried by the Public QA Suite.

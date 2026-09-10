@@ -5,19 +5,23 @@ checks and preserve unexpected observations. Run purpose is descriptive metadata
 
 ## Prepare
 
-The coordinator assigns actual setup, development, evaluation, diagnostic, and
-cleanup work to delegates. It owns sequencing, evidence integration, and the report.
-Record delegate identity and assignment with the step; no delegation event system
-is required. Delegates cannot grant authority or change acceptance requirements.
+The agent executing `booley-qa-run` is the Scenario Operator. The Scenario Operator
+may assign setup, development, evaluation, diagnostic, and cleanup work to sub-agents,
+but retains responsibility for sequencing, evidence integration, and the report.
+Record each sub-agent's identity and assignment with the Step; no delegation event
+system is required. Sub-agents cannot grant authority or change acceptance
+requirements.
 
-Before product exercises, freeze a run ID, selected profile, exact published Booley
-release and package identity, release documentation, suite commit, pinned IP inputs,
-native-host OS and architecture, provider, Runtime Attachment, agent backend,
-relevant Session Image and EDA tool identities, deadline, artifact root, pre-run
-capability probes, and granted authority in `run.json`. Record initial identities
-there; Session Image identities created by Project Setup and later Git repository or
-accepted-commit identities belong in the producing step's result and evidence.
-Missing required initial identity blocks execution. Missing authority means denied.
+Before product exercises, generate a fresh QA Run ID and freeze it with the selected
+Profile and Profile run definition, exact published Booley release and package
+identity, release documentation, suite commit, pinned IP inputs, native-host OS and
+architecture, provider, Runtime Attachment, agent backend, relevant Session Image and
+EDA tool identities, deadline, artifact root, pre-run capability probes, and the
+Scenario authority granted by skill invocation in `run.json`. Record initial
+identities there; Session Image identities created by Project Setup and later Git
+repository or accepted-commit identities belong in the producing Step's Check Result
+and evidence. Missing required initial identity blocks execution. An action outside the
+Scenario's declared authority remains denied until the user explicitly grants it.
 
 Runs are unattended. Authority covers only the declared actions and owned resources.
 Use published Booley documentation, packaged skills, CLI/MCP help, and ordinary
@@ -30,7 +34,7 @@ editable installs, development builds, and imports from a source checkout are ex
 Read each step's action, prerequisites, checks, and recovery instructions together.
 A check declares its stimulus, expected observation, contract source, and evidence.
 Preserve artifact identity and freshness. Reuse one artifact for multiple checks only
-when it independently supports each claim. Delegate prose cannot replace artifacts.
+when it independently supports each claim. Sub-agent prose cannot replace artifacts.
 Runtime Attachment claims require evidence from the attached application. Waveform
 Viewer claims require timestamped visual evidence from a qualified observer.
 
@@ -44,7 +48,7 @@ artifacts; documentation checks identify the consulted revision and observed
 behavior. Console text is authoritative when the diagnostic text itself is the
 contract. Preserve Booley's underlying grades and artifact meanings in the evidence.
 
-Delegates retain diagnostic and implementation freedom allowed by the journey. Exact
+Sub-agents retain diagnostic and implementation freedom allowed by the Journey. Exact
 commands or prose are mandatory only where the design says their literal form is
 under test. Apply the journey's existing timeouts and narrow retry allowances.
 Prerequisites may reference earlier checks; an unexpected failure blocks dependent
@@ -55,14 +59,14 @@ A seeded fault must prove baseline success, inject the declared fault, observe t
 expected failure, restore state, and prove recovery. Detecting that expected failure
 passes its negative check. An unexpected product failure is retained even after a
 workaround or successful retry. Attach post-recovery observations to the original
-result; they never retroactively convert it to pass.
+Check Result; they never retroactively convert it to pass.
 
 Record alternatives and deviations with the affected check. An explicitly permitted
 alternative may satisfy the check. Undeclared changes to inputs, actions, authority,
 or evidence block the affected claim unless trustworthy failure evidence already
 exists. Capture that failure regardless of the invalidated claim.
 
-## Record results
+## Record Check Results
 
 Use the files and minimum fields in [Format](FORMAT.md). Check outcomes are:
 
@@ -75,12 +79,12 @@ Use the files and minimum fields in [Format](FORMAT.md). Check outcomes are:
 
 A capability lost after declaration is fail or blocked, never retrospectively
 unavailable. Product-inapplicable checks are excluded explicitly by the profile;
-they are not passes. A selected check with no result is blocked at finalization.
+they are not passes. A selected Check with no Check Result is blocked at finalization.
 
-Append observations and corrections to `results.jsonl`; corrections identify the
-record and evidence of the recording mistake. Correcting a recording mistake does
+Append every Check Result and its corrections to `results.jsonl`; corrections identify
+the record and evidence of the recording mistake. Correcting a recording mistake does
 not authorize erasing a real failure. Preserve every trustworthy failed attempt.
-Conflicting trustworthy results produce a flaky Finding and prevent qualification.
+Conflicting trustworthy Check Results produce a flaky Finding and prevent qualification.
 
 Capture Findings, Friction Reports, Impressions, and wins with stable source IDs,
 original text, kind, time, classification, step/check links, and evidence. Defects
@@ -95,8 +99,8 @@ values. Do not invoke Booley Feedback or submit reports externally during a run.
 
 Keep the journey's named phase recovery points with saved source identities and
 artifact references. They support bounded recovery within a live run. General
-restart/resume of an interrupted coordinator is deferred: preserve its partial
-record, reconcile owned resources, and start a new run. Old results do not satisfy
+restart/resume of an interrupted Scenario Operator is deferred: preserve its partial
+record, reconcile owned resources, and start a new run. Old Check Results do not satisfy
 required checks in that new run.
 
 Persist ownership and intended disposition in `resources.json` before creating a

@@ -1,7 +1,8 @@
 {
   "format_version": 1,
   "illustrative_only": true,
-  "run_id": "example-run",
+  "run_id": "example-run-20260908T120000Z",
+  "profile_run_id": "example-run",
   "scenario_id": "example-wishbone",
   "profiles": ["example-core", "example-gui"],
   "suite_commit": "EXAMPLE_ONLY",

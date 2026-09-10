@@ -12,10 +12,12 @@ Production layout:
 
 ```text
 qa/
+  booley-qa-run/
+    SKILL.md
+    agents/openai.yaml
   agents/
     FORMAT.md
     PROTOCOL.md
-    RUN.md
   user/
     AUTHORING.md
     QUALIFICATION.md
@@ -50,14 +52,14 @@ cannot decide whether an expectation or oracle is meaningful; review does that.
 
 | File | Minimum content |
 |---|---|
-| `run.json` | Immutable run ID, profile, identities, initial inputs, authority, deadline, capability probes |
-| `results.jsonl` | Append-only records: result ID, step/check ID, timestamp, attempt, status, expected/observed outcome, evidence references; producing-step identities and recovery/correction links when applicable |
+| `run.json` | Fresh immutable QA Run ID, selected Profile and Profile run definition, identities, initial inputs, authority, deadline, capability probes |
+| `results.jsonl` | Append-only Check Results: result ID, Step/Check ID, timestamp, attempt, status, expected/observed outcome, evidence references; producing-Step identities and recovery/correction links when applicable |
 | `findings.jsonl` | Original findings and appended status updates, stable source IDs, kind/classification, original text, result links, evidence and reproduction data as appropriate |
 | `resources.json` | Current explicit ownership and intended/actual cleanup disposition; sufficient identification to reconcile interrupted creation |
 | `evidence/` | Immutable artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
 | `summary.md` | Profile verdicts, tested identities, operational completion, missing/failed work, findings, deviations, and cleanup |
 
-The containing directory supplies the run ID to result/finding records; external
+The containing directory supplies the QA Run ID to Check Result/Finding records; external
 references use run ID plus record ID. Common release and Session Image inputs need not repeat
 on every result. Changes created by steps are recorded as outputs, not by mutating
 the original run declaration. Retain evidence outside disposable Project state.
