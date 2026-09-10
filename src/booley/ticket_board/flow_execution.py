@@ -76,7 +76,7 @@ class TicketAcceptanceRecorder:
                 from booley.flows.execution_persistence import AcceptanceRecordingError
 
                 raise AcceptanceRecordingError(
-                    "ticket execution has no acceptance evidence directory"
+                    "ticket execution has no Criterion evidence directory"
                 )
             return
         try:
@@ -155,7 +155,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
     def _configure_runtime(request: FlowRequest) -> None:
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
         if not logs_dir:
-            raise AcceptanceBasisError("ticket execution has no acceptance evidence directory")
+            raise AcceptanceBasisError("ticket execution has no Criterion evidence directory")
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
         if not runtime_env:
             runtime_env = str(ticket_runtime_dir(logs_dir))

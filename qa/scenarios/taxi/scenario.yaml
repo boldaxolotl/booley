@@ -7332,7 +7332,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
   - path: fixtures/build_submodules.py
     audience: coordinator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -7362,7 +7362,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -7386,7 +7386,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -7398,10 +7398,10 @@ steps:
     stimulus: |-
       In the same disposable fixture after that pass, move only `deps/data` out of all Project/build search paths; leave its gitlink, Target, testbench, expected values and other inputs unchanged. Invoke the same Simulation Flow again, including with the preceding successful build cache present.
     expected: |-
-      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied Simulation Criterion may be produced.
+      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied simulation Criterion may be produced.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied Simulation Criterion may be produced.
+      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied simulation Criterion may be produced.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.simulation-missing-top
   requires:
   - inputs.pin
@@ -7411,7 +7411,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -7433,7 +7433,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -7464,7 +7464,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -7484,7 +7484,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -7514,7 +7514,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -7538,7 +7538,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -7560,7 +7560,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -7582,7 +7582,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -7602,7 +7602,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -7624,7 +7624,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -7646,7 +7646,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -7658,10 +7658,10 @@ steps:
     stimulus: |-
       In that explicitly empty-selection fixture, invoke the simulation that still requires data/leaf inside the materialized workspace.
     expected: |-
-      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion.
+      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied simulation Criterion.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion.
+      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied simulation Criterion.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.simulation-excluded-dependency
   requires:
   - inputs.pin
@@ -7671,7 +7671,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -7691,7 +7691,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -7711,7 +7711,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -7731,7 +7731,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -7753,7 +7753,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -7773,7 +7773,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -7797,7 +7797,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -7821,7 +7821,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -7845,7 +7845,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -7863,7 +7863,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
   recovery:
     baseline: submodules.fixture
     detection:
@@ -7894,7 +7894,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -7916,7 +7916,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
+    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-

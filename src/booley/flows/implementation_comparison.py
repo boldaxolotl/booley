@@ -19,7 +19,7 @@ from booley.targets.domain import FuseSocError, TargetHandle
 
 
 class ImplementationComparisonError(ValueError):
-    """Persisted criterion metadata cannot define an executable Target pair."""
+    """Persisted criterion metadata cannot define an executable Target binding."""
 
 
 @dataclass(frozen=True)
@@ -346,7 +346,7 @@ def target_pair_for_candidate(
     matches = tuple(plan for plan in plans if plan.candidate.identity == candidate_identity)
     if len(matches) != 1:
         raise ImplementationComparisonError(
-            f"no unique Target pair plan for candidate identity {candidate_identity!r}"
+            f"no unique Target comparison plan for candidate identity {candidate_identity!r}"
         )
     return matches[0]
 
@@ -363,7 +363,7 @@ def target_plan_for_handle(
         return target_pair_for_candidate(plans, handle.identity)
     if basis_bound:
         raise ImplementationComparisonError(
-            f"basis-bound {flow} execution has no Target pair plan for {handle.selector!r}"
+            f"basis-bound {flow} execution has no Target comparison plan for {handle.selector!r}"
         )
     candidate = _execution_ref(handle)
     return _make_plan(flow, candidate, candidate, None)

@@ -170,7 +170,9 @@ def test_advance_rejects_ticket_head_changed_after_acceptance_freeze(tmp_path: P
         expected_sources={"outer": frozen_head},
     )
 
-    with pytest.raises(AcceptanceOperationError, match="changed after the accepted snapshot"):
+    with pytest.raises(
+        AcceptanceOperationError, match="changed after the Criteria Satisfaction Record"
+    ):
         advance_acceptance(guarded)
 
 

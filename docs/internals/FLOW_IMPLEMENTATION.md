@@ -151,9 +151,10 @@ Targets are authored on Ticket-owned branches without changing the Project's
 destination branches or making Doctor observe a half-configured Target. Enqueue
 publishes schema 1 with the exact outer and optional project-data participants and
 their generation-qualified Ticket and destination refs. A canonical committed record
-pins the authored Ticket and each Criterion's directed Target Pair using canonical
-Target identities and exact callable selectors. Tickets from before Acceptance Basis
-publication are beyond the hard cutoff and must be recreated.
+pins the authored Ticket and each Criterion's directed baseline/candidate Target
+binding using canonical Target identities and exact callable selectors. Tickets
+from before Acceptance Basis publication are beyond the hard cutoff and must be
+recreated.
 
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
@@ -167,18 +168,18 @@ refs. Execution starts from those commits, and intake, each Flow, the commit
 guard, review handoff, and final acceptance reject drift as
 `acceptance-input-change-required`.
 For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
-both revisions. An explicit `{baseline, candidate}` Target Pair runs the
-baseline Target at the outer participant's authoring commit and the candidate Target at the ticket head. The
-baseline must fully resolve at enqueue; a distinct candidate may defer only
-missing RTL/TB sources declared Scope `[new]`. Both Targets remain immutable,
-and their measurement basis (technology/part, Flow methodology, top, and
-constraints) must match. A future non-relative Target may likewise omit only
-sources declared Scope `[new]`.
+both revisions. An explicit `{baseline, candidate}` binding runs the
+baseline Target at the outer participant's authoring commit and the candidate
+Target at the ticket head. The baseline must fully resolve at enqueue; a
+distinct candidate may defer only missing RTL/TB sources declared Scope
+`[new]`. Both Targets remain immutable, and their measurement basis
+(technology/part, Flow methodology, top, and constraints) must match. A future
+non-relative Target may likewise omit only sources declared Scope `[new]`.
 
-`return-to-draft` preserves the old identity and evidence, then starts a new
-Authoring Generation from committed destination refs.
+`return-to-draft` preserves the old identity and evidence, then starts fresh
+Ticket authoring from committed destination refs.
 Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
-Authoring Generation so enqueue can publish an Acceptance Basis before execution. The
+Ticket draft so enqueue can publish an Acceptance Basis before execution. The
 only automatic replacement is a Basis Refresh for an untouched waiting Ticket after its
 dependencies are accepted; drift still requires `return-to-draft`.
 
@@ -323,7 +324,7 @@ exit-2 Flow errors, outside the verdict vocabulary.
 
 ### Per-test Cycle Count Criteria
 
-`cycle_count` is a specialized Simulation Criterion. Each list item binds one
+`cycle_count` is a specialized simulation Criterion. Each list item binds one
 Target and registered test to one or more numeric thresholds:
 
 ```yaml
@@ -937,7 +938,7 @@ when a Criterion requires those tests. Execution is sorted and sequential.
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,
 loads approved waivers only when gated, evaluates, and publishes in order:
-Campaign, Simulation projection, Acceptance Evidence, saved Criteria state,
+Campaign, Simulation projection, Criterion evidence, saved Criteria state,
 terminal progress. Source/Target drift is rejected. Ungated evaluation remains
 `not_requested`, including incompatible input; collection errors still exit 2.
 Valid threshold misses or simulation failures exit 1. Blocking evaluation,
@@ -970,7 +971,7 @@ Deep readers validate its path, schema, byte counts, point count, digest, every
 point, recomputed rollups, and evaluation before accepting point-dependent
 evidence. Contract failures expose stable `COV_*` error codes. Summary readers
 validate manifest-local facts without opening point
-storage. Campaign and Simulation publication precede Acceptance Evidence. Coverage
+storage. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 Harness state save as the updated Criteria. Acceptance readers ignore evidence
@@ -1039,7 +1040,7 @@ quarantines, invocation locks, or number tombstones.
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
 its integrity-linked point store when V2, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
-it never calls Simulation or publishes Acceptance Evidence. Phase 5's native
+it never calls Simulation or publishes Criterion evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The
 Analyst's versioned output and capability-isolated, budgeted evidence boundary are documented in
 [MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). The release gate and

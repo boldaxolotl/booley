@@ -530,7 +530,7 @@ def return_to_draft(
     logs_dir: Path | str,
     append_transition: Callable[[str], None],
 ) -> AuthoringWorkspace:
-    """Prepare and recoverably publish a new authoring generation."""
+    """Prepare and recoverably publish a fresh Ticket draft."""
     root = Path(project_root).resolve()
     logs = Path(logs_dir)
     journal = _load_journal(root, logs.resolve(), slug)
@@ -551,7 +551,7 @@ def return_to_draft(
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
         _publish_board(root, journal)
         append_transition(
-            f"old basis {journal.basis_id}; new authoring generation {journal.generation}; "
+            f"old basis {journal.basis_id}; new draft identity {journal.generation}; "
             f"{journal.operation_id}"
         )
         journal = journal.with_state("published")

@@ -530,7 +530,7 @@ def _bind_existing_handoff_snapshot(
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
             print(
-                f"Error: cannot hand off '{slug}': accepted snapshot is unreadable",
+                f"Error: cannot hand off '{slug}': Criteria Satisfaction Record is unreadable",
                 file=sys.stderr,
             )
             return False
@@ -600,7 +600,7 @@ def _freeze_handoff_snapshot(
 
 
 def _handoff_basis_evidence(tio: Any, slug: str) -> dict:
-    """Load the durable enqueue receipt embedded in an Acceptance Snapshot."""
+    """Load the durable enqueue receipt embedded in a Criteria Satisfaction Record."""
     from .acceptance_basis import load_basis_receipt
 
     basis = _load_handoff_basis(tio, slug)
@@ -979,7 +979,9 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
     basis = tio.load_basis(slug)
     current_receipt = load_basis_receipt(tio._project_root, slug, basis.as_dict())
     if snapshot.acceptance_basis != current_receipt:
-        raise AcceptanceLedgerError("Acceptance Snapshot names a different Board Acceptance Basis")
+        raise AcceptanceLedgerError(
+            "Criteria Satisfaction Record names a different Board Acceptance Basis"
+        )
     with tempfile.TemporaryDirectory(prefix="booley-completion-basis-") as directory:
         snapshot_sources = snapshot.participant_heads
         sources = completion_basis_sources(
@@ -992,7 +994,7 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
             current_sources = validate_current_basis_refs(tio._project_root, basis)
             if current_sources != snapshot_sources:
                 raise AcceptanceLedgerError(
-                    "Ticket heads changed after the accepted snapshot was frozen"
+                    "Ticket heads changed after the Criteria Satisfaction Record was frozen"
                 )
             sources = snapshot_sources
         authoring = materialize_ticket_commits(
@@ -1024,7 +1026,9 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
-            print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
+            print(
+                f"Error: Criteria Satisfaction Record for '{slug}' is unreadable", file=sys.stderr
+            )
             return None
         try:
             _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
@@ -1037,11 +1041,11 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
         return accepted.snapshot
     if accepted.kind == "corrupt":
         print(
-            f"Error: accepted snapshot for '{slug}' is corrupt: {accepted.reason}",
+            f"Error: Criteria Satisfaction Record for '{slug}' is corrupt: {accepted.reason}",
             file=sys.stderr,
         )
         return None
-    print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
+    print(f"Error: Criteria Satisfaction Record for '{slug}' is unavailable", file=sys.stderr)
     return None
 
 

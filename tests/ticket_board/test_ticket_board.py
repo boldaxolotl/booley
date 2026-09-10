@@ -4466,7 +4466,7 @@ class TestOpReturnValues:
         snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
 
         assert op_complete(tio, "t1") is False
-        assert "accepted snapshot" in capsys.readouterr().err
+        assert "Criteria Satisfaction Record" in capsys.readouterr().err
 
     def test_complete_rejects_review_package_changed_after_binding(self, tmp_path, capsys):
         import json

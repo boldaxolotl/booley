@@ -522,8 +522,8 @@ draft ──► queued ──► running ──► review ──► done
 
 - `waiting → queued` happens when dependency Tickets finish.
 - `running → blocked` records a question or failure that needs human input.
-  Resolving it returns the same Ticket to `queued`; the Runner later resumes its
-  existing workspace and evidence.
+  Resolving it returns the same Ticket to `queued`; an active `booley run`
+  invocation later resumes its existing workspace and evidence.
 - `running → queued` is an exceptional interruption-recovery move, not another
   development attempt. Do not requeue while the Ticket still has an active job.
 - `running → review` is the default successful outcome. A Ticket configured with

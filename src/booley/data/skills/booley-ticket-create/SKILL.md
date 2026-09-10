@@ -339,7 +339,7 @@ the candidate determines the expanded Criterion name.
   dry-run completely at the basis baseline; a distinct frozen candidate may defer only
   its Scope `[new]` RTL/TB paths.
 - If a blocked ticket needs different authored inputs, use `return-to-draft`; it
-  preserves the old basis and evidence and starts a new authoring generation.
+  preserves the old basis and evidence and starts fresh Ticket authoring.
 - Decide the Target Plan during Ticket creation. `persistent` retains the new Target;
   `replacement` retains its candidate and removes its runnable baseline; `ephemeral`
   removes its candidate. Every selector resolves uniquely and is bound by Criteria.
