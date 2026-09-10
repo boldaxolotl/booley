@@ -1026,7 +1026,9 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     accepted = read_acceptance(log_dir)
     if accepted.kind == "accepted":
         if accepted.snapshot is None:
-            print(f"Error: Criteria Satisfaction Record for '{slug}' is unreadable", file=sys.stderr)
+            print(
+                f"Error: Criteria Satisfaction Record for '{slug}' is unreadable", file=sys.stderr
+            )
             return None
         try:
             _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)

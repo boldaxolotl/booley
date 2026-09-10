@@ -349,7 +349,9 @@ def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
     root = Path(log_dir) / "acceptance"
     reference_path = root / "accepted.json"
     if not reference_path.exists():
-        return AcceptanceReadResult("unavailable", reason="Criteria Satisfaction Record is unavailable")
+        return AcceptanceReadResult(
+            "unavailable", reason="Criteria Satisfaction Record is unavailable"
+        )
     try:
         reference = json.loads(reference_path.read_text(encoding="utf-8"))
         digest = reference["snapshot_digest"]

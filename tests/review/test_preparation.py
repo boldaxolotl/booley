@@ -300,6 +300,14 @@ def test_review_snapshot_heads_requires_frozen_exact_participants(tmp_path: Path
     monkeypatch.setattr(
         rp,
         "read_acceptance",
+        lambda _log_dir: SimpleNamespace(kind="corrupt", snapshot=None, reason="invalid JSON"),
+    )
+    with pytest.raises(rp.ReviewPrepError, match="Criteria Satisfaction Record is corrupt"):
+        rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
+
+    monkeypatch.setattr(
+        rp,
+        "read_acceptance",
         lambda _log_dir: SimpleNamespace(kind="unavailable", snapshot=None, reason="missing"),
     )
     with pytest.raises(rp.ReviewPrepError, match="no Criteria Satisfaction Record"):
