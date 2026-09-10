@@ -3,16 +3,16 @@
 This companion exercise is a named Taxi phase, with 40 minutes of work and
 its resources included in Taxi cleanup. It leaves the pinned direct Taxi clone,
 its symlink, Project Setup, hardware workloads and accepted verification assets unchanged.
-It is not a fourth IP journey or a consumer wrapper around Taxi.
+It is not a fourth IP Scenario or a consumer wrapper around Taxi.
 
 Public authority: [Submodules](../../../../docs/user/CONFIG.md#submodules), reconciled
 against the exact published Booley release documentation at execution. The phase
 closes the submodule part of inventory P-09; normal flat/vendored source handling
-continues to belong to the real IP journeys.
+continues to belong to the production IP Scenarios.
 
 ## Fixture and pre-run authority
 
-Create only beneath the run-owned companion root and its operator-owned fixture
+Create only beneath the run-owned companion root and its Scenario Operator-owned fixture
 source directory. Register all Projects, local repositories, branches, worktrees
 and Session Runtimes in the ownership ledger. A separate paired `.booley_project` Git
 repository is intentional and independently owned. Use the same exact published
@@ -52,7 +52,7 @@ The testbench instantiates the RTL module in `deps/data/rtl/data.sv`; that modul
 instantiates the RTL module in `deps/data/nested/leaf/rtl/leaf.sv`. The leaf's output
 reaches a top-level signal that the testbench checks together with DATA. These
 are required compiled sources and live simulation dependencies, not text files
-that are only inspected by the coordinator. There are no duplicate module
+that are only inspected by the Scenario Operator. There are no duplicate module
 definitions, fallback constants, precompiled dependency libraries or optional
 filesets that could let a missing dependency pass.
 
@@ -82,7 +82,7 @@ remote configuration, a shared object store or a working-tree copy.
 
 All IDs below belong to scenario `taxi-10g-mac-port-evolution` and use the suffixes
 shown. Evidence is captured immediately after each stimulus and before restoration.
-Keep the final production profile list explicit. Each negative variant starts
+Keep the final production Configured Scenario selection explicit. Each negative variant starts
 from a fresh known-good disposable fixture state, varies one precondition, and
 is restored before the next check. Fixture creation itself is not product proof.
 
@@ -110,7 +110,7 @@ is restored before the next check. Fixture creation itself is not product proof.
 | `submodules.shallow` | Supply a demonstrably shallow local source variant and materialize. | Hard failure identifies shallow repository and complete-history remedy. |
 | `submodules.incomplete-objects` | In a disposable copy only, remove a known required reachable historical object while preserving the current worktree, then materialize the historical destination. | Hard failure identifies incomplete local objects; no fallback fetch or newer-checkout substitution. Capture exact missing object identity and object-check result. |
 | `submodules.rollback` | Cause a later nested materialization to fail after a prior repository was created; place a uniquely hashed pre-existing sentinel in an unrelated destination beforehand. | Attempt-created repositories are rolled back; pre-existing sentinel/content remain byte-identical. Failure and before/after path inventories retained. |
-| `submodules.matching-destination` | Within a live product operation's documented recovery path, retry materialization with an already matching clean destination. | Matching pinned repository is accepted with the same identity. This checks Ticket Workspace recovery, not coordinator restart/resume. |
+| `submodules.matching-destination` | Within a live product operation's documented recovery path, retry materialization with an already matching clean destination. | Matching pinned repository is accepted with the same identity. This checks Ticket Workspace recovery, not Scenario Operator restart/resume. |
 | `submodules.restore` | Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation. | Fresh successful evidence and exact expected pins; all earlier negative observations remain retained. |
 | `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/configuration/Session Image identities and clean status; companion does not replace any Taxi regression evidence. |
 | `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories, Session Runtimes, worktrees, and inventory roots removed; Taxi and borrowed state preserved. |
@@ -124,7 +124,7 @@ hand-built destination is not evidence that the public product route worked.
 The warm-cache negative cases deliberately retain prior build products to catch
 stale-success reuse. Archive baseline evidence separately and require a new
 invocation/result identity for every observation. Move missing sources to an
-operator-owned location outside all consumed source/library paths; do not leave
+Scenario Operator-owned location outside all consumed source/library paths; do not leave
 a renamed module discoverable in the Project. Do not modify source lists or
 assertions to make the negative pass, and do not let the Developer Agent repair or fetch the
 dependency before its failure is captured. These seven functional checks consume
@@ -136,7 +136,7 @@ The companion requires trustworthy run identity, release and Session Image, auth
 its own fixture preparation. It does not depend on Taxi's mutation or fault-repair
 outcome. A companion failure blocks only its dependent checks, not independent
 Taxi work. At its cap, capture remaining requirements as blocked and clean up.
-The whole Taxi core profile cannot pass with an unmet required companion check.
+The whole Taxi core Scenario Run cannot pass with an unmet required companion check.
 
 Keep fixture recipe digest, exact source and destination commits, gitlink trees,
 local object-closure proofs, isolated variant diffs, Git and Booley Flow/Ticket logs,

@@ -2,6 +2,28 @@ format_version: 1
 scenario_id: sample
 title: Release smoke
 source: https://example.com/release
+check_sets:
+- id: sample-core
+  checks:
+  - baseline
+  - negative
+  - restored
+  - removed
+configured_scenarios:
+- id: sample-linux-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Docker ready
+  check_sets:
+  - sample-core
+  exclusions: []
 authority:
 - Owned temporary root only
 inputs:

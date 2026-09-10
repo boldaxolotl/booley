@@ -1,6 +1,6 @@
 # Independent UART evaluator
 
-This directory stays in operator-controlled storage outside the Developer Agent's
+This directory stays in Scenario Operator-controlled storage outside the Developer Agent's
 Project, Session Runtime, mounted folders and network reach. Copy only `../spec/`
 and the approved prompts/Ticket payloads into the Project. Never expose this
 implementation, generated seed/cases, controls, build logs or raw observations to
@@ -11,8 +11,8 @@ The evaluator reads only the frozen public corpus and addenda. Its simulator
 adapter compiles an owned snapshot of explicit, hash-verified RTL from the accepted
 Git commit. Literal includes must resolve to explicit hashed `include_files`;
 absolute, escaping, ambiguous and macro includes are rejected. Include directives
-are rewritten only to the corresponding operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
-Provision cocotb 2.1.0 and Icarus in the isolated operator environment before
+are rewritten only to the corresponding Scenario Operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
+Provision cocotb 2.1.0 and Icarus in the isolated Scenario Operator environment before
 the run; record their exact versions and immutable Session Image identity in run evidence.
 
 From this directory:
@@ -38,7 +38,7 @@ Each case resets the device and emits separate stimulus, observations, external-
 VCD and execution log files. Operational compile/case limits are 300/30 seconds;
 the source-clock ceiling is 1,048,576. Budget ceilings do not demonstrate feasibility.
 Controls record a shared wall-clock deadline; the initial evaluation uses only its
-remaining time. The coordinator further clips controls plus evaluation to the shared 30-minute phase,
+remaining time. The Scenario Operator further clips controls plus evaluation to the shared 30-minute phase,
 repairs plus full reruns to 45 minutes each, and all work to the cleanup boundary.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 

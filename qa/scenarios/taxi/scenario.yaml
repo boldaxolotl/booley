@@ -2,6 +2,570 @@ format_version: 1
 scenario_id: taxi-10g-mac-port-evolution
 title: Taxi 10G MAC port and evolution
 source: https://github.com/boldaxolotl/booley/issues/376#issuecomment-5596872672
+check_sets:
+- id: taxi-core
+  checks:
+  - inputs.pin
+  - inputs.no-wrapper
+  - inputs.symlink
+  - inputs.release
+  - inputs.authority
+  - setup.bootstrap-precondition
+  - setup.initialize
+  - setup.delegate-authority
+  - setup.plan
+  - setup.source-preservation
+  - setup.image-provenance
+  - setup.no-runtime-install
+  - setup.import-probe
+  - setup.stealth-disabled
+  - setup.public-navigation
+  - setup.image-clean-recovery
+  - physical.target
+  - physical.constraints
+  - physical.discovery-doctor
+  - inventory.H-03.init-repeat
+  - inventory.H-03.provider
+  - inventory.H-10.doctor-recovery
+  - inventory.P-01.setup-conformance
+  - inventory.P-01.setup-findings
+  - inventory.P-01.setup-native
+  - inventory.P-01.setup-plan
+  - inventory.P-01.setup-selector-docs
+  - inventory.P-07.dependency-refresh
+  - inventory.P-07.derived-image
+  - inventory.P-07.hook-failure
+  - inventory.P-07.hook-once
+  - inventory.P-07.hook-recovery
+  - inventory.P-07.host-skill-readonly
+  - target.sim-driver
+  - target.source-closure
+  - target.lint-driver
+  - target.synth-driver
+  - target.unambiguous
+  - target.cli-mcp
+  - target.fully-qualified
+  - target.discovery-refresh
+  - target.parameter-data_w
+  - target.parameter-tx_gbx_if_en
+  - target.parameter-rx_gbx_if_en
+  - target.parameter-gbx_cnt
+  - target.parameter-dic_en
+  - target.parameter-ptp_ts_en
+  - target.parameter-ptp_td_en
+  - target.parameter-ptp_ts_fmt_tod
+  - target.parameter-ptp_ts_fns_w
+  - target.parameter-ptp_ts_w
+  - target.parameter-ptp_td_sdi_pipeline
+  - target.parameter-tx_tag_w
+  - target.parameter-pfc_en
+  - target.parameter-pause_en
+  - target.parameter-stat_en
+  - target.parameter-stat_tx_level
+  - target.parameter-stat_rx_level
+  - target.parameter-stat_id_base
+  - target.parameter-stat_update_period
+  - target.parameter-stat_str_en
+  - target.parameter-stat_prefix_str
+  - target.register-rx
+  - target.register-tx
+  - target.register-tx-alignment
+  - target.register-tx-underrun
+  - target.register-tx-user-error
+  - target.register-lfc
+  - target.register-pfc
+  - doctor.plain
+  - doctor.deep
+  - doctor.plain-recheck
+  - doctor.failure-gate
+  - baseline.full-module
+  - baseline.normal-frames
+  - baseline.jumbo-frames
+  - baseline.rx-ifg12
+  - baseline.rx-ifg0
+  - baseline.tx-ifg12
+  - baseline.tx-ifg0
+  - baseline.dic-alignment
+  - baseline.good-fcs
+  - baseline.tx-underrun
+  - baseline.tx-user-error
+  - baseline.lfc-frame
+  - baseline.pfc-frame
+  - baseline.rx-timestamps
+  - baseline.tx-timestamps
+  - baseline.verible
+  - baseline.yosys
+  - physical.recipe-identity
+  - physical.clean-baseline
+  - physical.clock-coverage
+  - inventory.F-02.lint-clean
+  - inventory.F-02.lint-dedupe
+  - inventory.F-02.lint-hard
+  - inventory.F-02.lint-infra
+  - inventory.F-02.lint-native-waiver
+  - inventory.F-02.lint-nonfatal-warning
+  - inventory.F-02.lint-recovery
+  - inventory.F-02.lint-scope
+  - inventory.F-02.lint-warning
+  - inventory.F-03.synth-advisory
+  - inventory.F-03.synth-baseline
+  - inventory.F-03.synth-frontend-incompatible
+  - inventory.F-03.synth-frontend-missing
+  - inventory.F-03.synth-latch
+  - inventory.F-03.synth-metrics
+  - inventory.F-03.synth-recovery
+  - inventory.F-03.synth-threshold
+  - inventory.P-02.target-ambiguous
+  - inventory.P-02.target-override
+  - inventory.P-02.target-parameters
+  - inventory.P-02.target-qualified
+  - inventory.P-02.target-recovery
+  - inventory.P-02.target-views
+  - inventory.P-03.doctor-selection
+  - inventory.P-03.selftest-hidden
+  - inventory.P-03.target-axes
+  - inventory.P-05.cocotb-assertion
+  - inventory.P-05.cocotb-focused
+  - inventory.P-05.cocotb-full
+  - inventory.P-05.cocotb-missing-xml
+  - inventory.P-05.cocotb-presentation
+  - inventory.P-05.cocotb-recovery
+  - inventory.P-05.cocotb-truncated-xml
+  - inventory.P-09.many-cores
+  - inventory.P-09.vendored-ignore
+  - interactive.child-context
+  - interactive.prompt
+  - interactive.discovery
+  - interactive.focused-pfc
+  - bwave.alias-register
+  - bwave.alias-persist
+  - bwave.alias-stale
+  - bwave.alias-missing
+  - bwave.marker-create
+  - bwave.marker-list
+  - bwave.marker-resolve
+  - bwave.marker-delete
+  - bwave.semantic-list
+  - bwave.semantic-signal
+  - bwave.semantic-wave
+  - bwave.semantic-value
+  - bwave.semantic-find
+  - bwave.semantic-sample
+  - bwave.semantic-diff
+  - bwave.semantic-distance
+  - bwave.semantic-stats
+  - bwave.semantic-stuck
+  - bwave.synchronous-view
+  - bwave.asynchronous-view
+  - bwave.explicit-clock
+  - bwave.explicit-reset
+  - bwave.cycle-token
+  - bwave.typed-physical-time
+  - bwave.latency-crosscheck
+  - interactive.tb-review
+  - interactive.restore
+  - inventory.D-03.docs-contract
+  - inventory.D-03.docs-recovery
+  - inventory.I-01.interactive-commit
+  - inventory.I-02.cancel-queued
+  - inventory.I-02.cancel-recovery
+  - inventory.I-02.cancel-running
+  - inventory.I-02.detached-poll
+  - inventory.I-02.report-timeout
+  - inventory.I-04.interactive-concurrency
+  - inventory.I-04.interactive-priority
+  - inventory.I-04.shared-tree-collision
+  - inventory.I-05.catalog-coherence
+  - inventory.I-05.public-navigation
+  - inventory.ST-04.interrupt-cleanup
+  - inventory.ST-04.mount-boundary
+  - inventory.ST-04.network-deny
+  - inventory.ST-04.origin-push-deny
+  - inventory.ST-04.pdk-readonly
+  - inventory.ST-04.provider-allow
+  - inventory.ST-04.runtime-user
+  - inventory.W-01.trace-empty
+  - inventory.W-01.trace-fresh
+  - inventory.W-01.trace-legacy
+  - inventory.W-01.trace-native
+  - inventory.W-01.trace-raw-vcd
+  - inventory.W-01.trace-recovery
+  - inventory.W-01.trace-truncated
+  - inventory.W-02.alias-replace
+  - inventory.W-02.marker-wrapper-diff
+  - inventory.W-02.marker-wrapper-value
+  - inventory.W-02.marker-wrapper-wave
+  - inventory.W-02.trace-same-path
+  - inventory.W-03.docs-list
+  - inventory.W-03.docs-search
+  - inventory.W-03.docs-show
+  - inventory.W-03.json-diff-rejected
+  - inventory.W-03.json-distance-rejected
+  - inventory.W-03.json-find-supported
+  - inventory.W-03.json-list-supported
+  - inventory.W-03.json-sample-rejected
+  - inventory.W-03.json-signal-rejected
+  - inventory.W-03.json-stats-supported
+  - inventory.W-03.json-stuck-rejected
+  - inventory.W-03.json-value-supported
+  - inventory.W-03.json-wave-rejected
+  - inventory.W-03.query-ambiguous
+  - inventory.W-03.query-limit
+  - inventory.W-03.query-pattern-miss
+  - inventory.W-03.schema
+  - inventory.W-03.skill
+  - inventory.W-03.version
+  - inventory.W-04.async-bare-time
+  - inventory.W-04.bad-literal
+  - inventory.W-04.literal-slice
+  - inventory.W-04.marker-build-rejected
+  - inventory.W-04.marker-diff-rejected
+  - inventory.W-04.marker-distance-rejected
+  - inventory.W-04.marker-docs-rejected
+  - inventory.W-04.marker-find-rejected
+  - inventory.W-04.marker-list-rejected
+  - inventory.W-04.marker-sample-rejected
+  - inventory.W-04.marker-schema-rejected
+  - inventory.W-04.marker-signal-rejected
+  - inventory.W-04.marker-skill-rejected
+  - inventory.W-04.marker-stats-rejected
+  - inventory.W-04.marker-stuck-rejected
+  - inventory.W-04.marker-value-rejected
+  - inventory.W-04.marker-wave-async-bare
+  - inventory.W-04.marker-wave-async-column
+  - inventory.W-04.marker-wave-negative
+  - inventory.W-04.marker-wave-outside
+  - inventory.W-04.marker-wave-render
+  - inventory.W-04.marker-wave-repeat
+  - inventory.W-04.marker-wave-shared-time
+  - inventory.W-04.query-input-recovery
+  - inventory.W-04.reset-include
+  - inventory.W-04.reset-skip
+  - inventory.W-04.time-units
+  - inventory.W-04.unknown-signal
+  - inventory.W-04.virtual-build-rejected
+  - inventory.W-04.virtual-diff-rejected
+  - inventory.W-04.virtual-distance-malformed
+  - inventory.W-04.virtual-distance-semantic
+  - inventory.W-04.virtual-find-malformed
+  - inventory.W-04.virtual-find-semantic
+  - inventory.W-04.virtual-list-rejected
+  - inventory.W-04.virtual-sample-malformed
+  - inventory.W-04.virtual-sample-semantic
+  - inventory.W-04.virtual-signal-rejected
+  - inventory.W-04.virtual-stats-rejected
+  - inventory.W-04.virtual-stuck-rejected
+  - inventory.W-04.virtual-value-malformed
+  - inventory.W-04.virtual-value-semantic
+  - inventory.W-04.virtual-wave-malformed
+  - inventory.W-04.virtual-wave-semantic
+  - inventory.W-04.width-mismatch
+  - submodules.fixture
+  - submodules.ticket-current
+  - submodules.simulation-dependency-baseline
+  - submodules.simulation-missing-top
+  - submodules.simulation-restore-top
+  - submodules.simulation-missing-nested
+  - submodules.simulation-restore-nested
+  - submodules.simulation-missing-cold
+  - submodules.baseline-historical
+  - submodules.standalone
+  - submodules.offline
+  - submodules.default-all
+  - submodules.select-one
+  - submodules.select-none
+  - submodules.simulation-excluded-dependency
+  - submodules.selection-intersection
+  - submodules.paired-always
+  - submodules.missing
+  - submodules.dirty
+  - submodules.shallow
+  - submodules.incomplete-objects
+  - submodules.rollback
+  - submodules.matching-destination
+  - submodules.restore
+  - submodules.taxi-unchanged
+  - submodules.cleanup
+  - create.strengthen-10g-mac-observability.payload
+  - create.strengthen-10g-mac-observability.basis
+  - create.verification-scope
+  - retry.exact-allowance
+  - ticket1.target-definition
+  - ticket1.bad-fcs-stimulus
+  - ticket1.bad-fcs-tuser
+  - ticket1.bad-fcs-indication
+  - ticket1.bad-fcs-counter
+  - ticket1.pfc-stimulus
+  - ticket1.pfc-tx-bitmap
+  - ticket1.pfc-rx-bitmap
+  - ticket1.pfc-tx-quanta
+  - ticket1.pfc-rx-quanta
+  - ticket1.pfc-counter25
+  - ticket1.pfc-counter57
+  - ticket1.underrun-stimulus
+  - ticket1.underrun-termination
+  - ticket1.underrun-counter
+  - ticket1.completion-tag
+  - ticket1.completion-time
+  - ticket1.statistics-typing
+  - ticket1.statistics-namespace
+  - ticket1.elaboration
+  - ticket1.simulation
+  - ticket1.tb-review-clean
+  - ticket1.persistent-target
+  - mutation.contract
+  - mutation.source-isolation
+  - mutation.steering
+  - mutation.proposal-lock
+  - mutation.pristine-baseline
+  - mutation.isolated-results
+  - mutation.restoration
+  - mutation.threshold
+  - mutation.failure-gate
+  - ticket1.done
+  - ticket1.merge
+  - ticket1.workspace-cleanup
+  - ticket1.triage-report
+  - inventory.T-01.ticket-draft
+  - inventory.T-01.ticket-guidance
+  - inventory.T-01.ticket-invalid-criterion
+  - inventory.T-01.ticket-invalid-scope
+  - inventory.T-01.ticket-invalid-target
+  - inventory.T-01.ticket-seal
+  - image.package-pytest
+  - image.package-pytest-xdist
+  - image.package-pytest-split
+  - image.package-cocotb
+  - image.package-cocotb-bus
+  - image.package-cocotb-test
+  - image.package-cocotbext-axi
+  - image.package-cocotbext-eth
+  - image.package-cocotbext-i2c
+  - image.package-cocotbext-pcie
+  - image.package-cocotbext-uart
+  - image.package-scapy
+  - fst.metadata
+  - seed.clean-baseline
+  - seed.authorized-diff
+  - seed.upstream-pass
+  - seed.oracle-fail
+  - seed.fst-relationship
+  - seed.invalid-split-recovery
+  - seed.hidden-location
+  - create.repair-pfc-priority-routing.payload
+  - create.repair-pfc-priority-routing.basis
+  - ticket2.basis-dependency
+  - ticket2.scope
+  - ticket2.reproduce
+  - ticket2.diagnose
+  - ticket2.repair-identity
+  - ticket2.elab-upstream
+  - ticket2.elab-observability
+  - ticket2.sim-upstream
+  - ticket2.sim-observability
+  - ticket2.lint
+  - ticket2.synthesis-cells
+  - ticket2.review-bugs
+  - ticket2.review-protocol
+  - ticket2.review-spec
+  - ticket2.failure-recovery
+  - physical.ticket2-cells
+  - ticket2.synthesis-path
+  - ticket2.done
+  - ticket2.merge
+  - ticket2.workspace-cleanup
+  - ticket2.triage-report
+  - failure.independent-continuation
+  - deadline.finalize
+  - inventory.S-01.review-code-style
+  - inventory.S-01.review-protocol
+  - inventory.S-04.criterion-review-code-style
+  - inventory.S-04.criterion-review-protocol
+  - inventory.S-05.diagnostic-call
+  - inventory.S-05.evidence-rerun
+  - inventory.S-05.evidence-stale
+  - inventory.S-05.fail-fix-pass
+  - inventory.S-05.mandatory-block
+  - inventory.S-05.optional-justify
+  - inventory.S-05.out-contract
+  - inventory.T-03.dependency-release
+  - inventory.T-03.dependency-wait
+  - inventory.T-03.done-shortcut
+  - inventory.T-03.human-block
+  - inventory.T-03.human-unblock
+  - inventory.T-03.resume-workspace
+  - inventory.T-03.transition-done
+  - inventory.T-03.transition-queue
+  - inventory.T-03.transition-review
+  - inventory.T-03.transition-run
+  - inventory.T-04.review-queue-invalid
+  - inventory.T-04.triage-approve
+  - inventory.T-04.triage-archive
+  - inventory.T-04.triage-discover
+  - inventory.T-04.triage-reset
+  - inventory.T-05.bookkeeping-reject
+  - inventory.T-05.report-dirty-deleted
+  - inventory.T-05.report-dirty-modified
+  - inventory.T-05.report-dirty-staged
+  - inventory.T-05.report-dirty-untracked
+  - inventory.T-05.scope-deviation
+  - inventory.T-05.scope-justification
+  - inventory.T-05.scope-recovery
+  - inventory.T-06.basis-edit-reject
+  - inventory.T-06.basis-pin
+  - inventory.T-06.basis-redraft
+  - inventory.T-06.target-disposition
+  - inventory.T-07.briefing-html
+  - inventory.T-07.briefing-html-failure
+  - inventory.T-07.briefing-json
+  - inventory.T-07.briefing-regenerate
+  - inventory.T-07.run-result
+  - inventory.T-07.success-done
+  - inventory.T-07.success-review
+  - inventory.T-08.checkpoint-interrupt
+  - inventory.T-08.checkpoint-resume
+  - inventory.T-08.developer-timeout
+  - inventory.T-08.known-transient-retry
+  - inventory.T-08.ordinary-crash
+  - inventory.T-08.subscription-requeue
+  - inventory.T-09.artifact-isolation
+  - inventory.T-09.atomic-claim
+  - inventory.T-09.class-cap
+  - inventory.T-09.queue-cancel
+  - inventory.T-09.queue-full
+  - inventory.T-10.board-human
+  - inventory.T-10.board-machine
+  - inventory.T-10.check-ready
+  - inventory.T-10.console
+  - inventory.T-10.dry-run
+  - inventory.T-10.idle-drained
+  - inventory.T-11.human-policy
+  - inventory.T-11.limit-invalid
+  - inventory.T-11.model-invalid-role
+  - inventory.T-11.model-role
+  - inventory.T-11.model-tier
+  - inventory.T-11.policy-recovery
+  - inventory.T-11.report-policy-optional
+  - inventory.T-11.report-policy-required
+  - inventory.T-11.timeout-active
+  - inventory.T-11.timeout-wall
+  - final.doctor-plain
+  - final.doctor-deep
+  - final.upstream
+  - final.observability
+  - final.lint
+  - final.synthesis
+  - final.bwave
+  - final.source-identity
+  - final.accepted-assets
+  - physical.final
+  - archive.before-delete
+  - archive.git-bundle
+  - archive.evidence
+  - cleanup.session-runtimes
+  - cleanup.processes
+  - cleanup.worktrees
+  - cleanup.local-branches
+  - cleanup.project-inventory-entries
+  - cleanup.project-derived-images
+  - cleanup.volumes
+  - cleanup.mounts
+  - cleanup.inner-project-repository
+  - cleanup.disposable-clone
+  - cleanup.preserve-host
+  - cleanup.remotes
+  - cleanup.verdict
+  - physical.archive-cleanup
+- id: taxi-gui
+  checks:
+  - viewer.scoped-state
+  - viewer.markers-cursor
+  - viewer.actual-client-open
+  - viewer.visual-capture
+  - inventory.I-01.client-session
+  - inventory.I-02.mcp-schema
+  - inventory.W-03.legacy-translation
+  - inventory.W-05.gui-append
+  - inventory.W-05.gui-bare-fallback
+  - inventory.W-05.gui-cap
+  - inventory.W-05.gui-dropped
+  - inventory.W-05.gui-no-clock
+  - inventory.W-05.gui-no-wcp
+  - inventory.W-05.gui-recovery
+  - inventory.W-05.gui-scoped
+configured_scenarios:
+- id: taxi-ubuntu-codex-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  check_sets:
+  - taxi-core
+  exclusions: []
+- id: taxi-ubuntu-codex-vscode
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  check_sets:
+  - taxi-core
+  - taxi-gui
+  exclusions: []
+- id: taxi-windows-codex-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  check_sets:
+  - taxi-core
+  exclusions: []
+- id: taxi-windows-codex-vscode
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  check_sets:
+  - taxi-core
+  - taxi-gui
+  exclusions: []
 inputs:
 - id: release
   kind: pre-run
@@ -24,7 +588,7 @@ authority:
 - |-
   Keep credentials outside Projects and evidence; preserve borrowed installations, credentials, shared images/caches and unrelated state.
 - |-
-  Recovery stays within this live run and phase allowance; no coordinator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
+  Recovery stays within this live run and phase allowance; no Scenario Operator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
 budget:
   deadline_minutes: 480
   cleanup_minutes: 15
@@ -122,15 +686,15 @@ steps:
 - id: inputs.authority
   phase: prepare
   action: |-
-    Freeze profile, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
+    Freeze Configured Scenario, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
   checks:
   - id: inputs.authority
     capabilities:
     - ST-04
     stimulus: |-
-      Freeze profile, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
+      Freeze Configured Scenario, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
     expected: |-
-      Freeze profile, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
+      Freeze Configured Scenario, eight-hour deadline, granted authority, auth mechanism without secret values, external artifact root, run-owned branch and cleanup ownership.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Run declaration, capability probes and ledger.
     capture: evidence/taxi-10g-mac-port-evolution.inputs.authority
@@ -2550,17 +3114,17 @@ steps:
   phase: baseline
   action: |-
     Execute `many-cores` using the attached scenario-owned probe contract.
-    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
   checks:
   - id: inventory.P-09.many-cores
     capabilities:
     - P-09
     stimulus: |-
       Execute `many-cores` using the attached scenario-owned probe contract.
-      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
     expected: |-
       Evaluate only the independently named `many-cores` outcome in this contract.
-      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#flat-and-vendored-repos
     evidence: |-
       Vendored/core manifest and discovery output. Direct Taxi checkout has no submodules and earns no submodule credit. Companion must prove both Ticket and baseline worktrees offline and must fail simulation when required submodule RTL is missing; root-only synthesis earns no functional-dependency credit. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -2570,22 +3134,22 @@ steps:
   assets:
   - path: probes/P-09.md
     audience: coordinator
-    sha256: d45cdbe1eb4b2fc91b186a28013792ee9ffd94b027960a27965b47a63eeb96c1
+    sha256: 9fb6285767e5c0c29919cc7acedb3e01c36453047d952feee8fdcda4fd4e1874
 - id: inventory.P-09.vendored-ignore
   phase: baseline
   action: |-
     Execute `vendored-ignore` using the attached scenario-owned probe contract.
-    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
   checks:
   - id: inventory.P-09.vendored-ignore
     capabilities:
     - P-09
     stimulus: |-
       Execute `vendored-ignore` using the attached scenario-owned probe contract.
-      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
     expected: |-
       Evaluate only the independently named `vendored-ignore` outcome in this contract.
-      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+      `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios above.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#flat-and-vendored-repos
     evidence: |-
       Vendored/core manifest and discovery output. Direct Taxi checkout has no submodules and earns no submodule credit. Companion must prove both Ticket and baseline worktrees offline and must fail simulation when required submodule RTL is missing; root-only synthesis earns no functional-dependency credit. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -2595,7 +3159,7 @@ steps:
   assets:
   - path: probes/P-09.md
     audience: coordinator
-    sha256: d45cdbe1eb4b2fc91b186a28013792ee9ffd94b027960a27965b47a63eeb96c1
+    sha256: 9fb6285767e5c0c29919cc7acedb3e01c36453047d952feee8fdcda4fd4e1874
 - id: interactive.child-context
   phase: interactive
   action: Launch one long-lived read-only Interactive child in setup-complete Session Runtime with Project cwd and
@@ -2641,7 +3205,7 @@ steps:
   assets:
   - path: prompts/interactive.md
     audience: Interactive Mode delegate
-    sha256: cbcbbf1f74aca6f4c0d7e4679536b4bc29be97606d7602e3d545537509b42613
+    sha256: effd15f8b36e55a39cb23e00e5ca45b7457d7f9fc7ce2b7530368eb182ce984c
 - id: interactive.discovery
   phase: interactive
   action: Child compares CLI/MCP Target discovery and resolved build inputs.
@@ -3248,7 +3812,7 @@ steps:
     expected: Capture Viewer only with pre-run qualified observer; verify visible scoped signals/markers/cursor.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: |-
-      Timestamped screenshot with client/run identity and observer capability evidence; unavailable observer means incomplete GUI profile.
+      Timestamped screenshot with client/run identity and observer capability evidence; unavailable observer means incomplete GUI Scenario Run.
     capture: evidence/taxi-10g-mac-port-evolution.viewer.visual-capture
   requires:
   - inputs.pin
@@ -6532,14 +7096,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-append
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6561,14 +7125,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-bare-fallback
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6590,14 +7154,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-cap
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6619,14 +7183,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-dropped
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6648,14 +7212,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-no-clock
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6677,14 +7241,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-no-wcp
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6706,14 +7270,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-recovery
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6735,14 +7299,14 @@ steps:
       `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.W-05.gui-scoped
   requires:
   - inputs.pin
   assets:
   - path: probes/W-05.md
     audience: coordinator
-    sha256: f31d41b0f3452c11a241aeebbda9d1652c0bc2c28cdc2204e68e084cda781351
+    sha256: c1119d674106d77a3847051b4558658d12567b6edcb55bef875f0d3b921cdafb
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
@@ -6768,7 +7332,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
   - path: fixtures/build_submodules.py
     audience: coordinator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -6798,7 +7362,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -6822,7 +7386,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -6847,7 +7411,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -6869,7 +7433,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -6900,7 +7464,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -6920,7 +7484,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -6950,7 +7514,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -6974,7 +7538,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -6996,7 +7560,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -7018,7 +7582,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -7038,7 +7602,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -7060,7 +7624,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -7082,7 +7646,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -7107,7 +7671,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -7127,7 +7691,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -7147,7 +7711,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -7167,7 +7731,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -7189,7 +7753,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -7209,7 +7773,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -7233,7 +7797,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -7257,7 +7821,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -7269,10 +7833,10 @@ steps:
     stimulus: |-
       Within a live product operation's documented recovery path, retry materialization with an already matching clean destination.
     expected: |-
-      Matching pinned repository is accepted with the same identity. This checks product workspace recovery, not coordinator restart/resume.
+      Matching pinned repository is accepted with the same identity. This checks product workspace recovery, not Scenario Operator restart/resume.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      Matching pinned repository is accepted with the same identity. This checks product workspace recovery, not coordinator restart/resume.
+      Matching pinned repository is accepted with the same identity. This checks product workspace recovery, not Scenario Operator restart/resume.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.matching-destination
   requires:
   - inputs.pin
@@ -7281,7 +7845,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -7299,7 +7863,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
   recovery:
     baseline: submodules.fixture
     detection:
@@ -7330,7 +7894,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -7352,7 +7916,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: e6a6d37fe2aa2b2c886f7aa9b0530c54d0e72cf8613b06899c5423d32283a7c1
+    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-
@@ -8532,7 +9096,7 @@ steps:
     stimulus: Reproduce exact class-rotation failure on fresh simulation and trace.
     expected: Reproduce exact class-rotation failure on fresh simulation and trace.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: New run/FST and assertion, separate from operator seed proof.
+    evidence: New run/FST and assertion, separate from Scenario Operator seed proof.
     capture: evidence/taxi-10g-mac-port-evolution.ticket2.reproduce
   requires:
   - inputs.pin
@@ -10009,7 +10573,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -10040,7 +10604,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -10071,7 +10635,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -10102,7 +10666,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -10133,7 +10697,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -10164,7 +10728,7 @@ steps:
     sha256: 9acc4c56992f27132f8a42a6f5a7336e383e692c736bec4c0ee79ccee70b300a
   - path: probes/provider-fault/README.md
     audience: coordinator
-    sha256: 87403a50d12303f2f30adda56cf3d135435768e56d984abd8a241098cc11e7a3
+    sha256: 696c75405d5e5bd6963edd78e643e83c22a9eacc0e60bd3fcd81a4fe70e5e5d2
   - path: probes/provider-fault/codex_fixture.py
     audience: coordinator
     sha256: ecaf82a5cfbb1a7625a5e43c42b2b9500eb05bf43f1fb0584c0ca62d31bbb64a
@@ -11036,7 +11600,7 @@ steps:
     stimulus: Incomplete mandatory cleanup prevents pass, separately visible from product failure.
     expected: Incomplete mandatory cleanup prevents pass, separately visible from product failure.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Resource reconciliation, missing actions and profile/operational result.
+    evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict
 - id: physical.archive-cleanup
   phase: cleanup
