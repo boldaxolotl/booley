@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.flows.sim.coverage_analysis_input import (
+    CoverageAnalysisError,
+    CoverageSourceClosure,
+    verified_source_snapshot,
+)
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     DurableTargetIdentity,
@@ -20,18 +25,6 @@ from booley.flows.sim.coverage_campaign_store import (
 )
 
 
-class CoverageAnalysisError(ValueError):
-    """The input cannot support an advisory Coverage Analysis report."""
-
-
-@dataclass(frozen=True)
-class CoverageSourceClosure:
-    """Verified text snapshot of the producing Target's complete source closure."""
-
-    target_identity: str
-    files: Mapping[str, FrozenJson]
-
-
 @dataclass(frozen=True)
 class CoverageAnalysisReport:
     """Versioned advisory output, with immutable observations and hypotheses."""
@@ -40,6 +33,14 @@ class CoverageAnalysisReport:
 
     def to_dict(self) -> dict[str, object]:
         return json.loads(json.dumps(self.document, default=_json_value))
+
+
+@dataclass(frozen=True)
+class CoverageModelResult:
+    """Validated-model candidate plus deterministic evidence-tool audit data."""
+
+    response: object
+    analysis_scope: Mapping[str, FrozenJson]
 
 
 def _json_value(value: object) -> object:
@@ -58,17 +59,31 @@ class _AnalysisEnvelope:
 def _analysis_envelope(
     observed: dict[str, object], summary: CoverageCampaignSummary | None
 ) -> _AnalysisEnvelope:
+    storage_schema = "booley.coverage-campaign/v1"
+    point_store = None
+    manifest = None
+    if summary is not None:
+        storage_schema = summary.source_schema
+        manifest = cast(dict[str, object], _json_value(summary.document))
+        point_store = manifest.get("point_store")
+    reference = {
+        "campaign_reference": {
+            "campaign_id": observed["campaign_id"],
+            "target": observed["target"],
+            "point_count": len(cast(list[object], observed["points"])),
+            "storage_schema": storage_schema,
+            **({"point_store": point_store} if point_store is not None else {}),
+        }
+    }
     if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V2:
-        return _AnalysisEnvelope("booley.coverage-analysis/v1", {"campaign": observed}, observed)
-    manifest = _json_value(summary.document)
-    points = observed["points"]
+        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed)
+    assert manifest is not None
     assert summary.point_store is not None
     return _AnalysisEnvelope(
         "booley.coverage-analysis/v2",
-        {"campaign_manifest": manifest, "points": points},
+        reference,
         {
             "campaign_manifest": manifest,
-            "points": points,
             "point_store_sha256": summary.point_store.sha256,
         },
     )
@@ -92,40 +107,67 @@ class CoverageAnalyzer:
         decode_coverage_campaign(observed, DurableTargetIdentity(campaign.target.identity))
         envelope = _analysis_envelope(observed, summary)
         eligibility, limitations = _eligibility(campaign)
-        sources = _verified_snapshot(campaign, sources)
+        sources = verified_source_snapshot(campaign, sources)
         if sources is None:
             limitations.append(
                 "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
             )
-        response = self._model(
-            json.dumps(
-                {
-                    **envelope.model_campaign,
-                    "sources": sources.files if sources else None,
-                    "instruction": instruction,
-                },
-                default=_json_value,
-            )
+        response, analysis_scope = _model_response(
+            self._model(_analysis_prompt(envelope, sources, instruction)), campaign
         )
         response = _validate_response(response, campaign)
         response["waiver_candidates"] = _screen_candidates(
             response["waiver_candidates"], campaign, sources
         )
-        return CoverageAnalysisReport(
-            freeze_coverage_mapping(
-                {
-                    "$schema": envelope.schema,
-                    "campaign_id": campaign.campaign_id,
-                    "target": observed["target"],
-                    "eligibility": eligibility,
-                    "source_access": "report_only" if sources is None else "verified",
-                    "limitations": limitations,
-                    "closure_recommendation": _RECOMMENDATIONS[str(campaign.evaluation["status"])],
-                    "observed_evidence": envelope.observed_evidence,
-                    **response,
-                }
-            )
-        )
+        report = {
+            "$schema": envelope.schema,
+            "campaign_id": campaign.campaign_id,
+            "target": observed["target"],
+            "eligibility": eligibility,
+            "source_access": "report_only" if sources is None else "verified",
+            "limitations": limitations,
+            "closure_recommendation": _RECOMMENDATIONS[str(campaign.evaluation["status"])],
+            "observed_evidence": envelope.observed_evidence,
+            **response,
+        }
+        if analysis_scope is not None:
+            report["analysis_scope"] = analysis_scope
+        return CoverageAnalysisReport(freeze_coverage_mapping(report))
+
+
+def _analysis_prompt(
+    envelope: _AnalysisEnvelope,
+    sources: CoverageSourceClosure | None,
+    instruction: str,
+) -> str:
+    return json.dumps(
+        {
+            **envelope.model_campaign,
+            "evidence_access": (
+                "Use the coverage_evidence tool for overview, points, and verified source "
+                "excerpts. Begin with overview and retrieve only evidence needed for exact "
+                "point_ids."
+            ),
+            "source_access": "verified" if sources is not None else "report_only",
+            "instruction": instruction,
+        },
+        default=_json_value,
+    )
+
+
+def _model_response(
+    model_result: object, campaign: CoverageCampaign
+) -> tuple[object, dict[str, object] | None]:
+    if not isinstance(model_result, CoverageModelResult):
+        return model_result, None
+    scope = {
+        "total_points": len(campaign.points),
+        "points_retrieved": 0,
+        "point_ids": [],
+        "queries": [],
+        **model_result.analysis_scope,
+    }
+    return model_result.response, scope
 
 
 _RECOMMENDATIONS = {
@@ -253,33 +295,3 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         "ready_for_human_review",
         "Advisory only; a human must verify evidence and author any approval",
     )
-
-
-def _verified_snapshot(
-    campaign: CoverageCampaign, sources: CoverageSourceClosure | None
-) -> CoverageSourceClosure | None:
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
-
-    if sources is None or sources.target_identity != campaign.target.identity:
-        return None
-    expected = {}
-    for category in ("rtl", "testbench"):
-        records = cast(tuple[Mapping[str, str], ...], campaign.source_closure[category])
-        if coverage_digest(records) != campaign.fingerprints[category + "_sources"]:
-            return None
-        for record in records:
-            expected[record["path"]] = (category, record["sha256"])
-    if set(expected) != set(sources.files):
-        return None
-    for path, (category, digest) in expected.items():
-        item = sources.files[path]
-        text = item.get("text") if isinstance(item, Mapping) else None
-        if not isinstance(item, Mapping) or not isinstance(text, str):
-            return None
-        if (
-            item.get("category") != category
-            or item.get("sha256") != digest
-            or content_digest(text.encode("utf-8")) != digest
-        ):
-            return None
-    return CoverageSourceClosure(sources.target_identity, freeze_coverage_mapping(sources.files))

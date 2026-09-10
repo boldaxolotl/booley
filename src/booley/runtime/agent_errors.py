@@ -21,6 +21,7 @@ CONTEXT_EXHAUSTION_PATTERNS = [
     re.compile(r"prompt is too long", re.IGNORECASE),
     re.compile(r"max_tokens.*exceeded", re.IGNORECASE),
     re.compile(r"input.*too.*long", re.IGNORECASE),
+    re.compile(r"input[_ -]?too[_ -]?large", re.IGNORECASE),
     re.compile(r"exceeds.*context.*window", re.IGNORECASE),
 ]
 

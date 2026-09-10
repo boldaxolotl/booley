@@ -843,6 +843,42 @@ class TestMcpExposureFiltering:
         assert not self._status_mcp_tool_visible()
 
 
+class TestCoverageEvidenceTool:
+    @pytest.fixture(autouse=True)
+    def _import(self):
+        mcp_stubs = {
+            "mcp": MagicMock(),
+            "mcp.server": MagicMock(),
+            "mcp.server.models": MagicMock(),
+            "mcp.server.stdio": MagicMock(),
+            "mcp.types": MagicMock(),
+        }
+        with patch.dict(sys.modules, mcp_stubs):
+            from booley.mcp import server as mcp_server
+
+            self.mcp_server = mcp_server
+
+    def test_bound_nested_server_exposes_only_coverage_evidence(self, monkeypatch):
+        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
+        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
+        monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", "/reports/coverage.json")
+        monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", "/project")
+        monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
+
+        tools = self.mcp_server._all_mcp_tool_defs([])
+
+        assert [tool["name"] for tool in tools] == ["coverage_evidence"]
+        assert tools[0]["schema"]["additionalProperties"] is False
+
+    def test_coverage_evidence_is_hidden_without_bound_campaign(self, monkeypatch):
+        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
+        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
+        monkeypatch.delenv("BOOLEY_COVERAGE_CAMPAIGN", raising=False)
+        monkeypatch.delenv("BOOLEY_COVERAGE_PROJECT", raising=False)
+
+        assert self.mcp_server._coverage_evidence_tool_def() is None
+
+
 class TestBooleyStatus:
     @pytest.fixture(autouse=True)
     def _import(self):
