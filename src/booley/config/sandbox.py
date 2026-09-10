@@ -1,4 +1,4 @@
-"""Validated, operation-free Session Image naming policy."""
+"""Validated, operation-free Runtime Image naming policy."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def project_image_name(project_root: Path) -> str:
 
 
 def project_sandbox_image(project_root: Path) -> str:
-    """Return the validated Project-selected Session Image or the default."""
+    """Return the validated Project-selected Runtime Image or the default."""
     try:
         project_dir = resolve_checkout_project_dir(project_root)
     except FileNotFoundError:

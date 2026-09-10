@@ -115,7 +115,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
-- The standard Session Runtime image is 71% smaller by visible filesystem size;
+- The standard Runtime Image is 71% smaller by visible filesystem size;
   the RISC-V image is 66% smaller. Both retain the supported EDA and agent
   toolchains, OpenROAD source provenance, and SPDX SBOM attestations. The demo
   stack needs about 6 GB of Docker storage, plus Project artifacts and temporary
@@ -184,7 +184,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   reporting the Project ready with stale issuance.
   ([#352](https://github.com/boldaxolotl/booley/issues/352))
 - Simulation adapters resolve registries, selectors, skips, environments,
-  pre-run commands, and artifact freshness from each Target checkout, so
+  pre-sim commands, and artifact freshness from each Target checkout, so
   baseline worktrees cannot inherit active-Project cache state. Adapter results
   use attempt-bound atomic transport with explicit failure precedence.
   ([PR #359](https://github.com/boldaxolotl/booley/pull/359))
@@ -324,7 +324,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Source checkouts no longer acquire Project or Stealth policy accidentally;
   repository classification, hook installation, and managed-state placement
   now preserve the source-checkout boundary.
-- Session Image provenance is now scoped to the image that actually runs the
+- Runtime Image provenance is now scoped to the image that actually runs the
   Project, avoiding stale rebuild prompts from unrelated images.
 - Stealth projects now keep core projections and FPGA target metadata within
   their protected project state.
@@ -347,7 +347,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   `booley chat` is the explicit equivalent and `booley --help` remains the
   command reference.
 - Added Project-independent `booley bootstrap` for host prerequisites, skills,
-  the shared PDK cache, the base Session Image, and global proxy and reaper
+  the shared PDK cache, the base Runtime Image, and global proxy and reaper
   services. `booley init` performs the same reconciliation when needed.
 - Added durable, version-aware upgrade review state with scriptable status and
   compare-and-swap acknowledgment. Doctor and Session Runtime startup identify
@@ -554,7 +554,7 @@ completion recovery, and acceptance evidence.
   Interactive Reviewer receipts, parse legacy Cycle Count mappings, and prevent
   paired-contract archive collisions.
   ([issue #127](https://github.com/boldaxolotl/booley/issues/127))
-- Session Image refresh now uses one provenance lifecycle for pulled, locally
+- Runtime Image refresh now uses one provenance lifecycle for pulled, locally
   built, flavored, and Project-derived images. Same-version images from another
   source revision are stale; managed parents rebuild in order; custom external
   images remain unmanaged; and refresh verifies the recreated runtime.

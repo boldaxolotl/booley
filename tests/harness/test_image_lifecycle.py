@@ -1,4 +1,4 @@
-"""Authoritative Session Image reconciliation (GitHub issue #128)."""
+"""Authoritative Runtime Image reconciliation (GitHub issue #128)."""
 
 from __future__ import annotations
 
@@ -1275,6 +1275,13 @@ def test_tagged_parent_is_treated_as_its_exact_external_artifact(
 
     assert [node.reference for node in nodes] == [selected]
     assert nodes[0].parent == exact_parent
+
+
+def test_nodes_rejects_unsupported_managed_runtime_image(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="unsupported managed Runtime Image"):
+        lifecycle._nodes(root, "foreign:latest", FakeDocker({}))
 
 
 def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: Path):

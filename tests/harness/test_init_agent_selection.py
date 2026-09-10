@@ -371,7 +371,7 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
     assert calls[0]["agent_app"] == "codex"
 
 
-def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path, monkeypatch):
+def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path, monkeypatch):
     result = init_cmd.LifecycleResult(
         "booley-sandbox-riscv",
         "sha256:" + "f" * 64,
@@ -425,7 +425,7 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
         {
             "nangate_pdk_root": "pdk",
             "agent_app": "codex",
-            "session_image_id": result.selected_id,
+            "runtime_image_id": result.selected_id,
         }
     ]
     assert remembered == [tmp_path]
@@ -444,7 +444,7 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
             init_cmd.ImageLifecycleStatus.STALE,
             "docker_image",
             "warn",
-            "Session Image provenance is stale",
+            "Runtime Image provenance is stale",
         ),
         (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "skip", "current"),
     ],
@@ -477,7 +477,7 @@ def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch)
 
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "ok", "removed obsolete Session Image tags"
+        "docker_image", "ok", "removed obsolete Runtime Image tags"
     )
 
 
@@ -494,7 +494,7 @@ def test_image_lifecycle_step_returns_after_reporting_pending_cleanup(tmp_path, 
 
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "warn", "obsolete Session Image tags remain"
+        "docker_image", "warn", "obsolete Runtime Image tags remain"
     )
 
 
@@ -513,15 +513,15 @@ def test_image_lifecycle_step_reports_cleanup_alongside_stale_image(tmp_path, mo
 
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert (
-        init_cmd.StepResult("docker_image", "warn", "obsolete Session Image tags remain")
+        init_cmd.StepResult("docker_image", "warn", "obsolete Runtime Image tags remain")
         in ctx.results
     )
     assert (
-        init_cmd.StepResult("docker_image", "warn", "obsolete Session Image tags are in use")
+        init_cmd.StepResult("docker_image", "warn", "obsolete Runtime Image tags are in use")
         in ctx.results
     )
     assert ctx.results[-1] == init_cmd.StepResult(
-        "docker_image", "warn", "Session Image provenance is stale"
+        "docker_image", "warn", "Runtime Image provenance is stale"
     )
 
 
@@ -539,7 +539,7 @@ def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, m
 
     assert init_cmd._step_image_lifecycle(ctx) is result
     assert (
-        init_cmd.StepResult("docker_image", "ok", "removed obsolete Session Image tags")
+        init_cmd.StepResult("docker_image", "ok", "removed obsolete Runtime Image tags")
         in ctx.results
     )
     assert ctx.results[-1] == init_cmd.StepResult(

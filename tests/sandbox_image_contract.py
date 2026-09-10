@@ -1,4 +1,4 @@
-"""Parsed static contract for Booley's CI-owned Session Image graph."""
+"""Parsed static contract for Booley's CI-owned Runtime Image graph."""
 
 from __future__ import annotations
 

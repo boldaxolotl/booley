@@ -5,7 +5,7 @@
 # the exact 26Q3 binary and Corresponding Source from its official builder, but
 # run from the exact dependency image used by upstream's final stage. The
 # builder is intentionally throwaway: its object files and regression fixtures
-# account for most of the old Session Image.
+# account for most of the old Runtime Image.
 FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a AS openroad-artifacts
 
 USER root

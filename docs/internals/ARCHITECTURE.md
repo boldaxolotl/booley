@@ -21,9 +21,9 @@ The host owns only bootstrap, runtime lifecycle, trusted EDA registrations and G
 The preparation sequence is deliberately one-way:
 
 1. **Host Bootstrap** validates host policy and applications, then reconciles
-   shared skills, the PDK cache, the base Session Image, and global sidecars.
+   shared skills, the PDK cache, the base Runtime Image, and global sidecars.
 2. **Project Initialization** reconciles Project state, the selected or derived
-   Session Image, Git integration, and an issued Session Runtime specification.
+   Runtime Image, Git integration, and an issued Session Runtime specification.
 3. The issued **Session Runtime** hosts Interactive Mode and Ticket Mode.
 
 Both host and Project image scopes cross the same authoritative image-lifecycle
@@ -35,7 +35,7 @@ descendants.
 
 ## The Sandbox
 
-The Session Runtime is the shared execution and containment boundary. The `booley-sandbox` image supplies the open-source simulation, lint, synthesis, timing, and waveform-analysis stack, so most projects need no additional provisioning. It runs as a non-root user with project data mounted in, remains available across editor window closes, and is stopped only by explicit lifecycle commands or the idle reaper. One image-lifecycle module reconciles the selected Session Image and its managed ancestry for init, Doctor, and refresh; callers receive immutable identity and typed diagnostics rather than reimplementing Docker freshness rules. Runtime recreation remains a separate transaction so a failed replacement can restore the prior container. Setup and image customization are covered in [SETUP.md](../user/SETUP.md) and [CONFIG.md](../user/CONFIG.md#custom-sandbox-image); the packaged toolchain is listed in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
+The Session Runtime is the shared execution and containment boundary. The `booley-sandbox` image supplies the open-source simulation, lint, synthesis, timing, and waveform-analysis stack, so most projects need no additional provisioning. It runs as a non-root user with project data mounted in, remains available across editor window closes, and is stopped only by explicit lifecycle commands or the idle reaper. One image-lifecycle module reconciles the selected Runtime Image and its managed ancestry for init, Doctor, and refresh; callers receive immutable identity and typed diagnostics rather than reimplementing Docker freshness rules. Runtime recreation remains a separate transaction so a failed replacement can restore the prior container. Setup and image customization are covered in [SETUP.md](../user/SETUP.md) and [CONFIG.md](../user/CONFIG.md#custom-sandbox-image); the packaged toolchain is listed in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 Capabilities fall into two architectural categories. **Booley Flows** deterministically turn structured requests into EDA invocations and their results into evidence. **Specialists** are scoped LLM sub-agents for work such as review and mutation testing. The calling agent reaches both through a uniform MCP surface rather than spawning EDA tools directly. The live capability catalog and controls are in [USAGE.md](../user/USAGE.md#booley-flows--specialists); the build and evidence contracts are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md), and the extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
 

@@ -1,4 +1,4 @@
-"""Shared Session Image provenance schema and canonical recipe hashing."""
+"""Shared Runtime Image provenance schema and canonical recipe hashing."""
 
 from __future__ import annotations
 

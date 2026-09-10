@@ -61,6 +61,13 @@ def test_pin_image_rejects_reconciled_id_that_changed(
         runtime_spec.pin_image({"image": "booley-sandbox"}, expected_image_id=expected)
 
 
+def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
+    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot resolve Runtime Image"):
+        runtime_spec._resolve_image_id("missing:latest")
+
+
 @pytest.fixture
 def issued(
     tmp_path: Path,
@@ -157,6 +164,17 @@ def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="image keeper differs"):
         runtime_spec.load_issued_snapshot(project)
+
+
+def test_recovery_snapshot_rejects_missing_keeper_image(issued, monkeypatch) -> None:
+    project, spec, path, _stamp = issued
+
+    def missing(_image: str) -> str:
+        raise runtime_spec.RuntimeSpecError("missing")
+
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", missing)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Runtime Image keeper is missing"):
+        runtime_spec.load_recovery_snapshot(project, spec, path)
 
 
 def test_no_eda_issuance_and_validation_never_open_authority_store(
@@ -451,6 +469,37 @@ def test_validate_rejects_missing_issued_image_keeper(issued, monkeypatch) -> No
         runtime_spec.validate(project, spec, path)
 
 
+def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> None:
+    project, spec, path, _stamp = issued
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> None:
+    project, spec, path, stamp = issued
+    monkeypatch.setattr(
+        runtime_spec,
+        "authenticate",
+        lambda *_args: replace(stamp, keeper_image="booley-issued-foreign:session"),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper differs from this Project"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_validate_rejects_keeper_pointing_at_other_bytes(issued, monkeypatch) -> None:
+    project, spec, path, stamp = issued
+
+    def resolve(image: str) -> str:
+        return stamp.image_id if image == stamp.image else "sha256:other"
+
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper points at different bytes"):
+        runtime_spec.validate(project, spec, path)
+
+
 def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> None:
     _project, _spec, _path, stamp = issued
     old_id = "sha256:" + "a" * 64
@@ -473,6 +522,22 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
     assert retained[stamp.keeper_image] == new_id
+
+
+def test_reissuance_rejects_unverifiable_keeper(issued, monkeypatch) -> None:
+    _project, _spec, _path, stamp = issued
+    resolutions = iter((runtime_spec.RuntimeSpecError("missing"), "sha256:other"))
+
+    def resolve(_image: str) -> str:
+        value = next(resolutions)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
+    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper could not be verified"):
+        runtime_spec._retain_issued_image(stamp)
 
 
 def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
@@ -1295,10 +1360,47 @@ def test_image_contract_is_inspected_without_starting_candidate_code(
     assert calls[-1][:3] == ["container", "rm", "-f"]
 
 
+def test_image_contract_rejects_failed_inert_container_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.runtime import interactive_docker
+
+    monkeypatch.setattr(
+        interactive_docker,
+        "_run_docker",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "failed"),
+    )
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot create inert container"):
+        runtime_spec._validate_image_contract("sha256:trusted")
+
+
 def test_extracted_image_contract_rejects_fake_library(tmp_path: Path) -> None:
     (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
     (tmp_path / "libudev.so.1").write_bytes(b"not-elf")
     (tmp_path / "libpixman-1.so.0").write_bytes(b"\x7fELFfixture")
     (tmp_path / "locale-archive").write_bytes(b"archive:en_US.utf8")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="invalid libudev"):
+        runtime_spec._validate_extracted_image_contract(tmp_path)
+
+
+def test_extracted_image_contract_rejects_wrong_wrapper(tmp_path: Path) -> None:
+    (tmp_path / "vivado-wrapper").write_bytes(b"wrong")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="wrong Vivado wrapper digest"):
+        runtime_spec._validate_extracted_image_contract(tmp_path)
+
+
+def test_extracted_image_contract_rejects_unreadable_library(tmp_path: Path) -> None:
+    (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match="cannot inspect Runtime Image library"
+    ):
+        runtime_spec._validate_extracted_image_contract(tmp_path)
+
+
+def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
+    (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
+    (tmp_path / "libudev.so.1").write_bytes(b"\x7fELFfixture")
+    (tmp_path / "libpixman-1.so.0").write_bytes(b"\x7fELFfixture")
+    (tmp_path / "locale-archive").write_bytes(b"archive:C.UTF-8")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="lacks the required en_US"):
         runtime_spec._validate_extracted_image_contract(tmp_path)

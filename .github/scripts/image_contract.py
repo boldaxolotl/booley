@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a built Session Runtime image against its declared contract."""
+"""Validate a built Runtime Image against its declared contract."""
 
 from __future__ import annotations
 

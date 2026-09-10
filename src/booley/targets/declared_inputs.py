@@ -117,7 +117,7 @@ def project_config_program_paths(
     project_root: Path,
     strict: bool = False,
 ) -> tuple[Path, ...]:
-    """Return programs invoked by configured Simulation Pre-Run Commands."""
+    """Return programs invoked by configured Pre-Sim Commands."""
     candidates: list[str] = []
     flows = as_dict(config.get("flows"))
     if flows is not None:

@@ -1,4 +1,4 @@
-"""Project-scoped Pre-Run Commands execution for Simulation work units."""
+"""Project-scoped Pre-Sim Commands execution for Simulation work units."""
 
 from __future__ import annotations
 
@@ -9,16 +9,16 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
-from booley.flows.sim.config import resolve_pre_run_commands, resolve_run_cwd
+from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.domain import TargetHandle
 
-from .contract import PreRunEvidence
+from .contract import PreSimEvidence
 from .failures import find_missing_executable
 
 
-def run_pre_run_commands(
+def run_pre_sim_commands(
     handle: TargetHandle,
     *,
     test_names: tuple[str, ...],
@@ -28,13 +28,13 @@ def run_pre_run_commands(
     simulator_environment: Mapping[str, str] | None = None,
     commands: tuple[str, ...] | None = None,
     run_cwd: str | None = None,
-) -> PreRunEvidence | None:
+) -> PreSimEvidence | None:
     """Run the hook once for a native test or once for a Cocotb batch."""
     root = handle.project_root
-    resolved_commands = tuple(resolve_pre_run_commands(root)) if commands is None else commands
+    resolved_commands = tuple(resolve_pre_sim_commands(root)) if commands is None else commands
     if not resolved_commands:
         return None
-    environment = _pre_run_environment(
+    environment = _pre_sim_environment(
         handle,
         test_names=test_names,
         build_root=build_root,
@@ -42,10 +42,10 @@ def run_pre_run_commands(
         simulator_environment=simulator_environment,
         run_cwd=run_cwd,
     )
-    return _invoke_pre_run(resolved_commands, test_names, root, environment, timeout_s)
+    return _invoke_pre_sim(resolved_commands, test_names, root, environment, timeout_s)
 
 
-def _pre_run_environment(
+def _pre_sim_environment(
     handle: TargetHandle,
     *,
     test_names: tuple[str, ...],
@@ -76,13 +76,13 @@ def _pre_run_environment(
     return environment
 
 
-def _invoke_pre_run(
+def _invoke_pre_sim(
     commands: tuple[str, ...],
     test_names: tuple[str, ...],
     root: Path,
     environment: Mapping[str, str],
     timeout_s: int,
-) -> PreRunEvidence:
+) -> PreSimEvidence:
     """Execute one prepared hook and normalize its result."""
     started = time.monotonic()
     try:
@@ -96,7 +96,7 @@ def _invoke_pre_run(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        return PreRunEvidence(
+        return PreSimEvidence(
             commands,
             test_names,
             "timed_out",
@@ -104,7 +104,7 @@ def _invoke_pre_run(
             str(exc),
         )
     except OSError as exc:
-        return PreRunEvidence(
+        return PreSimEvidence(
             commands,
             test_names,
             "failed",
@@ -119,7 +119,7 @@ def _invoke_pre_run(
         if find_missing_executable(detail)
         else "failed"
     )
-    return PreRunEvidence(commands, test_names, status, time.monotonic() - started, detail)
+    return PreSimEvidence(commands, test_names, status, time.monotonic() - started, detail)
 
 
-__all__ = ["run_pre_run_commands"]
+__all__ = ["run_pre_sim_commands"]

@@ -24,7 +24,7 @@ _REQUIRED_TOOLS = ("verilator", "verilator_coverage", "cocotb-config", "bwave")
 
 pytestmark = pytest.mark.skipif(
     any(shutil.which(tool) is None for tool in _REQUIRED_TOOLS),
-    reason="the complete matrix runs inside the built Booley Session Image",
+    reason="the complete matrix runs inside the built Booley Runtime Image",
 )
 
 

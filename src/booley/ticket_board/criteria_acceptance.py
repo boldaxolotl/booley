@@ -542,7 +542,7 @@ def _stale_verification_entry(
         now=now,
         reason=(
             "RTL/testbench sources changed after the last passing "
-            "verification check; re-run the relevant Flow or Specialist."
+            "verification evidence; re-run the relevant Flow or Specialist."
         ),
         changed_categories=changed_categories,
         current=current,

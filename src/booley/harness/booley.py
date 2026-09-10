@@ -1336,7 +1336,7 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
-    """Reconcile the Session Image and replace its Session Runtime."""
+    """Reconcile the Runtime Image and replace its Session Runtime."""
     configure_progress_output()
     from booley.harness import auto_doctor
     from booley.harness.session_refresh import refresh
@@ -2158,8 +2158,8 @@ def _sleep_until_next_ticket(args: argparse.Namespace, project_root: Path) -> bo
 def _run_automatic_doctor(project_root: Path) -> None:
     """Run and report the stale startup Doctor without hiding its progress."""
     # Once per sweep (not per ticket): a stale automatic Doctor runs before
-    # unattended work begins. It is advisory and fail-soft; the normal
-    # preflight remains the blocking gate for ticket execution.
+    # unattended work begins. It is advisory and fail-soft; Ticket Preflight
+    # remains the blocking gate for ticket execution.
     from booley.harness import auto_doctor
 
     auto_doctor.run_if_due(

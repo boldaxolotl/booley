@@ -100,11 +100,11 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"Session Image keeper: {exc}")
+            errors.append(f"Runtime Image keeper: {exc}")
         else:
             if result.returncode != 0:
                 errors.append(
-                    "Session Image keeper: " + (result.stderr.strip() or "docker tag failed")
+                    "Runtime Image keeper: " + (result.stderr.strip() or "docker tag failed")
                 )
     for label, path, content, mode in (
         ("Session spec", snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode),

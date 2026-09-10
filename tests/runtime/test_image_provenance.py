@@ -1,4 +1,4 @@
-"""Failure semantics for authoritative Session Image provenance inputs."""
+"""Failure semantics for authoritative Runtime Image provenance inputs."""
 
 from pathlib import Path
 

@@ -42,7 +42,7 @@ ORCHESTRATORS = (
     "_run_host_checks",
     "_run_container_checks",
     "_run_mcp_checks",
-    "_run_preflight_parity_checks",
+    "_run_ticket_preflight_parity_checks",
     "_run_deep_checks",
     "_run_deep_phase",
     "_run_project_phase",
@@ -93,7 +93,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_run_mcp_probe",
         }
     ),
-    "_run_preflight_parity_checks": frozenset(
+    "_run_ticket_preflight_parity_checks": frozenset(
         {
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
@@ -136,7 +136,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_runtime_location",
             "_run_container_checks",
             "_run_mcp_checks",
-            "_run_preflight_parity_checks",
+            "_run_ticket_preflight_parity_checks",
         }
     ),
     "_run_flow_and_core_phase": frozenset(

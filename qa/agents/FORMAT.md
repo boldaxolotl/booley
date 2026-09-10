@@ -21,7 +21,7 @@ version.
 
 The containing directory supplies the Scenario Run ID to result and Finding records;
 external references use the Scenario Run ID plus the record ID. Common Booley product
-revision and Session Image inputs need not repeat in every result record. Changes
+revision and Runtime Image inputs need not repeat in every result record. Changes
 created by Steps are recorded as outputs rather than mutations to the original
 `run.json`. Retain evidence outside disposable Project state.
 

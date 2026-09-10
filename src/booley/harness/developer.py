@@ -64,7 +64,6 @@ from .developer_display import (
 )
 from .logging_utils import set_current_step, setup_file_logging, teardown_file_logging
 from .models import AgentResult, TicketContext
-from .preflight import run_preflight
 from .terminal import (
     close_log,
     open_log,
@@ -73,6 +72,7 @@ from .terminal import (
     step_line,
     step_start_header,
 )
+from .ticket_preflight import run_ticket_preflight
 from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
@@ -196,7 +196,7 @@ async def run_ticket(
         project_root: Project root directory. Defaults to cwd.
         save_transcripts: Write per-agent JSONL transcripts to logs dir.
 
-    The Console TUI is launched first and preflight/parse-validate
+    The Console TUI is launched first and Ticket Preflight/parse-validate
     run inside its worker (with SetupProgress events for visibility) so the
     user never sees pre-TUI chrome flash by.
     """
@@ -211,13 +211,16 @@ async def _prepare_ticket(
     project_root: Path,
     save_transcripts: bool,
 ) -> TicketContext:
-    """Run config-load, preflight, and parse-validate. Returns the ready ctx."""
+    """Run config-load, Ticket Preflight, and parse-validate.
+
+    Return the ready context.
+    """
     from booley.runtime.agent_config import load_backend_config
 
     from .setup.intake import run as parse_validate
 
     load_backend_config(project_root)
-    run_preflight(project_root)
+    run_ticket_preflight(project_root)
     try:
         ctx = await parse_validate(ticket_path_or_slug, project_root)
     except FatalError as e:
@@ -414,14 +417,14 @@ async def _run_with_console(
 ) -> TicketRunResult | None:
     """Run the full ticket flow inside the Console TUI.
 
-    The Textual app launches FIRST, with a placeholder header; preflight
+    The Textual app launches FIRST, with a placeholder header; Ticket Preflight
     and parse-validate then run inside the app's worker so the user never
     sees pre-TUI INFO logs flash before the screen takeover. The header
     is filled in once parse-validate has produced a ticket context.
 
     Errors raised inside the worker are captured and re-raised after the
-    app exits, so the outer entry point can map them to the right exit code (preflight=2,
-    user-quit=EXIT_USER_QUIT, etc.).
+    app exits, so the outer entry point can map them to the right exit code
+    (Ticket Preflight=2, user-quit=EXIT_USER_QUIT, etc.).
     """
     from .blocking import UserQuitError
     from .console.app import ConsoleApp, ConsolePhase
@@ -441,7 +444,7 @@ async def _run_with_console(
         exec_start = time.monotonic()
         try:
             app.post_message(SetupProgress("loading model/backend config..."))
-            app.post_message(SetupProgress("running preflight checks..."))
+            app.post_message(SetupProgress("running Ticket Preflight checks..."))
             app.post_message(SetupProgress("parsing & validating ticket..."))
             ctx = await _prepare_ticket(
                 ticket_path_or_slug,

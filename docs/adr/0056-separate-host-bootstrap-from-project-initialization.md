@@ -12,7 +12,7 @@ before any Project mutation, and aborts without creating Project state when
 bootstrap fails.
 
 Host Bootstrap verifies Git, Docker, and VS Code as required external
-prerequisites, deploys Booley skills, prepares the base Session Image and shared
+prerequisites, deploys Booley skills, prepares the base Runtime Image and shared
 Nangate45 cache, and owns one host-wide egress network, proxy, and reaper. Their
 policy lives in optional XDG-aware `~/.config/booley/config.toml`; absent
 configuration selects built-in defaults, and Project `[interactive]` fields

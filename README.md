@@ -74,7 +74,7 @@ for first-run, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
 
 `booley bootstrap` prepares reusable host resources: the VS Code Dev Containers
-extension, skills, the shared PDK cache, the base Session Image, and global
+extension, skills, the shared PDK cache, the base Runtime Image, and global
 Interactive Mode services.
 
 ## Quick Start

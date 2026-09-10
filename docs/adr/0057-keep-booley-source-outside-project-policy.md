@@ -4,7 +4,7 @@ status: accepted
 
 # Keep Booley Source Outside Project Policy
 
-A Booley Source Checkout is never a Project: Project Initialization refuses it,
+A Booley source checkout is never a Project: Project Initialization refuses it,
 Project discovery fails closed there, and Project Stealth Mode and Git hooks do
 not apply to its commits or tracked paths. Current source checkouts carry an
 explicit tracked role marker, while the distribution name plus distinctive
@@ -23,7 +23,7 @@ inside it still fail closed.
 - Removing `booley` from the Stealth denylist was rejected because downstream
   Projects still need to prevent product and workflow identifiers from leaking.
 - Classifying by Git remote was rejected because forks, offline clones, and
-  linked worktrees are still Booley Source Checkouts.
+  linked worktrees are still Booley source checkouts.
 - Letting source checkouts opt out through Project configuration was rejected
   because creating that configuration would itself violate the distinction.
 

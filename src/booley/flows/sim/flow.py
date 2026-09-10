@@ -136,7 +136,7 @@ _ELAB_FAIL_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Pre-Run Commands failure marker (ADR 0039). The boundary wrapper makefile
+# Pre-Sim Commands failure marker (ADR 0039). The boundary wrapper makefile
 # echoes it when [flows.sim].pre_run_commands exit nonzero (the
 # BOOLEY_STAGE marker precedent), so _interpret_sim_result attributes the
 # failure to the pre-run step instead of blaming the sim/build.
@@ -274,7 +274,7 @@ class TestResult:
     run_log_path: str = ""
     workload_snapshot: dict[str, Any] | None = None
     # Authenticated result of the build half for this execution attempt.
-    # ``None`` means setup or Pre-Run Commands failed before make ran.
+    # ``None`` means setup or Pre-Sim Commands failed before make ran.
     build_outcome: BuildOutcome | None = None
     phase_timings_s: dict[str, float] = field(default_factory=dict)
     resources: dict[str, float | int | None] = field(default_factory=dict)
@@ -501,14 +501,14 @@ def parse_sva_errors(output: str) -> int:
         return count
 
 
-def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
+def _resolve_pre_sim_commands(work_dir: Path | None = None) -> list[str]:
     """Project shell lines run before each sim run.
 
     ``[flows.sim].pre_run_commands`` (ADR 0039) carries a per-test
     non-RTL build step — e.g. compiling the selected test's firmware image
     with a cross-GCC — which the once-per-worktree post-setup hook cannot
-    express. The lines run under the ``BOOLEY_*`` env contract assembled by
-    :meth:`SimulateFlow._pre_run_env` before each run. Empty when unset.
+    express. The execution boundary assembles the ``BOOLEY_*`` environment
+    before each run. Empty when unset.
     """
     try:
         from booley.runtime.shared_infra import _load_rtl_config
@@ -2724,7 +2724,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             normalized_run_cwd = "<outside-worktree>"
         controls = {
             "cycle_sentinels": _resolve_cycle_sentinels(self.args.work_dir),
-            "pre_run_commands": _resolve_pre_run_commands(self.args.work_dir),
+            "pre_run_commands": _resolve_pre_sim_commands(self.args.work_dir),
             "run_cwd": normalized_run_cwd,
             "environment": self._target_sim_env(result.target),
             "select": lookup_target_section(_get_test_selects(self.args.work_dir), result.target),
@@ -3008,7 +3008,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         result = self._project_execution_outcome(outcome)
         output_lines.append(f"[sim] {target} (session-runtime)")
         output_lines.extend(result.diagnostics)
-        output_lines.extend(self._pre_run_output_lines(outcome))
+        output_lines.extend(self._pre_sim_output_lines(outcome))
         for test in result.tests:
             _append_test_output_line(test, output_lines, self._run_log_is_fresh(target))
         if len(result.tests) > 1:
@@ -3136,13 +3136,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._record_eda_tool(outcome.target, outcome.eda_tool)
 
     @staticmethod
-    def _pre_run_output_lines(outcome: SimulationTargetOutcome) -> list[str]:
-        """Render execution-owned Pre-Run evidence for compatibility output."""
+    def _pre_sim_output_lines(outcome: SimulationTargetOutcome) -> list[str]:
+        """Render execution-owned Pre-Sim Commands evidence."""
         return [
             f"  pre_run_commands ({len(item.commands)} line(s)) for "
             f"{', '.join(item.test_names) or outcome.target}: {item.status} "
             f"in {item.elapsed_s:.1f}s"
-            for item in outcome.pre_runs
+            for item in outcome.pre_sim_runs
         ]
 
     def _effective_skips(self, target: str) -> set[str]:

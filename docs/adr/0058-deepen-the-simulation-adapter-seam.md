@@ -71,7 +71,7 @@ failure is typed infrastructure evidence, except that a wrapper timeout retains
 its established timeout precedence when the child could not publish a terminal
 result.
 
-Pre-Run Commands fire after Target preparation and before the composite
+Pre-Sim Commands fire after Target preparation and before the composite
 build/run subprocess: once per selected native test and once per Cocotb batch.
 Elaboration Check does not enter this adapter seam and continues to share only
 build preparation and classification with full Simulation.

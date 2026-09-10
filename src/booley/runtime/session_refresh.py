@@ -1,4 +1,4 @@
-"""Recoverable Session Image and Runtime refresh orchestration."""
+"""Recoverable Runtime Image reconciliation and Session Runtime replacement."""
 
 from __future__ import annotations
 
@@ -70,14 +70,14 @@ class RecoveryResult:
 
 @dataclass(frozen=True, slots=True)
 class RefreshImage:
-    """Immutable Session Image facts needed by runtime replacement."""
+    """Immutable Runtime Image facts needed by runtime replacement."""
 
     selected_reference: str
     selected_id: str
     payload_fingerprint: str | None = None
 
 
-class SessionImageOperations(Protocol):
+class RuntimeImageOperations(Protocol):
     """Image operations composed by the Project Initialization caller."""
 
     def inspect(self, project_root: Path, *, verbose: bool) -> None: ...
@@ -596,7 +596,7 @@ def _load_recovery_issuance(
 
 def _reconcile_refresh_image(
     journal: _RefreshJournal,
-    images: SessionImageOperations,
+    images: RuntimeImageOperations,
     *,
     verbose: bool,
 ) -> tuple[RefreshImage, _RefreshJournal]:
@@ -606,7 +606,7 @@ def _reconcile_refresh_image(
     _write_journal(journal)
     result = images.refresh(journal.project_root, verbose=verbose)
     if not result.selected_id:
-        raise sr.SessionError("refresh did not produce an immutable Session Image ID")
+        raise sr.SessionError("refresh did not produce an immutable Runtime Image ID")
     journal = replace(
         journal,
         phase=_RefreshPhase.IMAGE_SELECTED,
@@ -620,7 +620,7 @@ def _reconcile_refresh_image(
 def _issue_and_verify_replacement(
     journal: _RefreshJournal,
     result: RefreshImage,
-    images: SessionImageOperations,
+    images: RuntimeImageOperations,
     *,
     verbose: bool,
 ) -> _RefreshJournal:
@@ -665,7 +665,7 @@ def _recover_failed_refresh(project_root: Path, original: BaseException) -> None
 
 def _refresh_unlocked(
     project_root: Path,
-    images: SessionImageOperations,
+    images: RuntimeImageOperations,
     *,
     verbose: bool,
 ) -> RefreshImage:
@@ -695,7 +695,7 @@ def _refresh_unlocked(
 
 def refresh(
     project_root: Path,
-    images: SessionImageOperations,
+    images: RuntimeImageOperations,
     *,
     verbose: bool = False,
 ) -> RefreshImage:

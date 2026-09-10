@@ -29,7 +29,7 @@ This is an implementation-level guide. It assumes the vocabulary and whole-syste
 - **[CONTEXT-MAP.md](../../CONTEXT-MAP.md)** — the controlled-vocabulary
   index. This guide uses both the shared Booley and Ticket Board glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Developer Agent, Specialists, and the Booley Flow contract fit together at run time.
-- **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Run Commands.
+- **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Sim Commands.
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
 - **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
 - **[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.
@@ -124,7 +124,7 @@ Write a Custom Flow or custom MCP tool when:
 - You need a project-specific check that doesn't belong in the framework (DRC, protocol compliance, custom linting)
 - You need an LLM-powered specialist with project-specific prompting
 
-First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Run Commands](../user/CONFIG.md#pre-run-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
+First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Sim Commands](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
 
 ---
 
@@ -172,7 +172,7 @@ must load and validate them explicitly.
 | Built-in Flow | Installed `booley.flows` package | Enabled unless `[flows.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Built-in Specialist or endpoint | Installed `booley.specialists` package | Enabled unless `[mcp_tools.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Custom MCP tool | `.booley_project/mcp_tools/*.py` | Namespace depends on whether it is a Flow, Specialist, or direct endpoint | Yes, subject to mode-specific hiding |
-Use unique MCP tool names. Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
+Use unique MCP tool names. Ticket Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
 ### Register a Custom Endpoint
 
@@ -384,7 +384,7 @@ class MultiTool(Specialist):
 
 `satisfies_args` are **prompt hints**: they tell the Developer Agent which CLI arguments to pass when invoking the MCP tool for a specific Criterion. They are not executed directly.
 
-**Static-discovery limitation:** The MCP tool registry reads class metadata without importing the file, using Python's abstract syntax tree (AST). It can extract only literal values. A computed expression such as `satisfies = BASE + ["extra"]` therefore appears empty, and preflight warns about it.
+**Static-discovery limitation:** The MCP tool registry reads class metadata without importing the file, using Python's abstract syntax tree (AST). It can extract only literal values. A computed expression such as `satisfies = BASE + ["extra"]` therefore appears empty, and Ticket Preflight warns about it.
 
 ### `per_target` Convention
 
@@ -533,7 +533,7 @@ if __name__ == "__main__":
 
 Save each class under `.booley_project/mcp_tools/` and define every Criterion
 named by `satisfies` as described in Chapter 3. An undefined Criterion draws a
-preflight warning and can never be selected by a ticket.
+Ticket Preflight warning and can never be selected by a ticket.
 
 #### Try It in Interactive Mode
 
@@ -600,7 +600,7 @@ Category isolation is separate from write isolation. Some built-ins temporarily 
 
 #### Find Its Logs
 
-Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Session Runtime so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for preflight errors.
+Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Session Runtime so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
 
 ---
 
@@ -617,7 +617,7 @@ Built-in families such as `sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` use
 | Booley package `data/criteria.toml` | Base criteria (shipped with framework: sim, lint, etc.) |
 | `.booley_project/criteria.toml` | Project-specific criteria you define |
 
-Base criteria are read-only: look at them for format reference, but never redefine them in your project file (preflight hard-fails on collision).
+Base criteria are read-only: look at them for format reference, but never redefine them in your project file (Ticket Preflight hard-fails on collision).
 
 ### Criterion Schema
 
@@ -660,7 +660,7 @@ category    = "rtl"
 
 ### Rules
 
-- Project criteria **cannot** override base criteria (hard error at preflight)
+- Project criteria **cannot** override base criteria (hard error during Ticket Preflight)
 - An MCP tool with empty `satisfies` gets a warning (probably misconfigured)
 - Multiple MCP tools can claim the same Criterion: the Criterion→MCP-tool map keeps one endpoint per Criterion (the last one discovered that claims it)
 - A Flow's Criterion contract is independent of whether a supported EDA installation is image- or host-provisioned
@@ -738,7 +738,7 @@ documented in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 ## Chapter 5: Validation and Diagnostics
 
-MCP tool validation is split across the same boundaries as discovery. The in-container registry validates what it can expose, Ticket preflight checks custom-MCP-tool metadata and Criterion wiring, and Doctor checks the initialized project as a whole. None of these replaces an execution test of the real endpoint.
+MCP tool validation is split across the same boundaries as discovery. The in-container registry validates what it can expose, Ticket Preflight checks custom-MCP-tool metadata and Criterion wiring, and Doctor checks the initialized project as a whole. None of these replaces an execution test of the real endpoint.
 
 ### Project Extension Checks
 
@@ -754,9 +754,9 @@ MCP tool validation is split across the same boundaries as discovery. The in-con
 
 The Criterion collision in check 6 stops execution. The other checks log diagnostics for the affected file. Registry discovery is separate, so a collision warning should not be treated as enforcement; fix it before running. Collision detection considers every installed built-in, independent of project `enabled` settings.
 
-### Checking Preflight Output
+### Checking Ticket Preflight Output
 
-Preflight runs automatically at the start of every `booley run`; there is no standalone preflight command. `booley doctor` performs related aggregate checks for custom MCP tools and Criteria, but it does not reproduce every per-file preflight warning or print the Criterion-to-MCP-tool map. Use `booley cheat --criteria` to inspect the live Criteria catalog.
+Ticket Preflight runs automatically at the start of every `booley run`; there is no standalone Ticket Preflight command. `booley doctor` performs related aggregate checks for custom MCP tools and Criteria, but it does not reproduce every per-file Ticket Preflight warning or print the Criterion-to-MCP-tool map. Use `booley cheat --criteria` to inspect the live Criteria catalog.
 
 For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 
@@ -776,13 +776,13 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | I want to... | Do this |
 |-------------|---------|
 | Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley_project/mcp_tools/`; discovery is automatic |
-| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-run-commands-flowssimpre_run_commands)) |
+| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) |
 | Use host-provisioned Vivado | Follow [CONFIG.md](../user/CONFIG.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
 | Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
 | Try a custom MCP tool | Restart the Session Runtime, then ask the Interactive Mode agent to invoke it |
-| Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect preflight logs for per-file warnings |
+| Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect Ticket Preflight logs for per-file warnings |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
 

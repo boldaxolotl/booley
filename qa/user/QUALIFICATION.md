@@ -39,7 +39,7 @@ The production Scenarios preserve the reviewed qualification cadence:
   optional until usage permits.
 - Native CLI runs exercise core product behavior. GUI runs additionally exercise
   the supported VS Code Runtime Attachment and Waveform Viewer integration.
-- Existing EDA tool, Session Image, Stealth Mode, and Linux provisioned-Vivado
+- Existing EDA tool, Runtime Image, Stealth Mode, and Linux provisioned-Vivado
   assignments remain unchanged. Windows has no provisioned-Vivado requirement;
   Linux unavailability does not remove it.
 

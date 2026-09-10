@@ -1,4 +1,4 @@
-"""Authoritative provenance and ancestry reconciliation for Session Images."""
+"""Authoritative provenance and ancestry reconciliation for Runtime Images."""
 
 from __future__ import annotations
 
@@ -70,12 +70,12 @@ class Status(StrEnum):
 
 
 class ImageLifecycleError(RuntimeError):
-    """A managed Session Image could not be reconciled or verified."""
+    """A managed Runtime Image could not be reconciled or verified."""
 
 
 @dataclass(frozen=True, slots=True)
 class HostImageScope:
-    """Project-independent ownership of the base Session Image."""
+    """Project-independent ownership of the base Runtime Image."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +91,7 @@ ImageScope: TypeAlias = HostImageScope | ProjectImageScope
 
 @dataclass(frozen=True)
 class PayloadProvenance:
-    """Booley payload identity embedded in a Session Image."""
+    """Booley payload identity embedded in a Runtime Image."""
 
     schema: str
     version: str
@@ -100,7 +100,7 @@ class PayloadProvenance:
 
 @dataclass(frozen=True)
 class BuildProvenance:
-    """Recipe and direct-parent inputs that produced a Session Image."""
+    """Recipe and direct-parent inputs that produced a Runtime Image."""
 
     recipe_fingerprint: str
     parent_artifact: str | None
@@ -376,7 +376,7 @@ def _nodes(project_root: Path, selected: str, docker: DockerPort) -> tuple[Image
         return _with_parent_artifacts((base, _flavor_node(selected, base, payload)), docker)
     generated = project_image.project_image_name(project_root)
     if selected != generated:
-        raise ImageLifecycleError(f"unsupported managed Session Image {selected!r}")
+        raise ImageLifecycleError(f"unsupported managed Runtime Image {selected!r}")
     parent_name = project_image.dockerfile_parent_image(
         _direct_project_dir(project_root) / "docker" / "Dockerfile"
     )
@@ -461,7 +461,7 @@ def _schema_two_parent_current(node: ImageNode, docker: DockerPort) -> bool:
 
 
 def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) -> bool:
-    """Validate the build-only parent of the base Session Image."""
+    """Validate the build-only parent of the base Runtime Image."""
     if origin == "registry":
         return normalize_registry_digest(recorded_parent) is not None
     if not is_local_image_id(recorded_parent):
@@ -836,7 +836,7 @@ def _verified_result(
 ) -> LifecycleResult:
     selected_id = docker.image_id(selected)
     if selected_id is None or not _node_current(selected_node, docker):
-        raise ImageLifecycleError(f"selected Session Image {selected!r} did not verify")
+        raise ImageLifecycleError(f"selected Runtime Image {selected!r} did not verify")
     return LifecycleResult(
         selected,
         selected_id,

@@ -243,19 +243,22 @@ run_cwd = "tests/work"   # relative to the repo root; unset = run from project r
 
 Only the direct-binary (Verilator) run honors this as a literal cwd; the Icarus
 `make run` target stays anchored to its build directory. Its resolved value is
-exported to pre-run commands as `BOOLEY_RUN_CWD`.
+exported to pre-sim commands as `BOOLEY_RUN_CWD`.
 
 **The directory must already exist.** Booley does not create it — the sim run
 spawns with this as its cwd, and a missing one fails the spawn. If your run dir
 is generated (a scratch dir a staging step fills), `mkdir -p` it from
-[Pre-run commands](#pre-run-commands-flowssimpre_run_commands), which run
+[Pre-sim commands](#pre-sim-commands-flowssimpre_run_commands), which run
 before the sim and are free to create it.
 
-### Pre-run commands (`[flows.sim].pre_run_commands`)
+### Pre-Sim Commands (`[flows.sim].pre_run_commands`)
+
+The `pre_run_commands` key is retained for configuration compatibility;
+**Pre-Sim Commands** is the canonical product term.
 
 Some tests need a non-RTL build step before the sim can run. The classic case
 is a CPU core whose testbench loads a firmware image cross-compiled *per test
-case*. Declare that step as **Pre-Run Commands**:
+case*. Declare that step as **Pre-Sim Commands**:
 
 ```toml
 [flows.sim]
@@ -293,7 +296,7 @@ but only the short one is exported, so a script that hardcodes
 writing to the same place under two different names. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
-attributed tail (`pre-run commands failed (rc=N): …`) and the loop continues
+attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands share the per-test
 timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
 their real position, and `booley doctor` validates the shape and notes when
@@ -558,7 +561,7 @@ design as success.
 
 `booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
-without running Pre-Run Commands, simulator tests, Cocotb Python, or tracing.
+without running Pre-Sim Commands, simulator tests, Cocotb Python, or tracing.
 Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
 and then sweep every RTL module from its declaring file. `--elab-only` and
 `--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
@@ -1212,7 +1215,7 @@ and *what to verify* in `.booley_project/tests.toml`.
 > Target. A `.core` is usually a mechanical restatement of the build
 > you already have (a filelist plus a toplevel); for the one thing it can't
 > express, a per-test non-RTL build step like compiling a test's firmware,
-> declare [Pre-run commands](#pre-run-commands-flowssimpre_run_commands)
+> declare [Pre-sim commands](#pre-sim-commands-flowssimpre_run_commands)
 > instead of abandoning the flow.
 
 A `.core` describes *how the design builds*: source files (`filesets`), top
@@ -1347,7 +1350,7 @@ Per Target because that is where the variance lives: the same testbench module
 run under two RTL flavours is two Targets, each with its own value. The exports
 happen in the shell that owns the build **and** the run, inside the Session
 Runtime — no testbench edit needed. [Pre-run
-commands](#pre-run-commands-flowssimpre_run_commands) see the same
+commands](#pre-sim-commands-flowssimpre_run_commands) see the same
 variables (so a flavour-aware firmware build works), but they can't *provide*
 them: their own exports die with their shell. The test filter selects tests
 rather than configuring them. Values must be quoted
@@ -1626,7 +1629,7 @@ hatches that remain, and what each is for:
 
 - a **per-test non-RTL build step** (compiling the selected test's firmware,
   staging vectors) is [Pre-run
-  commands](#pre-run-commands-flowssimpre_run_commands);
+  commands](#pre-sim-commands-flowssimpre_run_commands);
 - a **new kind of analysis** with its own criteria is a [Custom
   MCP tool](../internals/MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
   side door into `sim_pass_*`.

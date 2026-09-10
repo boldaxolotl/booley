@@ -305,13 +305,15 @@ class TestAuditTestsTomlTargets:
 
 
 class TestCustomToolsAndCriteria:
-    def test_preflight_error_fails_with_first_failure_as_fix(self, tmp_path, monkeypatch):
-        from booley.harness import preflight
+    def test_ticket_preflight_error_fails_with_first_failure_as_fix(self, tmp_path, monkeypatch):
+        from booley.harness import ticket_preflight
 
         def boom(_root):
-            raise preflight.PreflightError(["MCP endpoint 'x' has no command", "second"])
+            raise ticket_preflight.TicketPreflightError(
+                ["MCP endpoint 'x' has no command", "second"]
+            )
 
-        monkeypatch.setattr(preflight, "_validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(ticket_preflight, "_validate_custom_endpoints_and_criteria", boom)
         rec = _Rec()
         fixes: list[str] = []
 
@@ -322,16 +324,16 @@ class TestCustomToolsAndCriteria:
         doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
         assert rec.kinds() == {"fail"}
         assert "custom endpoint/Criteria validation failed" in rec.fails()[0]
-        # The first PreflightError failure is surfaced as the fix hint.
+        # The first TicketPreflightError failure is surfaced as the fix hint.
         assert fixes == ["MCP endpoint 'x' has no command"]
 
     def test_generic_error_fails_with_message(self, tmp_path, monkeypatch):
-        from booley.harness import preflight
+        from booley.harness import ticket_preflight
 
         def boom(_root):
             raise ValueError("criteria.toml is not a table")
 
-        monkeypatch.setattr(preflight, "_validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(ticket_preflight, "_validate_custom_endpoints_and_criteria", boom)
         rec = _Rec()
         doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.f)
         assert rec.kinds() == {"fail"}

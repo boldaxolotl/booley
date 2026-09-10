@@ -1,4 +1,4 @@
-"""Preflight checks -- fast-fail before any ticket work begins.
+"""Ticket Preflight checks -- fast-fail before any ticket work begins.
 
 Runs at the very top of run_ticket(), before ticket intake.
 These are environment/repo sanity checks that don't need a ticket context.
@@ -18,17 +18,17 @@ from booley.runtime import runtime_context
 logger = logging.getLogger(__name__)
 
 
-class PreflightError(Exception):
-    """Raised when preflight checks fail -- execution should not start."""
+class TicketPreflightError(Exception):
+    """Raised when Ticket Preflight checks fail -- execution should not start."""
 
     def __init__(self, failures: list[str]) -> None:
         self.failures = failures
-        msg = "Preflight failed:\n  " + "\n  ".join(failures)
+        msg = "Ticket Preflight failed:\n  " + "\n  ".join(failures)
         super().__init__(msg)
 
 
-def run_preflight(project_root: Path) -> None:
-    """Run all preflight checks. Raises PreflightError on failure.
+def run_ticket_preflight(project_root: Path) -> None:
+    """Run all Ticket Preflight checks. Raises TicketPreflightError on failure.
 
     Checks (in order):
       0. Running inside the Session Runtime (Ticket Mode is container-only)
@@ -65,7 +65,7 @@ def run_preflight(project_root: Path) -> None:
     failures.extend(_check_core_setup_hazards(project_root))
 
     if failures:
-        raise PreflightError(failures)
+        raise TicketPreflightError(failures)
 
     # 7. Custom MCP endpoints & criteria validation
     _validate_custom_endpoints_and_criteria(project_root)
@@ -73,7 +73,7 @@ def run_preflight(project_root: Path) -> None:
     # 8. Active agent backend health (warning only)
     _check_agent_backend()
 
-    logger.info("Preflight OK")
+    logger.info("Ticket Preflight OK")
 
 
 def _check_inside_container() -> None:
@@ -86,7 +86,7 @@ def _check_inside_container() -> None:
     """
     error = runtime_context.container_only_error("booley run")
     if error is not None:
-        raise PreflightError([error])
+        raise TicketPreflightError([error])
 
 
 def _check_git(project_root: Path) -> list[str]:
@@ -302,7 +302,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
 def _validate_criteria_structure(project_root: Path) -> set[str]:
     """Load and cross-validate criteria definitions. Returns all criteria names.
 
-    Raises PreflightError on criteria conflicts (check 8).
+    Raises TicketPreflightError on criteria conflicts (check 8).
     """
     from booley.criteria.templates import (
         load_base_criteria,
@@ -319,7 +319,7 @@ def _validate_criteria_structure(project_root: Path) -> set[str]:
     _merged, merge_errors = merge_criteria_defs(base_criteria, project_criteria)
     structural_errors = [f"CRITERIA CONFLICT: {e}" for e in merge_errors]
     if structural_errors:
-        raise PreflightError(structural_errors)
+        raise TicketPreflightError(structural_errors)
 
     return base_criteria_names | {c.name for c in project_criteria}
 
@@ -434,9 +434,7 @@ def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str,
             mcp_tools if isinstance(mcp_tools, dict) else {},
             flows if isinstance(flows, dict) else {},
         )
-    except (
-        Exception  # noqa: BLE001 — malformed TOML degrades to empty config so preflight continues
-    ) as e:
+    except Exception as e:  # noqa: BLE001 — malformed TOML degrades; validation continues
         logger.warning("Failed to load booley.toml: %s", e)
         return {}, {}
 

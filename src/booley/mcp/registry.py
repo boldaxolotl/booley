@@ -189,7 +189,7 @@ def extract_mcp_tool_info(
 ) -> McpToolInfo | None:
     """Extract endpoint metadata from a Python file via AST (no import).
 
-    Public API: peer modules (mcp_server, preflight) depend on this name rather
+    Public API: peer modules (mcp_server, ticket_preflight) depend on this name rather
     than reaching for a private helper (principle 9 — depend on abstractions).
     """
     try:
