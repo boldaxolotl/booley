@@ -167,6 +167,38 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
     assert result.outcome.detail["acceptance_effect"] == "rejected_unbound"
 
 
+def test_unbound_project_criterion_uses_active_endpoint_catalog(runtime, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+
+    project_dir = runtime / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "criteria.toml").write_text(
+        """[project_check]
+description = "Run the Project check"
+workflow_region = "pre_sim"
+per_target = true
+group = "verification"
+""",
+        encoding="utf-8",
+    )
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"project_check_other": True}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = LintFlow()
+    flow.satisfies = ["project_check"]
+    monkeypatch.setattr(
+        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+    )
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+
+    assert result.exit_code == 2
+    assert result.outcome.detail["acceptance_effect"] == "rejected_unbound"
+    assert "project_check_other -> lint --target other" in result.outcome.report_text
+
+
 @pytest.mark.parametrize("phase", ("update", "final"))
 def test_acceptance_failures_keep_their_distinct_persistence_semantics(
     phase, runtime, monkeypatch

@@ -299,14 +299,23 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     if not missing:
         return None
 
+    from booley.core.checkout_role import SourceCheckoutProjectError
     from booley.criteria.actions import planned_invocation
     from booley.criteria.endpoint_catalog import (
         CriterionEndpointCatalog,
         EndpointCriterionRelationship,
     )
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    try:
+        project_criteria_path = (
+            resolve_checkout_project_dir(Path(endpoint.args.work_dir)) / "criteria.toml"
+        )
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        project_criteria_path = None
 
     endpoint_catalog = CriterionEndpointCatalog.load(
-        None,
+        project_criteria_path,
         (
             EndpointCriterionRelationship(
                 command=endpoint.name,
