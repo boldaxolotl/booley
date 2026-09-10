@@ -3,6 +3,9 @@
 # compatibility canary for Booley's required checks first.
 merge_queue:
   mode: serial
+  # Keep queue progress in Mergify's dashboard and checks instead of posting
+  # status comments that notify every participant on each pull request.
+  status_comments: none
   max_parallel_checks: 1
   queued_label: queued
   checking_label: merge-queue-checking
