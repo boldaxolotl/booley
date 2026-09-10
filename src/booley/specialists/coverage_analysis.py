@@ -14,6 +14,10 @@ from booley.flows.sim.coverage_campaign import (
     encode_coverage_campaign,
     freeze_coverage_mapping,
 )
+from booley.flows.sim.coverage_campaign_store import (
+    CAMPAIGN_SCHEMA_V2,
+    CoverageCampaignSummary,
+)
 
 
 class CoverageAnalysisError(ValueError):
@@ -55,9 +59,25 @@ class CoverageAnalyzer:
         campaign: CoverageCampaign,
         sources: CoverageSourceClosure | None,
         instruction: str,
+        *,
+        summary: CoverageCampaignSummary | None = None,
     ) -> CoverageAnalysisReport:
         observed = encode_coverage_campaign(campaign)
         decode_coverage_campaign(observed, DurableTargetIdentity(campaign.target.identity))
+        analysis_schema = "booley.coverage-analysis/v1"
+        model_campaign: dict[str, object] = {"campaign": observed}
+        observed_evidence: object = observed
+        if summary is not None and summary.source_schema == CAMPAIGN_SCHEMA_V2:
+            manifest = _json_value(summary.document)
+            points = observed["points"]
+            digest = summary.point_store.sha256 if summary.point_store is not None else None
+            analysis_schema = "booley.coverage-analysis/v2"
+            model_campaign = {"campaign_manifest": manifest, "points": points}
+            observed_evidence = {
+                "campaign_manifest": manifest,
+                "points": points,
+                "point_store_sha256": digest,
+            }
         eligibility, limitations = _eligibility(campaign)
         sources = _verified_snapshot(campaign, sources)
         if sources is None:
@@ -67,7 +87,7 @@ class CoverageAnalyzer:
         response = self._model(
             json.dumps(
                 {
-                    "campaign": observed,
+                    **model_campaign,
                     "sources": sources.files if sources else None,
                     "instruction": instruction,
                 },
@@ -81,14 +101,14 @@ class CoverageAnalyzer:
         return CoverageAnalysisReport(
             freeze_coverage_mapping(
                 {
-                    "$schema": "booley.coverage-analysis/v1",
+                    "$schema": analysis_schema,
                     "campaign_id": campaign.campaign_id,
                     "target": observed["target"],
                     "eligibility": eligibility,
                     "source_access": "report_only" if sources is None else "verified",
                     "limitations": limitations,
                     "closure_recommendation": _RECOMMENDATIONS[str(campaign.evaluation["status"])],
-                    "observed_evidence": observed,
+                    "observed_evidence": observed_evidence,
                     **response,
                 }
             )

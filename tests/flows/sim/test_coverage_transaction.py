@@ -2,7 +2,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
@@ -63,9 +64,12 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     outcome = run_coverage_target(plan, execution, progress)
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
-    campaign = decode_coverage_campaign(
-        json.loads(outcome.campaign_path.read_text()), DurableTargetIdentity(plan.handle.identity)
-    )
+    document = json.loads(outcome.campaign_path.read_text())
+    assert document["$schema"] == "booley.coverage-campaign/v2"
+    assert "points" not in document
+    campaign = load_coverage_campaign(
+        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
+    ).campaign
     assert campaign.evaluation["status"] == "not_requested"
     assert campaign.rollups[0].eligible_points == 1
     assert campaign.points[0].hits_by_run == {"run:001:reset": 2, "run:002:wrap": 2}
@@ -131,7 +135,7 @@ def test_collector_errors_are_durable_command_errors_without_changing_simulation
     outcome = run_coverage_target(plan, BrokenNative(missing=missing), Progress())
     assert outcome.exit_code == 2
     document = json.loads(outcome.campaign_path.read_text())
-    decode_coverage_campaign(document, DurableTargetIdentity(plan.handle.identity))
+    load_coverage_campaign(outcome.campaign_path, DurableTargetIdentity(plan.handle.identity))
     assert document["evaluation"]["status"] == "not_requested"
     assert document["findings"]
     assert json.loads(outcome.simulation_path.read_text())["passed"] is True
@@ -288,9 +292,9 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     outcome = run_coverage_target(plan, Interrupted(), Progress())
     assert outcome.exit_code == 2
     assert outcome.abort_remaining is True
-    campaign = decode_coverage_campaign(
-        json.loads(outcome.campaign_path.read_text()), DurableTargetIdentity(plan.handle.identity)
-    )
+    campaign = load_coverage_campaign(
+        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
+    ).campaign
     expected = ["pass", "pass"] if failure_at == "merge" else ["pass", "inconclusive"]
     assert [run.simulation_verdict for run in campaign.runs] == expected
     assert campaign.collection["status"] == "collector_error"
@@ -369,7 +373,15 @@ def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch
 
 @pytest.mark.parametrize(
     "boundary",
-    ["campaign", "simulation", "first_evidence", "second_evidence", "state", "progress"],
+    [
+        "point_store",
+        "campaign",
+        "simulation",
+        "first_evidence",
+        "second_evidence",
+        "state",
+        "progress",
+    ],
 )
 def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     tmp_path, monkeypatch, boundary
@@ -406,8 +418,10 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert {entry["met"] for entry in snapshot.criteria.values()} == {not committed}
     assert len(snapshot.evidence) == (4 if committed else 2)
     assert {entry.met for entry in state.criteria.values()} == {not committed}
-    assert outcome.campaign_path.exists() == (boundary != "campaign")
-    assert outcome.simulation_path.exists() == (boundary not in {"campaign", "simulation"})
+    assert outcome.campaign_path.exists() == (boundary not in {"point_store", "campaign"})
+    assert outcome.simulation_path.exists() == (
+        boundary not in {"point_store", "campaign", "simulation"}
+    )
     assert outcome.detail["evaluation"] == "fail"
     assert outcome.detail["simulation"] == "fail"
 
@@ -431,6 +445,7 @@ def persistence_fault(boundary):
     original_replace, original_link = Path.replace, os.link
     evidence_count = 0
     filenames = {
+        "point_store": "coverage-points.jsonl.gz",
         "campaign": "coverage.json",
         "simulation": "simulation.json",
         "state": "state.json",
@@ -444,6 +459,8 @@ def persistence_fault(boundary):
 
     def link_file(source, destination, **kwargs):
         nonlocal evidence_count
+        if Path(destination).name == filenames.get(boundary):
+            raise OSError(f"injected {boundary} failure")
         if Path(destination).name == "record.json":
             evidence_count += 1
             if (boundary == "first_evidence" and evidence_count == 1) or (

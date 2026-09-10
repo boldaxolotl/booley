@@ -53,6 +53,8 @@ Verilator-native measurement, immutable Campaigns, deterministic Criteria,
 transactional waivers, canonical persistence, exact pruning, and the report-driven
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
+V2 Campaign persistence keeps statistics in that small manifest and lossless points
+in an integrity-linked compressed point store; retained V1 Campaigns remain readable.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
 Simulation collection controls and the Coverage Criterion are public alongside

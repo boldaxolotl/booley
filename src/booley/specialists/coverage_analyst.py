@@ -53,10 +53,10 @@ class CoverageAnalystSpecialist(Specialist):
         )
 
     def coverage_analyst(self, campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
-        decoded = read_coverage_campaign(campaign)
-        sources = coverage_sources(decoded, self.args.work_dir)
+        loaded = read_coverage_campaign(campaign)
+        sources = coverage_sources(loaded.campaign, self.args.work_dir)
         return CoverageAnalyzer(self._analyze_text).analyze_coverage_campaign(
-            decoded, sources, instruction
+            loaded.campaign, sources, instruction, summary=loaded.summary
         )
 
     def _analyze_text(self, prompt: str) -> object:

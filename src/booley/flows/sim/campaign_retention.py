@@ -16,7 +16,8 @@ from .campaign_reports import (
     target_report_directory,
     write_campaign_json,
 )
-from .coverage_campaign import CoverageCampaign, DurableTargetIdentity, decode_coverage_campaign
+from .coverage_campaign import CoverageCampaign, DurableTargetIdentity
+from .coverage_campaign_store import load_coverage_campaign
 
 
 class CampaignRetentionError(ValueError):
@@ -66,7 +67,9 @@ def _target(
     identity = document.get("target")
     if not isinstance(identity, dict) or not isinstance(identity.get("identity"), str):
         raise CampaignRetentionError("Campaign has no durable Target identity")
-    campaign = decode_coverage_campaign(document, DurableTargetIdentity(identity["identity"]))
+    campaign = load_coverage_campaign(
+        target / "coverage.json", DurableTargetIdentity(identity["identity"])
+    ).campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
         raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
     if not require_projection:
@@ -118,11 +121,15 @@ def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
     directory, campaign = _target(root, target)
     artifacts = _native_manifest(directory, campaign)
+    manifest = _read_object(directory / "coverage.json")
+    point_store = manifest.get("point_store")
+    point_store_sha256 = point_store.get("sha256") if isinstance(point_store, dict) else None
     sidecar = directory / "availability.json"
     document = {
         "$schema": "booley.coverage-availability/v1",
         "campaign_id": campaign.campaign_id,
         "campaign_sha256": hashlib.sha256((directory / "coverage.json").read_bytes()).hexdigest(),
+        "point_store_sha256": point_store_sha256,
         "artifacts": artifacts,
         "status": "pruning",
     }
