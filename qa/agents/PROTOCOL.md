@@ -10,9 +10,9 @@ cleanup work to delegates. It owns sequencing, evidence integration, and the rep
 Record delegate identity and assignment with the step; no delegation event system
 is required. Delegates cannot grant authority or change acceptance requirements.
 
-Before product exercises, freeze a run ID, selected profile, exact published Booley
-release and package identity, release documentation, suite commit, pinned IP inputs,
-native-host OS and architecture, provider, Runtime Attachment, agent backend,
+Before product exercises, freeze a run ID, selected profile, exact immutable Booley
+build and package identity, matching documentation snapshot, suite commit, pinned IP
+inputs, native-host OS and architecture, provider, Runtime Attachment, agent backend,
 relevant Session Image and EDA tool identities, deadline, artifact root, pre-run
 capability probes, and granted authority in `run.json`. Record initial identities
 there; Session Image identities created by Project Setup and later Git repository or
@@ -20,10 +20,12 @@ accepted-commit identities belong in the producing step's result and evidence.
 Missing required initial identity blocks execution. Missing authority means denied.
 
 Runs are unattended. Authority covers only the declared actions and owned resources.
-Use published Booley documentation, packaged skills, CLI/MCP help, and ordinary
-Project inspection. Consult Booley source for verification/classification only after
-capturing the original observation. Use exact published releases; local wheels,
-editable installs, development builds, and imports from a source checkout are excluded.
+Use the documentation and packaged skills matching the tested build, CLI/MCP help,
+and ordinary Project inspection. Consult Booley source for verification/classification
+only after capturing the original observation. The tested build may be a published
+release or an unreleased candidate. Candidate packages, including local wheels, must be
+immutable artifacts bound to a source commit and content hash. Floating references,
+editable installs, and execution or imports from a source checkout are excluded.
 
 ## Execute
 

@@ -104,4 +104,4 @@ The validator is standalone so authoring does not import the installed Booley re
 under test.
 Its strict metadata checks reject unknown coverage/profile fields without adding
 another persistent schema family. HTTPS authorities are syntax-checked offline;
-review and release-matched execution must verify their actual content and currency.
+review and build-matched execution must verify their actual content and currency.
