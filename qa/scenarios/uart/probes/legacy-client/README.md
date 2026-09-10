@@ -32,7 +32,7 @@ Do not attach borrowed volumes, credentials or host directories. A host unable t
 reproduce the recorded old creation command is missing fixture infrastructure;
 it cannot substitute hand-authored product state or receive qualification credit.
 
-For deterministic post-stop injection, create `fixture.json` in an operator-owned
+For deterministic post-stop injection, create `fixture.json` in a Scenario Operator-owned
 fixture root with `docker` (absolute original executable), `container_id` (the exact
 64-character run-owned ID), and `owned_bind` (relative path to the disposable bind
 inside that root). The bind must already be referenced by the real issued current

@@ -12,4 +12,4 @@ The FST exercise must:
 - Cover synchronous and asynchronous views, explicit clock/reset selection, cycle and typed physical-time tokens, and one request-to-frame latency cross-checked against the Cocotb observation rather than trusted from CLI return code alone.
 - Open a scoped Waveform Viewer state containing the clock, PFC request, packet-start, XGMII data/control, and relevant statistics signals, with start/end markers and cursor. Retain WCP readback. Attempt visual capture only when the pre-run capability probe proves a qualified observer.
 
-The separately allocated Taxi inventory matrices remain required in the selected profile.
+The separately allocated Taxi inventory matrices remain required in the selected Configured Scenario.

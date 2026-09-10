@@ -2,6 +2,406 @@ format_version: 1
 scenario_id: opentitan-uart-clean-room-greenfield
 title: Documentation-only standalone UART
 source: https://github.com/boldaxolotl/booley/issues/376#issuecomment-5596872672
+check_sets:
+- id: uart-core
+  checks:
+  - published-release
+  - run-inputs
+  - delegation
+  - authority
+  - empty-origin
+  - corpus-pin
+  - source-boundary
+  - doc-precedence
+  - doc-rx-depth
+  - doc-tx-overflow
+  - doc-watermark-shift
+  - interface-only
+  - bootstrap-pending
+  - automatic-bootstrap
+  - bootstrap-clean
+  - init-idempotence
+  - scaffold-assets
+  - stealth-disabled
+  - inventory.H-01.booley-rtl
+  - inventory.H-01.install
+  - inventory.H-01.pip-distro
+  - inventory.H-01.pip-recovery
+  - inventory.H-02.force-repair
+  - inventory.H-02.idempotent
+  - inventory.H-02.repair-ready
+  - inventory.H-03.init-check
+  - inventory.H-03.init-force
+  - inventory.H-03.location-guard
+  - inventory.H-03.provider
+  - inventory.H-03.seed
+  - inventory.H-03.skip-credentials
+  - inventory.H-04.scaffold-repeat
+  - inventory.H-05.auth-clear
+  - inventory.H-05.auth-precedence
+  - inventory.H-05.auth-recovery
+  - inventory.H-05.auth-secret-boundary
+  - inventory.H-05.auth-stdin
+  - inventory.H-05.auth-store
+  - inventory.H-06.enter-failure
+  - inventory.H-06.enter-success
+  - inventory.H-06.interrupt
+  - inventory.H-06.refresh
+  - inventory.H-06.refresh-rollback
+  - inventory.H-06.runtime-down
+  - inventory.H-06.runtime-retry
+  - inventory.H-06.runtime-up
+  - inventory.H-10.doctor-recovery
+  - inventory.H-10.doctor-warning
+  - inventory.H-10.failure-not-waivable
+  - inventory.H-10.health-stale
+  - inventory.H-10.waiver-expired
+  - inventory.H-10.waiver-stale
+  - inventory.H-10.waiver-valid
+  - inventory.H-11.upgrade-ack
+  - inventory.H-11.upgrade-heal
+  - inventory.H-11.upgrade-pending
+  - inventory.H-12.config-cap
+  - inventory.H-12.config-defaults
+  - inventory.H-12.config-denied-egress
+  - inventory.H-12.config-egress
+  - inventory.H-12.config-idle
+  - inventory.H-12.config-invalid-ip
+  - inventory.H-12.config-invalid-key
+  - inventory.H-12.config-invalid-path
+  - inventory.H-12.config-invalid-port
+  - inventory.H-12.config-invalid-scheme
+  - inventory.H-12.config-invalid-wildcard
+  - inventory.H-12.config-preserve
+  - inventory.H-12.config-recovery
+  - inventory.H-13.license-locality
+  - inventory.H-13.route-policy
+  - inventory.ST-01.nonstealth-history
+  - inventory.ST-01.stealth-legacy
+  - setup-new
+  - setup-doctor-plain
+  - setup-doctor-deep
+  - setup-doctor-final
+  - interactive-prompt
+  - interactive-edit
+  - interactive-mcp
+  - interactive-sim
+  - interactive-lint
+  - interactive-synth
+  - interactive-doctor
+  - interactive-trace
+  - interactive-bwave
+  - interactive-commit
+  - inventory.D-01.feedback-atomic
+  - inventory.D-01.feedback-concurrent
+  - inventory.D-01.feedback-filed
+  - inventory.D-01.feedback-kinds
+  - inventory.D-01.feedback-list
+  - inventory.D-01.feedback-regenerate
+  - inventory.D-01.feedback-triage
+  - inventory.D-02.feedback-block-submit
+  - inventory.D-02.feedback-export
+  - inventory.D-02.feedback-file-only
+  - inventory.D-02.feedback-off
+  - inventory.D-02.feedback-redact
+  - inventory.D-02.feedback-token
+  - inventory.D-03.docs-contract
+  - inventory.D-03.docs-recovery
+  - inventory.I-01.bare-launch
+  - inventory.I-01.bare-launch-failure
+  - inventory.I-01.bare-launch-recovery
+  - inventory.I-01.interactive-commit
+  - inventory.I-03.mcp-disabled
+  - inventory.I-03.mcp-modes
+  - inventory.I-03.mcp-restored
+  - inventory.I-05.catalog-coherence
+  - inventory.I-05.public-navigation
+  - inventory.P-10.custom-criterion
+  - inventory.P-10.custom-disabled
+  - inventory.P-10.custom-discover
+  - inventory.P-10.custom-invalid
+  - inventory.P-10.custom-preflight
+  - inventory.P-10.custom-recovery
+  - inventory.ST-04.interrupt-cleanup
+  - inventory.ST-04.mount-boundary
+  - inventory.ST-04.network-deny
+  - inventory.ST-04.origin-push-deny
+  - inventory.ST-04.pdk-readonly
+  - inventory.ST-04.provider-allow
+  - inventory.ST-04.runtime-user
+  - inventory.T-12.notify-absent
+  - inventory.T-12.notify-blocked
+  - inventory.T-12.notify-completion-drift
+  - inventory.T-12.notify-doctor
+  - inventory.T-12.notify-unavailable-blocked
+  - inventory.T-12.notify-unavailable-doctor
+  - feature-create
+  - feature-run
+  - feature-acceptance-basis
+  - feature-elaboration
+  - feature-simulation
+  - feature-lint
+  - feature-synthesis
+  - feature-review-rtl
+  - feature-review-protocol
+  - feature-review-spec
+  - feature-review-tb
+  - feature-disposition
+  - inventory.S-01.review-clean-blocked
+  - inventory.S-01.review-clean-waived
+  - inventory.S-01.review-done
+  - inventory.S-01.review-guidance
+  - inventory.S-01.review-rerun
+  - inventory.S-01.review-security
+  - inventory.S-01.review-spec
+  - inventory.S-01.review-stale
+  - inventory.S-01.review-tb-quality
+  - inventory.S-02.mutation-auto-dry
+  - inventory.S-02.mutation-campaign
+  - inventory.S-02.mutation-default-dry
+  - inventory.S-02.mutation-lock-regen
+  - inventory.S-02.mutation-lock-reuse
+  - inventory.S-03.isolation-complete
+  - inventory.S-03.isolation-failure
+  - inventory.S-03.isolation-hidden
+  - inventory.S-03.isolation-visible
+  - inventory.S-04.criterion-mutation
+  - inventory.S-04.criterion-review-security
+  - inventory.S-04.criterion-review-spec
+  - inventory.S-04.criterion-review-tb-quality
+  - inventory.T-02.accepted-commit
+  - inventory.T-02.report-retained
+  - inventory.T-02.ticket-type-feature
+  - inventory.T-02.ticket-type-verification
+  - evaluator-isolation
+  - evaluator-identity
+  - evaluator-candidate
+  - control-positive-mmio
+  - control-negative-mmio
+  - control-recover-mmio
+  - control-positive-serial
+  - control-negative-serial
+  - control-recover-serial
+  - case-manifest
+  - UART-BUS.request-stable
+  - UART-BUS.response-stable
+  - UART-BUS.single-outstanding
+  - UART-BUS.accept-latency
+  - UART-BUS.response-latency
+  - UART-BUS.read-snapshot
+  - UART-BUS.read-once
+  - UART-BUS.write-once
+  - UART-BUS.byte-masks
+  - UART-BUS.w1c-masks
+  - UART-BUS.wdata-strobe
+  - UART-BUS.zero-strobe
+  - UART-BUS.read-strobes
+  - UART-BUS.ro-write
+  - UART-BUS.wo-read
+  - UART-BUS.misaligned
+  - UART-BUS.unmapped
+  - UART-BUS.empty-read
+  - UART-REG.offsets
+  - UART-REG.reset-values
+  - UART-REG.legal-rw
+  - UART-REG.reserved
+  - UART-REG.alert-test
+  - UART-TXRX.tx-bytes
+  - UART-TXRX.rx-bytes
+  - UART-TXRX.back-to-back
+  - UART-TXRX.full-duplex
+  - UART-TXRX.enable-disable
+  - UART-BAUD.exact-a
+  - UART-BAUD.exact-b
+  - UART-BAUD.fractional
+  - UART-BAUD.zero
+  - UART-PARITY.disabled
+  - UART-PARITY.even
+  - UART-PARITY.odd
+  - UART-PARITY.bad
+  - UART-FIFO.tx-occupancy
+  - UART-FIFO.rx-occupancy
+  - UART-FIFO.overflow
+  - UART-FIFO.order
+  - UART-FIFO.tx-reset
+  - UART-FIFO.rx-reset
+  - UART-WATERMARK.tx
+  - UART-WATERMARK.rx
+  - UART-IRQ.identities
+  - UART-IRQ.enable-mask
+  - UART-IRQ.test
+  - UART-IRQ.level
+  - UART-IRQ.event
+  - UART-IRQ.tx-empty-done
+  - UART-ERROR.stop
+  - UART-ERROR.break
+  - UART-ERROR.timeout-enabled
+  - UART-ERROR.timeout-disabled
+  - UART-FILTER.noise
+  - UART-FILTER.false-start
+  - UART-FILTER.phase-start
+  - UART-LOOP.system
+  - UART-LOOP.line
+  - UART-OVERRIDE.low
+  - UART-OVERRIDE.high
+  - UART-OVERRIDE.release
+  - UART-HISTORY.order
+  - UART-RESET.idle
+  - UART-RESET.active-tx
+  - UART-RESET.active-rx
+  - UART-RESET.occupied
+  - UART-RESET.pending-mmio
+  - evaluator-results
+  - evaluator-reuse
+  - repair-trigger
+  - repair-create
+  - repair-diagnostics
+  - repair-regression
+  - repair-full-rerun
+  - repair-bounds
+  - external-prerequisite
+  - external-project
+  - external-release
+  - external-doctor
+  - external-smoke-first
+  - external-recreate
+  - external-smoke-second
+  - external-cleanup
+  - final-simulation
+  - final-lint
+  - final-synthesis
+  - final-doctor
+  - final-git-stealth
+  - archive
+  - cleanup-processes
+  - cleanup-git
+  - cleanup-projects
+  - cleanup-evaluator
+  - cleanup-preservation
+  - deadline
+  - retry-policy
+  - interruption
+- id: uart-windows
+  checks:
+  - inventory.H-03.lf-auto
+  - inventory.H-03.lf-compat
+  - inventory.H-03.lf-dirty
+  - inventory.H-03.lf-hardlink
+  - inventory.H-03.lf-protected
+  - inventory.H-03.lf-recovery
+- id: uart-gui
+  checks:
+  - inventory.H-06.legacy-poststop-failure
+  - inventory.H-06.legacy-refuse-ambiguous
+  - inventory.H-06.legacy-refuse-foreign
+  - inventory.H-06.legacy-refuse-headless
+  - inventory.H-06.legacy-refuse-multiple
+  - inventory.H-06.legacy-replace
+  - inventory.H-06.legacy-restart
+  - inventory.H-06.refresh-vscode
+  - inventory.I-01.client-session
+  - gui-runtime-client
+  - gui-mcp-integration
+  - gui-waveform
+configured_scenarios:
+- id: uart-ubuntu-codex-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  check_sets:
+  - uart-core
+  exclusions:
+  - check: inventory.H-03.lf-auto
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-compat
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-dirty
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-hardlink
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-protected
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-recovery
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+- id: uart-ubuntu-codex-vscode
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  check_sets:
+  - uart-core
+  - uart-gui
+  exclusions:
+  - check: inventory.H-03.lf-auto
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-compat
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-dirty
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-hardlink
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-protected
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+  - check: inventory.H-03.lf-recovery
+    reason: Windows-only LF reconciliation fixture is not applicable on Ubuntu.
+- id: uart-windows-codex-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  check_sets:
+  - uart-core
+  - uart-windows
+  exclusions: []
+- id: uart-windows-codex-vscode
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  check_sets:
+  - uart-core
+  - uart-windows
+  - uart-gui
+  exclusions: []
 inputs:
 - id: release
   kind: pre-run
@@ -24,10 +424,10 @@ authority:
   No external push, issue submission or permanent Booley repair. No source inspection before observing a product failure. No private internals as product proof.
 - |-
   Keep credentials outside Projects and evidence; preserve borrowed installations, credentials, shared images/caches and unrelated state.
-- UART evaluator, seed and generated cases remain operator-held outside Developer filesystem, runtime, mounts and
+- UART evaluator, seed and generated cases remain Scenario Operator-held outside Developer filesystem, runtime, mounts and
   network.
 - |-
-  Recovery stays within this live run and phase allowance; no coordinator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
+  Recovery stays within this live run and phase allowance; no Scenario Operator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
 budget:
   deadline_minutes: 480
   cleanup_minutes: 30
@@ -97,9 +497,9 @@ steps:
     capabilities:
     - D-03
     stimulus: Assign setup, development, evaluation, diagnostics and cleanup.
-    expected: Recorded delegate identities perform actual work; coordinator sequences and integrates evidence.
+    expected: Recorded delegate identities perform actual work; the Scenario Operator sequences and integrates evidence.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Recorded delegate identities perform actual work; coordinator sequences and integrates evidence.
+    evidence: Recorded delegate identities perform actual work; the Scenario Operator sequences and integrates evidence.
     capture: evidence/opentitan-uart-clean-room-greenfield.delegation
   requires:
   - published-release
@@ -1356,7 +1756,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1414,7 +1814,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1472,7 +1872,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1530,7 +1930,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1588,7 +1988,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1646,7 +2046,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1704,7 +2104,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1762,7 +2162,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1820,7 +2220,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1878,7 +2278,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1936,7 +2336,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -1994,7 +2394,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -2052,7 +2452,7 @@ steps:
     sha256: 781e71749deab8ee626f5db85ff1b09090dc31b6db712be608fc2a269e4a55d4
   - path: probes/host-policy/README.md
     audience: coordinator
-    sha256: 362406a9e274706f822572d0f4af36eb08b2724c1248f5c7f54e0310825cc729
+    sha256: 57d7c2e72eb1339535283f0d7550fc420dcb4aec762bf80aabb12d5f0efcc5d9
   - path: probes/host-policy/cap.toml
     audience: coordinator
     sha256: 23e378a6ef3be9e3979aebb1900f0f3cd21151b878ef22124eeb8c077a44f582
@@ -2368,7 +2768,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2399,7 +2799,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2430,7 +2830,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2461,7 +2861,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2492,7 +2892,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2523,7 +2923,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2554,7 +2954,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 82cd0c7143382a444a28675c5238a51453b1233060e4847ae05e7372d8de0dd4
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2694,10 +3094,10 @@ steps:
     - I-01
     stimulus: Implement minimal CTRL reset/read/write and MMIO smoke.
     expected: |-
-      Owned RTL/TB/config/guidance diff establishes sim_uart, lint_uart, synth_uart and does not implement subsequent Ticket's full journey prematurely.
+      Owned RTL/TB/config/guidance diff establishes sim_uart, lint_uart, synth_uart and does not implement the subsequent Ticket's full scope prematurely.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      Owned RTL/TB/config/guidance diff establishes sim_uart, lint_uart, synth_uart and does not implement subsequent Ticket's full journey prematurely.
+      Owned RTL/TB/config/guidance diff establishes sim_uart, lint_uart, synth_uart and does not implement the subsequent Ticket's full scope prematurely.
     capture: evidence/opentitan-uart-clean-room-greenfield.interactive-edit
   requires:
   - published-release
@@ -4029,7 +4429,7 @@ steps:
   assets:
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: b9c6ed7142ac37072a5317b8c1f2761a9a1d8483cea08fddefccf106efd9cda5
+    sha256: 730cdad0fa632b7d25206547718bab42b3425fca1ebc95153deb4ad7a0d3f822
   - path: spec/qa_uart.sv
     audience: Developer Agent
     sha256: 019ab153ca1f735225af165ad53c31f542676b95afa9c27322d8d22e404eeb64
@@ -4888,10 +5288,10 @@ steps:
     capabilities:
     - F-01
     stimulus: Place evaluator outside Project and Session Runtime; inspect access boundaries.
-    expected: Developer cannot access source/cases/prompts/logs/filesystem/network route; operator evidence proves
+    expected: Developer cannot access source/cases/prompts/logs/filesystem/network route; Scenario Operator evidence proves
       separation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Developer cannot access source/cases/prompts/logs/filesystem/network route; operator evidence proves
+    evidence: Developer cannot access source/cases/prompts/logs/filesystem/network route; Scenario Operator evidence proves
       separation.
     capture: evidence/opentitan-uart-clean-room-greenfield.evaluator-isolation
   requires:
@@ -4954,7 +5354,7 @@ steps:
     sha256: 357fbcc3ffdf2d2a65f816fe61b8a61a688bc43a032badc52693c751067a8400
   - path: evaluator/README.md
     audience: independent evaluator
-    sha256: 87c44dc9bef59d6dfa5d304b6f59488598cc40891b606c5d5ba6d3d4de918192
+    sha256: 3587819a12e9538de45c866fe37445d8b4afcf41d2e46f48484cf732ada9c717
   - path: evaluator/inputs.py
     audience: independent evaluator
     sha256: 7c91bd0a7ece38519395a7a463b8bf2d1e0a5dcbacaec334964748e147098725
@@ -4963,15 +5363,15 @@ steps:
     sha256: 7572e5b3cff19e402ec65ea9c38653cc4a0a10a278b5bf0497944f5151bd5f51
   - path: evaluator/CONTRACT.md
     audience: independent evaluator
-    sha256: 24e569d32f8c6e7e01ef42835966ff816c64a2a299a47da0b9c3bb4a199f9e39
+    sha256: e492f5fb60f164fb51b9bca8d1ed63dff64b294d4a7d170c33f26277f7b39d55
 - id: evaluator-candidate
   phase: evaluate
-  action: Build accepted commit in disposable operator checkout.
+  action: Build accepted commit in disposable Scenario Operator checkout.
   checks:
   - id: evaluator-candidate
     capabilities:
     - F-01
-    stimulus: Build accepted commit in disposable operator checkout.
+    stimulus: Build accepted commit in disposable Scenario Operator checkout.
     expected: Exact candidate RTL evaluated with independent drivers/monitors, never candidate TB/pass sentinel.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: Exact candidate RTL evaluated with independent drivers/monitors, never candidate TB/pass sentinel.
@@ -4981,12 +5381,12 @@ steps:
   - feature-disposition
 - id: control-positive-mmio
   phase: evaluate
-  action: Run known operator transport fixture without corruption.
+  action: Run known Scenario Operator transport fixture without corruption.
   checks:
   - id: control-positive-mmio
     capabilities:
     - F-01
-    stimulus: Run known operator transport fixture without corruption.
+    stimulus: Run known Scenario Operator transport fixture without corruption.
     expected: MMIO oracle passes, expected/observed response evidence retained.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: MMIO oracle passes, expected/observed response evidence retained.
@@ -5033,12 +5433,12 @@ steps:
     instruction: Remove MMIO corruption and rerun fixture.
 - id: control-positive-serial
   phase: evaluate
-  action: Run known operator serial fixture without corruption.
+  action: Run known Scenario Operator serial fixture without corruption.
   checks:
   - id: control-positive-serial
     capabilities:
     - F-01
-    stimulus: Run known operator serial fixture without corruption.
+    stimulus: Run known Scenario Operator serial fixture without corruption.
     expected: Serial oracle passes with trace.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: Serial oracle passes with trace.
@@ -6328,10 +6728,10 @@ steps:
   assets:
   - path: tickets/repair.md
     audience: Developer Agent
-    sha256: e4f6fa2e522c97af0b73ad0cef5b585fd2355bdd142111769cc02b998cb2f69a
+    sha256: 48ac4fac57d50a02fb7ec8e16af45016a766faedf00f7bcbcf5e485eb82431de
   - path: tickets/feature.md
     audience: Developer Agent
-    sha256: b9c6ed7142ac37072a5317b8c1f2761a9a1d8483cea08fddefccf106efd9cda5
+    sha256: 730cdad0fa632b7d25206547718bab42b3425fca1ebc95153deb4ad7a0d3f822
   - path: spec/mmio-addendum.md
     audience: Developer Agent
     sha256: 24afdde0db3790592497da41adae900eb2ae04eeea2baae4628f20c323dde748
@@ -6350,10 +6750,10 @@ steps:
     - T-02
     stimulus: Select failing records deterministically by public case ID, preferring distinct families.
     expected: |-
-      At most five records per repair, each only identity/stimulus/expected/observed/timing/relevant waveform excerpt; full logs remain operator-held.
+      At most five records per repair, each only identity/stimulus/expected/observed/timing/relevant waveform excerpt; full logs remain Scenario Operator-held.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      At most five records per repair, each only identity/stimulus/expected/observed/timing/relevant waveform excerpt; full logs remain operator-held.
+      At most five records per repair, each only identity/stimulus/expected/observed/timing/relevant waveform excerpt; full logs remain Scenario Operator-held.
     capture: evidence/opentitan-uart-clean-room-greenfield.repair-diagnostics
   requires:
   - published-release
@@ -6673,9 +7073,9 @@ steps:
     capabilities:
     - F-01
     stimulus: Remove owned evaluator scratch.
-    expected: Operator private evidence archived and scratch removed.
+    expected: Scenario Operator private evidence archived and scratch removed.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Operator private evidence archived and scratch removed.
+    evidence: Scenario Operator private evidence archived and scratch removed.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-evaluator
 - id: cleanup-preservation
   phase: cleanup
@@ -6719,12 +7119,12 @@ steps:
     capture: evidence/opentitan-uart-clean-room-greenfield.retry-policy
 - id: interruption
   phase: cleanup
-  action: Interrupt coordinator or encounter missing prerequisite.
+  action: Interrupt the Scenario Operator or encounter missing prerequisite.
   checks:
   - id: interruption
     capabilities:
     - D-03
-    stimulus: Interrupt coordinator or encounter missing prerequisite.
+    stimulus: Interrupt the Scenario Operator or encounter missing prerequisite.
     expected: Partial record retained, resources reconciled, new run starts without old check passes; live phase
       recovery only.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md

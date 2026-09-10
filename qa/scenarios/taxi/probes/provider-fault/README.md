@@ -5,7 +5,7 @@ Codex invocation passes and its absolute executable path/version are recorded.
 Keep authentication in the existing approved store. The fixture does not contact
 a provider, simulate a successful response, or read/retain credentials.
 
-Create an operator-owned directory with a `mode` file containing `subscription`,
+Create a Scenario Operator-owned directory with a `mode` file containing `subscription`,
 `transient`, `crash`, or `timeout`. Set `QA_PROVIDER_FIXTURE_ROOT` to that directory
 and `QA_REAL_CODEX` to the recorded original executable. In the run-owned PATH
 prefix, install a `codex` launcher that executes this Python file with unchanged
@@ -32,4 +32,4 @@ original real provider invocation and require fresh success. `restored` mode is
 available for a bounded 120-second transport sanity check, but remove the wrapper
 entirely for normal recovery. Reconcile attempt counts with durable product records;
 fixture output alone earns no Ticket-behavior credit. No additional retry or spend
-allowance is created. Freeze the shim hash and fault input as operator evidence.
+allowance is created. Freeze the shim hash and fault input as Scenario Operator evidence.
