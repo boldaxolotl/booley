@@ -304,10 +304,9 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         CriterionEndpointCatalog,
         EndpointCriterionRelationship,
     )
-    from booley.criteria.templates import load_base_criteria
 
-    endpoint_catalog = CriterionEndpointCatalog.build(
-        load_base_criteria(),
+    endpoint_catalog = CriterionEndpointCatalog.load(
+        None,
         (
             EndpointCriterionRelationship(
                 command=endpoint.name,

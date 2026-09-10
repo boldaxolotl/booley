@@ -4,6 +4,7 @@ import pytest
 
 from booley.criteria.endpoint_catalog import (
     CriterionEndpointCatalog,
+    CriterionEndpointCatalogError,
     EndpointCriterionRelationship,
 )
 from booley.criteria.templates import CriterionDef
@@ -40,6 +41,16 @@ def test_missing_binding_is_explicit() -> None:
     assert catalog.match("drc_clean_core") is None
 
 
+def test_unknown_criterion_relationship_fails_at_composition() -> None:
+    relationships = [EndpointCriterionRelationship("drc", ("missing_criterion",))]
+
+    with pytest.raises(
+        CriterionEndpointCatalogError,
+        match="claims unknown Criterion family 'missing_criterion'",
+    ):
+        CriterionEndpointCatalog.build([_definition("drc_clean")], relationships)
+
+
 def test_per_target_command_keeps_definition_and_endpoint_arguments() -> None:
     catalog = CriterionEndpointCatalog.build(
         [_definition("coverage", per_target=True)],
@@ -65,5 +76,5 @@ def test_conflicting_endpoint_relationships_fail_at_composition() -> None:
         EndpointCriterionRelationship("custom-lint", ("lint_clean",)),
     ]
 
-    with pytest.raises(ValueError, match="multiple endpoint bindings"):
+    with pytest.raises(CriterionEndpointCatalogError, match="multiple endpoint bindings"):
         CriterionEndpointCatalog.build([_definition("lint_clean")], relationships)

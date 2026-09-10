@@ -799,21 +799,10 @@ def _criterion_endpoint_catalog(
 ) -> CriterionEndpointCatalog:
     """Compose discovered endpoints with the active project's Criteria."""
     from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.criteria.templates import (
-        load_base_criteria,
-        load_project_criteria,
-        merge_criteria_defs,
-    )
     from booley.mcp.registry import criterion_endpoint_relationships
 
-    merged, errors = merge_criteria_defs(
-        load_base_criteria(),
-        load_project_criteria(project_criteria_path),
-    )
-    if errors:
-        raise ValueError("; ".join(errors))
-    return CriterionEndpointCatalog.build(
-        merged,
+    return CriterionEndpointCatalog.load(
+        project_criteria_path,
         criterion_endpoint_relationships(mcp_tools),
     )
 

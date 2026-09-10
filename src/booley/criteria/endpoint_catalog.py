@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from booley.criteria.templates import CriterionDef
 
-logger = logging.getLogger(__name__)
+
+class CriterionEndpointCatalogError(ValueError):
+    """A Criterion-to-endpoint relationship cannot form a valid catalog."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,29 @@ class CriterionEndpointCatalog:
     _bindings: tuple[CriterionEndpointBinding, ...] = ()
 
     @classmethod
+    def load(
+        cls,
+        project_criteria_path: Path | None,
+        relationships: Iterable[EndpointCriterionRelationship],
+    ) -> CriterionEndpointCatalog:
+        """Load active definitions and compose them with endpoint relationships."""
+        from booley.criteria.templates import (
+            load_base_criteria,
+            load_project_criteria,
+            merge_criteria_defs,
+        )
+
+        project = (
+            load_project_criteria(project_criteria_path)
+            if project_criteria_path is not None
+            else []
+        )
+        definitions, errors = merge_criteria_defs(load_base_criteria(), project)
+        if errors:
+            raise CriterionEndpointCatalogError("; ".join(errors))
+        return cls.build(definitions, relationships)
+
+    @classmethod
     def build(
         cls,
         definitions: Iterable[CriterionDef],
@@ -52,12 +77,10 @@ class CriterionEndpointCatalog:
             for family in relationship.satisfies:
                 definition = definitions_by_name.get(family)
                 if definition is None:
-                    logger.warning(
-                        "Endpoint %r claims satisfies=%r but no matching criterion def found",
-                        relationship.command,
-                        family,
+                    raise CriterionEndpointCatalogError(
+                        f"Endpoint {relationship.command!r} claims unknown Criterion "
+                        f"family {family!r}"
                     )
-                    continue
                 command = relationship.command
                 if argument_text := arguments.get(family):
                     command = f"{command} {argument_text}"
@@ -69,7 +92,7 @@ class CriterionEndpointCatalog:
                 )
                 existing = bindings.get(family)
                 if existing is not None and existing != binding:
-                    raise ValueError(
+                    raise CriterionEndpointCatalogError(
                         f"Criterion family {family!r} has multiple endpoint bindings: "
                         f"{existing.command!r} and {command!r}"
                     )

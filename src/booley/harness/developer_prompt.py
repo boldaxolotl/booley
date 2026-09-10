@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.criteria.templates import CriterionDef
     from booley.mcp.registry import McpToolInfo
 
 logger = logging.getLogger(__name__)
@@ -361,30 +360,16 @@ def _get_criterion_endpoint_map(
     """
     try:
         from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-        from booley.criteria.templates import (
-            load_base_criteria,
-            load_project_criteria,
-            merge_criteria_defs,
-        )
         from booley.mcp.registry import (
             criterion_endpoint_relationships,
             discover_mcp_tools,
         )
 
-        base_defs = load_base_criteria()
-        project_defs: list[CriterionDef] = []
-        if project_criteria_path and project_criteria_path.exists():
-            project_defs = load_project_criteria(project_criteria_path)
-
-        merged, errors = merge_criteria_defs(base_defs, project_defs)
-        for err in errors:
-            logger.error("Criteria merge error: %s", err)
-
         if mcp_tools is None:
             mcp_tools = discover_mcp_tools()
 
-        catalog = CriterionEndpointCatalog.build(
-            merged,
+        catalog = CriterionEndpointCatalog.load(
+            project_criteria_path,
             criterion_endpoint_relationships(mcp_tools),
         )
         return {

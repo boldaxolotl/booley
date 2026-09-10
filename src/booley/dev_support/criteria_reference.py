@@ -12,14 +12,13 @@ from booley.criteria.reference import (
     render_criteria_reference,
     splice_generated,
 )
-from booley.criteria.templates import load_base_criteria
 from booley.mcp.registry import criterion_endpoint_relationships, discover_mcp_tools
 
 
 def _base_endpoint_catalog() -> CriterionEndpointCatalog:
     """Compose the packaged Criterion definitions with discovered built-ins."""
-    return CriterionEndpointCatalog.build(
-        load_base_criteria(),
+    return CriterionEndpointCatalog.load(
+        None,
         criterion_endpoint_relationships(discover_mcp_tools()),
     )
 

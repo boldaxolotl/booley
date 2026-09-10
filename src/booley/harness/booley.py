@@ -977,25 +977,14 @@ def _parse_cli() -> argparse.Namespace:
 def _live_criterion_endpoint_catalog(project_root: Path):
     """Compose the active project's Criteria with its discovered endpoints."""
     from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.criteria.templates import (
-        load_base_criteria,
-        load_project_criteria,
-        merge_criteria_defs,
-    )
     from booley.mcp.registry import (
         criterion_endpoint_relationships,
         discover_mcp_tools,
     )
 
     project_dir = project_root / ".booley_project"
-    definitions, errors = merge_criteria_defs(
-        load_base_criteria(),
-        load_project_criteria(project_dir / "criteria.toml"),
-    )
-    if errors:
-        raise ValueError("; ".join(errors))
-    return CriterionEndpointCatalog.build(
-        definitions,
+    return CriterionEndpointCatalog.load(
+        project_dir / "criteria.toml",
         criterion_endpoint_relationships(
             discover_mcp_tools(project_mcp_tools_dir=project_dir / "mcp_tools")
         ),

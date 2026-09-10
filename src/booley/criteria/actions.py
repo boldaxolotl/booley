@@ -8,12 +8,6 @@ from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 
 
-def criterion_family(key: str, endpoint_catalog: CriterionEndpointCatalog) -> str | None:
-    """Return the longest built-in family prefix matching *key*."""
-    binding = endpoint_catalog.match(key)
-    return binding.family if binding is not None else None
-
-
 def criterion_target(
     key: str,
     entry: Any,
