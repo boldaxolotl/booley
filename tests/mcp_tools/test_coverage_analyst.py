@@ -1,5 +1,6 @@
 """Exact-path Coverage Analyst wrapper with real Campaign/source files."""
 
+import copy
 import json
 from pathlib import Path
 
@@ -40,6 +41,127 @@ class Model:
         return AgentResult(
             structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
         )
+
+
+def _successful_claude_query(options_seen):
+    from claude_agent_sdk import ResultMessage
+
+    async def query(*, prompt, options):
+        options_seen.append(options)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="test-coverage",
+            result="",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 20, "output_tokens": 5},
+            structured_output={"hypotheses": [], "recommendations": [], "waiver_candidates": []},
+        )
+
+    return query
+
+
+def persist_large_v2_campaign(root: Path, point_count: int = 2_000) -> Path:
+    from booley.flows.sim.coverage_campaign import (
+        DurableTargetIdentity,
+        _point_id,
+        decode_coverage_campaign,
+    )
+    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+
+    document = _valid_document()
+    template = document["points"][0]
+    points = []
+    for index in range(point_count):
+        point = copy.deepcopy(template)
+        line = index + 1
+        point["identity"]["location"]["start"]["line"] = line
+        point["identity"]["location"]["end"]["line"] = line
+        point["identity"]["subject"]["basic_block"] = index
+        point["identity"]["collector"]["native_key"] = f"{line}:basic-block-{index}"
+        point["id"] = _point_id(point["identity"])
+        points.append(point)
+    document["points"] = points
+    document["rollups"][0].update(
+        total_points=point_count,
+        eligible_points=point_count,
+        covered_points=point_count,
+    )
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    target_dir = root / "reports/sim/12/targets/sim_counter"
+    paths = publish_coverage_campaign(target_dir, campaign)
+    (target_dir / "simulation.json").write_text(
+        json.dumps(
+            {
+                "flow": "sim",
+                "complete": True,
+                "target": "sim_counter",
+                "target_identity": document["target"]["identity"],
+                "collection": "complete",
+                "evaluation": "not_requested",
+            }
+        )
+    )
+    return paths.campaign
+
+
+def test_large_v2_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
+    path = persist_large_v2_campaign(tmp_path)
+    calls = []
+
+    def bounded_model(params):
+        calls.append(params)
+        if len(params.prompt) > 1_048_576:
+            raise RuntimeError(
+                "Codex exit code 1: turn/start input_too_large: "
+                f"max_chars=1048576, actual_chars={len(params.prompt)}"
+            )
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    result = CoverageAnalystSpecialist(model=bounded_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 0
+    assert len(calls[0].prompt) < 16_384
+    assert calls[0].nested_mcp_tools == ["coverage_evidence"]
+    assert calls[0].nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
+    assert "coverage-points.jsonl.gz" in calls[0].prompt
+    assert "points" not in result.outcome.detail["observed_evidence"]
+    assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
+
+
+def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+
+    path = persist_campaign(tmp_path)
+
+    def querying_model(params):
+        for key, value in params.nested_mcp_env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+        coverage_evidence.query_active_coverage_evidence(
+            {"view": "points", "disposition": "eligible", "limit": 1}
+        )
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    analyst = CoverageAnalystSpecialist(model=querying_model)
+    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    report = analyst.coverage_analyst(path).to_dict()
+
+    assert report["analysis_scope"]["points_retrieved"] == 1
+    assert report["analysis_scope"]["point_ids"] == [
+        json.loads(path.read_text())["points"][0]["id"]
+    ]
 
 
 def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state(tmp_path):
@@ -112,7 +234,7 @@ def source_project(root):
     return path
 
 
-def test_verified_sources_are_supplied_as_exact_text_snapshot(tmp_path):
+def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     path = source_project(tmp_path)
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
@@ -120,8 +242,9 @@ def test_verified_sources_are_supplied_as_exact_text_snapshot(tmp_path):
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "verified"
     prompt = json.loads(model.calls[0].prompt)
-    assert prompt["sources"]["rtl/counter.sv"]["text"] == "module counter; endmodule\n"
-    assert set(prompt["sources"]) == {"rtl/counter.sv", "tb/counter_tb.sv"}
+    assert prompt["source_access"] == "verified"
+    assert "module counter" not in model.calls[0].prompt
+    assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
 
 
 @pytest.mark.parametrize("ignore_native", [False, True])
@@ -142,7 +265,7 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
 
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert report["source_access"] == "report_only"
-    assert json.loads(model.calls[0].prompt)["sources"] is None
+    assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
 
 
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])
@@ -169,7 +292,7 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "report_only"
-    assert json.loads(model.calls[0].prompt)["sources"] is None
+    assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert "SECRET" not in model.calls[0].prompt
 
 
@@ -231,6 +354,67 @@ def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     assert "model did not finish" in result.outcome.report_text
 
 
+def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
+    from booley.runtime.agent_errors import ContextExhaustedError
+
+    path = persist_campaign(tmp_path)
+
+    def oversized(_params):
+        raise ContextExhaustedError(
+            "turn/start input_too_large: max_chars=1048576, actual_chars=57231875",
+            provider="codex",
+        )
+
+    result = CoverageAnalystSpecialist(model=oversized).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "model input capacity" in result.outcome.report_text
+    assert "Narrow the analysis instruction" in result.outcome.report_text
+
+
+def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
+    path = persist_campaign(tmp_path)
+
+    def exhausted_model(params):
+        Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"]).write_text(
+            json.dumps({"budget_exhausted": True}), encoding="utf-8"
+        )
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    result = CoverageAnalystSpecialist(model=exhausted_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "evidence budget exhausted" in result.outcome.report_text
+    assert "narrow the analysis instruction" in result.outcome.report_text
+
+
+def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
+    path = persist_campaign(tmp_path)
+
+    def failed_evidence_model(params):
+        Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"]).write_text(
+            json.dumps({"terminal_error": "One Coverage Point exceeds the response limit"}),
+            encoding="utf-8",
+        )
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    result = CoverageAnalystSpecialist(model=failed_evidence_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "One Coverage Point exceeds the response limit" in result.outcome.report_text
+    assert "Narrow the analysis instruction" in result.outcome.report_text
+
+
 def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
     from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
     from tests.flows.sim.test_campaign_retention import campaign
@@ -260,9 +444,7 @@ def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
     assert result.exit_code == 0
 
 
-def test_default_wrapper_keeps_configured_role_usage_and_tool_free_backend(tmp_path, monkeypatch):
-    from claude_agent_sdk import ResultMessage
-
+def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_path, monkeypatch):
     from booley.config.agent import AgentSettings
     from booley.runtime import _claude_backend
     from booley.runtime.agent_backend import ClaudeSDKBackend
@@ -271,22 +453,7 @@ def test_default_wrapper_keeps_configured_role_usage_and_tool_free_backend(tmp_p
     path = persist_campaign(tmp_path)
     options_seen = []
 
-    async def query(*, prompt, options):
-        options_seen.append(options)
-        yield ResultMessage(
-            subtype="success",
-            duration_ms=1,
-            duration_api_ms=1,
-            is_error=False,
-            num_turns=1,
-            session_id="test-coverage",
-            result="",
-            total_cost_usd=0.01,
-            usage={"input_tokens": 20, "output_tokens": 5},
-            structured_output={"hypotheses": [], "recommendations": [], "waiver_candidates": []},
-        )
-
-    monkeypatch.setattr(_claude_backend, "query", query)
+    monkeypatch.setattr(_claude_backend, "query", _successful_claude_query(options_seen))
     set_backend_config(
         BackendConfig(
             settings=AgentSettings(
@@ -314,6 +481,35 @@ def test_default_wrapper_keeps_configured_role_usage_and_tool_free_backend(tmp_p
     assert result.outcome.output_tokens == 5
     assert options_seen[0].model == "chosen-model"
     assert options_seen[0].tools == []
-    assert options_seen[0].mcp_servers == {}
+    assert set(options_seen[0].mcp_servers) == {"booley"}
+    server_env = options_seen[0].mcp_servers["booley"]["env"]
+    assert server_env["BOOLEY_NESTED_MCP_TOOLS"] == "coverage_evidence"
+    assert server_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
     assert not Path(options_seen[0].cwd).exists()
     assert list((tmp_path / "transcripts").rglob("*.jsonl"))
+
+
+def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatch):
+    from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+    from booley.specialists.coverage_analyst import analyze_coverage_campaign
+
+    campaign = decode_coverage_campaign(
+        _valid_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+    )
+    staged_paths = []
+
+    def invoke(_self, params):
+        campaign_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"])
+        staged_paths.append(campaign_path)
+        assert campaign_path.is_file()
+        assert campaign_path.with_name("coverage-points.jsonl.gz").is_file()
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    monkeypatch.setattr(CoverageAnalystSpecialist, "_invoke_agent", invoke)
+
+    report = analyze_coverage_campaign(campaign, None, "Explain gaps").to_dict()
+
+    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert staged_paths and not staged_paths[0].exists()

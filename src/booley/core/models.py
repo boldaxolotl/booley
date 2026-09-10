@@ -231,12 +231,17 @@ class AgentCallParams:
     # calls (e.g. Codex) simply leave ``captured_agent_capability_calls`` empty.
     capture_agent_capability_calls: list[str] | None = None
 
-    # MCP tools exposed to a nested agent (Codex-only).
+    # MCP tools exposed to a nested agent.
     # None  -> developer-level call (no filtering, full MCP).
     # []    -> nested call with zero MCP servers visible.
     # [...] -> nested call, only the named MCP tools exposed.
     # Recursion safety: specialists must never appear in the allowlist.
     nested_mcp_tools: list[str] | None = None
+
+    # Extra environment supplied only to the nested Booley MCP server. This is
+    # trusted composition data, not model input; adapters must not merge it into
+    # the agent process environment itself.
+    nested_mcp_env: dict[str, str] | None = None
 
     # ADR 0028 (container-only Ticket Mode): marks an DEVELOPER-level
     # in-container call and carries its MCP-exposure allowlist.
@@ -249,7 +254,8 @@ class AgentCallParams:
     #          parent env, where the harness already exported BOOLEY_MCP_TOOLS.
     developer_mcp_tools: list[str] | None = None
 
-    # Text-only calls expose no execution, filesystem, or nested MCP capabilities.
+    # Text-only calls expose no built-in execution or filesystem capabilities.
+    # A non-empty nested_mcp_tools list may expose an explicitly scoped read-only tool.
     text_only: bool = False
 
 

@@ -494,6 +494,7 @@ def _ticket_home_scope() -> str:
 def _ensure_nested_codex_home(
     parent_label: str,
     allowed_mcp_tools: list[str] | None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """Create a per-parent HOME dir for a nested Codex agent.
 
@@ -510,9 +511,9 @@ def _ensure_nested_codex_home(
     startup and filters discovery to exactly those names. Empty list → no
     MCP at all (current behavior for most specialists).
 
-    Cache key: the allowlist itself. Two callers with identical allowlists
-    share the same nested home (cheap; the config is identical). A `None`
-    allowlist is treated the same as empty.
+    Cache key: the allowlist and explicit scoped environment. Two callers
+    with identical inputs share the same nested home (cheap; the config is
+    identical). A `None` allowlist is treated the same as empty.
     """
     import hashlib
     import os
@@ -523,7 +524,8 @@ def _ensure_nested_codex_home(
     # Deterministic cache key from the allowlist content. Empty -> "_none".
     allowlist_str = ",".join(sorted(allowlist))
     ticket_scope = _ticket_home_scope()
-    cache_key = f"{ticket_scope}:{allowlist_str or '_none'}"
+    env_str = json.dumps(extra_env or {}, sort_keys=True, separators=(",", ":"))
+    cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}"
     cached = _NESTED_HOMES.get(cache_key)
     if cached is not None:
         return cached
@@ -543,6 +545,7 @@ def _ensure_nested_codex_home(
     # *replaces* the MCP process env when [env] is present, so we have to
     # enumerate everything the child needs.
     booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
+    booley_env.update(extra_env or {})
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
 
@@ -644,6 +647,7 @@ async def _codex_spawn(
             env["HOME"] = _ensure_nested_codex_home(
                 params.label or "_anonymous",
                 params.nested_mcp_tools,
+                params.nested_mcp_env,
             )
 
     if auth_mode == "subscription":

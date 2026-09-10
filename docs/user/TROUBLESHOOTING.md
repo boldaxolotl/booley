@@ -499,10 +499,18 @@ requires FuseSoC registry reconciliation, which would change project files.
 This does not change the Campaign's measured verdict. The Analyst does not reuse
 legacy `coverage_waivers.json` files or approve its candidates.
 
+Large valid Campaigns are not copied into the model prompt. The Analyst validates
+the complete Campaign first, then retrieves bounded overview, point, and verified
+source views through its private evidence tool. Point views include Approved Waiver
+disposition and provenance. If the cumulative evidence budget or model context is
+exhausted, narrow the optional instruction or retry with a larger-context model; the
+failure report identifies the exhausted boundary instead of returning an empty report.
+
 Codex analysis requires cached metadata for the exact configured model. If that
 metadata is missing, start the configured Codex CLI to refresh model discovery,
 then retry. Analysis fails closed instead of starting an agent with execution
-capabilities. Claude analysis disables built-in tools and MCP servers as well.
+capabilities. Claude analysis also disables built-in tools; both backends expose only
+the Campaign-bound evidence tool.
 
 ### Coverage collection and evaluation failures
 

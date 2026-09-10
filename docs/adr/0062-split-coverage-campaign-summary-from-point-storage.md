@@ -28,5 +28,5 @@ status: accepted
 V1 Campaigns remain readable without rewriting immutable history. V2 format-wide resource limits
 apply equally to publication and reading. Persistence schema belongs to the codecs and loaded
 envelope rather than the in-memory Coverage Campaign domain value. The split does not itself reduce
-the Coverage Analyst model payload; any bounded evidence selection requires a separate explicit
-decision that discloses omitted points.
+the Coverage Analyst model payload. ADR 0063 separately binds analysis to budgeted evidence views
+and records the retrieval scope so omitted points remain explicit.

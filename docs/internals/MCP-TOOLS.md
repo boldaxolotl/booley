@@ -802,9 +802,10 @@ for the ordered persistence and Acceptance Evidence transaction.
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
 path) and optional `instruction`. Retained V1 input returns
 `booley.coverage-analysis/v1`; V2 input returns `booley.coverage-analysis/v2`
-with separate `campaign_manifest` and fully validated `points` observed evidence.
+with the Campaign manifest and integrity-linked point-store digest as observed evidence.
 Both carry immutable observed evidence, model-authored hypotheses and recommendations,
-explicit limitations, source-access status, and screened Waiver Candidates.
+explicit limitations, source-access status, screened Waiver Candidates, and the exact
+bounded evidence-retrieval scope.
 No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
@@ -818,6 +819,14 @@ constructor injection substitutes only the external text-model boundary.
 Sources are an immutable complete fingerprint-verified snapshot, never file tools.
 Native availability sidecars do not alter normalized measurement truth.
 
+The model prompt contains only a compact Campaign reference. One isolated read-only
+`coverage_evidence` tool exposes `overview`, filtered and cursor-paged `points`, and
+verified `source` excerpts for exact point IDs. Point records include their complete
+eligible, unscored, or waived disposition and Approved Waiver provenance. Responses
+are bounded individually and cumulatively; the host first deep-validates the complete
+V2 manifest/point-store pair, so paging never weakens Campaign integrity. No other MCP
+tool is visible to this model.
+
 Stored evaluation maps directly to closure recommendations:
 `pass` → `coverage_ready`, `fail` → `coverage_not_ready`,
 `blocked` → `coverage_evidence_blocked`, and
@@ -827,7 +836,8 @@ unknown, duplicate, or invalid-reason candidates are `forbidden`; missing source
 verification, evidence, or required proof reference is `investigate`; otherwise
 `ready_for_human_review` requests human validation, never approval.
 
-Text-only Codex calls use a private exact-model catalog to remove model-provided
+Capability-isolated Codex calls use a private exact-model catalog to remove model-provided
 shell/patch/search tools and explicit startup settings to disable other tools,
-apps, plugins and subagents. Claude uses an empty built-in tool list and MCP set.
-Both receive an empty temporary working directory and no project skills.
+apps, plugins and subagents. Claude uses an empty built-in tool list. Both receive
+an empty temporary working directory, no project skills, and only the bound evidence
+MCP server.
