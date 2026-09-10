@@ -21,9 +21,10 @@ booley board blocked-briefing $SLUG
 ```
 
 When it succeeds, present the prepared dossier and proceed to **Log The
-Diagnosis**. The separate post-developer report agent has already read the
-ticket, transitions, blocked log, state, run log, developer failures, Flow and
-Specialist reports, and worktree status. Do not repeat that evidence gathering.
+Diagnosis**. The separate report agent that runs after the Developer Agent has
+already read the ticket, transitions, blocked log, state, run log, developer
+failures, Flow and Specialist reports, and worktree status. Do not repeat that
+evidence gathering.
 
 If the dossier is missing or stale, use the manual Gather Context and Diagnosis
 fallback below. This fallback exists for old tickets and report-generation
@@ -125,7 +126,7 @@ Three distinct recovery paths — do NOT conflate them:
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
   execution against the original basis is required.
-- **Return to draft (new authoring generation)**: this is required when
+- **Return to draft (fresh Ticket authoring)**: this is required when
   `blocked_reason` is `acceptance-input-change-required`, or whenever the
   Acceptance Basis inputs must change. It preserves the old Acceptance Basis
   and worktrees for audit, archives the current run history under
@@ -173,10 +174,10 @@ For an unblock retry:
      and fix every error before continuing.
   4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
      Acceptance Basis, then print:
-     `Returned to draft -> corrected authoring generation published and enqueued.`
+     `Returned to draft -> corrected Ticket published and enqueued.`
 
   Do not use the main checkout for the authoring corrections: use the worktree
-  paths emitted as JSON by `return-to-draft`. This is a new authoring generation,
+  paths emitted as JSON by `return-to-draft`. This is a fresh Ticket draft,
   not an ordinary retry of the blocked execution.
 - **Archive**: Confirm first, then `python -m booley.ticket_board archive $SLUG --force` (or `booley board archive $SLUG --force`). `--force` is required because the ticket is not `done`; archive also removes the worktree and branch itself, so no manual `git branch -D` is needed.
 - **Skip**: leave as-is.

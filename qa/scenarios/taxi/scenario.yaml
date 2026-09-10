@@ -6834,10 +6834,10 @@ steps:
     stimulus: |-
       In the same disposable fixture after that pass, move only `deps/data` out of all Project/build search paths; leave its gitlink, Target, testbench, expected values and other inputs unchanged. Invoke the same Simulation Flow again, including with the preceding successful build cache present.
     expected: |-
-      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied Simulation Criterion may be produced.
+      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied simulation Criterion may be produced.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied Simulation Criterion may be produced.
+      The new invocation fails because required submodule/source content is absent. A configuration/materialization/compile rejection before simulator launch is valid failure evidence; a timeout, unrelated error, skipped test or reused passing artifact is not. Capture the missing path, fresh invocation identity, nonzero result and diagnostic chain. No fresh passing simulation or satisfied simulation Criterion may be produced.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.simulation-missing-top
   requires:
   - inputs.pin
@@ -7094,10 +7094,10 @@ steps:
     stimulus: |-
       In that explicitly empty-selection fixture, invoke the simulation that still requires data/leaf inside the materialized workspace.
     expected: |-
-      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion.
+      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied simulation Criterion.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
     evidence: |-
-      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied Simulation Criterion.
+      Simulation fails on the missing required source; successful selection/reconstruction of an intentionally empty set must not masquerade as successful hardware simulation. Retain the unchanged source references, empty dependency paths, fresh nonzero outcome and no satisfied simulation Criterion.
     capture: evidence/taxi-10g-mac-port-evolution.submodules.simulation-excluded-dependency
   requires:
   - inputs.pin

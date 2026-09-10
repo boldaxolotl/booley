@@ -268,7 +268,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("create-file", help="Create a new ticket .md file in drafts/")
     _add_create_file_args(p)
 
-    p = sub.add_parser("return-to-draft", help="Start a new authoring generation")
+    p = sub.add_parser("return-to-draft", help="Start fresh Ticket authoring")
     p.add_argument("slug", help="Blocked ticket slug")
 
     # enqueue

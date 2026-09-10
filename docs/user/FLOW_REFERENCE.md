@@ -92,7 +92,7 @@ Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
 selected Target or baseline cannot be planned, while retaining successfully
 planned work units for diagnosis. It never acquires a heavy execution slot,
 runs an EDA or Pre-Run command, changes timeline or Criteria state, records
-acceptance evidence, populates implementation caches, or writes a normal
+Criterion evidence, populates implementation caches, or writes a normal
 verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
 in `planning_disclosures` and the scratch is removed afterward.

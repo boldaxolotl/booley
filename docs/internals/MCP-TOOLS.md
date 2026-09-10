@@ -75,7 +75,7 @@ Every agent-facing call follows the same shape:
 7. The coordinator calls the explicit acceptance-recorder interface before
    mutable state/report persistence, then releases admission. In Ticket Mode,
    normalized Criterion changes are appended before state is saved; Interactive
-   Mode has no persistent acceptance evidence. If final acceptance recording
+   Mode has no persistent Criterion evidence. If final acceptance recording
    fails, final mutable persistence is skipped while terminal reporting and
    admission cleanup still run. An append failure during an in-run Criterion
    update instead follows the invocation error path; see the failure distinctions
@@ -795,7 +795,7 @@ Icarus selection rejects atomically. Structured Target results preserve
 simulation, collection, and evaluation independently and point to exact canonical
 reports. The Coverage Analyst accepts the returned Campaign path in a separate
 call. See [Flow contracts](FLOW_IMPLEMENTATION.md#coverage-campaign-orchestration)
-for the ordered persistence and Acceptance Evidence transaction.
+for the ordered persistence and Criterion-evidence transaction.
 
 ## Report-driven Coverage Analyst
 

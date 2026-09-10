@@ -33,13 +33,13 @@ booley board request-review SLUG --repair --reason "Recover unaccepted review"
 
 Repair still requires a valid retained Acceptance Basis and worktree. Corrupt
 acceptance or missing generation identity is an error, not permission to
-manufacture a snapshot.
+manufacture a Criteria Satisfaction Record.
 
 ## Verify interactively
 
 Make corrections in the existing Ticket worktree. Use the explicit Ticket
 context for every Flow, Specialist and final run report that should count as
-acceptance evidence:
+Criterion evidence:
 
 ```bash
 booley board review-exec SLUG -- python -m booley.mcp.submit_run_report --help
@@ -75,11 +75,12 @@ booley board finalize-review SLUG
 booley board review-briefing SLUG
 ```
 
-Finalization runs the normal acceptance checks. Unmet gates retain unaccepted
-review; passing checks freeze the first Acceptance Snapshot and bind a fresh
-accepted package. Approval/complete still applies normal merge and cleanup
-policy. This workflow does not replace already accepted snapshots after further
-source edits; such edits remain subject to the existing acceptance protections.
+Finalization runs the normal Criteria checks. Unmet gates retain unaccepted
+review; passing checks freeze the first Criteria Satisfaction Record and bind a
+fresh accepted package. Approval/complete still applies normal merge and
+cleanup policy. This workflow does not replace an existing Criteria
+Satisfaction Record after further source edits; such edits remain subject to
+the existing acceptance protections.
 
 **Hold** leaves the Ticket in review. **Reset** is the existing destructive clean
 restart. **Archive** of a review Ticket requires the existing `--force` option.
@@ -92,6 +93,6 @@ lock. Publication rechecks the Basis, execution identity, source cleanliness,
 heads and evidence digest under the lock. An interruption during publication
 retains a pending record; rerun the recorded request/refresh/finalize command to
 finish publication. Completion remains fenced until publication is coherent.
-Acceptance retries reuse the exact timestamp and selected snapshot, rather
-than replacing write-once acceptance. Changed or corrupt pending inputs fail
-closed with their evidence preserved.
+Retries reuse the exact timestamp and selected Criteria Satisfaction Record,
+rather than replacing write-once acceptance. Changed or corrupt pending inputs
+fail closed with their evidence preserved.
