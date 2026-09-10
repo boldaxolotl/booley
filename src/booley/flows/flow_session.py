@@ -32,6 +32,7 @@ class FlowSession(EndpointState):
         self.name = flow.name
         self.endpoint_kind = "flow"
         self.satisfies = flow.satisfies
+        self.satisfies_args = flow.satisfies_args
         self.code_modifying = flow.code_modifying
         self.modifies_category = flow.modifies_category
         self.config_aware = flow.config_aware

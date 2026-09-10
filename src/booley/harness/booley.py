@@ -974,6 +974,34 @@ def _parse_cli() -> argparse.Namespace:
     return _normalize_args(parser, parser.parse_args())
 
 
+def _live_criterion_endpoint_catalog(project_root: Path):
+    """Compose the active project's Criteria with its discovered endpoints."""
+    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
+    from booley.criteria.templates import (
+        load_base_criteria,
+        load_project_criteria,
+        merge_criteria_defs,
+    )
+    from booley.mcp.registry import (
+        criterion_endpoint_relationships,
+        discover_mcp_tools,
+    )
+
+    project_dir = project_root / ".booley_project"
+    definitions, errors = merge_criteria_defs(
+        load_base_criteria(),
+        load_project_criteria(project_dir / "criteria.toml"),
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return CriterionEndpointCatalog.build(
+        definitions,
+        criterion_endpoint_relationships(
+            discover_mcp_tools(project_mcp_tools_dir=project_dir / "mcp_tools")
+        ),
+    )
+
+
 def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     if getattr(args, "list", False):
         for slug in cheatsheet.section_slugs():
@@ -1022,7 +1050,8 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
         pass
 
     # Splice the criteria table live from the single source of truth
-    # (criteria.toml + MCP tool registry), including any project-defined criteria.
+    # (criteria.toml + injected endpoint relationships), including any
+    # project-defined criteria.
     try:
         from booley.criteria.reference import (
             render_criteria_reference,
@@ -1034,7 +1063,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
         project_criteria = project_root / ".booley_project" / "criteria.toml"
         text = splice_criteria(
             text,
-            render_criteria_reference(project_criteria_path=project_criteria),
+            render_criteria_reference(
+                _live_criterion_endpoint_catalog(project_root),
+                project_criteria_path=project_criteria,
+            ),
             name="criteria",
         )
     except Exception:  # noqa: BLE001 — best-effort live criteria splice; committed block remains on failure

@@ -300,6 +300,22 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         return None
 
     from booley.criteria.actions import planned_invocation
+    from booley.criteria.endpoint_catalog import (
+        CriterionEndpointCatalog,
+        EndpointCriterionRelationship,
+    )
+    from booley.criteria.templates import load_base_criteria
+
+    endpoint_catalog = CriterionEndpointCatalog.build(
+        load_base_criteria(),
+        (
+            EndpointCriterionRelationship(
+                command=endpoint.name,
+                satisfies=tuple(endpoint.satisfies),
+                arguments=tuple(sorted(endpoint.satisfies_args.items())),
+            ),
+        ),
+    )
 
     pending: list[str] = []
     for key, entry in endpoint.state.criteria.items():
@@ -307,7 +323,7 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             key == family or key.startswith(f"{family}_") for family in endpoint.satisfies
         ):
             continue
-        invocation = planned_invocation(key, entry)
+        invocation = planned_invocation(key, entry, endpoint_catalog)
         pending.append(f"  {key} -> {invocation or endpoint.name}")
     pending_text = "\n".join(pending) if pending else "  (no compatible criterion declared)"
     return EndpointOutcome(

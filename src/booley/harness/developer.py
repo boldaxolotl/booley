@@ -76,6 +76,7 @@ from .terminal import (
 from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
+    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
     from booley.review.preparation import ReviewPrepOutcome
 
     from .developer_guardrails import DirtyFile
@@ -792,6 +793,31 @@ class DiscoveredMcpSurface:
     project_mcp_tools_dir: Path
 
 
+def _criterion_endpoint_catalog(
+    mcp_tools: list,
+    project_criteria_path: Path,
+) -> CriterionEndpointCatalog:
+    """Compose discovered endpoints with the active project's Criteria."""
+    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
+    from booley.criteria.templates import (
+        load_base_criteria,
+        load_project_criteria,
+        merge_criteria_defs,
+    )
+    from booley.mcp.registry import criterion_endpoint_relationships
+
+    merged, errors = merge_criteria_defs(
+        load_base_criteria(),
+        load_project_criteria(project_criteria_path),
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return CriterionEndpointCatalog.build(
+        merged,
+        criterion_endpoint_relationships(mcp_tools),
+    )
+
+
 async def _discover_mcp_surface(
     project_root: Path,
     ctx: TicketContext,
@@ -1349,13 +1375,17 @@ async def _prepare_review_handoff(
     return None
 
 
-def _display_criteria_verdict(state_path: Path, verdict) -> None:
+def _display_criteria_verdict(
+    state_path: Path,
+    verdict,
+    endpoint_catalog: CriterionEndpointCatalog,
+) -> None:
     """Render the accepted Criteria details before routing the Ticket."""
     from booley.ticket_board.criteria_acceptance import build_criteria_summary_lines
 
     from .colors import yellow
 
-    crit_lines, totals_line = build_criteria_summary_lines(state_path)
+    crit_lines, totals_line = build_criteria_summary_lines(state_path, endpoint_catalog)
     if crit_lines:
         terminal.criteria_summary(crit_lines, totals_line)
     if transition_note := verdict.unverified_transitions_note():
@@ -1414,6 +1444,7 @@ async def _resolve_ticket_disposition(
     state_path: Path,
     project_root: Path,
     run_index: int,
+    endpoint_catalog: CriterionEndpointCatalog,
 ) -> TicketRunResult | None:
     """Read final state, check criteria acceptance, and transition the ticket."""
     if _block_changed_acceptance_basis(ctx, run_index):
@@ -1424,7 +1455,7 @@ async def _resolve_ticket_disposition(
 
     verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir)
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
-    _display_criteria_verdict(state_path, verdict)
+    _display_criteria_verdict(state_path, verdict, endpoint_catalog)
 
     # The harness MUST NOT auto-archive (delete) tickets. Failed-criteria
     # tickets land in blocked/ for human triage; archive is a human-only
@@ -1474,6 +1505,7 @@ def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
 def _build_prompt_context(
     ctx: TicketContext,
     state_path: Path,
+    endpoint_catalog: CriterionEndpointCatalog,
     discovered_mcp_tools: list,
     mcp_tool_config: dict,
     flow_config: dict,
@@ -1496,6 +1528,7 @@ def _build_prompt_context(
             slug=ctx.slug,
             ticket_type=ctx.ticket_type,
             criteria=ctx.criteria,
+            criterion_endpoint_catalog=endpoint_catalog,
             mcp_tools=discovered_mcp_tools,
             mcp_tool_config=mcp_tool_config,
             flow_config=flow_config,
@@ -1589,10 +1622,15 @@ async def _run_developer_path(
             crash_summary = write_distilled_summary(crash_transcript)
 
         mcp_surface = await _discover_mcp_surface(project_root, ctx)
+        endpoint_catalog = _criterion_endpoint_catalog(
+            mcp_surface.discovered_mcp_tools,
+            project_root / ".booley_project" / "criteria.toml",
+        )
 
         system_prompt, user_prompt = _build_prompt_context(
             ctx,
             state_path,
+            endpoint_catalog,
             mcp_surface.discovered_mcp_tools,
             mcp_surface.mcp_tool_config,
             mcp_surface.flow_config,
@@ -1656,7 +1694,13 @@ async def _run_developer_path(
         if hook_blocked:
             return None
         return await run_with_developer_budget(
-            _resolve_ticket_disposition(ctx, state_path, project_root, run_index),
+            _resolve_ticket_disposition(
+                ctx,
+                state_path,
+                project_root,
+                run_index,
+                endpoint_catalog,
+            ),
             budget,
         )
     except Exception as e:
