@@ -50,7 +50,7 @@ def is_booley_source_checkout(root: Path) -> bool:
 
 
 def source_checkout_root(start: Path) -> Path | None:
-    """Return the enclosing Booley Source Checkout, if any."""
+    """Return the enclosing Booley source checkout, if any."""
     current = Path(start).resolve()
     for candidate in (current, *current.parents):
         if is_booley_source_checkout(candidate):

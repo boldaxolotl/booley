@@ -389,7 +389,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
 
 
 def _warn_on_stale_booley_bake(workspace: Path) -> None:
-    """Warn when the managed Session Image is stale by authoritative provenance."""
+    """Warn when the managed Runtime Image is stale by authoritative provenance."""
     from booley.runtime.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
 
     result = reconcile(ProjectImageScope(workspace), Intent.CHECK)

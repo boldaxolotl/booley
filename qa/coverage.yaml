@@ -195,7 +195,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
   contract: |-
     `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
-    Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario.
+    Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-09

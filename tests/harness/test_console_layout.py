@@ -144,12 +144,12 @@ class TestSetupPhaseLayout:
             await pilot.pause()
             _seed_ticket_info(app)
             app.post_message(SetupProgress("loading model/backend config..."))
-            app.post_message(SetupProgress("running preflight checks..."))
+            app.post_message(SetupProgress("running Ticket Preflight checks..."))
             app.post_message(SetupProgress("parsing & validating ticket..."))
             await pilot.pause()
             content = str(app.query_one(MainPane).query_one("#main-content").render())
             assert "loading" in content
-            assert "preflight" in content
+            assert "Ticket Preflight" in content
             assert "parsing" in content
 
     @pytest.mark.asyncio

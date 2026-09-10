@@ -1,4 +1,4 @@
-"""Validate provider-side web-MCP-tool policy in the Session Runtime image."""
+"""Validate provider-side web-MCP-tool policy in the Runtime Image."""
 
 from __future__ import annotations
 

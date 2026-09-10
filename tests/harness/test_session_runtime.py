@@ -3349,7 +3349,7 @@ class TestSessionRefresh:
             ),
         )
 
-        assert init_cmd.refresh_session_image(tmp_path, verbose=True) is expected
+        assert init_cmd.refresh_runtime_image(tmp_path, verbose=True) is expected
         assert calls == [
             (ProjectImageScope(tmp_path), Intent.CHECK, True),
             ("bootstrap", Intent.REFRESH, True),
@@ -3381,7 +3381,7 @@ class TestSessionRefresh:
         )
 
         with pytest.raises(RuntimeError, match="foreign collision"):
-            init_cmd.refresh_session_image(tmp_path)
+            init_cmd.refresh_runtime_image(tmp_path)
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
@@ -3395,7 +3395,7 @@ class TestSessionRefresh:
             ),
         )
         with pytest.raises(RuntimeError, match="user-managed"):
-            init_cmd.refresh_session_image(tmp_path)
+            init_cmd.refresh_runtime_image(tmp_path)
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.eda.provisioning import runtime_spec
@@ -3450,7 +3450,7 @@ class TestSessionRefresh:
         spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
         stamp_path.write_text("new stamp\n", encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="Session Image keeper: tag failed"):
+        with pytest.raises(RuntimeError, match="Runtime Image keeper: tag failed"):
             session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == old_spec
@@ -3476,7 +3476,7 @@ class TestSessionRefresh:
 
         monkeypatch.setattr(init_cmd.subprocess, "run", missing_docker)
 
-        with pytest.raises(RuntimeError, match="Session Image keeper: docker missing"):
+        with pytest.raises(RuntimeError, match="Runtime Image keeper: docker missing"):
             session_spec.restore_session_spec(tmp_path, snapshot)
 
         assert spec_path.read_bytes() == b"old spec"

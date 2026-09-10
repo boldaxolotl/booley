@@ -13,7 +13,7 @@ Captured on 08 SEP 2026 from the included `capture.sv`, `capture_cases.py`, and
 - Cocotb **2.1.0**, verified with `cocotb-config --version` and the runtime log.
 - Icarus Verilog **13.0 (stable)**, version output `dfeee90-dirty`.
 - Embedded Python **3.13.8**, as reported by the simulator log.
-- Local Session Runtime image `booley-sandbox:latest`, image ID
+- Local Runtime Image `booley-sandbox:latest`, image ID
   `sha256:47a55d8d1ec8c15d73da106972df2b6f0bf0025b2a12d1606336069a0d7360a4`.
 - Seed `1` and hostname `cocotb-results` were fixed at generation time.
 

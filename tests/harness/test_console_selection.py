@@ -66,7 +66,7 @@ async def test_console_startup_failure_propagates_without_executing_ticket(tmp_p
 @pytest.mark.asyncio
 async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
     from booley.harness.console.app import ConsoleApp
-    from booley.harness.preflight import PreflightError
+    from booley.harness.ticket_preflight import TicketPreflightError
 
     run_async = ConsoleApp.run_async
 
@@ -74,10 +74,10 @@ async def test_console_worker_surfaces_preflight_failure(tmp_path, monkeypatch):
         await run_async(app, headless=True)
 
     monkeypatch.setattr(ConsoleApp, "run_async", run_headless)
-    prepare = AsyncMock(side_effect=PreflightError(["missing toolchain"]))
+    prepare = AsyncMock(side_effect=TicketPreflightError(["missing toolchain"]))
     monkeypatch.setattr(developer, "_prepare_ticket", prepare)
 
-    with pytest.raises(PreflightError, match="missing toolchain"):
+    with pytest.raises(TicketPreflightError, match="missing toolchain"):
         await developer.run_ticket("demo", tmp_path)
 
     prepare.assert_awaited_once_with("demo", tmp_path, True)

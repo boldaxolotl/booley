@@ -17,9 +17,9 @@ Configured Scenario ID and declared parameters, exact immutable Booley product
 revision and artifact or package identity,
 matching documentation snapshot, suite commit, pinned IP inputs, native-host OS and
 architecture, provider, Runtime Attachment, agent backend,
-relevant Session Image and EDA tool identities, deadline, artifact root, pre-run
+relevant Runtime Image and EDA tool identities, deadline, artifact root, pre-run
 capability probes, and the Scenario authority granted by explicit skill invocation in
-`run.json`. Record initial identities there; Session Image identities created by
+`run.json`. Record initial identities there; Runtime Image identities created by
 Project Setup and later Git repository or
 accepted-commit identities belong in the producing Step's Check Result and evidence.
 Missing required initial identity blocks execution. An action outside the Scenario's
@@ -84,8 +84,9 @@ Use the files and minimum fields in [Format](FORMAT.md). Check outcomes are:
 | `unavailable` | A pre-run probe proved an applicable declared capability absent |
 
 A capability lost after declaration is fail or blocked, never retrospectively
-unavailable. Product-inapplicable checks are excluded explicitly by the Configured Scenario;
-they are not passes. A selected Check with no Check Result is blocked at finalization.
+unavailable. Product-inapplicable checks are excluded explicitly by the Configured
+Scenario; they are not passes. A selected Check with no Check Result is blocked at
+finalization.
 
 Append every Check Result and its corrections to `results.jsonl`; corrections identify
 the record and evidence of the recording mistake. Correcting a recording mistake does
@@ -112,7 +113,7 @@ required checks in that new run.
 Persist ownership and intended disposition in `cleanup-ledger.json` before creating a
 resource where its identity is known, otherwise immediately upon acquiring it and
 before dependent work. Track branches, worktrees, processes, Session Runtimes,
-Session Images, mounts, registrations, Grants, License Profiles, and relays as applicable. Ownership must
+Runtime Images, mounts, registrations, Grants, License Profiles, and relays as applicable. Ownership must
 be specific enough for cleanup after an interrupted run without touching others'
 state. Update the ledger as resources are released; retain cleanup result evidence.
 

@@ -13,7 +13,7 @@ Git commit. Literal includes must resolve to explicit hashed `include_files`;
 absolute, escaping, ambiguous and macro includes are rejected. Include directives
 are rewritten only to the corresponding Scenario Operator snapshot paths. It does not compile the candidate testbench or trust its pass sentinel.
 Provision cocotb 2.1.0 and Icarus in the isolated Scenario Operator environment before
-the run; record their exact versions and immutable Session Image identity in run evidence.
+the run; record their exact versions and immutable Runtime Image identity in run evidence.
 
 From this directory:
 

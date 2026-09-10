@@ -100,7 +100,7 @@ def test_unknown_target_fails_instead_of_falling_back(tmp_path) -> None:
         compute_source_fingerprint(tmp_path, target="missing")
 
 
-def test_workload_fingerprint_tracks_pre_run_program_not_its_arguments(tmp_path) -> None:
+def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path) -> None:
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     _write_core(tmp_path, "design", "sim", "rtl/dut.sv")

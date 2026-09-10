@@ -76,7 +76,7 @@ _PARENT_DIRECTIVE_RE = re.compile(r"^\s*#\s*booley:parent=(?P<image>\S+)\s*$", r
 
 
 class DockerImageError(RuntimeError):
-    """Docker could not authoritatively inspect a Session Image."""
+    """Docker could not authoritatively inspect a Runtime Image."""
 
 
 def _content_digest(text: str) -> str:

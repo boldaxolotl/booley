@@ -404,7 +404,7 @@ an inherited `-Wno-WIDTH` may not silence the warning you expect. Read the code
 from the failing `%Error-<CODE>` or `%Warning-<CODE>` line and either fix the RTL
 or add the corresponding `-Wno-<CODE>` to that Target's `verilator_options`.
 
-## A pre-run command dies with `Syntax error: Bad fd number`
+## Pre-Sim Commands fail with `Syntax error: Bad fd number`
 
 Make defaults to `/bin/sh` (dash), where a recipe using `>&` redirection
 (`make all >& build.log`) dies with `Syntax error: Bad fd number`. If the

@@ -121,7 +121,7 @@ def test_projects_forget_human_output_names_root(
     args = _parser().parse_args(["projects", "forget", str(project)])
 
     assert project_inventory_cli.run(args) == 0
-    assert f"Forgot Remembered Project Root: {project}" in capsys.readouterr().out
+    assert f"Forgot remembered Project path: {project}" in capsys.readouterr().out
 
 
 def test_projects_human_output_explains_empty_inventory(
@@ -131,7 +131,7 @@ def test_projects_human_output_explains_empty_inventory(
 
     assert project_inventory_cli.run(_parser().parse_args(["projects"])) == 0
 
-    assert "No Remembered Project Roots or Project Grants" in capsys.readouterr().out
+    assert "No remembered Project paths or Project Grants" in capsys.readouterr().out
 
 
 def test_projects_human_output_explains_root_without_grants(

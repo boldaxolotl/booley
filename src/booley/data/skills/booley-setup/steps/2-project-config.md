@@ -23,7 +23,7 @@ owns verification-intent (what to verify) and runtime policy:**
 2. **`.booley_project/tests.toml`** — *verification-intent*: per-Target test
    lists and the run-time `select` plusarg template.
 3. **`.booley_project/booley.toml`** (slimmed) — *execution policy + project
-   meta*: each Booley Flow's `enabled` setting, the Session Runtime image,
+   meta*: each Booley Flow's `enabled` setting, the Runtime Image,
    optional approved EDA provisioning, and `[project].name`.
 
 For a fresh IP the job, end to end: list the RTL and TB files in `.core`
@@ -593,7 +593,7 @@ Before showing the proposed config, give a concise plain-English setup summary.
 Restate (don't re-derive) the three artifacts, the first-run Flow and Specialist opt-outs,
 and why those capabilities start disabled, then cover the project-specific bits:
 
-- **What the standard Session Runtime image likely provides:** common open-source RTL
+- **What the standard Runtime Image likely provides:** common open-source RTL
   tooling — FuseSoC, Verilator, Icarus Verilog, Yosys/ABC, sv2v, bwave, Make,
   GCC/G++, Python, Node.js, and npm. Rust is not included; projects that compile
   Rust need a reviewed project image with a pinned toolchain. Project extras

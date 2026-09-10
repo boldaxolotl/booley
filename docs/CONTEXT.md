@@ -40,9 +40,9 @@ How and where Booley work runs. The **Session Runtime** is the execution environ
 The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Tickets receive their own git worktrees and branches inside the runtime; the branch and its commits are the durable artifact of a run, while the worktree itself is runtime-scoped scratch. Docker is the default implementation, not the domain concept.
 _Avoid_: Session Container, Docker Session, MCP sandbox, per-ticket sandbox
 
-**Session Image**:
-The immutable filesystem and installed-program artifact from which a **Session Runtime** is created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Session Image's identity.
-_Avoid_: sandbox tag, container, Dockerfile
+**Runtime Image**:
+The reusable immutable filesystem and installed-program artifact from which **Session Runtimes** are created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Runtime Image's identity.
+_Avoid_: Session Image, sandbox tag, container, Dockerfile
 
 **Ticket Mode**:
 The ticket-driven execution mode: a `booley run` invocation, issued from inside a Session Runtime, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Session Runtime, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Session Runtime of its own.
@@ -52,16 +52,20 @@ _Avoid_: batch mode, automated mode, host mode
 Execution mode in which a human steers Claude Code or Codex inside a Session Runtime, using the recommended CLI or an optional VS Code extension in a window attached to that runtime. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside that runtime; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
-**Preflight**:
-The fast-fail validation Booley runs before Ticket intake. It checks the execution environment, Ticket Board and Git state, Custom Flow metadata, Criteria structure, and configured agent backend. Blocking failures stop the run before Ticket work begins; non-blocking findings are warnings. `booley doctor` provides related diagnostics without starting a Ticket run, but it does not reproduce every preflight result.
-_Avoid_: Flow validation, doctor, startup test
+**Runtime Attachment**:
+The connection method by which a human-facing app or autonomous driver uses a Session Runtime. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
+_Avoid_: remote, tunnel, app bridge
+
+**Ticket Preflight**:
+The fast-fail validation Booley runs before Ticket intake. It checks the execution environment, Ticket Board and Git state, Custom Flow metadata, Criteria structure, and configured agent backend. Blocking failures stop the run before Ticket work begins; non-blocking findings are warnings. `booley doctor` provides related diagnostics without starting a Ticket run, but it does not reproduce every Ticket Preflight result.
+_Avoid_: bare Preflight, Flow validation, doctor, startup test
 
 **Harness**:
 The Ticket Mode runtime infrastructure that the Developer Agent operates within, managing ticket lifecycle, Criteria tracking, logging, and cleanup. Interactive Mode may reuse lower-level Session Runtime infrastructure, but does not run inside the Harness.
 _Avoid_: engine, core, framework, harness
 
 **Developer Agent**:
-The LLM agent that drives Booley Flow and Specialist selection during ticket execution, making decisions about what to invoke next based on criteria state. The Developer Agent also authors RTL and testbench code itself; there is no separate coder Specialist (the TB Coder Specialist is retained but hidden until it matures; see [ROADMAP.md](internals/ROADMAP.md)); its edits are allowed when Scope permits, invalidate dependent Criteria, and require passing Verification Checks like any other edit.
+The LLM agent that drives Booley Flow and Specialist selection during ticket execution, making decisions about what to invoke next based on criteria state. The Developer Agent also authors RTL and testbench code itself; there is no separate coder Specialist (the TB Coder Specialist is retained but hidden until it matures; see [ROADMAP.md](internals/ROADMAP.md)); its edits are allowed when Scope permits, invalidate dependent Criteria, and require the relevant Booley Flows to pass like any other edit.
 _Avoid_: bare "Developer", loop, controller, scheduler, harness
 
 **Workflow Region**:
@@ -77,7 +81,7 @@ An EDA tool whose immutable installation files are supplied by the host while ev
 _Avoid_: host execution, host EDA flow, container-installed tool, trusted tool, bare tool
 
 **Image-Provisioned Sandbox EDA Tool**:
-An EDA tool whose installation is part of the selected Session Runtime image and whose processes execute inside that runtime. Image provisioning is the default when a Project does not request a host registration for that EDA kind.
+An EDA tool whose installation is part of the selected Runtime Image and whose processes execute inside that runtime. Image provisioning is the default when a Project does not request a host registration for that EDA kind.
 _Avoid_: built-in tool, bare tool
 
 **EDA Provisioning**:
@@ -108,17 +112,9 @@ The design-description primitives Booley references but does not own. **Target**
 A codebase initialized with `booley init`, containing a `.booley_project/` directory with tickets, configuration, and logs. Booley discovers the active project by walking up the directory tree.
 _Avoid_: repo, workspace
 
-**Remembered Project Root**:
-A canonical Project path retained by the host as an administrative identity even when the path is missing or no longer contains initialized Project data.
-_Avoid_: Known Project, Project registry entry, workspace record
-
 **Project Inventory**:
-The host-owned catalog of **Remembered Project Roots** and their **Project Grants**, including roots whose Project data is missing or uninitialized.
+The host-owned catalog of canonical Project paths and their **Project Grants**, including paths whose Project data is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
-
-**Booley Source Checkout**:
-A checkout or linked worktree of Booley's own source code. It is never a Project, never owns a `.booley_project/` directory, and never receives Project Stealth Mode policy or hooks.
-_Avoid_: Booley Project, framework project, self-hosted Project
 
 **EDA Installation Registration**:
 A host-owned record of one approved **Host-Provisioned Sandbox EDA Tool** installation and its built-in compatibility policy. Registration identifies available immutable files but grants no Project access by itself.
@@ -129,7 +125,7 @@ A host-owned record of one approved commercial-license topology, including its f
 _Avoid_: project license config, forwarded license environment, license server setting
 
 **Project Grant**:
-Host-owned authorization for one exact canonical **Remembered Project Root** and EDA kind to use an **EDA Installation Registration**, a **License Profile**, or both. Moving, copying, or separately opening a Project creates a different root that requires its own grant.
+Host-owned authorization for one exact canonical Project path and EDA kind to use an **EDA Installation Registration**, a **License Profile**, or both. Moving, copying, or separately opening a Project creates a different path that requires its own grant.
 _Avoid_: workspace allowlist, project enrollment, inherited repository access
 
 **Target**:
@@ -145,9 +141,9 @@ _Avoid_: Design Configuration, build config, profile, named config
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite
 
-**Pre-Run Commands**:
+**Pre-Sim Commands**:
 Project-declared shell commands that Booley executes inside the **Session Runtime** immediately before each simulation run, with the run's test selection and authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per test; for a **Cocotb Target** it fires once before the batched run. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
-_Avoid_: pre-test hook, prebuild adapter, test fixture script
+_Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools
 
@@ -165,13 +161,13 @@ _Avoid_: B-Tool, mechanical tool, utility, command
 Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and Criteria rather than delegating those responsibilities to the EDA tool.
 _Avoid_: bare tool, Booley Flow, backend
 
+**MCP tool**:
+Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are implementation details rather than Booley's product taxonomy: describe the invoked capability as a **Booley Flow** or **Specialist** unless the protocol boundary itself is the subject.
+_Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
+
 **Elaboration Check**:
 A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a simulation Criterion.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
-
-**Verification Check**:
-A passing criterion-family-specific Booley Flow run required after an RTL or testbench edit. Simulation Criteria are checked by simulation, synthesis-related Criteria by synthesis, and lint Criteria by lint; RTL work requires a testbench for simulation, whether pre-existing or created during ticket execution.
-_Avoid_: review gate, planner approval
 
 **Specialist**:
 An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/CONTEXT.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
@@ -202,24 +198,6 @@ _Avoid_: regex, marker, exit-code-only verdict
 **Console**:
 The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
 _Avoid_: flashy mode, monitor, dashboard
-
-## Inside Booley
-
-These terms describe implementation and durable bookkeeping. User-facing
-documentation should prefer the public concepts above unless the mechanism
-itself is the subject.
-
-**Session Image Provenance**:
-The evidence connecting a **Session Image** to its Booley payload, build recipe, and exact parent ancestry. How the image reached the host—pull or local build—is acquisition history, not provenance.
-_Avoid_: image version, pulled tag, freshness label
-
-**Runtime Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a Session Runtime. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
-_Avoid_: remote, tunnel, app bridge
-
-**MCP tool**:
-Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are implementation details rather than Booley's product taxonomy: describe the invoked capability as a **Booley Flow** or **Specialist** unless the protocol boundary itself is the subject.
-_Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 ## Retired and ambiguous terminology
 

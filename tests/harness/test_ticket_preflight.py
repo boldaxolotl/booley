@@ -1,4 +1,4 @@
-"""Tests for preflight checks."""
+"""Tests for Ticket Preflight checks."""
 
 from __future__ import annotations
 
@@ -9,75 +9,75 @@ from unittest.mock import patch
 import pytest
 
 from booley.fusesoc.fusesoc_registry import CoreSetupHazard
-from booley.harness.preflight import (
-    PreflightError,
+from booley.harness.ticket_preflight import (
+    TicketPreflightError,
     _check_core_setup_hazards,
     _check_git,
     _check_inside_container,
-    run_preflight,
+    run_ticket_preflight,
 )
 
 # ===========================================================================
-# PreflightError
+# TicketPreflightError
 # ===========================================================================
 
 
-class TestPreflightError:
+class TestTicketPreflightError:
     def test_format(self):
-        err = PreflightError(["no .tickets/", "git not found"])
+        err = TicketPreflightError(["no .tickets/", "git not found"])
         assert "no .tickets/" in str(err)
         assert "git not found" in str(err)
         assert err.failures == ["no .tickets/", "git not found"]
 
 
 # ===========================================================================
-# run_preflight
+# run_ticket_preflight
 # ===========================================================================
 
 
 # The venue guard reads env + the real filesystem (/.dockerenv); no-op it so
-# these run_preflight tests behave identically whether the suite runs on the
+# these run_ticket_preflight tests behave identically whether the suite runs on the
 # host or in a container. Its own behavior is covered by
 # TestCheckInsideContainer below.
-@patch("booley.harness.preflight._check_inside_container", return_value=None)
-class TestRunPreflight:
-    @patch("booley.harness.preflight._check_ticket_board", return_value=[])
-    @patch("booley.harness.preflight._check_git", return_value=[])
+@patch("booley.harness.ticket_preflight._check_inside_container", return_value=None)
+class TestRunTicketPreflight:
+    @patch("booley.harness.ticket_preflight._check_ticket_board", return_value=[])
+    @patch("booley.harness.ticket_preflight._check_git", return_value=[])
     def test_passes_when_all_ok(self, mock_git, mock_tb, _mock_guard, project_root: Path):
         """No failures -> no exception."""
-        run_preflight(project_root)
+        run_ticket_preflight(project_root)
 
-    @patch("booley.harness.preflight._check_ticket_board", return_value=[])
-    @patch("booley.harness.preflight._check_git", return_value=[])
+    @patch("booley.harness.ticket_preflight._check_ticket_board", return_value=[])
+    @patch("booley.harness.ticket_preflight._check_git", return_value=[])
     def test_fails_when_no_tickets_dir(self, mock_git, mock_tb, _mock_guard, tmp_path: Path):
-        """Missing tickets dir -> PreflightError."""
-        with pytest.raises(PreflightError, match="tickets directory"):
-            run_preflight(tmp_path)
+        """Missing tickets dir -> TicketPreflightError."""
+        with pytest.raises(TicketPreflightError, match="tickets directory"):
+            run_ticket_preflight(tmp_path)
 
-    @patch("booley.harness.preflight._check_ticket_board", return_value=[])
-    @patch("booley.harness.preflight._check_git", return_value=["git not found on PATH"])
+    @patch("booley.harness.ticket_preflight._check_ticket_board", return_value=[])
+    @patch("booley.harness.ticket_preflight._check_git", return_value=["git not found on PATH"])
     def test_fails_on_git_error(self, mock_git, mock_tb, _mock_guard, project_root: Path):
-        with pytest.raises(PreflightError, match="git not found"):
-            run_preflight(project_root)
+        with pytest.raises(TicketPreflightError, match="git not found"):
+            run_ticket_preflight(project_root)
 
     @patch(
-        "booley.harness.preflight._check_ticket_board",
+        "booley.harness.ticket_preflight._check_ticket_board",
         return_value=["ticket_board package not importable: ModuleNotFoundError"],
     )
-    @patch("booley.harness.preflight._check_git", return_value=[])
+    @patch("booley.harness.ticket_preflight._check_git", return_value=[])
     def test_fails_on_ticket_board_missing(
         self, mock_git, mock_tb, _mock_guard, project_root: Path
     ):
-        with pytest.raises(PreflightError, match="ticket_board"):
-            run_preflight(project_root)
+        with pytest.raises(TicketPreflightError, match="ticket_board"):
+            run_ticket_preflight(project_root)
 
-    @patch("booley.harness.preflight._check_ticket_board", return_value=["tb error"])
-    @patch("booley.harness.preflight._check_git", return_value=["git error"])
+    @patch("booley.harness.ticket_preflight._check_ticket_board", return_value=["tb error"])
+    @patch("booley.harness.ticket_preflight._check_git", return_value=["git error"])
     def test_aggregates_all_failures(self, mock_git, mock_tb, _mock_guard, project_root: Path):
-        """All failures collected in one PreflightError."""
+        """All failures collected in one TicketPreflightError."""
         # Also missing .tickets/ -> 3 total
-        with pytest.raises(PreflightError) as exc_info:
-            run_preflight(project_root / "nonexistent")
+        with pytest.raises(TicketPreflightError) as exc_info:
+            run_ticket_preflight(project_root / "nonexistent")
         assert len(exc_info.value.failures) >= 2
 
 
@@ -92,7 +92,7 @@ class TestCheckInsideContainer:
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         with (
             patch.object(Path, "exists", lambda self: False),
-            pytest.raises(PreflightError, match="Session Runtime"),
+            pytest.raises(TicketPreflightError, match="Session Runtime"),
         ):
             _check_inside_container()
 
@@ -101,7 +101,7 @@ class TestCheckInsideContainer:
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         with (
             patch.object(Path, "exists", lambda self: False),
-            pytest.raises(PreflightError, match="Reopen in Container"),
+            pytest.raises(TicketPreflightError, match="Reopen in Container"),
         ):
             _check_inside_container()
 
@@ -151,7 +151,7 @@ class TestCoreSetupHazards:
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(
-            "booley.harness.preflight._doctor_core_files",
+            "booley.harness.ticket_preflight._doctor_core_files",
             lambda _root: {core},
         )
         errors = _check_core_setup_hazards(tmp_path)
@@ -165,7 +165,7 @@ class TestCoreSetupHazards:
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(
-            "booley.harness.preflight._doctor_core_files",
+            "booley.harness.ticket_preflight._doctor_core_files",
             lambda _root: set(),
         )
         assert _check_core_setup_hazards(tmp_path) == []
@@ -213,7 +213,7 @@ targets:
 
 
 class TestCheckGit:
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_not_in_worktree(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[],
@@ -224,19 +224,19 @@ class TestCheckGit:
         errors = _check_git(Path("/tmp"))
         assert any("work tree" in e.lower() for e in errors)
 
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_git_not_found(self, mock_run):
         mock_run.side_effect = FileNotFoundError()
         errors = _check_git(Path("/tmp"))
         assert any("not found" in e.lower() for e in errors)
 
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_git_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=10)
         errors = _check_git(Path("/tmp"))
         assert any("timed out" in e.lower() for e in errors)
 
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_dirty_tree_warns_but_no_error(self, mock_run, tmp_path: Path, caplog):
         """Dirty working tree emits warning but does not block."""
 
@@ -257,12 +257,12 @@ class TestCheckGit:
         mock_run.side_effect = side_effect
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="harness.preflight"):
+        with caplog.at_level(logging.WARNING, logger="harness.ticket_preflight"):
             errors = _check_git(tmp_path)
         assert errors == []
         assert any("dirty" in r.message.lower() for r in caplog.records)
 
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_merge_in_progress_detected(self, mock_run, tmp_path: Path):
         """MERGE_HEAD present -> error."""
         git_dir = tmp_path / ".git"
@@ -282,7 +282,7 @@ class TestCheckGit:
         errors = _check_git(tmp_path)
         assert any("merge" in e.lower() for e in errors)
 
-    @patch("booley.harness.preflight.subprocess.run")
+    @patch("booley.harness.ticket_preflight.subprocess.run")
     def test_clean_repo_no_errors(self, mock_run, tmp_path: Path):
         """Clean repo -> empty error list."""
 

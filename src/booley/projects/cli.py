@@ -14,7 +14,7 @@ from booley.projects import inventory
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register the Project Inventory command."""
     parser = subparsers.add_parser(
-        "projects", help="List Remembered Project Roots and their Project Grants"
+        "projects", help="List remembered Project paths and their Project Grants"
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     actions = parser.add_subparsers(dest="projects_action", metavar="{discover,forget}")
@@ -77,7 +77,7 @@ def _render_forgotten(forgotten: Path, *, json_output: bool) -> int:
     if json_output:
         print(json.dumps({"schema": 1, "forgotten": str(forgotten)}, indent=2))
     else:
-        print(f"Forgot Remembered Project Root: {forgotten}")
+        print(f"Forgot remembered Project path: {forgotten}")
     return 0
 
 
@@ -100,7 +100,7 @@ def _json_document(
 def _print_human(entries: tuple[inventory.ProjectInventoryEntry, ...]) -> None:
     print("Project Inventory")
     if not entries:
-        print("  No Remembered Project Roots or Project Grants.")
+        print("  No remembered Project paths or Project Grants.")
         return
     for entry in entries:
         source = "" if entry.remembered else "; grant only"

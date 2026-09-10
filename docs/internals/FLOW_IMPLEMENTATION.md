@@ -102,7 +102,7 @@ Every Booley Flow contract provides the same kind of shared reality:
 - **Verdict integrity: never trust a stale artifact.** When a verdict comes from a file the run writes (a report, a JUnit XML, a log sentinel), anything present before the run must not survive into this run's evidence, and the exit code outranks the artifact. Otherwise a build that fails to compile leaves the *prior* run's artifact in place, and reading it reports a false pass on RTL that does not even build. A nonzero exit with no fresh evidence maps to `elab_error` or an infra verdict: never `pass`, never a functional `fail`.
 - **Artifact normalization.** Logs, structured reports, and generated artifacts land in predictable locations. Waveform and debug tooling should not hunt through simulator-specific build directories; synthesis consumers should not scrape arbitrary output paths for reports.
 - **Identity normalization.** Arguments such as `target` and `test` name entries in the project's FuseSoC/Booley configuration, not ad-hoc command-line fragments. A request to run one test resolves to exactly the test that ran, and the report carries that resolved identity.
-- **Flow boundary.** Projects may use Verilator, Icarus, Vivado, per-test firmware builds (Pre-Run Commands, below), or DPI (C code linked into the simulation). Past the Booley Flow boundary, Booley sees the same contract regardless of the EDA tool or how its installation was provisioned.
+- **Flow boundary.** Projects may use Verilator, Icarus, Vivado, per-test firmware builds (Pre-Sim Commands, below), or DPI (C code linked into the simulation). Past the Booley Flow boundary, Booley sees the same contract regardless of the EDA tool or how its installation was provisioned.
 - **Actionability.** The structured result tells the caller what to do next: debug a behavioral failure, fix elaboration, investigate a hang, repair an inconclusive testbench verdict, or mark a Criterion satisfied.
 
 This applies to every built-in. Simulation converts authenticated build-stage and
@@ -275,14 +275,14 @@ The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
 (debug-only; never a pass/fail source), `--timeout-ms`, and `--dry-run` resolve
 against those config entries rather than acting as raw command fragments.
 
-**Pre-Run Commands** (`[flows.sim].pre_run_commands`) are the one
+**Pre-Sim Commands** (`[flows.sim].pre_run_commands`) are the one
 project-owned hook, and they do not loosen the contract. Shell lines run at the
 Session Runtime immediately before each run (per test for an HDL Target, once per
 Cocotb batch), under a `BOOLEY_*` env contract that names the run
 (`BOOLEY_TEST_NAME` / `BOOLEY_TEST_NAMES`, `BOOLEY_TARGET`) and its authoritative
 directories (`BOOLEY_RUN_CWD`, `BOOLEY_BUILD_ROOT`). This is how a per-test
 non-RTL build step (e.g. cross-compiling the selected test's firmware) joins the
-Simulation Flow: a failing pre-run is recorded as that test's failed result with
+Simulation Flow: a failing Pre-Sim Commands invocation is recorded as that test's failed result with
 an attributed tail. It can never manufacture a pass, and it never crashes the
 Flow.
 
@@ -293,12 +293,12 @@ Each test resolves to exactly one of five verdicts:
 - `pass`: the run's `[SIM_SUMMARY]` sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
 - `fail`: a failing sentinel, a nonzero exit with fresh evidence, or SVA errors.
 - `inconclusive`: the sim ran cleanly (exit 0, no SVA errors) but produced *no* verdict sentinel, so nothing affirmatively passed; also where a `--trace` run lands if it otherwise passed but could not confirm the trace was written.
-- `elab_error`: build/elaboration/compile failure, or a failed Pre-Run Command (the sim never ran).
+- `elab_error`: build/elaboration/compile failure, or failed Pre-Sim Commands (the sim never ran).
 - `timeout`: the per-test budget was exceeded.
 
 `SimulateFlow` delegates execution through one `SimulationExecution.run` /
 `preview` boundary. The boundary resolves each `TargetHandle` from its own
-Project root, prepares the shared build, fires Pre-Run Commands, invokes one
+Project root, prepares the shared build, fires Pre-Sim Commands, invokes one
 leaf adapter, and returns immutable build, test, workload, log, trace, and
 infrastructure evidence. The Flow retains campaign concerns: Target/test
 selection, Cycle Count baselines, Criteria, report rendering, and public exit
@@ -398,7 +398,7 @@ continue through every Target, with ERROR taking precedence over FAIL.
 
 Full Simulation records `elab_pass_{target}` from an authenticated build-stage
 record before the run half begins. A later runtime failure, timeout, OOM, or
-signal cannot erase a successful elaboration result. Setup or Pre-Run Command
+signal cannot erase a successful elaboration result. Setup or Pre-Sim Commands
 failure before the build leaves the elaboration Criterion unchanged.
 
 Elaboration reports stay in the Simulation namespace with canonical mode values

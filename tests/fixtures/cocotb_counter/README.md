@@ -5,7 +5,7 @@ A minimal Booley project with a cocotb Python testbench: an 8-bit counter DUT
 Six `.core` Targets share one build shape; only their `tests.toml` selected
 sets differ, so each G-case is one `simulate` invocation.
 
-The e2e runs **inside the Session Runtime image**, which pins cocotb. From the
+The e2e runs **inside the Runtime Image**, which pins cocotb. From the
 repo root, with a freshly built image:
 
 ```bash

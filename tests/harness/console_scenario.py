@@ -88,7 +88,7 @@ class ConsoleScenario:
         self.ledger = ExpectedLedger()
 
     def post_setup(self) -> None:
-        for line in ("loading backend", "running preflight", "parsing ticket"):
+        for line in ("loading backend", "running Ticket Preflight", "parsing ticket"):
             self.app.post_message(SetupProgress(line))
         self.app.query_one(TicketHeader).set_ticket_info(
             "console-scenario",

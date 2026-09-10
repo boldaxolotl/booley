@@ -101,7 +101,7 @@ see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-witho
 A test that needs a non-RTL build step before it can run (a per-case
 firmware compile, vector staging) declares it as
 `[flows.sim].pre_run_commands`
-([CONFIG.md](CONFIG.md#pre-run-commands-flowssimpre_run_commands)) —
+([CONFIG.md](CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) —
 the project's own Makefile runs inside the Session Runtime, and Booley keeps the
 same Flow contract above it. A simulator outside this matrix is out of scope
 for Ticket Mode; widening the matrix is the sanctioned extension axis.

@@ -18,5 +18,5 @@ A Finding that records subjective praise, a gripe, a wish, or mixed sentiment.
 _Avoid_: feature request, review, rating, testimonial
 
 **Findings Log**:
-The durable, append-only collection of Findings for one Project or Booley Source Checkout.
+The durable, append-only collection of Findings for one Project or Booley source checkout.
 _Avoid_: bug database, feedback queue, telemetry

@@ -14,7 +14,7 @@ SOURCE_FEEDBACK_DIR_NAME = "booley-feedback"
 def feedback_storage_dir(checkout_root: Path) -> Path:
     """Return the durable local directory owned by feedback commands.
 
-    Projects keep findings with their Project state.  A Booley Source Checkout
+    Projects keep findings with their Project state.  A Booley source checkout
     is not a Project, so its dogfood findings live under ``$GIT_COMMON_DIR``;
     linked worktrees therefore share one untracked store.
     """

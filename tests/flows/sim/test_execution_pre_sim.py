@@ -1,11 +1,11 @@
-"""Pre-Run Commands live behind the Project-scoped execution seam."""
+"""Pre-Sim Commands live behind the Project-scoped execution seam."""
 
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 from booley.config.project_config import load_test_configuration_field, render_test_selector
-from booley.flows.sim.execution.pre_run import run_pre_run_commands
+from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
 
 
@@ -29,7 +29,7 @@ def test_each_target_handle_resolves_its_own_project_configuration(tmp_path: Pat
     second = _project(second_root, "baseline")
 
     for handle in (first, second):
-        outcome = run_pre_run_commands(
+        outcome = run_pre_sim_commands(
             handle,
             test_names=("smoke",),
             build_root=handle.project_root / "build",

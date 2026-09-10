@@ -26,7 +26,7 @@ from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import (
     DefaultSelection,
     NamedTests,
-    PreRunEvidence,
+    PreSimEvidence,
     SimulationExecution,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -265,11 +265,11 @@ class _ChangingTraceRun:
         self.config = config
         self.traces = traces
         self.commands: list[str] = []
-        self.pre_run_timeouts: list[int] = []
+        self.pre_sim_timeouts: list[int] = []
         self.invocation_timeouts: list[int] = []
 
-    def pre_run(self, _handle, attempt) -> PreRunEvidence:
-        self.pre_run_timeouts.append(attempt.wrapper_timeout_s)
+    def pre_sim(self, _handle, attempt) -> PreSimEvidence:
+        self.pre_sim_timeouts.append(attempt.wrapper_timeout_s)
         (self.prepared.build_root / "firmware.hex").write_text("generated\n", encoding="utf-8")
         if not self.commands:
             self.config.write_text(
@@ -281,7 +281,7 @@ class _ChangingTraceRun:
                 'pre_run_commands = ["new"]\n',
                 encoding="utf-8",
             )
-        return PreRunEvidence((), ("smoke",), "passed", 0.0, "")
+        return PreSimEvidence((), ("smoke",), "passed", 0.0, "")
 
     def invoke(self, command: list[str], *, timeout: int) -> SubprocessResult:
         self.invocation_timeouts.append(timeout)
@@ -730,9 +730,9 @@ def test_ordinary_build_root_is_never_reset(
 @pytest.mark.parametrize(
     "evidence, expected_verdict, expected_error",
     [
-        (PreRunEvidence(("slow",), ("smoke",), "timed_out", 1.0, "expired"), "fail", None),
+        (PreSimEvidence(("slow",), ("smoke",), "timed_out", 1.0, "expired"), "fail", None),
         (
-            PreRunEvidence(
+            PreSimEvidence(
                 ("missing-tool",),
                 ("smoke",),
                 "spawn_error",
@@ -744,9 +744,9 @@ def test_ordinary_build_root_is_never_reset(
         ),
     ],
 )
-def test_pre_run_stage_preserves_elaboration_and_infrastructure_classes(
+def test_pre_sim_stage_preserves_elaboration_and_infrastructure_classes(
     tmp_path: Path,
-    evidence: PreRunEvidence,
+    evidence: PreSimEvidence,
     expected_verdict: str,
     expected_error: str | None,
 ) -> None:
@@ -759,7 +759,7 @@ def test_pre_run_stage_preserves_elaboration_and_infrastructure_classes(
             return_value=_inspection(cocotb=False),
         ),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
-        patch.object(execution, "_run_pre_run", return_value=evidence),
+        patch.object(execution, "_run_pre_sim", return_value=evidence),
     ):
         outcome = execution.run(handle, NamedTests(("smoke",)))
 
@@ -1135,7 +1135,7 @@ def _assert_attempt_config_freezing(
     assert "--run-cwd other-run" in run.commands[1]
     assert "--timeout 1" in run.commands[0]
     assert "--timeout 2" in run.commands[1]
-    assert run.pre_run_timeouts == run.invocation_timeouts == [91, 92]
+    assert run.pre_sim_timeouts == run.invocation_timeouts == [91, 92]
     assert first_snapshot["controls"]["run_cwd"] == "run"
     assert second_snapshot["controls"]["run_cwd"] == "other-run"
     assert first_snapshot["controls"]["pre_run_commands"] == ["old"]
@@ -1181,7 +1181,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
             return_value=_inspection(cocotb=False),
         ),
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
-        patch.object(execution, "_run_pre_run", side_effect=run.pre_run),
+        patch.object(execution, "_run_pre_sim", side_effect=run.pre_sim),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
     ):
         first = execution.run(handle, NamedTests(("smoke",)))

@@ -203,9 +203,9 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
     try:
         retained_id = _resolve_image_id(expected_keeper)
     except RuntimeSpecError as exc:
-        raise RuntimeSpecError("prior Session Runtime image keeper is missing") from exc
+        raise RuntimeSpecError("prior Runtime Image keeper is missing") from exc
     if retained_id != issuance.image_id:
-        raise RuntimeSpecError("prior Session Runtime image keeper points at different bytes")
+        raise RuntimeSpecError("prior Runtime Image keeper points at different bytes")
     return issuance
 
 
@@ -234,7 +234,7 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
         image_id = _resolve_image_id(expected_image_id)
         if image_id != expected_image_id:
             raise RuntimeSpecError(
-                "reconciled Session Image ID no longer resolves to the same artifact"
+                "reconciled Runtime Image ID no longer resolves to the same artifact"
             )
     spec["image"] = image_id
     return image_id
@@ -438,20 +438,16 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
             if stamp.image != spec.get("image") or stamp.image_id != _resolve_image_id(
                 stamp.image
             ):
-                raise RuntimeSpecError(
-                    "Session Runtime image tag/digest has drifted since issuance"
-                )
+                raise RuntimeSpecError("Runtime Image tag/digest has drifted since issuance")
             expected_keeper = keeper_image(project)
             if stamp.keeper_image != expected_keeper:
-                raise RuntimeSpecError("Session Runtime image keeper differs from this Project")
+                raise RuntimeSpecError("Runtime Image keeper differs from this Project")
             try:
                 retained_id = _resolve_image_id(stamp.keeper_image)
             except RuntimeSpecError as exc:
-                raise RuntimeSpecError("issued Session Runtime image keeper is missing") from exc
+                raise RuntimeSpecError("issued Runtime Image keeper is missing") from exc
             if retained_id != stamp.image_id:
-                raise RuntimeSpecError(
-                    "issued Session Runtime image keeper points at different bytes"
-                )
+                raise RuntimeSpecError("issued Runtime Image keeper points at different bytes")
             expected_installation = installation.name if installation else None
             expected_profile = profile.name if profile else None
             if (
@@ -1257,7 +1253,7 @@ def _resolve_image_id(image: str) -> str:
 
     value = docker.image_id(image)
     if not value:
-        raise RuntimeSpecError(f"cannot resolve Session Runtime image to an immutable ID: {image}")
+        raise RuntimeSpecError(f"cannot resolve Runtime Image to an immutable ID: {image}")
     return value
 
 
@@ -1281,7 +1277,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     except RuntimeError as exc:
         raise RuntimeSpecError(str(exc)) from exc
     if _resolve_image_id(issuance.keeper_image) != issuance.image_id:
-        raise RuntimeSpecError("issued Session Runtime image keeper could not be verified")
+        raise RuntimeSpecError("issued Runtime Image keeper could not be verified")
 
 
 def _relay_image_id(profile: authority.LicenseProfile) -> str:
@@ -1320,7 +1316,7 @@ def _validate_image_contract(image_id: str) -> None:
     )
     container = created.stdout.strip()
     if created.returncode != 0 or not container:
-        raise RuntimeSpecError("cannot create inert container for Session image inspection")
+        raise RuntimeSpecError("cannot create inert container for Runtime Image inspection")
     try:
         with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
             root = Path(raw)
@@ -1337,7 +1333,7 @@ def _validate_image_contract(image_id: str) -> None:
                 )
                 if copied.returncode != 0:
                     raise RuntimeSpecError(
-                        "Session Runtime image does not satisfy the built-in "
+                        "Runtime Image does not satisfy the built-in "
                         f"Vivado compatibility contract ({source} is unavailable)"
                     )
             _validate_extracted_image_contract(root)
@@ -1345,27 +1341,27 @@ def _validate_image_contract(image_id: str) -> None:
         removed = docker._run_docker(["container", "rm", "-f", container], timeout=30)
         if removed.returncode != 0:
             raise RuntimeSpecError(
-                f"inert Session image inspection container could not be removed: {container}"
+                f"inert Runtime Image inspection container could not be removed: {container}"
             )
 
 
 def _validate_extracted_image_contract(root: Path) -> None:
     """Validate bytes copied from an inert, never-started candidate container."""
     if _file_sha256(root / "vivado-wrapper") != wrapper_sha256():
-        raise RuntimeSpecError("Session Runtime image contains the wrong Vivado wrapper digest")
+        raise RuntimeSpecError("Runtime Image contains the wrong Vivado wrapper digest")
     for name in ("libudev.so.1", "libpixman-1.so.0"):
         try:
             prefix = (root / name).read_bytes()[:4]
         except OSError as exc:
-            raise RuntimeSpecError(f"cannot inspect Session Runtime image library {name}") from exc
+            raise RuntimeSpecError(f"cannot inspect Runtime Image library {name}") from exc
         if prefix != b"\x7fELF":
-            raise RuntimeSpecError(f"Session Runtime image contains an invalid {name}")
+            raise RuntimeSpecError(f"Runtime Image contains an invalid {name}")
     try:
         locale_archive = (root / "locale-archive").read_bytes()
     except OSError as exc:
         raise RuntimeSpecError("cannot inspect Session Runtime locale archive") from exc
     if b"en_US" not in locale_archive:
-        raise RuntimeSpecError("Session Runtime image lacks the required en_US.UTF-8 locale")
+        raise RuntimeSpecError("Runtime Image lacks the required en_US.UTF-8 locale")
 
 
 def _require_string(spec: dict[str, Any], key: str) -> str:

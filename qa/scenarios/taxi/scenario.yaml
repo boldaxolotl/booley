@@ -669,13 +669,13 @@ steps:
 - id: inputs.release
   phase: prepare
   action: |-
-    Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Session Image digest; forbid editable, source-checkout and floating inputs.
+    Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Runtime Image digest; forbid editable, source-checkout and floating inputs.
   checks:
   - id: inputs.release
     capabilities:
     - H-01
     stimulus: |-
-      Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Session Image digest; forbid editable, source-checkout and floating inputs.
+      Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Runtime Image digest; forbid editable, source-checkout and floating inputs.
     expected: |-
       The installed package, source commit, documentation snapshot, suite/protocol revisions and image provenance all match the declared build; execution is isolated from source checkouts.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
@@ -890,7 +890,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 29602ece6b67643955bc2191ee7f18aecc69178149e87bbfa94b08289b2d5f35
+    sha256: 2c240a4c109f32c341a275a44337de9b8acf31ec86cbce586433a06d58e876bb
 - id: physical.constraints
   phase: prepare
   action: |-
@@ -914,7 +914,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 29602ece6b67643955bc2191ee7f18aecc69178149e87bbfa94b08289b2d5f35
+    sha256: 2c240a4c109f32c341a275a44337de9b8acf31ec86cbce586433a06d58e876bb
 - id: physical.discovery-doctor
   phase: prepare
   action: Include fourth Target in CLI/MCP identity checks and deep Doctor.
@@ -1156,7 +1156,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: inventory.P-07.derived-image
   phase: prepare
   action: |-
@@ -1181,7 +1181,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: inventory.P-07.hook-failure
   phase: prepare
   action: |-
@@ -1206,7 +1206,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: inventory.P-07.hook-once
   phase: prepare
   action: |-
@@ -1231,7 +1231,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: inventory.P-07.hook-recovery
   phase: prepare
   action: |-
@@ -1256,7 +1256,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: inventory.P-07.host-skill-readonly
   phase: prepare
   action: |-
@@ -1281,7 +1281,7 @@ steps:
   assets:
   - path: probes/P-07.md
     audience: coordinator
-    sha256: f44cc2c50f0f3466a99dda73b481b085abe24b36bd210166db525f29512426aa
+    sha256: 83e678959a1a8c8bbf71bd334e4d11910c48a02ff48cb03afa0b2228a12c19a1
 - id: target.sim-driver
   phase: baseline
   action: |-
@@ -7332,7 +7332,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
   - path: fixtures/build_submodules.py
     audience: coordinator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -7362,7 +7362,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -7386,7 +7386,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -7411,7 +7411,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -7433,7 +7433,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -7464,7 +7464,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -7484,7 +7484,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -7514,7 +7514,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -7538,7 +7538,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -7560,7 +7560,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -7582,7 +7582,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -7602,7 +7602,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -7624,7 +7624,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -7646,7 +7646,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -7671,7 +7671,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -7691,7 +7691,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -7711,7 +7711,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -7731,7 +7731,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -7753,7 +7753,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -7773,7 +7773,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -7797,7 +7797,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -7821,7 +7821,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -7845,7 +7845,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -7863,7 +7863,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
   recovery:
     baseline: submodules.fixture
     detection:
@@ -7894,7 +7894,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -7916,7 +7916,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: 8e62dbcd218e4dcff8ffbffdf80f37c48a4d72fff54a8a4c2b27913ae787be63
+    sha256: e90c19a0f289d1fd97b975ad5fbddd61df90f29de329520b85d0f9e3ab3280ce
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-

@@ -9,7 +9,7 @@ The app's life is a strict linear progression:
 * PRE_MOUNT: instance constructed; widgets not yet composed. No handlers fire
   here in practice because Textual queues messages until ``on_mount``.
 * SETUP: ``on_mount`` has run; widgets exist. The harness worker emits
-  ``SetupProgress`` events for preflight / parse-validate / config load.
+  ``SetupProgress`` events for Ticket Preflight / parse-validate / config load.
 * RUNNING: harness has entered the ticket body. Endpoint/criteria/agent events
   are accepted.
 * TEARDOWN: ``app.exit()`` requested — either by the harness (worker

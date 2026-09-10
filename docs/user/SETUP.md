@@ -52,7 +52,7 @@ booley bootstrap
 
 It validates Git, Docker, and VS Code; installs or verifies VS Code's Dev
 Containers extension; deploys packaged skills; verifies the shared Nangate45
-cache; reconciles the base Session Image; and converges the
+cache; reconciles the base Runtime Image; and converges the
 single global egress network, proxy, and reaper. It neither discovers a Project
 nor selects an agent provider. `booley bootstrap --check-only` performs no
 writes and returns 1 when work is pending; `--force` refreshes Booley-managed
@@ -132,12 +132,12 @@ booley init --scaffold my_ip
 detects the loss of its `# AUTO-GENERATED` header, or a `# booley:keep`
 directive you add, and leaves your files and image untouched). Host Bootstrap
 owns external dependency validation, system skill links, the Nangate45 cache,
-the base Session Image, and global sidecars. Project Initialization walks through:
+the base Runtime Image, and global sidecars. Project Initialization walks through:
 
 1. Creating `.booley_project/` with placeholder configs
 2. Recording the selected agent provider and authentication policy
 3. The tickets directory tree and selected-provider credential checks
-4. Reconciling the Project-selected or Project-derived Session Image while
+4. Reconciling the Project-selected or Project-derived Runtime Image while
    verifying its immutable base ancestry
 5. Installing Git hooks (repo-level and Project commit-msg)
 6. Writing and issuing the Interactive Mode devcontainer specification
