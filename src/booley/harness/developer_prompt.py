@@ -377,7 +377,7 @@ def _get_criterion_endpoint_map(
             for family, binding in catalog.items()
         }
 
-    except Exception:  # noqa: BLE001 — optional mapping must not block the run
+    except Exception:  # optional mapping must not block the run
         logger.warning("Failed to auto-build criterion-to-endpoint map", exc_info=True)
         return {}
 
