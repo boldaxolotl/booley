@@ -227,6 +227,28 @@ def test_deep_reader_preserves_retained_v1_campaigns(tmp_path: Path) -> None:
     assert loaded.campaign == _campaign()
 
 
+def test_summary_reader_preserves_retained_v1_campaigns(tmp_path: Path) -> None:
+    path = tmp_path / "coverage.json"
+    path.write_text(json.dumps(_valid_document()), encoding="utf-8")
+
+    summary = read_coverage_summary(path, TARGET)
+
+    assert summary.source_schema == "booley.coverage-campaign/v1"
+    assert summary.point_store is None
+
+
+def test_summary_reader_rejects_unsupported_schema(tmp_path: Path) -> None:
+    document = _valid_document()
+    document["$schema"] = "booley.coverage-campaign/v999"
+    path = tmp_path / "coverage.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(path, TARGET)
+
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+
+
 def test_v1_deep_reader_decodes_once(tmp_path: Path, monkeypatch) -> None:
     import booley.flows.sim.coverage_campaign_store as store
 
