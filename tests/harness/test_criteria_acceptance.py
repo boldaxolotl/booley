@@ -22,8 +22,10 @@ from booley.ticket_board.criteria_acceptance import (
     format_criteria_verdict,
     refresh_verification_freshness,
 )
+from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_ENDPOINTS = builtin_endpoint_catalog()
 
 # ---------------------------------------------------------------------------
 # CriteriaVerdict
@@ -797,7 +799,7 @@ class TestBuildCriteriaSummaryLines:
         state = _FakeState(criteria=criteria)
         with patch("booley.criteria.state.DevelopmentState") as mock_cls:
             mock_cls.load.return_value = state
-            lines, _ = build_criteria_summary_lines(state_path)
+            lines, _ = build_criteria_summary_lines(state_path, _ENDPOINTS)
         return lines
 
     @staticmethod

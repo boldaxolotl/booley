@@ -80,8 +80,9 @@ supported. Diagnostic/elaboration modes keep their existing distinct semantics.
 
 D15 in [the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md) forbids
 all `booley.flows -> booley.mcp` imports, including nested and type-only imports,
-without exemptions. D5/D6/D9 remain unchanged. Criteria producer discovery and
-its W1/W2 waivers remain owned by #284.
+without exemptions. D5/D6/D9 remain unchanged. Criteria action and reference
+rendering consume an immutable endpoint catalog assembled outside Criteria; the
+former W1/W2 discovery waivers were retired by #284.
 
 `tests/flows/test_transport_contract.py` captures all four pre-refactor schemas,
 exercises direct typed and CLI calls, checks Ticket gates and acceptance ordering,

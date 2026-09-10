@@ -146,7 +146,12 @@ def test_unmet_criterion_shows_copyable_target_invocation(tmp_path: Path) -> Non
     state = _state(tmp_path, {"lint_clean_lint_uart": True})
     state.save()
 
-    lines, _totals = build_criteria_summary_lines(state._file_path)
+    from tests.criterion_endpoint_support import builtin_endpoint_catalog
+
+    lines, _totals = build_criteria_summary_lines(
+        state._file_path,
+        builtin_endpoint_catalog(),
+    )
 
     assert any("--target lint_uart" in line for line in lines)
 
