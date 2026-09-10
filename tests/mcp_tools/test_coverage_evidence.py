@@ -91,6 +91,45 @@ def test_points_filter_and_cursor_are_deterministic():
     assert first["next_cursor"] is None
 
 
+def test_points_cursor_advances_within_the_same_filtered_query():
+    campaign = _campaign_with_waiver()
+    point = campaign.points[0]
+    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
+    session = CoverageEvidenceSession(campaign, None)
+
+    first = session.query({"view": "points", "disposition": "waived", "limit": 1})
+    second = session.query(
+        {
+            "view": "points",
+            "disposition": "waived",
+            "limit": 1,
+            "cursor": first["next_cursor"],
+        }
+    )
+
+    assert first["points"][0]["id"] == point.id
+    assert second["points"][0]["id"] == f"{point.id}-second"
+    assert second["next_cursor"] is None
+
+
+def test_points_cursor_cannot_be_reused_with_different_filters():
+    campaign = _campaign_with_waiver()
+    point = campaign.points[0]
+    campaign = replace(campaign, points=(point, replace(point, id=f"{point.id}-second")))
+    session = CoverageEvidenceSession(campaign, None)
+    first = session.query({"view": "points", "disposition": "waived", "limit": 1})
+
+    with pytest.raises(ValueError, match="does not match this query"):
+        session.query(
+            {
+                "view": "points",
+                "disposition": "eligible",
+                "limit": 1,
+                "cursor": first["next_cursor"],
+            }
+        )
+
+
 def test_source_view_is_limited_to_exact_campaign_point_ids():
     document = _valid_document()
     campaign = decode_coverage_campaign(
