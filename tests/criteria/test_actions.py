@@ -2,12 +2,17 @@
 
 from booley.criteria.actions import planned_invocation
 from booley.criteria.state import CriterionEntry
+from tests.criterion_endpoint_support import builtin_endpoint_catalog
+
+_ENDPOINTS = builtin_endpoint_catalog()
 
 
 def test_per_target_lint_action_uses_key_target() -> None:
     entry = CriterionEntry(met=False, mandatory=True)
 
-    assert planned_invocation("lint_clean_lint_uart", entry) == "lint --target lint_uart"
+    assert (
+        planned_invocation("lint_clean_lint_uart", entry, _ENDPOINTS) == "lint --target lint_uart"
+    )
 
 
 def test_structured_sim_action_uses_sealed_target_and_selector() -> None:
@@ -22,7 +27,7 @@ def test_structured_sim_action_uses_sealed_target_and_selector() -> None:
     )
 
     assert (
-        planned_invocation("sim_pass_tb_test_uart.py_sim_uart_test_transmit", entry)
+        planned_invocation("sim_pass_tb_test_uart.py_sim_uart_test_transmit", entry, _ENDPOINTS)
         == "sim --target sim_uart --test test_transmit"
     )
 
@@ -38,7 +43,7 @@ def test_action_prefers_sealed_callable_selector_over_durable_identity() -> None
     )
 
     assert (
-        planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry)
+        planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry, _ENDPOINTS)
         == "lint --target uart#lint_uart"
     )
 
@@ -51,7 +56,7 @@ def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -
     )
 
     assert (
-        planned_invocation("review_rtl_spec_done", entry)
+        planned_invocation("review_rtl_spec_done", entry, _ENDPOINTS)
         == "reviewer --category rtl --focus spec --scope rtl/uart.sv"
     )
 
@@ -64,6 +69,6 @@ def test_tb_reviewer_action_uses_source_scope_without_target() -> None:
     )
 
     assert (
-        planned_invocation("review_tb_quality_clean", entry)
+        planned_invocation("review_tb_quality_clean", entry, _ENDPOINTS)
         == "reviewer --category tb --focus quality --scope tb/test_uart.py,tb/uart_tb.sv"
     )

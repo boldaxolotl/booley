@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from booley.criteria.templates import CriterionDef
+    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
     from booley.mcp.registry import McpToolInfo
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ class DeveloperPromptContext:
     slug: str
     ticket_type: str = "feature"
     criteria: dict[str, Any] | None = None
+    criterion_endpoint_catalog: CriterionEndpointCatalog | None = None
     mcp_tools: list[McpToolInfo] | None = None
     mcp_tool_config: dict[str, Any] | None = None
     flow_config: dict[str, Any] | None = None
@@ -358,28 +359,23 @@ def _get_criterion_endpoint_map(
     Falls back to legacy hardcoded map if loading fails.
     """
     try:
-        from booley.criteria.templates import (
-            expand_criteria_defs,
-            load_base_criteria,
-            load_project_criteria,
-            merge_criteria_defs,
+        from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
+        from booley.mcp.registry import (
+            criterion_endpoint_relationships,
+            discover_mcp_tools,
         )
-        from booley.mcp.registry import build_criterion_endpoint_map, discover_mcp_tools
 
-        base_defs = load_base_criteria()
-        project_defs: list[CriterionDef] = []
-        if project_criteria_path and project_criteria_path.exists():
-            project_defs = load_project_criteria(project_criteria_path)
-
-        merged, errors = merge_criteria_defs(base_defs, project_defs)
-        for err in errors:
-            logger.error("Criteria merge error: %s", err)
-
-        expanded = expand_criteria_defs(merged, [])
         if mcp_tools is None:
             mcp_tools = discover_mcp_tools()
 
-        return build_criterion_endpoint_map(expanded, mcp_tools)
+        catalog = CriterionEndpointCatalog.load(
+            project_criteria_path,
+            criterion_endpoint_relationships(mcp_tools),
+        )
+        return {
+            family: (binding.command, binding.workflow_region)
+            for family, binding in catalog.items()
+        }
 
     except Exception:  # optional mapping must not block the run
         logger.warning("Failed to auto-build criterion-to-endpoint map", exc_info=True)
@@ -775,10 +771,16 @@ def build_developer_prompt(
             flow_config=ctx.flow_config,
         )
 
-    criterion_endpoint_map = _get_criterion_endpoint_map(
-        mcp_tools=mcp_tools,
-        project_criteria_path=ctx.project_criteria_path,
-    )
+    if ctx.criterion_endpoint_catalog is None:
+        criterion_endpoint_map = _get_criterion_endpoint_map(
+            mcp_tools=mcp_tools,
+            project_criteria_path=ctx.project_criteria_path,
+        )
+    else:
+        criterion_endpoint_map = {
+            family: (binding.command, binding.workflow_region)
+            for family, binding in ctx.criterion_endpoint_catalog.items()
+        }
 
     system_prompt = (
         _ROLE_MCP

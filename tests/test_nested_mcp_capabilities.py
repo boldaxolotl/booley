@@ -12,7 +12,7 @@ from booley.runtime.nested_mcp_capabilities import (
 
 class TestNestedMcpToolsFor:
     def test_known_specialist_returns_allowlist(self):
-        assert nested_mcp_tools_for("coverage_analyst") == []
+        assert nested_mcp_tools_for("coverage_analyst") == ["coverage_evidence"]
 
     def test_returns_fresh_list(self):
         # Caller-mutation must not leak back into the matrix.
@@ -32,7 +32,7 @@ class TestNestedMcpToolsFor:
             ("reviewer", []),
             ("mutation_tester", []),
             ("tb_coder", ["sim"]),
-            ("coverage_analyst", []),
+            ("coverage_analyst", ["coverage_evidence"]),
         ],
     )
     def test_specialist_allowlists(self, spec, expected):

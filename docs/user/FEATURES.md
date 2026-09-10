@@ -211,7 +211,9 @@ The Coverage Analyst explains one retained native Coverage Campaign, keeping
 observed counts and stored verdicts separate from causal hypotheses. It can
 suggest tests and Waiver Candidates for human review, but cannot launch
 Simulation, read waveforms, evaluate Criteria, or approve exclusions. Verified
-Target sources are optional, and native-payload pruning leaves the normalized
+Target sources are optional. Large Campaigns use bounded overview, point, and
+source retrieval rather than copying every point into the model prompt; point views
+preserve Approved Waiver provenance. Native-payload pruning leaves the normalized
 Campaign analyzable. Explicit `sim --coverage` (alias `--cov`) collects native
 Verilator evidence with or without a Coverage Criterion. Gated collection applies
 exact-suite metric thresholds and the project-wide Approved Waiver Set; simulation

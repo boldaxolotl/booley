@@ -305,6 +305,26 @@ def test_codex_homes_are_isolated_by_ticket(tmp_path, monkeypatch):
     assert 'BOOLEY_STATE_FILE = "/state/b.json"' in (nested_b / ".codex/config.toml").read_text()
 
 
+def test_nested_codex_home_includes_scoped_environment(tmp_path, monkeypatch):
+    from booley.runtime import _codex_backend as cb
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_SLUG", "coverage")
+    cb._NESTED_HOMES.clear()
+
+    home = Path(
+        cb._ensure_nested_codex_home(
+            "coverage_analyst",
+            ["coverage_evidence"],
+            {"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
+        )
+    )
+
+    config = (home / ".codex/config.toml").read_text(encoding="utf-8")
+    assert 'BOOLEY_COVERAGE_CAMPAIGN = "/reports/coverage.json"' in config
+    assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
+
+
 def test_codex_spawn_routes_developer_home(tmp_path, monkeypatch):
     """developer_mcp_tools selects the developer HOME, not the nested one."""
     from booley.runtime import _codex_backend as cb
@@ -315,8 +335,8 @@ def test_codex_spawn_routes_developer_home(tmp_path, monkeypatch):
         calls["orch"] = (label, mcp_tools)
         return "/tmp/fake-orch-home"
 
-    def _nested_home(label, mcp_tools):
-        calls["nested"] = (label, mcp_tools)
+    def _nested_home(label, mcp_tools, extra_env=None):
+        calls["nested"] = (label, mcp_tools, extra_env)
         return "/tmp/fake-nested-home"
 
     async def _fake_exec(*_cmd, **kwargs):
@@ -345,7 +365,7 @@ def test_codex_spawn_routes_developer_home(tmp_path, monkeypatch):
     calls.clear()
     params2 = AgentCallParams(prompt="p", model="m", cwd=tmp_path, label="reviewer")
     asyncio.run(cb._codex_spawn(["codex"], params2))
-    assert calls["nested"] == ("reviewer", None)
+    assert calls["nested"] == ("reviewer", None, None)
     assert "orch" not in calls
     assert calls["env"]["HOME"] == "/tmp/fake-nested-home"
 

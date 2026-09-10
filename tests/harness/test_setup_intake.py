@@ -20,6 +20,7 @@ from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,7 +126,11 @@ def test_acceptance_basis_seeds_callable_selector_for_prompt_rendering(
         params=criterion_params["lint_clean_acme:ip:uart:1.0#lint_uart"],
     )
     assert (
-        planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry)
+        planned_invocation(
+            "lint_clean_acme:ip:uart:1.0#lint_uart",
+            entry,
+            builtin_endpoint_catalog(),
+        )
         == "lint --target uart#lint_uart"
     )
 

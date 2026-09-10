@@ -13,15 +13,21 @@ from pathlib import Path
 
 import pytest
 
+from booley.criteria.endpoint_catalog import (
+    CriterionEndpointCatalog,
+    EndpointCriterionRelationship,
+)
 from booley.criteria.reference import (
     extract_generated,
     render_criteria_params_reference,
     render_criteria_reference,
 )
-from booley.criteria.templates import load_base_criteria
+from booley.criteria.templates import load_base_criteria, load_project_criteria
 from booley.runtime.paths import cheatsheet_path
+from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENDPOINTS = builtin_endpoint_catalog()
 
 # Docs that embed a committed copy of the generated block (base render, no
 # project criteria). cheatsheet.md is also spliced live by `booley cheat`, but its
@@ -32,7 +38,7 @@ _EMBEDDED_DOCS = [
 ]
 
 REGEN_HINT = (
-    "Regenerate with: python -m booley.criteria.reference "
+    "Regenerate with: python -m booley.dev_support.criteria_reference "
     "docs/user/USAGE.md src/booley/data/cheatsheet.md"
 )
 
@@ -42,7 +48,7 @@ def test_committed_block_matches_source(doc: Path) -> None:
     """Each committed criteria block is byte-identical to the current render."""
     assert doc.exists(), f"missing doc: {doc}"
     committed = extract_generated(doc.read_text(encoding="utf-8"))
-    assert committed == render_criteria_reference(), (
+    assert committed == render_criteria_reference(_ENDPOINTS), (
         f"{doc.name} criteria block is stale. {REGEN_HINT}"
     )
 
@@ -59,7 +65,7 @@ def test_committed_params_block_matches_source(doc: Path) -> None:
 
 def test_every_visible_criterion_is_rendered() -> None:
     """No visible criterion defined in criteria.toml may vanish from the reference."""
-    rendered = render_criteria_reference()
+    rendered = render_criteria_reference(_ENDPOINTS)
     for cdef in load_base_criteria():
         if cdef.hidden:
             continue
@@ -70,7 +76,7 @@ def test_every_visible_criterion_is_rendered() -> None:
 
 
 def test_per_target_criteria_use_target_placeholder() -> None:
-    rendered = render_criteria_reference()
+    rendered = render_criteria_reference(_ENDPOINTS)
     assert "sim_pass_{target}" in rendered
     assert "cycle_count_{target,test}" in rendered
     assert "{cfg}" not in rendered
@@ -80,14 +86,35 @@ def test_hidden_criteria_are_omitted(tmp_path: Path) -> None:
     """A hidden project Criterion is omitted while public coverage is rendered."""
     config = tmp_path / "criteria.toml"
     config.write_text('[private_check]\ndescription = "Internal check"\nhidden = true\n')
-    rendered = render_criteria_reference(project_criteria_path=config)
+    rendered = render_criteria_reference(_ENDPOINTS, project_criteria_path=config)
     assert "`private_check" not in rendered
     assert "`coverage_{target}`" in rendered
 
 
+def test_custom_criterion_uses_injected_endpoint_binding(tmp_path: Path) -> None:
+    config = tmp_path / "criteria.toml"
+    config.write_text(
+        """[drc_clean]
+description = "No design-rule violations"
+workflow_region = "post_sim"
+group = "verification"
+""",
+        encoding="utf-8",
+    )
+    catalog = CriterionEndpointCatalog.build(
+        load_project_criteria(config),
+        [EndpointCriterionRelationship("drc", ("drc_clean",))],
+    )
+
+    rendered = render_criteria_reference(catalog, project_criteria_path=config)
+
+    row = next(line for line in rendered.splitlines() if "`drc_clean`" in line)
+    assert "`drc`" in row
+
+
 def test_grouped_render_has_group_headings() -> None:
     """The criteria render is split into functional group sub-tables."""
-    rendered = render_criteria_reference()
+    rendered = render_criteria_reference(_ENDPOINTS)
     for heading in ("#### Build & Elaborate", "#### Implementation & PPA"):
         assert heading in rendered, f"missing group heading: {heading!r}"
 
@@ -125,6 +152,56 @@ def test_every_cycle_count_threshold_param_is_documented() -> None:
 
 
 def test_public_coverage_reference_names_explicit_collection() -> None:
-    rendered = render_criteria_reference()
+    rendered = render_criteria_reference(_ENDPOINTS)
     row = next(line for line in rendered.splitlines() if "`coverage_{target}`" in line)
     assert "`sim --coverage`" in row
+
+
+def test_maintainer_cli_prints_every_reference_block(monkeypatch, capsys) -> None:
+    from booley.dev_support import criteria_reference
+
+    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
+    monkeypatch.setattr(
+        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
+    )
+    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
+
+    assert criteria_reference._main([]) == 0
+
+    assert capsys.readouterr().out == (
+        "<!-- criteria -->\ncriteria\n\n<!-- criteria-params -->\nparams\n\n"
+    )
+
+
+def test_maintainer_cli_updates_reference_blocks_in_place(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from booley.dev_support import criteria_reference
+
+    destination = tmp_path / "reference.md"
+    destination.write_text(
+        """before
+<!-- BEGIN GENERATED: criteria -->
+old criteria
+<!-- END GENERATED: criteria -->
+<!-- BEGIN GENERATED: criteria-params -->
+old params
+<!-- END GENERATED: criteria-params -->
+after
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
+    monkeypatch.setattr(
+        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
+    )
+    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
+
+    assert criteria_reference._main([str(destination)]) == 0
+
+    assert extract_generated(destination.read_text(encoding="utf-8")) == "criteria"
+    assert (
+        extract_generated(destination.read_text(encoding="utf-8"), name="criteria-params")
+        == "params"
+    )
+    assert capsys.readouterr().out == f"updated {destination}\n"

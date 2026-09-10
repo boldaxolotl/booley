@@ -1042,6 +1042,6 @@ its integrity-linked point store when V2, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The
-Analyst's versioned output and text-only model boundary are documented in
+Analyst's versioned output and capability-isolated, budgeted evidence boundary are documented in
 [MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). The release gate and
 validation commands are recorded in [coverage-release-gate.md](coverage-release-gate.md).
