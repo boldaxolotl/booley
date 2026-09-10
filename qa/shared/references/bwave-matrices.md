@@ -2,7 +2,7 @@
 
 [Reconcile the B-Wave virtual-signal option matrix](https://github.com/boldaxolotl/booley/issues/282)
 defines the virtual-signal contract. Under
-`taxi-10g-mac-port-evolution.inventory.W-04`, create these **per-command** checks:
+`taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL`, create these **per-command** checks:
 
 | Command set | Check suffixes (one ID for every named command) | Stimulus / expected result / evidence |
 |---|---|---|
@@ -14,7 +14,7 @@ defines the virtual-signal contract. Under
 Judge the released SUT against these semantics; parser acceptance alone is insufficient.
 Only find among behavior-backed virtual commands has schema-backed JSON output.
 
-Under `taxi-10g-mac-port-evolution.inventory.W-03`, independently define `json-<command>-supported`
+Under `taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY`, independently define `json-<command>-supported`
 for list/value/find/stats: request JSON on known trace → parse documented envelope
 and exact result. Define `json-<command>-rejected` for signal/wave/sample/diff/
 distance/stuck: request JSON → documented unsupported-output rejection. Merely
@@ -24,7 +24,7 @@ exit and build-matched command page.
 Current [public marker reference](../../../crates/bwave/docs/public/reference/markers.md)
 and [overview](../../../crates/bwave/docs/public/commands/overview.md) agree:
 **native --marker is wave-only**.
-Under `taxi-10g-mac-port-evolution.inventory.W-04`, encode separate `marker-wave-render` (known typed
+Under `taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL`, encode separate `marker-wave-render` (known typed
 in-window time → label at correct column), `marker-wave-async-column` (no signal
 transition at annotation tick → marker column nevertheless present),
 `marker-wave-outside` (out-of-window marker → omitted), `marker-wave-repeat`
@@ -36,7 +36,7 @@ rejection). Retain each output and independent time oracle. Define separate
 diff, distance, stats, stuck, schema, docs, and skill: native --marker must fail
 argument parsing with exit 2. Wrapper GUI gains no native marker-query claim.
 
-Under `taxi-10g-mac-port-evolution.inventory.W-02`, `marker-wrapper-value` supplies a persisted marker
+Under `taxi-10g-mac-port-evolution.inventory.TRACE-REGISTRY`, `marker-wrapper-value` supplies a persisted marker
 name to value --at → known cycle value; `marker-wrapper-diff` supplies two names
 to diff → exact endpoints/delta; `marker-wrapper-wave` supplies named endpoints
 to wave → expected interval and annotations. Retain registry snapshots and

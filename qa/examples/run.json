@@ -22,7 +22,7 @@
   "capabilities": {
     "qualified_visual_observer": {
       "available": false,
-      "probe_evidence": "evidence/preflight/observer.json"
+      "assessment_evidence": "evidence/preflight/observer.json"
     }
   }
 }

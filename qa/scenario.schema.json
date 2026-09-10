@@ -450,7 +450,7 @@
                 },
                 "audience": {
                   "enum": [
-                    "coordinator",
+                    "scenario-operator",
                     "setup delegate",
                     "Interactive Mode delegate",
                     "Developer Agent",

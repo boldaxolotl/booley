@@ -15,7 +15,7 @@ The versioned collection of Scenarios, Capability Coverage, and shared execution
 _Avoid_: test suite, CI suite, regression tests
 
 **Capability**:
-One supported, publicly sourced product behavior inventoried by the Public QA Suite.
+One supported, publicly sourced product behavior inventoried by the Public QA Suite. Its stable, semantic ID names the behavior in uppercase kebab case, such as `SECURITY-RUNTIME-ISOLATION`.
 _Avoid_: feature flag, Check, Criterion
 
 **Scenario**:
@@ -27,8 +27,12 @@ One ordered unit of work in a Scenario. A Step may own multiple Checks and the r
 _Avoid_: Criterion, pipeline stage
 
 **Check**:
-One independently observable product claim within a Scenario, with declared stimulus, expectation, authority, and evidence requirement.
+One independently observable product claim within a Scenario, with declared stimulus, expectation, authority, evidence requirement, and capture point. The Check is the complete instruction for exercising and judging that claim.
 _Avoid_: Criterion, assertion, test function
+
+**Check Result**:
+One immutable record of a Check attempt within a Scenario Run, including its observed outcome and evidence references.
+_Avoid_: Run Result, test result
 
 **Capability Coverage**:
 The mapping between inventoried Capabilities and the Scenario Checks that exercise them. Capability Coverage establishes representation, not behavioral evidence.
@@ -53,10 +57,6 @@ _Avoid_: test runner, coordinator agent, autonomous campaign, delegate
 **Scenario Run**:
 One execution of a Configured Scenario with exact product, suite, input, tool, and environment identities. It produces Check evidence.
 _Avoid_: QA Run, Job, Ticket run, test invocation
-
-**Check Result**:
-One immutable observation of a Check attempt within a Scenario Run.
-_Avoid_: Run Result, Criterion result, verdict, summary
 
 **Scenario Run Outcome**:
 The evaluation of one Scenario Run's evidence against its selected Checks. Its value is `passed`, `failed`, or `incomplete`, independently of whether execution completed, reached its deadline, or ended in operator error.

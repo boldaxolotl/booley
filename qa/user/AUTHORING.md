@@ -24,7 +24,7 @@ restrictions, recovery instructions, owned resources, and phase recovery point.
 Shared behavior comes from the protocol; Scenario instructions may tighten it. Keep
 lengthy prompts, Ticket payloads, and evaluator material in referenced assets.
 
-Each Check records its ID, capability references, stimulus, expectation, public
+Each Check is self-contained and records its ID, capability references, stimulus, expectation, public
 contract source, evidence requirement, and capture point. Keep expectation authority
 distinct from documentation used only for navigation. A Scenario Run records which
 documentation it actually consulted.
@@ -44,8 +44,8 @@ change thresholds or disclose private assets.
 
 A restoration Step's `recovery` record identifies its `baseline`, prior `detection`
 Check IDs, and `instruction`. It requires the baseline and remains independent of the
-detection's successful result: it cannot depend directly or transitively on that
-result. Cleanup must remain independently reachable.
+detection's successful outcome: it cannot depend directly or transitively on that
+outcome. Cleanup must remain independently reachable.
 
 Check sets are flat and disjoint. A Configured Scenario may select several sets; the
 validator resolves them into one ordered Check list and derives supporting Steps. Each
@@ -64,22 +64,24 @@ and build-matched execution establish the authority's meaning and currency.
 
 ## Authoring workflow
 
-1. Identify the public behavior and its contract source. Consult the
-   [capability inventory](../coverage.yaml), then extend the Scenario that covers it.
+1. Identify the public behavior and its contract source. Assign a semantic,
+   uppercase-kebab Capability ID that names the behavior rather than its category or
+   sequence number. Consult the [capability inventory](../coverage.yaml), then extend
+   the Scenario that covers it.
    Keep independently observable requirements in separate checks. A
    specification-backed check becomes mandatory once review introduces it; it need
    not pass a reference run first. Treat an expectation without an authoritative
    basis as a research question or observation until resolved. Ordinary maintainer
    review governs specification changes; no candidate/established assertion registry
    is needed.
-2. Record each check's stimulus, expectation, evidence, and capture point. At scenario
+2. Make each Check self-contained: record its stimulus, expectation, evidence, and capture point. At Scenario
    level, supply prerequisites, authority, timeout, recovery, and cleanup. Preserve
    the full fault/restoration sequence for seeded faults. Link known defects to issues
    and retain their failures. Preserve original evidence in finding updates.
 3. Reference capabilities and assign each Check to explicit Configured Scenarios. Runtime
    Attachment and Waveform Viewer claims require corresponding evidence. Record
    missing capabilities as gaps; a
-   mapping or availability probe does not prove product coverage. Before publishing,
+   mapping or availability assessment does not prove product coverage. Before publishing,
    confirm every retained required behavior has a Check, Configured Scenario assignment, and
    evidence contract. Keep unresolved gaps visible.
 4. Review oracle quality, permitted sub-agent freedom, pre-run authority, feasible
@@ -115,7 +117,7 @@ through a VS Code Runtime Attachment. The `viewer.visual-capture` check separate
 proves that the Waveform Viewer shows the expected signals, markers, and cursor. Its
 authoring follows the five steps above:
 
-1. Start with capability [W-05](../coverage.yaml), whose public contract requires
+1. Start with capability [WAVEFORM-VIEWER](../coverage.yaml), whose public contract requires
    Waveform Control Protocol (WCP) readback and a rendered screenshot. Keep this check
    separate from `viewer.actual-client-open`: the Waveform Viewer can open without
    showing the correct state.
@@ -126,7 +128,7 @@ authoring follows the five steps above:
    ```yaml
    - id: viewer.visual-capture
      capabilities:
-     - W-05
+     - WAVEFORM-VIEWER
      stimulus: Capture Viewer only with pre-run qualified observer; verify visible scoped signals/markers/cursor.
      expected: Capture Viewer only with pre-run qualified observer; verify visible scoped signals/markers/cursor.
      authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md

@@ -14,6 +14,20 @@ import yaml
 from jsonschema import Draft202012Validator
 
 
+def validate_capability_id(value: str) -> None:
+    """Require a readable semantic identifier rather than a category sequence."""
+    segments = value.split("-")
+    if (
+        len(segments) < 2
+        or any(not segment.isalnum() for segment in segments)
+        or any(segment != segment.upper() for segment in segments)
+        or any(not any(character.isalpha() for character in segment) for segment in segments)
+    ):
+        raise ValueError(
+            f"coverage.yaml: capability ID must be semantic uppercase kebab case: {value}"
+        )
+
+
 def read_yaml(path: Path) -> object:
     """Reject duplicate keys and alias indirection before interpreting authored data."""
     text = path.read_text(encoding="utf-8")
@@ -250,6 +264,7 @@ def validate(root: Path, scenario_id: str | None = None) -> dict:
             {"id": str, "title": str, "sources": list, "contract": str, "applicability": str},
             "coverage.yaml",
         )
+        validate_capability_id(capability["id"])
         strings(capability["sources"], "coverage.yaml sources")
         for source in capability["sources"]:
             validate_source(root, source, root.parent)

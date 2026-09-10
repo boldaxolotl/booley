@@ -13,7 +13,7 @@ The agent owns the exact `.core`, requirements-file, and configuration spelling.
 - `synth_mac_10g` drives logical Yosys with the slang frontend and `taxi_eth_mac_10g` as its top. It does not claim STA or tape-out significance.
 - All four Targets use unambiguous identities, carry the agreed fixed parameter values where applicable, and are selected for the appropriate deep-Doctor checks.
 - `[stealth] enabled = false` is explicit; omission is not equivalent.
-- The Project-derived image contains the complete pinned Taxi test dependency set: pytest 8.3.4, pytest-xdist 3.6.1, pytest-split 0.10.0, cocotb 2.0.1, cocotb-bus 0.3.0, cocotb-test 0.2.6, cocotbext-axi 0.1.28, cocotbext-eth 0.1.28, cocotbext-i2c 0.1.2, cocotbext-pcie 0.2.16, cocotbext-uart 0.1.4, and scapy 2.6.1. Runtime network installation is forbidden. The real testbench import path is probed inside the Session Runtime.
+- The Project-derived image contains the complete pinned Taxi test dependency set: pytest 8.3.4, pytest-xdist 3.6.1, pytest-split 0.10.0, cocotb 2.0.1, cocotb-bus 0.3.0, cocotb-test 0.2.6, cocotbext-axi 0.1.28, cocotbext-eth 0.1.28, cocotbext-i2c 0.1.2, cocotbext-pcie 0.2.16, cocotbext-uart 0.1.4, and scapy 2.6.1. Runtime network installation is forbidden. The real testbench import path is verified inside the Session Runtime.
 - CLI and MCP Target discovery agree on identity, selectors, EDA programs, toplevels, parameters, and resolved source inputs.
 - Project Setup uses only published setup documentation, packaged skills, cheat sheets, CLI/MCP help, and ordinary Project inspection until an observation requiring source verification has been captured.
 

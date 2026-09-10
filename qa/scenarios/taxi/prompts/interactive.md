@@ -10,6 +10,6 @@ The FST exercise must:
 - Register a named alias and `_last`, prove the named alias after a new command context, create/list/resolve/delete named markers, and reject a stale or missing registration.
 - Use `list`, `signal`, `wave`, `value`, `find`, `sample`, `diff`, `distance`, `stats`, and `stuck` semantically against known PFC request, frame-start, XGMII data/control, timestamp, reset, and statistics relationships.
 - Cover synchronous and asynchronous views, explicit clock/reset selection, cycle and typed physical-time tokens, and one request-to-frame latency cross-checked against the Cocotb observation rather than trusted from CLI return code alone.
-- Open a scoped Waveform Viewer state containing the clock, PFC request, packet-start, XGMII data/control, and relevant statistics signals, with start/end markers and cursor. Retain WCP readback. Attempt visual capture only when the pre-run capability probe proves a qualified observer.
+- Open a scoped Waveform Viewer state containing the clock, PFC request, packet-start, XGMII data/control, and relevant statistics signals, with start/end markers and cursor. Retain WCP readback. Attempt visual capture only when the pre-run capability assessment establishes a qualified observer.
 
 The separately allocated Taxi inventory matrices remain required in the selected Configured Scenario.

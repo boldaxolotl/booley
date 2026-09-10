@@ -38,7 +38,7 @@ def test_unknown_structural_key_is_rejected(tmp_path):
 
 def test_structurally_invalid_scenario_is_rejected(tmp_path):
     (tmp_path / "coverage.yaml").write_text(
-        "format_version: 1\ncapabilities:\n- id: H-01\n  title: Install\n"
+        "format_version: 1\ncapabilities:\n- id: PRODUCT-ARTIFACT-INSTALLATION\n  title: Install\n"
         "  sources: [https://example.com/contract]\n  contract: Exact release\n"
         "  applicability: All Configured Scenarios\n"
     )
@@ -55,6 +55,20 @@ def test_structurally_invalid_scenario_is_rejected(tmp_path):
     assert result.returncode == 1
     assert "scenario.yaml" in result.stderr
     assert "stepps" in result.stderr
+
+
+def test_opaque_capability_id_is_rejected(tmp_path):
+    write_suite(tmp_path)
+    coverage = tmp_path / "coverage.yaml"
+    text = coverage.read_text().replace("PRODUCT-ARTIFACT-INSTALLATION", "H-01")
+    coverage.write_text(text)
+    scenario = tmp_path / "scenarios/sample/scenario.yaml"
+    scenario.write_text(scenario.read_text().replace("PRODUCT-ARTIFACT-INSTALLATION", "H-01"))
+
+    result = run_validator(tmp_path)
+
+    assert result.returncode == 1
+    assert "capability ID must be semantic uppercase kebab case" in result.stderr
 
 
 def write_suite(root):
@@ -157,7 +171,7 @@ def test_asset_symlink_escape_is_rejected(tmp_path):
 
     scenario = write_suite(tmp_path)
     (tmp_path / "scenarios/sample/escape").symlink_to("/etc/passwd")
-    scenario["steps"][0]["assets"] = [{"path": "escape", "audience": "coordinator"}]
+    scenario["steps"][0]["assets"] = [{"path": "escape", "audience": "scenario-operator"}]
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
@@ -178,7 +192,7 @@ def test_unused_capability_is_not_coverage(tmp_path):
     data = yaml.safe_load(path.read_text())
     data["capabilities"].append(
         {
-            "id": "H-02",
+            "id": "HOST-BOOTSTRAP",
             "title": "Bootstrap",
             "sources": ["https://example.com/bootstrap"],
             "contract": "Idempotence",
@@ -194,7 +208,7 @@ def test_unused_capability_is_not_coverage(tmp_path):
         check=False,
     )
     assert result.returncode == 1
-    assert "H-02" in result.stderr
+    assert "HOST-BOOTSTRAP" in result.stderr
 
 
 def test_scenario_schema_rejects_misspelled_agent_provider(tmp_path):
@@ -253,13 +267,13 @@ def test_coverage_index_is_derived_after_validation(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     index = json.loads(destination.read_text())
-    assert index["H-01"]["checks"] == [
+    assert index["PRODUCT-ARTIFACT-INSTALLATION"]["checks"] == [
         "sample.baseline",
         "sample.negative",
         "sample.removed",
         "sample.restored",
     ]
-    assert index["H-01"]["configured_scenarios"] == ["sample-linux-cli"]
+    assert index["PRODUCT-ARTIFACT-INSTALLATION"]["configured_scenarios"] == ["sample-linux-cli"]
 
 
 def test_required_check_cannot_disappear_from_all_configured_scenarios(tmp_path):
@@ -375,15 +389,15 @@ def test_shared_asset_is_explicit_and_confined(tmp_path):
     import yaml
 
     scenario = write_suite(tmp_path)
-    shared = tmp_path / "shared/probes"
+    shared = tmp_path / "shared/references"
     shared.mkdir(parents=True)
     asset = shared / "common.md"
-    asset.write_text("Shared public probe instructions.\n")
+    asset.write_text("Shared public instructions.\n")
     scenario["steps"][0]["assets"] = [
         {
             "base": "shared",
-            "path": "probes/common.md",
-            "audience": "coordinator",
+            "path": "references/common.md",
+            "audience": "scenario-operator",
             "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
         }
     ]
@@ -405,7 +419,7 @@ def test_shared_directory_cannot_redirect_outside_suite(tmp_path):
     scenario = write_suite(tmp_path)
     (tmp_path / "shared").symlink_to("/etc", target_is_directory=True)
     scenario["steps"][0]["assets"] = [
-        {"base": "shared", "path": "passwd", "audience": "coordinator"}
+        {"base": "shared", "path": "passwd", "audience": "scenario-operator"}
     ]
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
     result = subprocess.run(

@@ -1,4 +1,4 @@
-# T-08 provider process controls
+# TICKET-RESILIENCE provider process controls
 
 Use this only in the declared disposable Taxi Session Runtime, after a real selected
 Codex invocation passes and its absolute executable path/version are recorded.
