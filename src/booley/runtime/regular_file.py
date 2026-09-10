@@ -8,7 +8,8 @@ import stat
 from pathlib import Path
 
 
-def _windows_path_from_handle(descriptor: int) -> str:
+def _windows_path_from_handle(descriptor: int) -> str:  # pragma: no cover
+    """Resolve a Windows descriptor; exercised by the native Windows CI shards."""
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -31,7 +32,8 @@ def _windows_path_from_handle(descriptor: int) -> str:
     return value.removeprefix("\\\\?\\")
 
 
-def _open_windows(path: Path) -> int:
+def _open_windows(path: Path) -> int:  # pragma: no cover
+    """Reject Windows reparse-point traversal; exercised by native Windows CI."""
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
     accepted = False
     try:
