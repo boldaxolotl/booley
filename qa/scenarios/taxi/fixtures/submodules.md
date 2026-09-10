@@ -6,7 +6,7 @@ its symlink, Project Setup, hardware workloads and accepted verification assets 
 It is not a fourth IP journey or a consumer wrapper around Taxi.
 
 Public authority: [Submodules](../../../../docs/user/CONFIG.md#submodules), reconciled
-against the exact published Booley release documentation at execution. The phase
+against the documentation snapshot matching the tested Booley build. The phase
 closes the submodule part of inventory P-09; normal flat/vendored source handling
 continues to belong to the real IP journeys.
 
@@ -15,8 +15,8 @@ continues to belong to the real IP journeys.
 Create only beneath the run-owned companion root and its operator-owned fixture
 source directory. Register all Projects, local repositories, branches, worktrees
 and Session Runtimes in the ownership ledger. A separate paired `.booley_project` Git
-repository is intentional and independently owned. Use the same exact published
-Booley release and Session Image identity as the Taxi run. No package installation,
+repository is intentional and independently owned. Use the same exact Booley build
+and Session Image identity as the Taxi run. No package installation,
 network Git fetch, external push or source edit in the real Taxi Project is allowed.
 
 The suite supplies a deterministic construction recipe, not a dependency on a

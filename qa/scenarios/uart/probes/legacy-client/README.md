@@ -2,14 +2,14 @@
 
 Provision this matrix on the native QA host with a real VS Code Dev Containers
 Runtime Attachment and a disposable Docker daemon. Headless Docker output cannot
-qualify it. Freeze the preceding published Booley release, current release, VS Code
+qualify it. Freeze the preceding published Booley release, current declared target build, VS Code
 and Dev Containers extension versions, old issued configuration, immutable Docker
 container IDs, and named-volume identities before each case. Run each case from a
 fresh copy of the same disposable Project and retain all attempts.
 
 Create the baseline through the preceding release's normal `booley init` and
 VS Code **Reopen in Container**. Close the window without deleting its container;
-prepare the Project with the current release's normal host initialization. Verify
+prepare the Project with the target build's normal host initialization. Verify
 that the old Session Runtime still uses the old project-data bind and is running. A copied
 label or invented inspect response is not an authenticated baseline.
 

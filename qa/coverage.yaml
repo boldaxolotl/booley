@@ -1,12 +1,12 @@
 format_version: 1
 capabilities:
 - id: H-01
-  title: H-01 install exact published  in isolated pipx environment and launch from ne
+  title: H-01 install exact declared artifact in isolated pipx environment and launch from new shell
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/README.md#installation
   contract: |-
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
-    Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning.
   applicability: |-
     Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-02
@@ -95,12 +95,12 @@ capabilities:
   applicability: |-
     Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-11
-  title: H-11 create Project using immediately preceding published release then instal
+  title: H-11 create Project using immediately preceding published release then install target build
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
   contract: |-
-    `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
-    Both released package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair.
+    `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+    Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair.
   applicability: |-
     Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-12
@@ -261,7 +261,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
   contract: |-
     `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
-    Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks.
+    Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks.
   applicability: |-
     Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: F-01
