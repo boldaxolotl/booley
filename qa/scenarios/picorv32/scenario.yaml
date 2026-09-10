@@ -679,7 +679,7 @@ phases:
   title: Ticket 2, remaining allocated checks and complete final regression
   minutes: 210
 - id: cleanup
-  title: Cleanup
+  title: Finish and quiesce
   minutes: 20
 steps:
 - id: inputs.project-pin
@@ -5513,147 +5513,147 @@ steps:
   - inputs.project-pin
 - id: cleanup.branches
   phase: cleanup
-  action: Reconcile and remove every run-owned branches in dependency order.
+  action: Retain run-owned branches for review when eligible; otherwise release them.
   checks:
   - id: cleanup.branches
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned branches in dependency order.
-    expected: Reconcile and remove every run-owned branches in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Retain run-owned branches for review when eligible; otherwise release them.
+    expected: Retain run-owned branches for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.branches
 - id: cleanup.worktrees
   phase: cleanup
-  action: Reconcile and remove every run-owned worktrees in dependency order.
+  action: Retain run-owned worktrees for review when eligible; otherwise release them.
   checks:
   - id: cleanup.worktrees
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned worktrees in dependency order.
-    expected: Reconcile and remove every run-owned worktrees in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Retain run-owned worktrees for review when eligible; otherwise release them.
+    expected: Retain run-owned worktrees for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.worktrees
 - id: cleanup.targets
   phase: cleanup
-  action: Reconcile and remove every run-owned Targets in dependency order.
+  action: Retain run-owned Targets for review when eligible; otherwise release them.
   checks:
   - id: cleanup.targets
     capabilities:
     - TARGET-CATALOG
-    stimulus: Reconcile and remove every run-owned Targets in dependency order.
-    expected: Reconcile and remove every run-owned Targets in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Retain run-owned Targets for review when eligible; otherwise release them.
+    expected: Retain run-owned Targets for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.targets
 - id: cleanup.projections
   phase: cleanup
-  action: Reconcile and remove every run-owned projections in dependency order.
+  action: Retain run-owned projections for review when eligible; otherwise release them.
   checks:
   - id: cleanup.projections
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned projections in dependency order.
-    expected: Reconcile and remove every run-owned projections in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Retain run-owned projections for review when eligible; otherwise release them.
+    expected: Retain run-owned projections for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.projections
 - id: cleanup.hooks
   phase: cleanup
-  action: Reconcile and remove every run-owned hooks in dependency order.
+  action: Disable run-owned executable hooks; retain only eligible inert hook state.
   checks:
   - id: cleanup.hooks
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned hooks in dependency order.
-    expected: Reconcile and remove every run-owned hooks in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Disable run-owned executable hooks; retain only eligible inert hook state.
+    expected: Disable run-owned executable hooks; retain only eligible inert hook state.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.hooks
 - id: cleanup.runtimes
   phase: cleanup
-  action: Reconcile and remove every run-owned runtimes in dependency order.
+  action: Release every run-owned Session Runtime and prove its absence.
   checks:
   - id: cleanup.runtimes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned runtimes in dependency order.
-    expected: Reconcile and remove every run-owned runtimes in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Release every run-owned Session Runtime and prove its absence.
+    expected: Release every run-owned Session Runtime and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.runtimes
 - id: cleanup.processes
   phase: cleanup
-  action: Reconcile and remove every run-owned processes in dependency order.
+  action: Release every run-owned process and prove no descendants remain.
   checks:
   - id: cleanup.processes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned processes in dependency order.
-    expected: Reconcile and remove every run-owned processes in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Release every run-owned process and prove no descendants remain.
+    expected: Release every run-owned process and prove no descendants remain.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.processes
 - id: cleanup.project-grants
   phase: cleanup
-  action: Reconcile and remove every run-owned Project-Grants in dependency order.
+  action: Revoke every run-owned Grant and prove its absence.
   checks:
   - id: cleanup.project-grants
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned Project-Grants in dependency order.
-    expected: Reconcile and remove every run-owned Project-Grants in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Revoke every run-owned Grant and prove its absence.
+    expected: Revoke every run-owned Grant and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.project-grants
 - id: cleanup.license-profiles
   phase: cleanup
-  action: Reconcile and remove every run-owned License-Profiles in dependency order.
+  action: Release every run-owned License Profile and prove its absence.
   checks:
   - id: cleanup.license-profiles
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned License-Profiles in dependency order.
-    expected: Reconcile and remove every run-owned License-Profiles in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Release every run-owned License Profile and prove its absence.
+    expected: Release every run-owned License Profile and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.license-profiles
 - id: cleanup.relays
   phase: cleanup
-  action: Reconcile and remove every run-owned relays in dependency order.
+  action: Release every run-owned relay and prove its absence.
   checks:
   - id: cleanup.relays
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned relays in dependency order.
-    expected: Reconcile and remove every run-owned relays in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Release every run-owned relay and prove its absence.
+    expected: Release every run-owned relay and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.relays
 - id: cleanup.installation-registrations
   phase: cleanup
-  action: Reconcile and remove every run-owned Installation-Registrations in dependency order.
+  action: Release every run-owned installation registration and prove its absence.
   checks:
   - id: cleanup.installation-registrations
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned Installation-Registrations in dependency order.
-    expected: Reconcile and remove every run-owned Installation-Registrations in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Release every run-owned installation registration and prove its absence.
+    expected: Release every run-owned installation registration and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.installation-registrations
 - id: cleanup.mounts
   phase: cleanup
-  action: Reconcile and remove every run-owned mounts in dependency order.
+  action: Unmount every run-owned mount and prove its absence.
   checks:
   - id: cleanup.mounts
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile and remove every run-owned mounts in dependency order.
-    expected: Reconcile and remove every run-owned mounts in dependency order.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Owned identity, actual cleanup action and independent absence/state proof.
+    stimulus: Unmount every run-owned mount and prove its absence.
+    expected: Unmount every run-owned mount and prove its absence.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.mounts
 - id: cleanup.preserve-borrowed
   phase: cleanup
@@ -5669,14 +5669,14 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.cleanup.preserve-borrowed
 - id: cleanup.clean-pins
   phase: cleanup
-  action: Require clean pinned repositories at final cleanup.
+  action: Record final pinned-repository state and preserve it for review when eligible.
   checks:
   - id: cleanup.clean-pins
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Require clean pinned repositories at final cleanup.
-    expected: Require clean pinned repositories at final cleanup.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
+    stimulus: Record final pinned-repository state and preserve it for review when eligible.
+    expected: Record final pinned-repository state and preserve it for review when eligible.
+    authority_ref: ../../agents/FINISH.md
     evidence: Tree/status against initial pins; accepted evolution commits retained as evidence before restoration.
     capture: evidence/picorv32-published-demo-continuity.cleanup.clean-pins
 - id: cleanup.remotes
@@ -5700,6 +5700,6 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Finalize record, Findings, recovery links and resource disposition with no secret values.
     expected: Finalize record, Findings, recovery links and resource disposition with no secret values.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Compact run files and immutable external evidence; cleanup-complete recovery point.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Compact run files, immutable external evidence, and quiescence-complete recovery point.
     capture: evidence/picorv32-published-demo-continuity.evidence.finalize

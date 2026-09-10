@@ -6,17 +6,19 @@ and Check Results are examples, not execution evidence. It grants no coverage cr
 Production encoding must supply the complete accepted Scenario and concrete inputs.
 
 Read [scenario.yaml](scenario.yaml) beside [run.json](run.json),
-[check-results.jsonl](check-results.jsonl), and [summary.md](summary.md). The example shows:
+[operator-state.json](operator-state.json), [check-results.jsonl](check-results.jsonl),
+[cleanup-ledger.json](cleanup-ledger.json), and [summary.md](summary.md). The example shows:
 
 - a normal baseline check with a local stimulus and evidence contract;
 - an expected seeded failure followed by restored-state proof;
 - an unavailable Waveform Viewer check that leaves GUI qualification incomplete;
-- cleanup and a core pass that does not claim full qualification.
+- quiescence, retained review state, and a core pass that does not claim full qualification.
 
 The fault-detection check passes because the injected fault is expected. If baseline
 instead fails unexpectedly, append its failure and any recovery evidence separately;
 core remains failed. If restoration has no Check Result, core is incomplete unless another
-trustworthy failure already makes it failed. If cleanup has no proof, core cannot pass.
+trustworthy failure already makes it failed. If mandatory quiescence has no proof,
+core cannot pass; eligible retained review state is not missing cleanup.
 
 The Scenario declares its named check sets and Configured Scenarios; checks own their
 capability references. Actual production Configured Scenarios select all sets required by
@@ -31,5 +33,5 @@ The Scenario uses the production [JSON Schema](../scenario.schema.json). Check R
 interpretation additionally covers these independent cases: a missing selected
 record is blocked; an unexpected failure followed by successful recovery still
 fails the Scenario Run; contradictory trustworthy attempts create a flaky Finding and
-a failed Scenario Run Outcome; and absent cleanup proof leaves the Outcome incomplete unless a
+a failed Scenario Run Outcome; and absent quiescence proof leaves the Outcome incomplete unless a
 failure already takes precedence. The example records are illustrative only.

@@ -456,7 +456,7 @@ phases:
   title: Final regression/archive
   minutes: 30
 - id: cleanup
-  title: Cleanup
+  title: Finish and quiesce
   minutes: 30
 steps:
 - id: published-release
@@ -6027,44 +6027,44 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Stop/remove owned processes and runtimes.
     expected: Ledger and inspection prove release; pre-existing resources untouched.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
+    authority_ref: ../../agents/FINISH.md
     evidence: Ledger and inspection prove release; pre-existing resources untouched.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-processes
 - id: cleanup-git
   phase: cleanup
-  action: Remove owned Workspaces/worktrees/branches after archiving.
+  action: Retain owned Workspaces, worktrees, and branches for review when eligible.
   checks:
   - id: cleanup-git
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Remove owned Workspaces/worktrees/branches after archiving.
-    expected: Durable bundle/evidence verified before deletion; no remaining owned scratch.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Durable bundle/evidence verified before deletion; no remaining owned scratch.
+    stimulus: Retain owned Workspaces, worktrees, and branches for review when eligible.
+    expected: Immutable evidence verified; retained state satisfies the retention predicate.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Immutable evidence verified; retained state satisfies the retention predicate.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-git
 - id: cleanup-projects
   phase: cleanup
-  action: Remove owned Projects and inventory entries.
+  action: Release owned Project inventory entries; retain eligible Project directories for review.
   checks:
   - id: cleanup-projects
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Remove owned Projects and inventory entries.
+    stimulus: Release owned Project inventory entries; retain eligible Project directories for review.
     expected: Ledger reconciled with remaining state, no unrelated deletion.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
+    authority_ref: ../../agents/FINISH.md
     evidence: Ledger reconciled with remaining state, no unrelated deletion.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-projects
 - id: cleanup-evaluator
   phase: cleanup
-  action: Remove owned evaluator scratch.
+  action: Retain eligible evaluator state for review; otherwise release it.
   checks:
   - id: cleanup-evaluator
     capabilities:
     - SIMULATION-FLOW
-    stimulus: Remove owned evaluator scratch.
-    expected: Scenario Operator private evidence archived and scratch removed.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
-    evidence: Scenario Operator private evidence archived and scratch removed.
+    stimulus: Retain eligible evaluator state for review; otherwise release it.
+    expected: Private evidence archived outside mutable state; any retained evaluator state is eligible.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Private evidence archived outside mutable state; any retained evaluator state is eligible.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-evaluator
 - id: cleanup-preservation
   phase: cleanup
@@ -6087,10 +6087,10 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Observe elapsed time and stop new work at 7h30.
     expected: |-
-      Cleanup reserve honored, eight-hour completion recorded honestly; unfinished required checks blocked, never silently omitted.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
+      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
+    authority_ref: ../../agents/FINISH.md
     evidence: |-
-      Cleanup reserve honored, eight-hour completion recorded honestly; unfinished required checks blocked, never silently omitted.
+      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
     capture: evidence/opentitan-uart-clean-room-greenfield.deadline
 - id: retry-policy
   phase: cleanup
