@@ -129,7 +129,7 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
     prior = read_entry(tio.logs_dir / slug)
     accepted = read_acceptance(tio.logs_dir / slug)
     if accepted.kind == "corrupt":
-        raise ReviewEntryError(f"accepted snapshot is corrupt: {accepted.reason}")
+        raise ReviewEntryError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
     if accepted.kind == "accepted" and action != "regenerate":
         raise ReviewEntryError("already accepted; use the accepted review/complete workflow")
     if action == "request":

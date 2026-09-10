@@ -1067,7 +1067,7 @@ def _single_target_removal_completion(
         encoding="utf-8",
     )
     _git(root, "add", "toy.core")
-    _git(root, "commit", "-m", "add target pair")
+    _git(root, "commit", "-m", "add baseline and candidate Targets")
     if retained_submodule:
         _add_retained_submodule_target(root, tmp_path)
     base = _git(root, "rev-parse", "HEAD")
@@ -1142,7 +1142,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         encoding="utf-8",
     )
     _git(project, "add", "cores/toy.core", "tests.toml")
-    _git(project, "commit", "-m", "add project target pair")
+    _git(project, "commit", "-m", "add project baseline and candidate Targets")
     project_base = _git(project, "rev-parse", "HEAD")
     project_ticket = _ticket_commit(
         project, "booley-ticket/change-target", "project implementation\n"
@@ -1199,7 +1199,7 @@ def _outer_target_removal_repository(tmp_path: Path) -> tuple[Path, str, str]:
         encoding="utf-8",
     )
     _git(root, "add", "toy.core")
-    _git(root, "commit", "-m", "add target pair")
+    _git(root, "commit", "-m", "add baseline and candidate Targets")
     outer_base = _git(root, "rev-parse", "HEAD")
     outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
     return root, outer_base, outer_ticket

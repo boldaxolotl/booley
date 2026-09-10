@@ -92,7 +92,7 @@ Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
 selected Target or baseline cannot be planned, while retaining successfully
 planned work units for diagnosis. It never acquires a heavy execution slot,
 runs an EDA or Pre-Run command, changes timeline or Criteria state, records
-acceptance evidence, populates implementation caches, or writes a normal
+Criterion evidence, populates implementation caches, or writes a normal
 verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
 in `planning_disclosures` and the scratch is removed afterward.
@@ -310,7 +310,7 @@ Nangate45 technology inputs.
 Useful controls:
 
 - `--baseline <git-ref>` compares the candidate with its recorded baseline Target
-  at another revision. Directed baseline/candidate Target pairs are supported.
+  at another revision. Distinct baseline and candidate Targets are supported.
 - `--frontend <sv2v|slang>` overrides the Target's RTL frontend for diagnosis.
 - `--ppa-profile <compact|balanced|max_frequency>` selects a clean built-in PPA
   profile for this invocation.
@@ -364,8 +364,8 @@ hash-suffixed filename):
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical` verdict. |
 | `total_warnings`, `warning_summary` | Total warning-record occurrences plus unique and grouped counts by EDA tool, category, and disposition, with bounded representative diagnostics. Repeated warnings remain visible in the total; `unique_warnings` groups identical records. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | Optional baseline metrics and deltas; `baseline.ref` identifies the compared revision. |
-| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
-| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
+| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the baseline and candidate Targets. |
+| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
 | `run_evidence`, `baseline_run_evidence` | Current and optional baseline source/recipe provenance. |
 | `failure_output`, `io_bound_critical` | Optional failure excerpt and I/O-bound timing indicator. |
 | `artifacts` | The durable report, complete run log, build directory, and physical-mode timing directory. |
@@ -401,7 +401,7 @@ Useful controls:
 | `max_frequency` | `Flow_PerfOptimized_high` | `Performance_ExplorePostRoutePhysOpt` | Prefer timing/Fmax. |
 
 These mappings are internal adapter evidence, not raw public knobs. A per-call
-profile applies to both baseline and candidate. Directed Target pairs may carry
+profile applies to both baseline and candidate. Baseline and candidate Targets may carry
 different persistent profiles, but basis-bound comparisons reject differing
 measurement recipes. Target `synth` and `pnr` values are Edalize engine-selector
 fields; the built-in FPGA Flow neither forwards them nor treats them as Vivado
@@ -425,8 +425,8 @@ Structured output (`fpga_<target>.json`):
 | `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | Normalized recipe and provenance for the current run. |
 | `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | Optional baseline recipe and provenance. |
 | `cache_consumer_run_id` | Present when this run consumes cached evidence produced by another run. |
-| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
-| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
+| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the baseline and candidate Targets. |
+| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
 | `artifacts` | The durable report, complete run log, and build, synthesis, and implementation directories. |
 
 The profile name describes optimization intent, not a promised QoR result.

@@ -1,13 +1,15 @@
-"""Durable Ticket acceptance evidence and snapshots."""
+"""Durable Ticket Criterion evidence and Criteria Satisfaction Records."""
 
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.ticket_board import acceptance_ledger
 from booley.ticket_board.acceptance_ledger import (
     AcceptanceLedgerError,
     EvidenceRef,
@@ -173,6 +175,16 @@ def test_concurrent_observations_receive_unique_completion_sequences(tmp_path):
     assert sorted(sequences) == list(range(1, 25))
 
 
+def test_allocate_sequence_reports_exhaustion(tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    root.mkdir()
+    (root / "000000001").mkdir()
+    monkeypatch.setattr(acceptance_ledger, "range", lambda *_args: (1,), raising=False)
+
+    with pytest.raises(AcceptanceLedgerError, match="Criterion evidence sequence exhausted"):
+        acceptance_ledger._allocate_sequence(root, "")
+
+
 def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
     log_dir = tmp_path / "logs" / "fix-uart"
     state = _accepted_state()
@@ -240,7 +252,7 @@ def test_read_acceptance_reports_invalid_reference_and_snapshot_shapes(tmp_path)
 
     invalid_snapshot = read_acceptance(log_dir)
     assert invalid_snapshot.kind == "corrupt"
-    assert "invalid acceptance snapshot" in invalid_snapshot.reason
+    assert "invalid Criteria Satisfaction Record" in invalid_snapshot.reason
 
 
 def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
@@ -300,3 +312,9 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert bind_review_package(log_dir, snapshot) is True
     validate_review_package_binding(log_dir, snapshot)
+
+    different_snapshot = replace(snapshot, execution_id="generation-2")
+    with pytest.raises(
+        AcceptanceLedgerError, match="cannot rebind a different Criteria Satisfaction Record"
+    ):
+        bind_review_package(log_dir, different_snapshot, replace_existing=True)

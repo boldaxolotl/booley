@@ -509,7 +509,7 @@ _TARGET_CAMPAIGN_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str,
     ),
 }
 
-# Criteria whose execution and acceptance evidence belong to one Target campaign.
+# Criteria whose execution and evidence belong to one Target campaign.
 TARGET_CAMPAIGN_CRITERIA: frozenset[str] = frozenset(_TARGET_CAMPAIGN_PARAM_REGISTRY)
 
 

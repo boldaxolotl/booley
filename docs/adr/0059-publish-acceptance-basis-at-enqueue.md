@@ -6,10 +6,10 @@ status: accepted
 
 Executable Tickets need one immutable authority for authored inputs, repository
 routing, Target identities, reset, readiness, and completion. Booley therefore
-publishes an Acceptance Basis automatically when an Authoring Generation is
-enqueued, records its participant commits through prepare-first journals and
-identity-checked ref updates, and treats the stored basis as authoritative for
-the rest of that generation.
+publishes an Acceptance Basis automatically when a Ticket is enqueued, records
+its participant commits through prepare-first journals and identity-checked ref
+updates, and treats the stored basis as authoritative until the Ticket returns
+to draft.
 
 ADR-0060 adds one narrow exception: a pre-execution Basis Refresh may replace
 the basis of an untouched waiting Ticket after its dependencies are accepted,
@@ -18,7 +18,7 @@ previous basis as evidence.
 
 Target Contract fields, commands, journal schemas, and compatibility adapters
 are rejected rather than upgraded. Existing Tickets using the retired format
-must be recreated and enqueued as a new Authoring Generation. This hard cutoff
+must be recreated from a fresh draft and enqueued. This hard cutoff
 supersedes only ADR-0058's promise that acceptance journals remain compatible
 with existing records; the Acceptance Journal remains the active acceptance
 module.

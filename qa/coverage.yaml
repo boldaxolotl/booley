@@ -353,7 +353,7 @@ capabilities:
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
   contract: |-
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     Both refs, Target recipes, numeric operands and result; no generic report-exists oracle.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.

@@ -166,7 +166,7 @@ Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, 
 _Avoid_: bare tool, Booley Flow, backend
 
 **Elaboration Check**:
-A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a Simulation Criterion.
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a simulation Criterion.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Verification Check**:

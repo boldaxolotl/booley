@@ -1,1 +1,1 @@
-"""Tests for dependency-neutral acceptance evidence values."""
+"""Tests for dependency-neutral Criterion evidence values."""

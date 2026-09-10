@@ -78,7 +78,8 @@ $SLUG` to capture new inputs. `booley board finalize-review $SLUG` checks every
 normal acceptance gate and publishes first acceptance; only a successful
 finalization makes approval available. Hold leaves the Ticket unchanged.
 
-If a legacy review has no accepted snapshot, the explicit recovery operation is
+If a legacy review has no Criteria Satisfaction Record, the explicit recovery
+operation is
 `booley board request-review $SLUG --repair --reason "<recovery intent>"`.
 It preserves work and creates an unaccepted package when its Basis/worktree are
 valid. Never substitute a mechanical move or fabricate accepted evidence.
@@ -86,7 +87,8 @@ valid. Never substitute a mechanical move or fabricate accepted evidence.
 For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
 
 - **Approve**: `python -m booley.ticket_board complete $SLUG`
-- **Fix here**: accepted snapshots are immutable. Explain that changed source
+- **Fix here**: Criteria Satisfaction Records are immutable. Explain that
+  changed source
   heads cannot be silently reaccepted by `refresh-review`; retain work and
   resolve the required acceptance recovery before claiming another approval.
 - **Reset**: ask why a clean run is required, then run

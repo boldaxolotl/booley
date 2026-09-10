@@ -59,7 +59,7 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
   artifacts. Classify by provenance and purpose, not filename extension: firmware
   encoded as hexadecimal words in a `.txt` file is still a compiled artifact,
   just like a binary, memory image, object file, or FPGA bitstream. Use the
-  developer report and build rules/output declarations to identify generated
+  Developer Report and build rules/output declarations to identify generated
   outputs; text encoding and Git tracking do not establish source status.
   Keep artifact paths in changed-file and scope summaries, marked "diff omitted
   (compiled artifact)"; review their source/build inputs and validation evidence

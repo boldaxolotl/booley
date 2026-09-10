@@ -1180,7 +1180,7 @@ def _ensure_sources(
         actual = sources if has_journaled_sources else current
         if set(expected) != set(transaction.participants) or actual != expected:
             raise AcceptanceOperationError(
-                "Ticket heads changed after the accepted snapshot was frozen"
+                "Ticket heads changed after the Criteria Satisfaction Record was frozen"
             )
     plans: list[_RefReconciliation] = []
     for participant in transaction.basis.participants:
