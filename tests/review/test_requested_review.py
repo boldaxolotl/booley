@@ -146,6 +146,18 @@ def test_missing_observations_are_visible(blocked):
     assert all(row["availability"] == "unavailable" for row in package["criteria"])
 
 
+def test_request_review_rejects_corrupt_criteria_satisfaction_record(blocked):
+    root, tio, _ = blocked
+    acceptance_dir = tio.logs_dir / "demo" / "acceptance"
+    acceptance_dir.mkdir(parents=True)
+    (acceptance_dir / "accepted.json").write_text("{", encoding="utf-8")
+
+    outcome = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+
+    assert not outcome.ready
+    assert "Criteria Satisfaction Record is corrupt" in outcome.message
+
+
 def test_failed_refresh_retains_previous_generation(blocked, monkeypatch):
     root, tio, _ = blocked
     first = asyncio.run(request_review_command(root, "demo", reason="inspect"))

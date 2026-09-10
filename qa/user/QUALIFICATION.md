@@ -2,119 +2,118 @@
 
 ## Direct coverage mapping
 
-Keep the supported capability inventory and its public contract sources. Scenario
-checks reference capabilities directly; generate the reverse index from those
-references. Each check owns its stimulus, expectation, and evidence once.
+Keep the supported Capability inventory and its public contract sources. Scenario
+Checks reference Capabilities directly; generate the reverse index from those
+references. Each Check owns its stimulus, expectation, and evidence once.
 
-Independently observable requirements remain separate checks, including meaningful
+Independently observable requirements remain separate Checks, including meaningful
 success, rejection, state transition, fault, restoration, persistence, and cleanup
-claims. Baseline/fault/recovery ordering is expressed inside the scenario. Separately
+claims. Baseline/fault/recovery ordering is expressed inside the Scenario. Separately
 authored Coverage Obligations, Cells, Allocations, and Verification Chains are removed.
 
-[`coverage.yaml`](../coverage.yaml) owns the capability inventory and public sources.
-Scenario checks alone own capability references. [`profiles.yaml`](../profiles.yaml)
-owns required scenario runs, native-host OS and architecture, provider identities,
-named check sets, exclusions, and capability prerequisites. Profiles compose flat
-check sets instead of repeating their contents. The inventory does not repeat check
-assignments. Generate reverse indexes from these references and resolve profiles
-before execution. No generic dimension-expansion language is required.
+[`coverage.yaml`](../coverage.yaml) owns the Capability inventory and public sources.
+Each production `scenario.yaml` owns its Checks, named check sets, and required or
+optional Configured Scenarios. A Configured Scenario binds the host operating
+system, CPU architecture, native-host scope, agent provider, Interactive Mode client,
+Ticket Mode backend, pre-run requirements, check sets, and justified exclusions. The
+inventory does not repeat Check assignments. Generate reverse indexes from these
+references; no generic dimension-expansion language is required.
 
-A profile's required run resolves to the prerequisite checks and steps needed to
-produce its evidence. Perform that work in the same run; never borrow unlisted setup
-or earlier-run artifacts to skip it. Authors select named check sets, and validation
-checks the resolved list is complete. A run selecting
-multiple profiles executes their combined ordered work once, retaining separate
-profile verdicts. No scheduler or automatic prerequisite expansion is required.
+A Configured Scenario's selected Checks resolve to the prerequisite Checks and
+Steps needed to produce their evidence. Perform that work in the same run; never borrow unlisted
+setup or earlier-run artifacts to skip it. Validation requires every Scenario Check
+to belong to exactly one named set and every set to be selected by at least one
+Configured Scenario. No scheduler or automatic prerequisite expansion is required.
 
-Inventory-to-check completeness remains mandatory for the designed suite. A mapping
-does not prove behavior: actual evidence is needed for qualification. Report gaps
-by name; do not silently drop a supported capability to obtain a pass.
+Inventory-to-Check completeness remains mandatory for the designed suite. A mapping
+does not prove behavior: actual evidence is needed for Qualification. Report gaps by
+name; do not silently drop a supported Capability to obtain a pass.
 
-## Profiles
+## Configured Scenarios
 
-Separate core semantic/product qualification from VS Code Runtime Attachment and
-Waveform Viewer integration. Preserve the existing qualification cadence and
-responsibilities:
+The production Scenarios preserve the reviewed qualification cadence:
 
-- All three journeys with Codex on Ubuntu 24.04 x86-64 and native Windows x86-64
-  with Docker Desktop/WSL2.
-- Representative PicoRV32 Claude qualification on Ubuntu; Claude Windows when
-  usage permits. The latter remains explicitly pending until run.
-- Both Interactive Mode and Ticket Mode behavior from the accepted journeys.
-- Existing EDA tool, Session Image, Stealth Mode, and Linux provisioned-Vivado assignments. Windows
-  has no provisioned-Vivado requirement; Linux unavailability does not remove it.
+- All three Scenarios run with Codex on Ubuntu 24.04 x86-64 and native Windows
+  x86-64 with Docker Desktop/WSL2.
+- PicoRV32 also runs with Claude on Ubuntu; its Windows/Claude GUI run remains
+  optional until usage permits.
+- Native CLI runs exercise core product behavior. GUI runs additionally exercise
+  the supported VS Code Runtime Attachment and Waveform Viewer integration.
+- Existing EDA tool, Session Image, Stealth Mode, and Linux provisioned-Vivado
+  assignments remain unchanged. Windows has no provisioned-Vivado requirement;
+  Linux unavailability does not remove it.
 
-Classify each Interactive Mode check by its evidence. Semantic MCP tool and Booley
+Classify each Interactive Mode Check by its evidence. Semantic MCP tool and Booley
 Flow behavior may be exercised independently. Claims about the actual VS Code Runtime
-Attachment and Waveform Viewer remain in GUI integration and require attachment or
-visual evidence. A headless child never earns VS Code credit. When no qualified
-driver or observer exists, retain these checks as unavailable in that profile. The
-specification still includes the full journey; a core result does not claim complete
-Interactive Mode Runtime Attachment qualification.
+Attachment and Waveform Viewer require attachment or visual evidence. A headless
+child never earns VS Code credit. When no qualified driver or observer exists, retain
+those Checks as unavailable and mark the affected Scenario Run incomplete.
 
-Profiles are versioned scope decisions fixed before running. Pre-run capability
-probes determine availability, not scope. Required unavailable work makes its
-profile incomplete. Only the reviewed profile may exclude genuinely inapplicable
-product and native-host combinations. Show exclusions in the report with their rationale.
+Configured Scenarios are versioned scope decisions fixed before execution.
+Pre-run observations determine availability, not scope. Required unavailable work
+makes the Scenario Run Outcome incomplete. Only a reviewed Configured Scenario
+may exclude genuinely inapplicable product and native-host combinations. Show
+exclusions in the report with their rationale.
 
-## Verdicts
+## Outcomes
 
-Evaluate a profile against all its required runs and checks for the declared release
-and suite revision. Existing profiles cannot be narrowed after seeing results.
+Evaluate each Scenario Run against all of its selected Checks for the declared Booley
+product revision and suite revision. Its scope cannot be narrowed after seeing results.
 
-1. Any trustworthy required-check failure or unresolved trustworthy Booley/docs
-   defect within profile scope makes the profile `failed`. This includes new defects
-   discovered outside a prewritten check, known defects, and flaky failures.
-2. Otherwise any missing, blocked, or unavailable required check, missing required
-   run, invalid evidence, or incomplete mandatory cleanup makes it `incomplete`.
-3. Otherwise it is `passed`.
+1. Any trustworthy selected-Check failure or unresolved trustworthy Booley/docs
+   defect within the Scenario Run's scope makes its Scenario Run Outcome `failed`.
+   This includes new defects discovered outside a prewritten Check, known defects,
+   and flaky failures.
+2. Otherwise any missing, blocked, or unavailable selected Check, invalid evidence,
+   or incomplete mandatory cleanup makes the outcome `incomplete`.
+3. Otherwise the outcome is `passed`.
 
-Keep failure precedence when a failed profile also has missing work or cleanup
-problems. List every condition. Friction and impressions do not fail qualification.
-Findings outside the selected profile are visible without invalidating unrelated
-claims. A finding with unresolved scope/classification that could invalidate the
-profile leaves it incomplete until triaged; uncertainty must not manufacture pass.
+Keep failure precedence when a failed Scenario Run also has missing work or cleanup
+problems. List every condition. Friction and impressions do not fail Qualification.
+Findings outside the selected Scenario Run are visible without invalidating unrelated
+claims. A Finding with unresolved scope or classification that could invalidate the
+run leaves it incomplete until triaged; uncertainty must not manufacture pass.
 
-Do not define separate aggregate QA verdict and “green” mechanisms. A report has
-profile verdicts plus operational completion and findings. Full qualification passes
-only when every required profile passes; optional future runs are shown separately.
+A report lists each Scenario Run Outcome, execution status, and Findings.
+Qualification passes only when a Scenario Run against every required Configured
+Scenario has passed; optional Configured Scenarios are shown separately.
 
 Example, with no claim that these runs have occurred:
 
 ```text
-Core — Ubuntu/Codex: passed (all three required journeys)
-Core — Windows/Codex: passed (all three required journeys)
-Compatibility — Ubuntu/Claude: passed (PicoRV32)
-GUI integration: incomplete — observer/driver unavailable
+picorv32-ubuntu-codex-cli: passed
+taxi-ubuntu-codex-cli: passed
+uart-ubuntu-codex-cli: passed
+picorv32-ubuntu-codex-vscode: incomplete — observer unavailable
+picorv32-windows-claude-vscode: pending (optional)
 Full qualification: incomplete
-Optional Windows/Claude: pending
 Cleanup: complete
 ```
 
-Name missing checks and link evidence in a real report. “Core passed” is valid even
-while GUI is unavailable; an unqualified “suite passed” is not.
+Name missing Checks and link evidence in a real report. A CLI Scenario Run Outcome
+can be passed while a GUI Scenario Run Outcome is incomplete; an unqualified “suite
+passed” is not valid.
 
 ## Revision and currency
 
-Bind every result to exact run inputs. For a new released Booley version, run the
-required profiles afresh; evidence does not carry forward automatically. For a
-behavioral scenario revision, rerun affected whole scenarios in their required
-profiles. A shared behavioral protocol change reruns every affected scenario.
-Editorial changes need no rerun; record that classification. Reports identify the
-actual tested commits and any reviewed editorial-only equivalence.
+Bind every result to exact Scenario Run inputs. For a different Booley product revision,
+whether published or unreleased, execute a Scenario Run against every required Configured
+Scenario afresh; evidence does not carry forward automatically. A behavioral Scenario
+revision reruns every affected required Configured Scenario. A shared behavioral protocol
+change reruns every affected Configured Scenario. Editorial changes need no rerun; record
+that classification. Reports identify the actual tested commits and any reviewed
+editorial-only equivalence.
 
-When only some scenarios change, a qualification report may use prior completed
-runs of unchanged whole scenarios from the same Booley release. Review must confirm
-that their scenario inputs, selected checks/profile requirements, shared protocol,
-referenced prompts/evaluator assets, and relevant environment identities are unchanged
-or editorially equivalent. Record the source run and actual tested suite commit;
-otherwise rerun the scenario. This assembles a report from complete runs, not skipped
-checks in a new run. A new Booley release always requires fresh runs. No per-cell
+When only some Scenarios change, a Qualification report may use prior completed Scenario
+Runs from unchanged Scenarios against the same Booley product revision. Review must
+confirm that the Scenario inputs, selected Checks, run parameters, shared protocol,
+referenced prompts/evaluator assets, and relevant environment identities are unchanged or
+editorially equivalent. Record the source run and actual tested suite commit; otherwise
+rerun it. This assembles a report from complete runs, not skipped Checks in a new run. A
+different product revision always requires fresh runs. No per-cell
 invalidation database is required.
 
-The exact named definitions live in [profiles.yaml](../profiles.yaml):
-`core-ubuntu-codex`, `core-windows-codex`, `gui-ubuntu-codex`, `gui-windows-codex`,
-`core-ubuntu-claude`, `gui-ubuntu-claude`, and optional `gui-windows-claude`.
-Standalone GUI runs include all same-run core support. Both Claude runs retain
-complete original PicoRV32 Ticket contracts; duplicate Codex stress probes are not
-added. The current implementation has no full qualification results.
+The exact named Configured Scenarios live in the three production
+`scenario.yaml` files. Each declares its required status, parameters, pre-run
+requirements, check sets, and exclusions. The current implementation has no full
+Qualification results.

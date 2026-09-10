@@ -202,7 +202,8 @@ def test_forged_source_snapshot_cannot_be_supplied_to_model():
 
     report = CoverageAnalyzer(model).analyze_coverage_campaign(campaign, snapshot, "").to_dict()
     assert report["source_access"] == "report_only"
-    assert prompts[0]["sources"] is None
+    assert prompts[0]["source_access"] == "report_only"
+    assert "SECRET" not in json.dumps(prompts[0])
 
 
 @pytest.mark.parametrize(

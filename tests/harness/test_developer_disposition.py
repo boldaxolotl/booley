@@ -21,6 +21,9 @@ from booley.harness.developer import _resolve_ticket_disposition, _run_post_deve
 from booley.harness.models import OnSuccess, TicketContext
 from booley.review.preparation import ReviewPrepOutcome
 from booley.ticket_board.criteria_acceptance import CriteriaVerdict
+from tests.criterion_endpoint_support import builtin_endpoint_catalog
+
+_ENDPOINTS = builtin_endpoint_catalog()
 
 
 def _make_ctx(tmp_path: Path) -> TicketContext:
@@ -110,7 +113,9 @@ class TestResolveTicketDisposition:
         )
         mocks["verify_review"].return_value = mocks["prepare_review"].return_value
         try:
-            result = await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
             assert mocks["handoff"].call_count == 1
             assert mocks["prepare_review"].await_count == 1
             assert mocks["block"].call_count == 0
@@ -143,7 +148,9 @@ class TestResolveTicketDisposition:
 
         mocks["prepare_review"].side_effect = prepare
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 3)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
         finally:
@@ -160,7 +167,9 @@ class TestResolveTicketDisposition:
             package_path=tmp_path / "review-package.json",
         )
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 3)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
             assert mocks["handoff"].call_count == 1
             assert mocks["block"].call_count == 0
         finally:
@@ -175,7 +184,9 @@ class TestResolveTicketDisposition:
             "changed", "live review inputs changed concurrently"
         )
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 3)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 3, _ENDPOINTS
+            )
             assert mocks["block"].call_count == 1
             assert (
                 mocks["block"]
@@ -205,7 +216,9 @@ class TestResolveTicketDisposition:
         ctx.on_success = on_success
         mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
             assert mocks["handoff"].call_count == 1
             assert mocks["prepare_review"].await_count == expected_preparations
         finally:
@@ -220,7 +233,9 @@ class TestResolveTicketDisposition:
         )
         mocks, patches = _patch_disposition_collaborators(verdict)
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
             assert mocks["block"].call_count == 1
             assert mocks["handoff"].call_count == 0
             assert mocks["fail"].call_count == 0
@@ -237,7 +252,9 @@ class TestResolveTicketDisposition:
         )
         mocks, patches = _patch_disposition_collaborators(verdict)
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
+            await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
             assert mocks["fail"].call_count == 1
             assert mocks["block"].call_count == 0
             assert mocks["handoff"].call_count == 0
@@ -261,6 +278,7 @@ class TestResolveTicketDisposition:
                     tmp_path / "state.json",
                     tmp_path,
                     0,
+                    _ENDPOINTS,
                 )
             assert mocks["fail"].call_count == 0
             assert mocks["block"].call_count == 0
@@ -291,6 +309,7 @@ class TestResolveTicketDisposition:
                     tmp_path / "state.json",
                     tmp_path,
                     0,
+                    _ENDPOINTS,
                 )
                 assert mocks["archive"].call_count == 0, (
                     f"op_archive was called for disposition={verdict.disposition!r} "

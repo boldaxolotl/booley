@@ -16,17 +16,19 @@ Two generated blocks live here:
   rendered straight from the param registry in :mod:`booley.criteria.templates` so
   the docs can never drift from the validator.
 
-The "Set by" column is derived from the MCP-tool registry's ``satisfies`` metadata via
-:func:`booley.mcp.registry.build_criterion_endpoint_map` — never hardcoded.
+The "Set by" column consumes an immutable endpoint catalog supplied by an outer
+composition root; Criteria never performs MCP discovery.
 
 Regenerate the committed doc blocks with::
 
-    python -m booley.criteria.reference docs/user/USAGE.md src/booley/data/cheatsheet.md
+    python -m booley.dev_support.criteria_reference docs/user/USAGE.md src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 
 # Human-facing Workflow Region labels + sort order (mirrors developer_prompt._REGION_ORDER).
 _REGION_LABEL = {"pre_sim": "pre-sim", "core_loop": "sim loop", "post_sim": "post-sim"}
@@ -73,7 +75,11 @@ def _group_sort_key(group: str) -> tuple[int, str]:
     return (_GROUP_ORDER.get(group, len(_GROUP_ORDER)), group)
 
 
-def render_criteria_reference(*, project_criteria_path: Path | None = None) -> str:
+def render_criteria_reference(
+    endpoint_catalog: CriterionEndpointCatalog,
+    *,
+    project_criteria_path: Path | None = None,
+) -> str:
     """Render the supported acceptance criteria as grouped Markdown tables.
 
     Criteria are split into functional groups (Build, Review, …) for readability;
@@ -85,23 +91,16 @@ def render_criteria_reference(*, project_criteria_path: Path | None = None) -> s
             the active project.
     """
     from booley.criteria.templates import (
-        expand_criteria_defs,
         load_base_criteria,
         load_project_criteria,
         merge_criteria_defs,
     )
-    from booley.mcp.registry import build_criterion_endpoint_map, discover_mcp_tools
 
     base = load_base_criteria()
     project = (
         load_project_criteria(project_criteria_path) if project_criteria_path is not None else []
     )
     merged, _errors = merge_criteria_defs(base, project)
-
-    endpoint_map = build_criterion_endpoint_map(
-        expand_criteria_defs(merged, []),
-        discover_mcp_tools(),
-    )
 
     # Group -> criteria, each group sorted by (workflow_region, name) for a stable order.
     # Hidden criteria stay usable but are left out of the reference: listing one would
@@ -125,7 +124,8 @@ def render_criteria_reference(*, project_criteria_path: Path | None = None) -> s
             "|-----------|-------------|--------|-------|",
         ]
         for c in rows:
-            endpoint_command = endpoint_map.get(c.name, (None, c.workflow_region))[0]
+            binding = endpoint_catalog.binding_for(c.name)
+            endpoint_command = binding.command if binding is not None else None
             set_by = f"`{endpoint_command}`" if endpoint_command else "—"
             region = _REGION_LABEL.get(c.workflow_region, c.workflow_region)
             lines.append(f"| {_display_name(c)} | {_clean(c.description)} | {set_by} | {region} |")
@@ -319,52 +319,3 @@ def has_block(doc_text: str, name: str) -> bool:
     """True when ``doc_text`` carries both markers for the named block."""
     begin, end = _markers(name)
     return begin in doc_text and end in doc_text
-
-
-# Named blocks this module knows how to render, in the order _main splices them.
-_RENDERERS = {
-    "criteria": render_criteria_reference,
-    "criteria-params": render_criteria_params_reference,
-}
-
-
-def _main(argv: list[str] | None = None) -> int:
-    """Regenerate every known block present in the given files (or print to stdout).
-
-    Each file only has the blocks it actually embeds rewritten; a file missing a
-    block's markers is left untouched for that block (the cheatsheet carries both
-    blocks, USAGE.md only the criteria table).
-    """
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Render the canonical acceptance-criteria blocks.",
-    )
-    parser.add_argument(
-        "paths",
-        nargs="*",
-        help="Markdown files whose generated blocks should be rewritten in "
-        "place. With no paths, all blocks are printed to stdout.",
-    )
-    args = parser.parse_args(argv)
-
-    if not args.paths:
-        for name, render in _RENDERERS.items():
-            print(f"<!-- {name} -->")
-            print(render())
-            print()
-        return 0
-
-    for path in args.paths:
-        pth = Path(path)
-        text = pth.read_text(encoding="utf-8")
-        for name, render in _RENDERERS.items():
-            if has_block(text, name):
-                text = splice_generated(text, render(), name=name)
-        pth.write_text(text, encoding="utf-8")
-        print(f"updated {pth}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(_main())

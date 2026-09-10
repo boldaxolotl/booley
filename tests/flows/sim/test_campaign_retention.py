@@ -3,7 +3,8 @@
 import json
 from dataclasses import replace
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
@@ -31,6 +32,8 @@ def test_native_pruning_preserves_normalized_campaign_and_records_availability(t
 
     outcome = campaign(tmp_path)
     original = outcome.campaign_path.read_bytes()
+    point_store = outcome.campaign_path.with_name("coverage-points.jsonl.gz")
+    original_points = point_store.read_bytes()
     projection = outcome.simulation_path.read_bytes()
     root = outcome.campaign_path.parent
     (root / "hooks").mkdir()
@@ -38,14 +41,16 @@ def test_native_pruning_preserves_normalized_campaign_and_records_availability(t
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
     assert not (root / "native").exists()
     assert outcome.campaign_path.read_bytes() == original
+    assert point_store.read_bytes() == original_points
     assert outcome.simulation_path.read_bytes() == projection
     assert (root / "hooks/proof.json").is_file()
-    decoded = decode_coverage_campaign(
-        json.loads(original), DurableTargetIdentity("acme:demo:counter:1#sim_0")
-    )
+    decoded = load_coverage_campaign(
+        outcome.campaign_path, DurableTargetIdentity("acme:demo:counter:1#sim_0")
+    ).campaign
     assert decoded.rollups[0].covered_points == 1
     availability = json.loads((root / "availability.json").read_text())
     assert availability["status"] == "pruned"
+    assert availability["point_store_sha256"] == json.loads(original)["point_store"]["sha256"]
     assert len(availability["artifacts"]) == 3
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
 

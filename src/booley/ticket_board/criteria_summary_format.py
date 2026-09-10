@@ -19,6 +19,8 @@ from booley.evidence.timing import worst_fmax_from_json
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
+
     from .criteria_acceptance import CriteriaVerdict
 
 
@@ -278,7 +280,10 @@ def _partition_criteria_lines(
     return not_met_lines, met_lines
 
 
-def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
+def build_criteria_summary_lines(
+    state_path: Path,
+    endpoint_catalog: CriterionEndpointCatalog,
+) -> tuple[list[str], str]:
     """Build per-criterion lines and a totals line for terminal display.
 
     Returns (criterion_lines, totals_line). Empty lists if state is unreadable.
@@ -318,7 +323,7 @@ def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
             name_part = dim(name_part)
         line = f"{icon} {name_part}"
         if not entry.met:
-            invocation = planned_invocation(key, entry)
+            invocation = planned_invocation(key, entry, endpoint_catalog)
             if invocation:
                 line += f"\n  next: {invocation}"
         return line

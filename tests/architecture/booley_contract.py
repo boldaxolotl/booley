@@ -6,7 +6,6 @@ from tests.architecture.contract import (
     ArchitectureContract,
     CompositionPermission,
     DirectionRule,
-    LegacyWaiver,
     ModuleSelector,
 )
 
@@ -259,26 +258,7 @@ COMPOSITION_PERMISSIONS = (
     ),
 )
 
-LEGACY_WAIVERS = (
-    LegacyWaiver(
-        "W1",
-        "D2",
-        "booley.criteria.actions",
-        "booley.mcp.registry",
-        "Invocation rendering currently discovers the endpoint-to-Criterion relationship "
-        "from MCP registration; this is legacy mechanism knowledge, not desired policy direction.",
-        "#284",
-    ),
-    LegacyWaiver(
-        "W2",
-        "D2",
-        "booley.criteria.reference",
-        "booley.mcp.registry",
-        "Generated Criteria reference text currently discovers producing endpoints through "
-        "the MCP registry.",
-        "#284",
-    ),
-)
+LEGACY_WAIVERS = ()
 
 APPROVED_LEGACY_SCCS = (
     frozenset(

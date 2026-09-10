@@ -1,10 +1,51 @@
 format_version: 1
 scenario_id: example-wishbone
 source: https://github.com/boldaxolotl/booley/issues/374
+check_sets:
+- id: example-core
+  checks:
+  - baseline
+  - detect-fault
+  - restore
+  - cleanup
+- id: example-gui
+  checks:
+  - viewer
+configured_scenarios:
+- id: example-run-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Disposable approved Project and Human Maintainer-provided artifact root
+  check_sets:
+  - example-core
+  exclusions: []
+- id: example-run-vscode
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: supported VS Code client
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Disposable approved Project and Human Maintainer-provided artifact root
+  - Qualified visual observer
+  check_sets:
+  - example-core
+  - example-gui
+  exclusions: []
 inputs:
 - id: project
   kind: pre-run
-  value: Exact pinned Project identity from the complete journey
+  value: Exact pinned Project identity from the complete Scenario
   source: https://github.com/boldaxolotl/booley/issues/374
   verification: Freeze clean commit and file hashes before the illustrative slice
 steps:

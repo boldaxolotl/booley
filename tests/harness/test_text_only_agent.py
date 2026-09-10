@@ -56,6 +56,31 @@ def test_text_only_missing_exact_model_fails_closed(tmp_path):
         prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
 
 
+def test_text_only_codex_may_expose_one_scoped_nested_mcp_tool(tmp_path):
+    cache = tmp_path / "original"
+    cache.mkdir()
+    (cache / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "chosen", "context_window": 200000}]})
+    )
+    root = tmp_path / "invocation"
+    root.mkdir()
+    params = AgentCallParams(
+        prompt="Analyze",
+        model="chosen",
+        cwd=root,
+        text_only=True,
+        nested_mcp_tools=["coverage_evidence"],
+        nested_mcp_env={"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
+    )
+
+    _, env = prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(cache)})
+
+    config = (Path(env["CODEX_HOME"]) / "config.toml").read_text()
+    assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
+    assert 'BOOLEY_COVERAGE_CAMPAIGN = "/reports/coverage.json"' in config
+    assert "mcp_servers.booley" in config
+
+
 @pytest.mark.asyncio
 async def test_claude_text_only_model_receives_no_tools_mcp_or_project_settings(
     tmp_path, monkeypatch

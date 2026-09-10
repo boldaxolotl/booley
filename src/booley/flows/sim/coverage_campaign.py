@@ -200,10 +200,20 @@ class CoverageRollup:
 
 
 @dataclass(frozen=True)
+class CoverageCampaignSummaryFields:
+    """Validated Campaign fields that do not depend on Coverage Points."""
+
+    campaign_id: str
+    target: CoverageTarget
+    rollups: tuple[CoverageRollup, ...]
+    collection: Mapping[str, FrozenJson]
+    evaluation: Mapping[str, FrozenJson]
+
+
+@dataclass(frozen=True)
 class CoverageCampaign:
     """One indivisible normalized coverage record for one Target invocation."""
 
-    schema: str
     campaign_id: str
     invocation: Mapping[str, FrozenJson]
     target: CoverageTarget
@@ -1549,7 +1559,6 @@ def _decode_valid_campaign(document: Mapping[str, object]) -> CoverageCampaign:
     assert isinstance(rollups, list)
     assert isinstance(findings, list)
     return CoverageCampaign(
-        schema=str(document["$schema"]),
         campaign_id=str(document["campaign_id"]),
         invocation=_decode_invocation(invocation),
         target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
@@ -1592,6 +1601,40 @@ def decode_coverage_campaign(
     if all_findings:
         raise CoverageCampaignValidationError(all_findings)
     return _decode_valid_campaign(document)
+
+
+def validate_coverage_campaign_summary(
+    document: Mapping[str, object],
+    expected_target: DurableTargetIdentity,
+) -> CoverageCampaignSummaryFields:
+    """Validate Campaign semantics that do not require Coverage Points."""
+    probe = dict(document)
+    probe["$schema"] = _SCHEMA
+    probe["points"] = []
+    probe.pop("point_store", None)
+    structural_findings = _structural_findings(probe)
+    findings = _identity_semantic_findings(probe, expected_target, structural_findings)
+    findings.extend(_observation_semantic_findings(probe, structural_findings))
+    collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
+    if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
+        findings.extend(_validate_collection(probe))
+    evaluation_dependencies = ("/evaluation", "/collection", "/rollups")
+    if _sections_are_structurally_valid(structural_findings, *evaluation_dependencies):
+        findings.extend(_validate_evaluation(probe))
+    all_findings = structural_findings + tuple(findings)
+    if all_findings:
+        raise CoverageCampaignValidationError(all_findings)
+    target = probe["target"]
+    rollups = probe["rollups"]
+    assert isinstance(target, Mapping)
+    assert isinstance(rollups, list)
+    return CoverageCampaignSummaryFields(
+        campaign_id=str(probe["campaign_id"]),
+        target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
+        rollups=tuple(_decode_rollup(item) for item in rollups),
+        collection=_freeze_mapping(probe["collection"]),
+        evaluation=_freeze_mapping(probe["evaluation"]),
+    )
 
 
 def _encode_capability(capability: CoverageCapability) -> dict[str, object]:
@@ -1649,6 +1692,11 @@ def _encode_point(point: CoveragePoint) -> dict[str, object]:
     }
 
 
+def encode_coverage_point(point: CoveragePoint) -> dict[str, object]:
+    """Encode one normalized Coverage Point for durable point storage."""
+    return _encode_point(point)
+
+
 def _encode_rollup(rollup: CoverageRollup) -> dict[str, object]:
     return {
         "metric": rollup.metric,
@@ -1664,7 +1712,7 @@ def _encode_rollup(rollup: CoverageRollup) -> dict[str, object]:
 def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
     """Encode *campaign* as a fresh canonical V1 JSON object."""
     return {
-        "$schema": campaign.schema,
+        "$schema": _SCHEMA,
         "campaign_id": campaign.campaign_id,
         "invocation": _thaw(campaign.invocation),
         "target": {

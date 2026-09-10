@@ -26,7 +26,7 @@ class AcceptanceRecorder(Protocol):
 
 
 class AcceptanceRecordingError(RuntimeError):
-    """Durable acceptance evidence could not be recorded."""
+    """Durable Criterion evidence could not be recorded."""
 
 
 class FlowExecutionAdapter(AcceptanceRecorder, Protocol):

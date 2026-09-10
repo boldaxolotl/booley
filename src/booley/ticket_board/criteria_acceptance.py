@@ -167,7 +167,7 @@ def _sim_contract_requirements(
     from booley.criteria.actions import criterion_target
 
     params = entry.params or {}
-    target = criterion_target(key, entry, "sim_pass")
+    target = criterion_target(key, entry, "sim_pass", per_target=True)
     section = lookup_target_section(registry, target) if target else None
     registered = set(section.get("tests", [])) if isinstance(section, dict) else set()
     selector = params.get("test_selector") or params.get("selector") or "all"
@@ -288,7 +288,7 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
         _invalidate_submitted_report(state, now=now)
         state.save()
         logger.warning(
-            "Rejected insufficient acceptance evidence for %s: %s",
+            "Rejected insufficient Criterion evidence for %s: %s",
             state.slug,
             ", ".join(rejected),
         )

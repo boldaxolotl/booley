@@ -208,7 +208,6 @@ def _run() -> CoverageRun:
 def _campaign() -> CoverageCampaign:
     points = (_point(_POINT_ID, 0, covered=False), _point("covered-point", 1, covered=True))
     return CoverageCampaign(
-        schema="booley.coverage-campaign/v1",
         campaign_id="campaign:sim_counter:12",
         invocation=MappingProxyType({"id": 12}),
         target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),

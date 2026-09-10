@@ -1,4 +1,4 @@
-"""Fail-closed Codex composition for models that may only consume supplied text.
+"""Fail-closed Codex composition with no built-in execution capabilities.
 
 Codex 0.153.4 registers apply_patch from model metadata independently of shell
 feature flags. A private exact-model catalog removes that metadata; explicit
@@ -13,6 +13,8 @@ from pathlib import Path
 
 from booley.core.boundary import require_dict, require_list
 from booley.core.models import AgentCallParams
+
+from .mcp_config import generate_codex_config
 
 _DISABLED_FEATURES = (
     "shell_tool",
@@ -63,6 +65,15 @@ def prepare_codex_text_only(
     if (original / "auth.json").is_file():
         shutil.copyfile(original / "auth.json", private / "auth.json")
         (private / "auth.json").chmod(0o600)
+    if params.nested_mcp_tools:
+        nested_env = {
+            **(params.nested_mcp_env or {}),
+            "BOOLEY_NESTED_AGENT": "1",
+            "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools),
+        }
+        (private / "config.toml").write_text(
+            generate_codex_config(extra_env=nested_env), encoding="utf-8"
+        )
     env = {**environment, "CODEX_HOME": str(private)}
     settings = [
         f"model_catalog_json={json.dumps(str(catalog))}",

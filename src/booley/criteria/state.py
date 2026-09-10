@@ -683,7 +683,7 @@ class DevelopmentState:
                 "expected": evidence.expected_ref or evidence.expected_recipe,
                 "actual": evidence.actual_ref or evidence.actual_recipe,
                 "pass": evidence.complete,
-                "detail": "baseline and candidate evidence match the recorded Target pair"
+                "detail": "baseline and candidate evidence match the recorded Target binding"
                 if evidence.complete
                 else "implementation recipe comparison evidence is incomplete",
             }

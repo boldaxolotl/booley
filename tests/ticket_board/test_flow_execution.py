@@ -82,7 +82,7 @@ def test_ticket_recorder_requires_an_evidence_directory(
     monkeypatch.setenv("BOOLEY_TICKET_FILE", "ticket.md")
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
-    with pytest.raises(AcceptanceRecordingError, match="no acceptance evidence directory"):
+    with pytest.raises(AcceptanceRecordingError, match="no Criterion evidence directory"):
         TicketAcceptanceRecorder().record_changes(
             DevelopmentState(),
             [],
@@ -97,7 +97,7 @@ def test_ticket_runtime_configuration_requires_logs(
 ) -> None:
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
-    with pytest.raises(AcceptanceBasisError, match="no acceptance evidence directory"):
+    with pytest.raises(AcceptanceBasisError, match="no Criterion evidence directory"):
         TicketBoardFlowExecution._configure_runtime(FlowRequest(target="demo", work_dir=tmp_path))
 
 

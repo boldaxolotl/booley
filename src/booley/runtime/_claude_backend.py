@@ -513,7 +513,7 @@ def _build_sdk_options(
     if params.resume_session:
         options.continue_conversation = True
 
-    if not params.text_only:
+    if not params.text_only or params.nested_mcp_tools:
         _apply_mcp_servers(options, params)
 
     options.setting_sources = ["project"] if params.needs_skills and not params.text_only else []
@@ -539,7 +539,7 @@ def _apply_mcp_servers(
     """
     # BOOLEY_MCP_NESTED=1 tells the spawned server it is a sub-agent's server
     # so it skips orphan-lock reconciliation of the parent's in-flight events.
-    server_env: dict[str, str] = {"BOOLEY_MCP_NESTED": "1"}
+    server_env: dict[str, str] = {**(params.nested_mcp_env or {}), "BOOLEY_MCP_NESTED": "1"}
     if params.nested_mcp_tools is not None:
         server_env["BOOLEY_NESTED_AGENT"] = "1"
         server_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(params.nested_mcp_tools)

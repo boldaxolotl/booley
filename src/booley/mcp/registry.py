@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.criteria.endpoint_catalog import EndpointCriterionRelationship
+
 logger = logging.getLogger(__name__)
 
 
@@ -340,46 +342,15 @@ def _get_constant_value(node: ast.expr) -> Any:  # noqa: PLR0911 — one early r
     return None
 
 
-def build_criterion_endpoint_map(
-    criteria_defs: dict[str, Any],
+def criterion_endpoint_relationships(
     endpoints: list[McpToolInfo],
-) -> dict[str, tuple[str, str]]:
-    """Auto-build criterion -> (endpoint_command, workflow_region) map from criteria defs and endpoint metadata.
-
-    Args:
-        criteria_defs: expanded criterion name -> CriterionDef (from expand_criteria_defs)
-        endpoints: discovered endpoint metadata with satisfies/satisfies_args
-
-    Returns:
-        Dict mapping criterion_name_prefix -> (endpoint_command, workflow_region).
-    """
-    result: dict[str, tuple[str, str]] = {}
-    for endpoint in endpoints:
-        for crit_name in endpoint.satisfies:
-            # Find the CriterionDef for this base criterion name
-            # Match by exact name or by prefix (expanded per_target entries
-            # share the same CriterionDef)
-            crit_def = criteria_defs.get(crit_name)
-            if crit_def is None:
-                # Try to find via any expanded key that starts with this name
-                for _expanded_key, cdef in criteria_defs.items():
-                    if cdef.name == crit_name:
-                        crit_def = cdef
-                        break
-            if crit_def is None:
-                logger.warning(
-                    "MCP endpoint %r claims satisfies=%r but no matching criterion def found",
-                    endpoint.name,
-                    crit_name,
-                )
-                continue
-
-            # Build endpoint command string
-            args_str = ""
-            if endpoint.satisfies_args and crit_name in endpoint.satisfies_args:
-                args_str = " " + endpoint.satisfies_args[crit_name]
-            endpoint_command = endpoint.name + args_str
-
-            result[crit_name] = (endpoint_command, crit_def.workflow_region)
-
-    return result
+) -> tuple[EndpointCriterionRelationship, ...]:
+    """Adapt discovered MCP metadata into dependency-neutral immutable values."""
+    return tuple(
+        EndpointCriterionRelationship(
+            command=endpoint.name,
+            satisfies=endpoint.satisfies,
+            arguments=tuple(sorted((endpoint.satisfies_args or {}).items())),
+        )
+        for endpoint in endpoints
+    )

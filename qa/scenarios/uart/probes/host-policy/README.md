@@ -1,7 +1,7 @@
 # H-12 host-policy inputs
 
 Use only a disposable native QA user and a dedicated Docker daemon: host policy
-applies across Projects on that daemon. Never replace the operator's real policy.
+applies across Projects on that daemon. Never replace the Human Maintainer's real policy.
 For each case copy the named TOML bytes to a new case directory's
 `xdg/booley/config.toml`. Launch the released `booley session up` from the declared
 disposable Project with `XDG_CONFIG_HOME` pointing to that case's `xdg` directory.

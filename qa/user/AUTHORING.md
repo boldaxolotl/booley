@@ -1,11 +1,71 @@
 # Authoring QA scenarios
 
-Read [Protocol](../agents/PROTOCOL.md) for execution, [Qualification](QUALIFICATION.md)
-for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
+This guide owns the Scenario definition contract. Read
+[Protocol](../agents/PROTOCOL.md) for execution,
+[Qualification](QUALIFICATION.md) for scope and verdicts, and the [run record
+format](../agents/FORMAT.md) for the files produced during a Scenario Run. The
 [worked example](../examples/README.md) shows how they fit together.
 
+## Scenario definition contract
+
+[scenario.schema.json](../scenario.schema.json) is the structural authority. Use
+`format_version: 1`. Keep Scenario IDs and local Step and Check IDs stable; qualify
+external Check references with the Scenario ID. A revision to the same Check retains
+its ID, while a different Check receives a new ID. Never repurpose IDs. The repository
+commit freezes the Scenario, protocol, and Capability Coverage definitions used by a
+Scenario Run.
+
+Each Scenario supplies inputs, shared budgets, named check sets, Configured Scenarios,
+and ordered phases and Steps. Each phase records its `id`, `title`, and `minutes`; the
+Scenario budget records its deadline, contingency, cleanup minutes, and cleanup start.
+Phase minutes include cleanup, while contingency is counted once in addition. A Step
+records its ID, action, Checks, and any prerequisites, authority, timeout or retry
+restrictions, recovery instructions, owned resources, and phase recovery point.
+Shared behavior comes from the protocol; Scenario instructions may tighten it. Keep
+lengthy prompts, Ticket payloads, and evaluator material in referenced assets.
+
+Each Check records its ID, capability references, stimulus, expectation, public
+contract source, evidence requirement, and capture point. Keep expectation authority
+distinct from documentation used only for navigation. A Scenario Run records which
+documentation it actually consulted.
+
+Inputs are named records with `id`, `kind`, `value`, `source`, and `verification`.
+`git` and `sha256` inputs use full literal lowercase hashes. A `pre-run` input fixes an
+identity before execution; it does not permit changing a pinned IP, workload, or
+threshold.
+
+Assets record a contained `path`, an explicit `audience`, and, for production assets,
+a SHA-256 digest. `base` defaults to `scenario`; `base: shared` resolves within
+`qa/shared/`. Paths and symlinks must remain inside the selected base. Every Step
+lists the shared assets it uses. Templates list their allowed `substitutions`:
+`run_root`, `artifact_root`, `ticket_id`, `commit_id`, `product_revision`, and
+`provider`; any unlisted template variable fails validation. Substitutions cannot
+change thresholds or disclose private assets.
+
+A restoration Step's `recovery` record identifies its `baseline`, prior `detection`
+Check IDs, and `instruction`. It requires the baseline and remains independent of the
+detection's successful result: it cannot depend directly or transitively on that
+result. Cleanup must remain independently reachable.
+
+Check sets are flat and disjoint. A Configured Scenario may select several sets; the
+validator resolves them into one ordered Check list and derives supporting Steps. Each
+Configured Scenario declares whether it is required, binds `host_os`,
+`cpu_architecture`, `native_host`, `agent_provider`, `interactive_mode_client`, and
+`ticket_mode_backend`, and lists its pre-run requirements, check sets, and justified
+exclusions. `run.json` records the actual execution values and observed identities.
+The validator rejects missing or unused sets, duplicate Checks, unknown exclusions,
+and unknown coverage, Scenario, or Configured Scenario fields.
+
+The standalone validator checks fields, unique IDs, references, earlier
+prerequisites, asset containment and hashes, Configured Scenario selections,
+supporting work, budgets, recovery, and Capability Coverage without importing the
+Booley product under test. It checks HTTPS authority syntax; Human Maintainer review
+and build-matched execution establish the authority's meaning and currency.
+
+## Authoring workflow
+
 1. Identify the public behavior and its contract source. Consult the
-   [capability inventory](../coverage.yaml), then extend the journey that covers it.
+   [capability inventory](../coverage.yaml), then extend the Scenario that covers it.
    Keep independently observable requirements in separate checks. A
    specification-backed check becomes mandatory once review introduces it; it need
    not pass a reference run first. Treat an expectation without an authoritative
@@ -16,16 +76,16 @@ for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
    level, supply prerequisites, authority, timeout, recovery, and cleanup. Preserve
    the full fault/restoration sequence for seeded faults. Link known defects to issues
    and retain their failures. Preserve original evidence in finding updates.
-3. Reference capabilities and assign explicit qualification profiles. Runtime
+3. Reference capabilities and assign each Check to explicit Configured Scenarios. Runtime
    Attachment and Waveform Viewer claims require corresponding evidence. Record
    missing capabilities as gaps; a
    mapping or availability probe does not prove product coverage. Before publishing,
-   confirm every retained required behavior has a check, profile assignment, and
+   confirm every retained required behavior has a Check, Configured Scenario assignment, and
    evidence contract. Keep unresolved gaps visible.
 4. Review oracle quality, permitted sub-agent freedom, pre-run authority, feasible
    budgets, continuation, and cleanup. Review literal payloads, public expectation
    authority, prerequisite and supporting work, native-host exclusions, and the
-   complete 480-minute allocation. Keep profile lists explicit, and review content changes
+   complete 480-minute allocation. Keep Configured Scenario selections explicit, and review content changes
    before updating asset hashes.
 
    After changing assets, run:
@@ -35,13 +95,13 @@ for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
    python -m pytest tests/qa/
    ```
 
-   The validator checks fields, IDs, references, prerequisite ordering, profile
+   The validator checks fields, IDs, references, prerequisite ordering, Configured Scenario
    selections, and inventory coverage. The tests exercise rejection and fixture
    controls. Use `--coverage-index <path>` to review the derived
-   capability/check/profile mapping.
+   capability/Check/Configured Scenario mapping.
 
 5. Classify the change. Behavioral edits require affected-scenario reruns
-   in required profiles; editorial edits do not. Keep actual tested revisions in
+   using required Configured Scenarios; editorial edits do not. Keep actual tested revisions in
    qualification reports. Rehearse where feasible to discover underspecification;
    a product defect is a finding, not a reason to weaken a valid check. Keep landed
    fixes verification pending until the relevant checks pass. Do not add a separate
@@ -50,7 +110,7 @@ for scope and verdicts, and [Format](../agents/FORMAT.md) for fields. The
 
 ## Worked example: verify rendered waveform state
 
-The Taxi journey creates scoped waveform state and opens it in the Waveform Viewer
+The Taxi Scenario creates scoped waveform state and opens it in the Waveform Viewer
 through a VS Code Runtime Attachment. The `viewer.visual-capture` check separately
 proves that the Waveform Viewer shows the expected signals, markers, and cursor. Its
 authoring follows the five steps above:
@@ -70,31 +130,48 @@ authoring follows the five steps above:
      stimulus: Capture Viewer only with pre-run qualified observer; verify visible scoped signals/markers/cursor.
      expected: Capture Viewer only with pre-run qualified observer; verify visible scoped signals/markers/cursor.
      authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-     evidence: Timestamped screenshot with Waveform Viewer and run identity plus observer capability evidence; unavailable observer means incomplete GUI profile.
+     evidence: Timestamped screenshot with Waveform Viewer and run identity plus observer capability evidence; unavailable observer means the GUI Scenario Run is incomplete.
      capture: evidence/taxi-10g-mac-port-evolution.viewer.visual-capture
    ```
 
    The containing step requires the pinned inputs and clean baseline outputs. It uses
    the scenario's authority and budget; it needs no check-specific timeout or recovery.
-3. Add the scenario-qualified check ID to the applicable named check set in
-   [profiles.yaml](../profiles.yaml):
+3. Add the local check ID to the applicable named check set in
+   [the Taxi Scenario](../scenarios/taxi/scenario.yaml), and select that set from
+   each applicable Configured Scenario. Relevant excerpt (unchanged fields omitted):
 
    ```yaml
+   check_sets:
    - id: taxi-gui
-     scenario_id: taxi-10g-mac-port-evolution
      checks:
-     - taxi-10g-mac-port-evolution.viewer.visual-capture
+     - viewer.visual-capture
+   configured_scenarios:
+   - id: taxi-ubuntu-codex-vscode
+     required: true
+     parameters:
+       host_os: Ubuntu 24.04
+       cpu_architecture: x86-64
+       native_host: true
+       agent_provider: Codex
+       interactive_mode_client: VS Code Codex extension
+       ticket_mode_backend: Codex
+     pre_run_requirements:
+     - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+     check_sets:
+     - taxi-core
+     - taxi-gui
+     exclusions: []
    ```
 
-   Only GUI profiles select `taxi-gui`. Their pre-run probes
+   Only GUI Configured Scenarios select `taxi-gui`. Their pre-run requirements
    require a VS Code Runtime Attachment, WCP access to the Waveform Viewer, and a
-   qualified screenshot observer. Core profiles cannot earn credit for this visual
+   qualified screenshot observer. CLI Scenario Runs cannot earn credit for this visual
    claim.
 4. Run the validation commands from step 4 and inspect `--coverage-index <path>`.
    Review the screenshot oracle, pre-run observer qualification, prerequisite order,
-   profile selection, and budget. An unavailable observer leaves the GUI profile
+   Configured Scenario selection, and budget. An unavailable observer leaves the GUI Scenario Run
    incomplete; it does not justify removing the check.
 5. Classify the addition as behavioral because it adds a required observation and
-   evidence contract. Rerun the whole Taxi scenario in both required GUI profiles and
+   evidence contract. Rerun the whole Taxi Scenario using both required GUI Configured Scenarios and
    record the tested revisions. A rehearsal may find a product defect; retain the
    failure instead of weakening the check.

@@ -2,13 +2,637 @@ format_version: 1
 scenario_id: picorv32-published-demo-continuity
 title: PicoRV32 published demo continuity
 source: https://github.com/boldaxolotl/booley/issues/376#issuecomment-5596872672
+check_sets:
+- id: picorv32-core
+  checks:
+  - inputs.project-pin
+  - inputs.upstream-pin
+  - inputs.release
+  - inputs.authority
+  - project.separate-repository
+  - stealth.enabled
+  - stealth.hidden-projection
+  - stealth.native-no-copy
+  - stealth.native-no-symlink
+  - stealth.commit-sanitation
+  - stealth.attribution-removal
+  - doctor.first-product-exercise
+  - doctor.plain
+  - doctor.deep
+  - doctor.plain-recheck
+  - baseline.source-unchanged
+  - baseline.firmware
+  - baseline.targets
+  - baseline.icarus-main-core
+  - baseline.icarus-axi
+  - baseline.icarus-wishbone
+  - baseline.icarus-dhrystone
+  - baseline.verilator-lint
+  - baseline.physical-synthesis
+  - vivado.license-create
+  - vivado.license-read
+  - vivado.license-update
+  - vivado.license-delete
+  - interactive.child-context
+  - interactive.readiness
+  - interactive.wishbone-baseline
+  - bwave.semantic-wave
+  - bwave.semantic-find
+  - bwave.semantic-sample
+  - bwave.semantic-distance
+  - bwave.semantic-value
+  - bwave.rejection-list
+  - bwave.rejection-signal
+  - bwave.rejection-diff
+  - bwave.rejection-stats
+  - bwave.rejection-stuck
+  - bwave.defect-preservation
+  - interactive.inject
+  - interactive.reproduce
+  - interactive.trace-observability
+  - interactive.bwave-diagnosis
+  - interactive.repair
+  - interactive.rerun-simulation
+  - interactive.rerun-lint
+  - interactive.local-commit
+  - interactive.restore
+  - create.dhrystone-self-checking-cycle-contract.payload
+  - create.dhrystone-self-checking-cycle-contract.board
+  - create.dhrystone-self-checking-cycle-contract.basis
+  - create.rv32-zbb-pcpi.payload
+  - create.rv32-zbb-pcpi.board
+  - create.rv32-zbb-pcpi.basis
+  - create.barrier
+  - create.authoring-boundary
+  - retry.exact-allowance
+  - ticket1.scope
+  - ticket1.fixed-iterations
+  - ticket1.firmware-validation
+  - ticket1.success-magic
+  - ticket1.cycle-record
+  - ticket1.elaboration
+  - ticket1.simulation
+  - ticket1.cycle-cap
+  - ticket1.tb-review
+  - ticket1.persistent-target
+  - ticket1.done
+  - ticket1.merge
+  - ticket1.workspace-cleanup
+  - ticket1.triage-report
+  - guard.negative-result
+  - guard.no-success
+  - guard.no-cycles
+  - guard.restore-rerun
+  - guard.discard
+  - refresh.old-basis
+  - refresh.provider-surface
+  - refresh.queue-transition
+  - refresh.authored-drift
+  - refresh.incompatible-provider
+  - ticket2.scope
+  - ticket2.isa-authority
+  - ticket2.pcpi-timing
+  - ticket2.enable-default
+  - ticket2.disabled-trap
+  - ticket2.zbb-andn
+  - ticket2.zbb-orn
+  - ticket2.zbb-xnor
+  - ticket2.zbb-clz
+  - ticket2.zbb-ctz
+  - ticket2.zbb-cpop
+  - ticket2.zbb-min
+  - ticket2.zbb-minu
+  - ticket2.zbb-max
+  - ticket2.zbb-maxu
+  - ticket2.zbb-sext-b
+  - ticket2.zbb-sext-h
+  - ticket2.zbb-zext-h
+  - ticket2.zbb-rol
+  - ticket2.zbb-ror
+  - ticket2.zbb-rori
+  - ticket2.zbb-orc-b
+  - ticket2.zbb-rev8
+  - ticket2.enabled-core
+  - ticket2.enabled-axi
+  - ticket2.enabled-wishbone
+  - ticket2.elab-sim_core_zbb
+  - ticket2.sim-sim_core_zbb
+  - ticket2.elab-sim_wb_zbb
+  - ticket2.sim-sim_wb_zbb
+  - ticket2.elab-sim_zbb_disabled
+  - ticket2.sim-sim_zbb_disabled
+  - ticket2.elab-sim_axi_zbb
+  - ticket2.sim-sim_axi_zbb
+  - ticket2.regression-main-core
+  - ticket2.regression-axi
+  - ticket2.regression-wishbone
+  - ticket2.provider-execution
+  - ticket2.standalone
+  - ticket2.lint
+  - ticket2.mutation
+  - ticket2.synthesis-cell
+  - ticket2.synthesis-timing
+  - ticket2.review-bugs
+  - ticket2.review-protocol
+  - ticket2.review-spec
+  - ticket2.review-code_style
+  - ticket2.review-optimization
+  - ticket2.review-security
+  - ticket2.tb-review
+  - ticket2.bugs-clean
+  - ticket2.ephemeral-retention
+  - ticket2.ephemeral-removal
+  - ticket2.done
+  - ticket2.merge
+  - ticket2.workspace-cleanup
+  - ticket2.triage-report
+  - final.combined-regression
+  - coverage.criterion-families
+  - cleanup.branches
+  - cleanup.worktrees
+  - cleanup.targets
+  - cleanup.projections
+  - cleanup.hooks
+  - cleanup.runtimes
+  - cleanup.processes
+  - cleanup.license-profiles
+  - cleanup.mounts
+  - cleanup.preserve-borrowed
+  - cleanup.clean-pins
+  - cleanup.remotes
+  - evidence.finalize
+- id: picorv32-ubuntu
+  checks:
+  - vivado.version
+  - vivado.registration
+  - vivado.project-grant
+  - vivado.readonly-mount
+  - vivado.license-attach
+  - vivado.relay-fault
+  - vivado.relay-recovery
+  - vivado.implementation
+  - ticket2.fpga
+  - cleanup.project-grants
+  - cleanup.relays
+  - cleanup.installation-registrations
+- id: picorv32-codex
+  checks:
+  - inventory.H-01.prerequisite
+  - inventory.H-01.prerequisite-recovery
+  - inventory.H-03.init-repeat
+  - inventory.H-03.provider
+  - inventory.H-07.forget-granted
+  - inventory.H-07.forget-revoked
+  - inventory.H-07.inventory-import
+  - inventory.H-07.inventory-missing
+  - inventory.H-07.inventory-views
+  - inventory.H-10.doctor-recovery
+  - inventory.P-08.riscv-firmware
+  - inventory.P-08.riscv-tools
+  - inventory.ST-01.stealth-history
+  - inventory.ST-02.dual-repo
+  - inventory.ST-02.fresh-clone
+  - inventory.ST-02.native-ignore
+  - inventory.ST-02.projected-core
+  - inventory.ST-02.projection-refresh
+  - inventory.F-02.lint-clean
+  - inventory.F-02.lint-dedupe
+  - inventory.F-02.lint-hard
+  - inventory.F-02.lint-infra
+  - inventory.F-02.lint-native-waiver
+  - inventory.F-02.lint-nonfatal-warning
+  - inventory.F-02.lint-recovery
+  - inventory.F-02.lint-scope
+  - inventory.F-02.lint-warning
+  - inventory.F-03.synth-advisory
+  - inventory.F-03.synth-baseline
+  - inventory.F-03.synth-frontend-incompatible
+  - inventory.F-03.synth-frontend-missing
+  - inventory.F-03.synth-latch
+  - inventory.F-03.synth-metrics
+  - inventory.F-03.synth-recovery
+  - inventory.F-03.synth-threshold
+  - inventory.H-09.profile-attach
+  - inventory.H-09.profile-cleanup
+  - inventory.H-09.profile-crud
+  - inventory.D-03.docs-contract
+  - inventory.D-03.docs-recovery
+  - inventory.I-01.interactive-commit
+  - inventory.I-05.catalog-coherence
+  - inventory.I-05.public-navigation
+  - inventory.ST-04.interrupt-cleanup
+  - inventory.ST-04.mount-boundary
+  - inventory.ST-04.network-deny
+  - inventory.ST-04.origin-push-deny
+  - inventory.ST-04.pdk-readonly
+  - inventory.ST-04.provider-allow
+  - inventory.ST-04.runtime-user
+  - inventory.W-01.trace-fifo
+  - inventory.W-01.trace-fresh
+  - inventory.W-01.trace-vcd-convert
+  - inventory.F-01.sim-design-fail
+  - inventory.F-01.sim-elab
+  - inventory.F-01.sim-elab-args
+  - inventory.F-01.sim-elab-persistence
+  - inventory.F-01.sim-inconclusive
+  - inventory.F-01.sim-infra
+  - inventory.F-01.sim-multi
+  - inventory.F-01.sim-pass
+  - inventory.F-01.sim-recovery
+  - inventory.F-01.sim-standalone-fail
+  - inventory.F-01.sim-standalone-pass
+  - inventory.P-04.cycle-invalid
+  - inventory.P-04.cycle-valid
+  - inventory.P-04.sentinel-both
+  - inventory.P-04.sentinel-fail
+  - inventory.P-04.sentinel-none
+  - inventory.P-04.sentinel-pass
+  - inventory.P-04.sentinel-recovery
+  - inventory.P-04.skip-default
+  - inventory.P-04.skip-override
+  - inventory.P-04.test-token
+  - inventory.P-06.disk-budget
+  - inventory.P-06.frozen-clock
+  - inventory.P-06.prerun-input
+  - inventory.P-06.prerun-recovery
+  - inventory.S-01.review-optimization
+  - inventory.S-01.review-rtl-bugs
+  - inventory.S-04.criterion-cycle
+  - inventory.S-04.criterion-elab
+  - inventory.S-04.criterion-lint
+  - inventory.S-04.criterion-review-optimization
+  - inventory.S-04.criterion-review-rtl-bugs
+  - inventory.S-04.criterion-sim
+  - inventory.S-04.criterion-standalone
+  - inventory.S-04.criterion-synthesis
+  - inventory.S-06.baseline-mismatch
+  - inventory.S-06.baseline-missing
+  - inventory.S-06.baseline-recovery
+  - inventory.S-06.threshold-absolute
+  - inventory.S-06.threshold-clock
+  - inventory.S-06.threshold-directed
+  - inventory.S-06.threshold-relative
+  - inventory.ST-03.body-reject
+  - inventory.ST-03.escape-sanitized
+  - inventory.ST-03.history-recovery
+  - inventory.ST-03.push-guard-escape
+  - inventory.ST-03.push-identity-allow
+  - inventory.ST-03.push-identity-reject
+  - inventory.ST-03.push-path-reject
+  - inventory.ST-03.push-symlink-reject
+  - inventory.ST-03.subject-reject
+  - inventory.T-02.ticket-type-bug-fix
+  - inventory.T-02.ticket-type-refactor
+- id: picorv32-ubuntu-codex
+  checks:
+  - inventory.F-04.fpga-authority-fail
+  - inventory.F-04.fpga-baseline
+  - inventory.F-04.fpga-cache
+  - inventory.F-04.fpga-design-fail
+  - inventory.F-04.fpga-dry
+  - inventory.F-04.fpga-no-cache
+  - inventory.F-04.fpga-recovery
+  - inventory.H-08.grant
+  - inventory.H-08.grant-denied
+  - inventory.H-08.grant-recovery
+  - inventory.H-08.installation-cleanup
+  - inventory.H-08.installation-crud
+  - inventory.H-08.mount
+  - inventory.H-09.relay-isolation
+  - inventory.ST-04.vivado-readonly
+  - inventory.S-04.criterion-fpga
+- id: picorv32-gui
+  checks:
+  - interactive.supported-client
+- id: picorv32-codex-gui
+  checks:
+  - inventory.I-01.client-session
+configured_scenarios:
+- id: picorv32-ubuntu-codex-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  check_sets:
+  - picorv32-core
+  - picorv32-ubuntu
+  - picorv32-codex
+  - picorv32-ubuntu-codex
+  exclusions: []
+- id: picorv32-ubuntu-codex-vscode
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  check_sets:
+  - picorv32-core
+  - picorv32-ubuntu
+  - picorv32-codex
+  - picorv32-ubuntu-codex
+  - picorv32-gui
+  - picorv32-codex-gui
+  exclusions: []
+- id: picorv32-windows-codex-cli
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  check_sets:
+  - picorv32-core
+  - picorv32-codex
+  exclusions:
+  - check: vivado.version
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.registration
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.project-grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.readonly-mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.license-attach
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-fault
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.implementation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: ticket2.fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.project-grants
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.relays
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.installation-registrations
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-authority-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-baseline
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-design-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-dry
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-no-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-denied
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-cleanup
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-crud
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-09.relay-isolation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.S-04.criterion-fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.ST-04.vivado-readonly
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+- id: picorv32-windows-codex-vscode
+  required: true
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: VS Code Codex extension
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  check_sets:
+  - picorv32-core
+  - picorv32-codex
+  - picorv32-gui
+  - picorv32-codex-gui
+  exclusions:
+  - check: vivado.version
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.registration
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.project-grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.readonly-mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.license-attach
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-fault
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.implementation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: ticket2.fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.project-grants
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.relays
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.installation-registrations
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-authority-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-baseline
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-design-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-dry
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-no-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-denied
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-cleanup
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-crud
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-09.relay-isolation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.S-04.criterion-fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.ST-04.vivado-readonly
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+- id: picorv32-ubuntu-claude-cli
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  check_sets:
+  - picorv32-core
+  - picorv32-ubuntu
+  exclusions: []
+- id: picorv32-ubuntu-claude-vscode
+  required: true
+  parameters:
+    host_os: Ubuntu 24.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: VS Code Claude extension
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  check_sets:
+  - picorv32-core
+  - picorv32-ubuntu
+  - picorv32-gui
+  exclusions: []
+- id: picorv32-windows-claude-vscode
+  required: false
+  parameters:
+    host_os: Windows with Docker Desktop WSL2
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Claude
+    interactive_mode_client: VS Code Claude extension
+    ticket_mode_backend: Claude
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS, Docker/storage and artifact-root capacity
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
+  - RISC-V image/toolchain; at least 21 GB Docker free storage plus artifact headroom
+  check_sets:
+  - picorv32-core
+  - picorv32-gui
+  exclusions:
+  - check: vivado.version
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.registration
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.project-grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.readonly-mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.license-attach
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-fault
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.relay-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: vivado.implementation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: ticket2.fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.project-grants
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.relays
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: cleanup.installation-registrations
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-authority-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-baseline
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-design-fail
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-dry
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-no-cache
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.F-04.fpga-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-denied
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.grant-recovery
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-cleanup
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.installation-crud
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-08.mount
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.H-09.relay-isolation
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.S-04.criterion-fpga
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+  - check: inventory.ST-04.vivado-readonly
+    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
 inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact published booley-rtl release, package SHA-256, matching docs and immutable runtime image digest; no editable/local/development package or source imports.
-  source: https://github.com/boldaxolotl/booley/releases
-  verification: Record version, executable/import origin, package hash and image payload provenance before work.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+  source: https://github.com/boldaxolotl/booley
+  verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: project
   kind: git
   value: b8fe2370cb9aa7d93617850169f42f07821865d6
@@ -29,7 +653,7 @@ authority:
 - |-
   Keep credentials outside Projects and evidence; preserve borrowed installations, credentials, shared images/caches and unrelated state.
 - |-
-  Recovery stays within this live run and phase allowance; no coordinator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
+  Recovery stays within this live run and phase allowance; no Scenario Operator resume or replay. Retain failures, classify missing work blocked and enter cleanup on time.
 budget:
   deadline_minutes: 480
   cleanup_minutes: 20
@@ -89,19 +713,19 @@ steps:
   - inputs.project-pin
 - id: inputs.release
   phase: prepare
-  action: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-    imports.
+  action: Install the exact declared package artifact; allow a published release or immutable unreleased candidate,
+    and forbid floating references, editable installs and source-checkout execution/imports.
   checks:
   - id: inputs.release
     capabilities:
     - H-01
-    stimulus: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-      imports.
-    expected: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-      imports.
+    stimulus: Install the exact declared package artifact; allow a published release or immutable unreleased candidate,
+      and forbid floating references, editable installs and source-checkout execution/imports.
+    expected: The installed package, source commit, documentation snapshot and image provenance all match the declared
+      build; execution is isolated from source checkouts.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Release/package hash, release-doc identity, runtime import origin and selected image digest in run
-      inputs.
+    evidence: Build/package hash, source commit, matching documentation identity, runtime import origin and selected
+      image digest in run inputs.
     capture: evidence/picorv32-published-demo-continuity.inputs.release
   requires:
   - inputs.project-pin
@@ -211,7 +835,7 @@ steps:
   assets:
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: stealth.attribution-removal
   phase: prepare
   action: Exercise attribution-trailer removal.
@@ -230,7 +854,7 @@ steps:
   assets:
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: doctor.first-product-exercise
   phase: prepare
   action: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
@@ -291,53 +915,53 @@ steps:
   phase: prepare
   action: |-
     Execute `prerequisite` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.prerequisite
     capabilities:
     - H-01
     stimulus: |-
       Execute `prerequisite` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `prerequisite` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.H-01.prerequisite
   requires:
   - inputs.project-pin
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-01.prerequisite-recovery
   phase: prepare
   action: |-
     Execute `prerequisite-recovery` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.prerequisite-recovery
     capabilities:
     - H-01
     stimulus: |-
       Execute `prerequisite-recovery` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `prerequisite-recovery` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.H-01.prerequisite-recovery
   requires:
   - inputs.project-pin
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-03.init-repeat
   phase: prepare
@@ -559,14 +1183,14 @@ steps:
       `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing journey image recovery checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.P-08.riscv-firmware
   requires:
   - inputs.project-pin
   assets:
   - path: probes/P-08.md
     audience: coordinator
-    sha256: b019248fc24af8592e6298f2aa8de5150aab5a3a212623db5cd8c4b9c16e1a82
+    sha256: 538b474fdcd47f9a43bdc196ae3fb120d38d5896d8dcf9b503225b0b26be1913
 - id: inventory.P-08.riscv-tools
   phase: prepare
   action: |-
@@ -584,14 +1208,14 @@ steps:
       `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing journey image recovery checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.P-08.riscv-tools
   requires:
   - inputs.project-pin
   assets:
   - path: probes/P-08.md
     audience: coordinator
-    sha256: b019248fc24af8592e6298f2aa8de5150aab5a3a212623db5cd8c4b9c16e1a82
+    sha256: 538b474fdcd47f9a43bdc196ae3fb120d38d5896d8dcf9b503225b0b26be1913
 - id: inventory.ST-01.stealth-history
   phase: prepare
   action: |-
@@ -620,7 +1244,7 @@ steps:
     base: shared
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: inventory.ST-02.dual-repo
   phase: prepare
   action: |-
@@ -2248,17 +2872,17 @@ steps:
 - id: interactive.inject
   phase: interactive
   action: |-
-    Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
+    Scenario Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
   checks:
   - id: interactive.inject
     capabilities:
     - I-01
     stimulus: |-
-      Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
+      Scenario Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
     expected: |-
-      Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
+      Scenario Operator changes only OR reduction of `mem_wstrb[3:0]` deriving `we` to AND inside `picorv32_wb` in `picorv32.v`; hide mutation/location from next prompt.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Exact patch, prior tree, operator authority, prompt and access separation.
+    evidence: Exact patch, prior tree, granted authority, prompt and access separation.
     capture: evidence/picorv32-published-demo-continuity.interactive.inject
   requires:
   - inputs.project-pin
@@ -2268,7 +2892,7 @@ steps:
   assets:
   - path: probes/wishbone-fault.md
     audience: coordinator
-    sha256: edd8b9ed5f5cf07ae46eadf0932be34a6e4bafb8025782da3d172a1de9d6b139
+    sha256: f6af33e5888197f3c9ab97181876322da71f01119aa92fea7dd412e72bc7bc8f
 - id: interactive.reproduce
   phase: interactive
   action: |-
@@ -2416,15 +3040,15 @@ steps:
 - id: interactive.supported-client
   phase: interactive
   action: |-
-    When claiming actual supported VS Code integration, exercise this journey through that client and verify runtime attachment/context and MCP operations.
+    When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
   checks:
   - id: interactive.supported-client
     capabilities:
     - I-01
     stimulus: |-
-      When claiming actual supported VS Code integration, exercise this journey through that client and verify runtime attachment/context and MCP operations.
+      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
     expected: |-
-      When claiming actual supported VS Code integration, exercise this journey through that client and verify runtime attachment/context and MCP operations.
+      When claiming actual supported VS Code integration, exercise this Scenario through that client and verify runtime attachment/context and MCP operations.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Actual client/backend/version, attachment evidence and durable client operation logs; headless child
       is insufficient.
@@ -2528,14 +3152,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.I-05.catalog-coherence
   requires:
   - inputs.project-pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
@@ -2554,14 +3178,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.I-05.public-navigation
   requires:
   - inputs.project-pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.ST-04.interrupt-cleanup
   phase: interactive
@@ -2774,7 +3398,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-fresh
   phase: interactive
   action: |-
@@ -2804,7 +3428,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-vcd-convert
   phase: interactive
   action: |-
@@ -2834,7 +3458,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.ST-04.vivado-readonly
   phase: interactive
   action: |-
@@ -3222,7 +3846,7 @@ steps:
     stimulus: 'Reach `destination: done`.'
     expected: 'Reach `destination: done`.'
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Board terminal state and acceptance evidence.
+    evidence: Board terminal state and Criteria Satisfaction Record.
     capture: evidence/picorv32-published-demo-continuity.ticket1.done
   requires:
   - inputs.project-pin
@@ -4051,7 +4675,7 @@ steps:
   assets:
   - path: probes/basis-refresh.md
     audience: coordinator
-    sha256: b8f5141e2532b1b47e28e97ed17907c2a818bfd64a4d8aee84bcd03b991bef10
+    sha256: 5309ecd71d70e24351933ab2d614ca380f2e17f0740003c27bb6b1fb3fb49b40
 - id: refresh.incompatible-provider
   phase: ticket2
   action: Incompatible provider surface blocks instead of silently refreshing authority.
@@ -4071,7 +4695,7 @@ steps:
   assets:
   - path: probes/basis-refresh.md
     audience: coordinator
-    sha256: b8f5141e2532b1b47e28e97ed17907c2a818bfd64a4d8aee84bcd03b991bef10
+    sha256: 5309ecd71d70e24351933ab2d614ca380f2e17f0740003c27bb6b1fb3fb49b40
 - id: ticket2.scope
   phase: ticket2
   action: |-
@@ -4965,7 +5589,7 @@ steps:
     stimulus: 'Reach `destination: done`.'
     expected: 'Reach `destination: done`.'
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Board terminal state and acceptance evidence.
+    evidence: Board terminal state and Criteria Satisfaction Record.
     capture: evidence/picorv32-published-demo-continuity.ticket2.done
   requires:
   - inputs.project-pin
@@ -5323,17 +5947,17 @@ steps:
   phase: ticket2
   action: |-
     Execute `baseline-mismatch` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-mismatch
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-mismatch` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-mismatch` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5343,22 +5967,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.baseline-missing
   phase: ticket2
   action: |-
     Execute `baseline-missing` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-missing
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-missing` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-missing` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5368,22 +5992,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.baseline-recovery
   phase: ticket2
   action: |-
     Execute `baseline-recovery` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.baseline-recovery
     capabilities:
     - S-06
     stimulus: |-
       Execute `baseline-recovery` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `baseline-recovery` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5393,22 +6017,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-absolute
   phase: ticket2
   action: |-
     Execute `threshold-absolute` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-absolute
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-absolute` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-absolute` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5418,22 +6042,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-clock
   phase: ticket2
   action: |-
     Execute `threshold-clock` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-clock
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-clock` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-clock` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5443,22 +6067,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-directed
   phase: ticket2
   action: |-
     Execute `threshold-directed` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-directed
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-directed` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-directed` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5468,22 +6092,22 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.S-06.threshold-relative
   phase: ticket2
   action: |-
     Execute `threshold-relative` using the attached scenario-owned probe contract.
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
   checks:
   - id: inventory.S-06.threshold-relative
     capabilities:
     - S-06
     stimulus: |-
       Execute `threshold-relative` using the attached scenario-owned probe contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     expected: |-
       Evaluate only the independently named `threshold-relative` outcome in this contract.
-      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+      `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
     evidence: |-
       Both refs, Target recipes, numeric operands and result; no generic report-exists oracle. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
@@ -5493,7 +6117,7 @@ steps:
   assets:
   - path: probes/S-06.md
     audience: coordinator
-    sha256: 461d097018d7d6adce29e1d0f109983eda8b02c53e77422483aa6f480d898466
+    sha256: fb9d773418c295147444d453f943bac57e4ab59d1a4e2034ee90940a185892ac
 - id: inventory.ST-03.body-reject
   phase: ticket2
   action: |-

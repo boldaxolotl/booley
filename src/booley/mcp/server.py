@@ -117,6 +117,12 @@ _INTERACTIVE_HIDDEN_REASONS = {
 _INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
 _STATUS_MCP_TOOL_NAME = "booley_status"
 _STATUS_MCP_TOOL_DESCRIPTION = "Show whether Booley Interactive Mode is ready in this tab."
+_COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
+_COVERAGE_EVIDENCE_TOOL_DESCRIPTION = (
+    "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+    "Coverage Analyst. Start with view='overview'; use view='points' for filtered exact "
+    "Coverage Points and view='source' for verified excerpts associated with point_ids."
+)
 _REPORT_MCP_TOOL_NAME = "booley_report"
 _REPORT_MCP_TOOL_DESCRIPTION = (
     "Fetch the most recent completed run report for a Booley endpoint (e.g. "
@@ -651,7 +657,7 @@ def _poll_mcp_tool_visible() -> bool:
     it cannot invoke an endpoint or recurse — so it is exempt from the
     recursion-safety allowlists that gate real endpoints.
     """
-    return True
+    return not _coverage_evidence_mode()
 
 
 def _targets_mcp_tool_visible() -> bool:
@@ -662,7 +668,23 @@ def _targets_mcp_tool_visible() -> bool:
     real endpoints do not apply, and every mode's agent (interactive tab, ticket
     developer, nested specialist) needs to know what ``target`` values exist.
     """
-    return True
+    return not _coverage_evidence_mode()
+
+
+def _coverage_evidence_mode() -> bool:
+    """Return whether this server is the Analyst's single-capability server."""
+    return bool(os.environ.get("BOOLEY_COVERAGE_CAMPAIGN"))
+
+
+def _coverage_evidence_tool_visible() -> bool:
+    """Expose Campaign evidence only inside its bound nested Analyst server."""
+    nested = _nested_allowlist()
+    return (
+        nested is not None
+        and _COVERAGE_EVIDENCE_TOOL_NAME in nested
+        and bool(os.environ.get("BOOLEY_COVERAGE_CAMPAIGN"))
+        and bool(os.environ.get("BOOLEY_COVERAGE_PROJECT"))
+    )
 
 
 def _sleep_mcp_tool_visible() -> bool:
@@ -2152,6 +2174,40 @@ def _targets_mcp_tool_def() -> dict[str, Any] | None:
     }
 
 
+def _coverage_evidence_tool_def() -> dict[str, Any] | None:
+    """Return the bound Coverage Analyst evidence-tool definition."""
+    if not _coverage_evidence_tool_visible():
+        return None
+    return {
+        "name": _COVERAGE_EVIDENCE_TOOL_NAME,
+        "description": _COVERAGE_EVIDENCE_TOOL_DESCRIPTION,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "view": {"type": "string", "enum": ["overview", "points", "source"]},
+                "metric": {"type": "string"},
+                "source": {"type": "string"},
+                "covered": {"type": "boolean"},
+                "disposition": {
+                    "type": "string",
+                    "enum": ["eligible", "waived", "unscored"],
+                },
+                "point_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 10,
+                },
+                "cursor": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "context_lines": {"type": "integer", "minimum": 0, "maximum": 20},
+            },
+            "required": ["view"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def _sleep_mcp_tool_def() -> dict[str, Any] | None:
     """Return the diagnostic sleep MCP tool definition (or None if hidden)."""
     if not _sleep_mcp_tool_visible():
@@ -2196,6 +2252,9 @@ def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     targets_def = _targets_mcp_tool_def()
     if targets_def is not None:
         mcp_tool_defs.append(targets_def)
+    coverage_evidence_def = _coverage_evidence_tool_def()
+    if coverage_evidence_def is not None:
+        mcp_tool_defs.append(coverage_evidence_def)
     return sorted(mcp_tool_defs, key=lambda item: item["name"])
 
 
@@ -3334,6 +3393,17 @@ def _ticket_baseline_required(criterion_prefix: str) -> bool:
     )
 
 
+def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
+    """Serve one bounded query from the Campaign-scoped evidence module."""
+    from booley.mcp.coverage_evidence import query_active_coverage_evidence
+
+    try:
+        result = query_active_coverage_evidence(arguments)
+    except (OSError, ValueError) as exc:
+        result = {"error": "coverage_evidence_rejected", "message": str(exc)}
+    return [TextContent(type="text", text=json.dumps(result, sort_keys=True))]
+
+
 async def _dispatch_special_mcp_tool(
     name: str,
     arguments: dict[str, Any],
@@ -3354,6 +3424,10 @@ async def _dispatch_special_mcp_tool(
         ),
         _REPORT_MCP_TOOL_NAME: (_report_mcp_tool_visible, lambda: _dispatch_report(arguments)),
         _TARGETS_MCP_TOOL_NAME: (_targets_mcp_tool_visible, lambda: _dispatch_targets(arguments)),
+        _COVERAGE_EVIDENCE_TOOL_NAME: (
+            _coverage_evidence_tool_visible,
+            lambda: _dispatch_coverage_evidence(arguments),
+        ),
     }
     entry = sync_meta.get(name)
     if entry is not None:

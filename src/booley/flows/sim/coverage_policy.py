@@ -29,6 +29,7 @@ __all__ = [
 ]
 
 _CRITERION_SCHEMA = "booley.coverage-criterion/v1"
+_COVERAGE_SEMANTICS = "booley.coverage-semantics/v1"
 _METRIC_ORDER = ("line", "branch", "expression", "toggle", "cover_property")
 
 
@@ -79,7 +80,7 @@ def _criterion_fingerprint(
     }
     payload = {
         "$schema": _CRITERION_SCHEMA,
-        "coverage_campaign_schema": campaign.schema,
+        "coverage_semantics": _COVERAGE_SEMANTICS,
         "target": str(criterion.target),
         "metrics": thresholds,
         "tests": sorted(required_tests),

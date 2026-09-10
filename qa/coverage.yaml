@@ -1,14 +1,14 @@
 format_version: 1
 capabilities:
 - id: H-01
-  title: H-01 install exact published  in isolated pipx environment and launch from ne
+  title: H-01 install exact declared artifact in isolated pipx environment and launch from new shell
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/README.md#installation
   contract: |-
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
-    Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-02
   title: H-02 bootstrap check-only before reconciliation → rc1 and no mutation.  plain
   sources:
@@ -17,7 +17,7 @@ capabilities:
     `pending`: bootstrap check-only before reconciliation → rc1 and no mutation. `automatic`: plain init without prior bootstrap → managed resources reconciled. `ready`: check-only afterward → ready without mutation. `idempotent`: repeat bootstrap → stable identities. `force-repair`: safely stale one run-owned managed resource and force → repaired resource, preserved caches/user sentinel.
     Before/after resource identities, image/PDK/skill links and user-file hashes; `repair-ready`: subsequent check-only succeeds.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-03
   title: 'H-03 repeat plain init → no unintended file/spec drift.  check-only on stale '
   sources:
@@ -27,7 +27,7 @@ capabilities:
     `init-repeat`: repeat plain init → no unintended file/spec drift. `init-check`: check-only on stale disposable state → reports work without mutation. `init-force`: force reconcile owned generated state → issued configuration restored, user sentinel intact. `seed`: init with declared seed → seeded policy/config appears. `skip-credentials`: initialize with skip flag → no credential mutation. `location-guard`: invoke host-only init inside runtime → actionable rejection. `provider`: select each provider in separate declared compatibility run → issued auth/client policy matches selection.
     Generated config/devcontainer, sanitized policy, hashes. Windows: `lf-auto` introduces clean CRLF fixture → local Git policy and LF reconciliation; `lf-compat` repeats with compatibility flag → accepted; `lf-dirty`, `lf-protected`, `lf-hardlink` each introduces named unsafe file class → refusal without changed bytes. `lf-recovery`: remove unsafe fixture condition and retry → normalized safe file.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-04
   title: H-04 use accepted UART scaffold choices → documented .core, TB, lint and conf
   sources:
@@ -36,7 +36,7 @@ capabilities:
     `scaffold`: use accepted UART scaffold choices → documented .core, TB, lint and configuration files appear with exact selected tools. `scaffold-repeat`: rerun initialization → preserves authored files and stable targets.
     Scaffold options, generated tree manifest, initial Doctor/Target results; do not claim every scaffold cross-product.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-05
   title: 'H-05 ,  independently store disposable credential through documented forms → '
   sources:
@@ -45,7 +45,7 @@ capabilities:
     `auth-store`, `auth-stdin`: independently store disposable credential through documented forms → status identifies provider/auth class without secret. `auth-precedence`: configure subscription/API/automatic selection in fixtures → reported selected class follows policy. `auth-clear`: clear disposable store → status unconfigured. `auth-secret-boundary`: inspect Project/log evidence → no credential material.
     Redacted status and paths only, no token bytes. `auth-recovery`: restore disposable credential → ready; borrowed real credential remains byte-identical and unread into evidence.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-06
   title: 'H-06 absent runtime→up/status/validate → running issued spec.  child returns '
   sources:
@@ -56,7 +56,7 @@ capabilities:
     `runtime-up`: absent runtime→up/status/validate → running issued spec. `enter-success`: child returns zero → zero. `enter-failure`: child returns nonzero → same nonzero. `interrupt`: interrupt supervised child with descendant → signal semantics preserved and descendants gone. `refresh`: change permitted image/spec then refresh → new immutable identity. `refresh-rollback`: inject bounded replacement validation failure → old runtime restored. `refresh-vscode`: try refreshing VS Code-owned runtime → refusal, runtime unchanged. `runtime-down`: down → absent/stopped and no owned descendants.
     Runtime IDs/spec digest/process listing before/after. `runtime-retry`: repeat up/enter after interruption → usable clean runtime on both OSes. VS Code: `legacy-replace` exactly one authenticated legacy container → only it replaced; `legacy-refuse-ambiguous`, `legacy-refuse-foreign`, `legacy-refuse-headless`, `legacy-refuse-multiple` → each refused with all other identities intact; `legacy-poststop-failure` → exact restart command after validation failure; `legacy-restart` → supplied command restores usable runtime, named volumes unchanged.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-07
   title: H-07 import bounded disposable root containing directory symlink → only expli
   sources:
@@ -65,7 +65,7 @@ capabilities:
     `inventory-import`: import bounded disposable root containing directory symlink → only explicitly bounded real roots remembered. `inventory-views`: list human/JSON → same exact roots/Grants. `inventory-missing`: move owned root aside → missing root retained. `forget-granted`: forget granted root → rejected. `forget-revoked`: revoke then forget → exactly that root removed.
     Inventory snapshots and import tree; restore moved root before ledger cleanup, foreign roots unchanged.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-08
   title: H-08 register/list/show approved exact installation under run-unique name → c
   sources:
@@ -74,7 +74,7 @@ capabilities:
     `installation-crud`: register/list/show approved exact installation under run-unique name → canonical identity/version stable. `grant`: grant exact canonical Project → inventory shows exact relationship. `mount`: start runtime → fixed `/opt/booley-eda/vivado` read-only mount and executable version. `grant-denied`: revoke Grant then request runtime/tool → authority failure, no mount. `grant-recovery`: restore Grant → same mount usable. `installation-cleanup`: revoke/remove owned registration → absent, installation bytes untouched.
     Host registry snapshots, runtime mount metadata, write-rejection probe, actual FPGA report. Windows expected not runnable only for platform-scoped portions.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-09
   title: H-09 register/list/show disposable License Profile → same safe identity.  att
   sources:
@@ -83,7 +83,7 @@ capabilities:
     `profile-crud`: register/list/show disposable License Profile → same safe identity. `profile-attach`: attach to exact Grant → runtime policy matches authorized destination. `relay-isolation`: controlled relay infrastructure attempts unapproved destination → blocked. `relay-failure`: make approved controlled destination unavailable → precise diagnostic without leaked secret. `relay-recovery`: restore controlled endpoint → approved route usable. `profile-cleanup`: detach/remove owned profile and relay → no owned resources remain.
     Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success.
   applicability: |-
-    Supported outcomes under explicit profile applicability. Paid-seat observations remain optional experimental with site authority; common CRUD is supported.
+    Supported outcomes under explicit Configured Scenario applicability. Paid-seat observations remain optional experimental with site authority; common CRUD is supported.
 - id: H-10
   title: 'H-10 ,  run separately → current structured last.json and complete last.log, '
   sources:
@@ -93,16 +93,16 @@ capabilities:
     `doctor-plain`, `doctor-deep`: run separately → current structured last.json and complete last.log, intended selected checks. `doctor-warning`: benign warning fixture → actionable warning. `waiver-valid`: add explicit unexpired matching waiver → warning waived. `waiver-expired`, `waiver-stale`: expire/change warning identity separately → waiver no longer applies. `failure-not-waivable`: hard config failure with waiver → remains failure. `health-stale`: change config → freshness reports stale. `doctor-recovery`: restore config/run Doctor → fresh clean health.
     Separate report/log copies before overwrite, waiver text with expiry, config diffs. Deep Doctor retains manually suggested FPGA command rather than silently claiming FPGA execution.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-11
-  title: H-11 create Project using immediately preceding published release then instal
+  title: H-11 create Project using immediately preceding published release then install target build
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
   contract: |-
-    `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
-    Both released package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair.
+    `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+    Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-12
   title: H-12 absent disposable host config → documented defaults. , ,  separately ove
   sources:
@@ -111,7 +111,7 @@ capabilities:
     `config-defaults`: absent disposable host config → documented defaults. `config-idle`, `config-cap`, `config-egress`: separately override each supported field → observed timeout, cross-Project cap, and allowed hostname. `config-denied-egress`: undeclared host → blocked. `config-invalid-scheme`, `config-invalid-path`, `config-invalid-port`, `config-invalid-ip`, `config-invalid-wildcard`, `config-invalid-key`: each input → validation rejection before bootstrap mutation. `config-preserve`: successful and rejected reads → byte-identical host config. `config-recovery`: restore valid policy → bootstrap succeeds.
     Policy hashes, admission timestamps/runtime counts, controlled network results and owned-resource snapshots; no unrelated external targets.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: H-13
   title: H-13 inspect package license metadata and generated state/artifact paths → Ap
   sources:
@@ -121,7 +121,7 @@ capabilities:
     `license-locality`: inspect package license metadata and generated state/artifact paths → Apache-2.0 and local persistence. `route-policy`: compare observed provider/relay/notification/egress routes to declared policy → each external route explicitly authorized; undeclared route blocked.
     Package metadata, local path manifest, sanitized route policy and probe results; link ST-04 evidence rather than treating local-first as offline providers.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-01
   title: P-01 invoke published setup port/new route → one complete approved plan befor
   sources:
@@ -131,7 +131,7 @@ capabilities:
     `setup-plan`: invoke published setup port/new route → one complete approved plan before changes. `setup-conformance`: compare resulting config/cores/guidance to plan → each deviation explicit. `setup-native`: execute accepted native parity comparison → baseline and port result compared. `setup-findings`: invoke required Findings handoff → retained local report. `setup-selector-docs`: compare public selector lists → mismatch retained as docs Finding if present.
     Approved plan, public route citations, generated diff, native logs and Finding record; no source-assisted workaround before capture.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-02
   title: P-02 list/filter/detail/JSON/MCP same targets → same qualified identities and
   sources:
@@ -141,7 +141,7 @@ capabilities:
     `target-views`: list/filter/detail/JSON/MCP same targets → same qualified identities and typed values. `target-qualified`: invoke collision fixture with qualified name → exact core selected. `target-ambiguous`: bare collision → rejected. `target-refresh`: edit owned core then refresh → new target values visible. `target-parameters`: execute two declared Targets with different values → respective values appear in reports. `target-override`: supply invented per-call parameter override → rejected.
     Core manifests, discovery outputs, resolved build inputs; `target-recovery`: restore valid qualified selector → Flow completes with expected identity.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-03
   title: 'P-03 discover authored sim/lint/synth/fpga naming and native vendored target '
   sources:
@@ -150,7 +150,7 @@ capabilities:
     `target-axes`: discover authored sim/lint/synth/fpga naming and native vendored target → valid names retained. `doctor-selection`: deep Doctor with selected/nonselected targets → only selected targets run. `selftest-hidden`: ordinary listing → bad selftest absent; deep Doctor → intended selftest evidence present.
     Listings and per-target Doctor reports; no claim that hidden selftest is ordinary public discovery.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-04
   title: P-04 , , ,  fixture emits each combination → pass, fail, fail, inconclusive r
   sources:
@@ -160,7 +160,7 @@ capabilities:
     `sentinel-pass`, `sentinel-fail`, `sentinel-both`, `sentinel-none`: fixture emits each combination → pass, fail, fail, inconclusive respectively. `test-token`: select one plusarg/getopt token → exactly named test executed. `skip-default`: default run → skipped test absent. `skip-override`: explicit selection → same test runs. `cycle-valid`: emit named count → exact parsed count. `cycle-invalid`: malformed/missing count → cannot satisfy Criterion.
     Per-test verdicts and raw logs; `sentinel-recovery` restores valid fixture → pass; malformed count is not silently zero.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-05
   title: P-05 ,  full/focused multi-file package → expected registered tests only, ver
   sources:
@@ -169,7 +169,7 @@ capabilities:
     `cocotb-full`, `cocotb-focused`: full/focused multi-file package → expected registered tests only, version-appropriate selector. `cocotb-presentation`: compact/full display → same verdicts as retained XML/JSON. `cocotb-assertion`: deliberate test assertion → design failure. `cocotb-missing-xml`, `cocotb-truncated-xml`: separately remove/truncate owned result → inconclusive result, not pass. `cocotb-recovery`: rerun valid suite → fresh complete XML and expected verdict.
     cocotb version, module/package manifest, selection environment excluding secrets, XML/JSON and display transcripts.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-06
   title: P-06 documented env/pre-run substitution/workdir stages firmware/vector → tes
   sources:
@@ -178,7 +178,7 @@ capabilities:
     `prerun-input`: documented env/pre-run substitution/workdir stages firmware/vector → test consumes named fresh input without TB edits. `frozen-clock`: bounded frozen simulation → documented watchdog classification. `disk-budget`: bounded disposable output exceeds configured budget → killed with largest-file diagnostics. `prerun-recovery`: restore normal stimulus and rerun → fresh artifact/verdict, no surviving producer.
     Environment variable names/nonsecret values, command/workdir, staged artifact digest, kill diagnostics/process evidence.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-07
   title: P-07 bake pinned requirements → runtime dependency versions match image ident
   sources:
@@ -188,26 +188,26 @@ capabilities:
     `derived-image`: bake pinned requirements → runtime dependency versions match image identity. `dependency-refresh`: change permitted dependency pin → stale image detected and rebuilt identity used. `runtime-offline`: attempt runtime dependency acquisition → no undeclared network install. `host-skill-readonly`: opt in disposable skill → visible but write denied. `hook-once`: new Ticket workspace with bounded hook → exactly one successful invocation; resume → no repeat. `hook-failure`: controlled nonzero hook → workspace blocked. `hook-recovery`: fix fixture and documented retry → usable workspace.
     Image/pip manifests and payload provenance, skill mount metadata, hook counter/log and workspace identity.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-08
   title: P-08 inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supp
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
   contract: |-
     `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
-    Storage proof, versions, compile and execution logs, firmware digest; link existing journey image recovery checks.
+    Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-09
   title: P-09 invalid core behind FUSESOC_IGNORE → excluded while valid native core re
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#flat-and-vendored-repos
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
   contract: |-
-    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear centrally in [profiles](profiles.md).
+    `vendored-ignore`: invalid core behind FUSESOC_IGNORE → excluded while valid native core resolves. `many-cores`: enumerate fixture cores → exact qualified set. Submodule companion uses the complete 26-check list in [the approved companion](submodules.md), including live top-level/nested RTL dependency, fresh passing simulation, required-source absence with warm/cold builds, dependency-specific simulation failure, and exact restoration/fresh pass. The exact qualified IDs appear in the Scenario-owned check sets and Configured Scenarios.
     Vendored/core manifest and discovery output. Direct Taxi checkout has no submodules and earns no submodule credit. Companion must prove both Ticket and baseline worktrees offline and must fail simulation when required submodule RTL is missing; root-only synthesis earns no functional-dependency credit.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: P-10
   title: P-10 install deterministic public Custom Flow/endpoint and Criterion → advert
   sources:
@@ -217,7 +217,7 @@ capabilities:
     `custom-discover`: install deterministic public Custom Flow/endpoint and Criterion → advertised schema. `custom-preflight`: dry-run → validated inputs/no execution artifact. `custom-criterion`: run → report satisfies its bound custom Criterion. `custom-disabled`: disable endpoint → absent from discovery. `custom-invalid`: syntax/schema fault → Doctor identifies extension failure. `custom-recovery`: restore file/re-enable → discovery and report succeed.
     Extension fixture source, public schema, Doctor output and Criterion/report binding; never substitute custom result for built-in sim.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: I-01
   title: I-01 actual selected VS Code client calls status/targets/Flow/Specialist → ru
   sources:
@@ -227,7 +227,7 @@ capabilities:
     `client-session`: actual selected VS Code client calls status/targets/Flow/Specialist → runtime identity and durable interactive logs; no Ticket/Criteria created. `interactive-commit`: safe edit/commit → exact local diff/history. `bare-launch`: bare booley/chat → configured provider and Project cwd. `bare-launch-failure`: missing disposable client executable → actionable diagnostic. `bare-launch-recovery`: restore executable → native CLI launches.
     Supported-client transcript is required for client coverage; shell/MCP harness cannot replace it. Provider compatibility executions remain separate.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: I-02
   title: I-02 discover tools in each actual supported client → public argument contrac
   sources:
@@ -236,7 +236,7 @@ capabilities:
     `mcp-schema`: discover tools in each actual supported client → public argument contracts. `detached-poll`: long public job returns run_id then poll → same job terminal result. `report-timeout`: inline client timeout then report lookup → latest same durable report. `cancel-queued`, `cancel-running`: cancel each state → distinct cancelled outcome, not design/infra failure. `cancel-recovery`: new job afterward → queue usable and clean completion.
     run_id, timing, reports, queue/running snapshots and process cleanup.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: I-03
   title: 'I-03 compare Interactive/Ticket discovery → submit_run_report hidden/visible '
   sources:
@@ -245,7 +245,7 @@ capabilities:
     `mcp-modes`: compare Interactive/Ticket discovery → submit_run_report hidden/visible respectively. `mcp-disabled`: disable one ordinary endpoint → removed and diagnostic explains policy. `mcp-restored`: re-enable → endpoint/schema restored.
     Mode/config identity and tool lists; hidden maturity tools not promoted.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: I-04
   title: I-04 two read-only Interactive jobs and Ticket work → class limits respected.
   sources:
@@ -254,16 +254,16 @@ capabilities:
     `interactive-concurrency`: two read-only Interactive jobs and Ticket work → class limits respected. `interactive-priority`: queued Interactive and Ticket jobs behind active job → no preemption; Interactive admitted first, FIFO peers. `shared-tree-collision`: two controlled edits in disposable shared-tree fixture → visible shared checkout collision captured.
     Admission/start/end ordering, class configuration and distinct caller IDs; restoration diff proves fixture cleanup.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: I-05
   title: I-05 record consulted help/cheat/MCP/skill for each step → reproducible publi
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
   contract: |-
     `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
-    Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks.
+    Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: F-01
   title: F-01 use independently named subchecks , , ,  → correct normalized result and
   sources:
@@ -272,7 +272,7 @@ capabilities:
     `sim-grades`: use independently named subchecks `sim-pass`, `sim-design-fail`, `sim-inconclusive`, `sim-infra` → correct normalized result and report class. `sim-multi`: selected pass+fail+pass Targets → all attempted, strongest grade retained. `sim-elab`: elab-only → durable successful elaboration. `sim-elab-args`: add run-only argument to elab → rejected. `sim-standalone-pass`, `sim-standalone-fail`: standalone good/bad module → distinct results. `sim-elab-persistence`: successful elaboration followed by failing run → elaboration remains durable.
     sim target JSON, artifacts/logs, exact target/test lists; restored failing fixture rerun earns separate `sim-recovery`. Focus/skip/traces reuse P-04/P-05/W-01 only through named mapping.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: F-02
   title: F-02 , , ,  separate clean/warning/syntax/tool-availability inputs → distinct
   sources:
@@ -282,7 +282,7 @@ capabilities:
     `lint-clean`, `lint-warning`, `lint-hard`, `lint-infra`: separate clean/warning/syntax/tool-availability inputs → distinct report outcomes. `lint-nonfatal-warning`: warnings configured nonfatal → rc and report passed distinction preserved. `lint-scope`: selected files → only intended scope. `lint-dedupe`: duplicate cross-Target finding → one finding with proper provenance. `lint-native-waiver`: each linter's native waiver → intended finding waived only. `lint-recovery`: restore source/tool → clean fresh result.
     Both linter versions, native waiver files, complete findings/report and filtered file lists.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: F-03
   title: F-03 execute assigned mode/frontend → fresh metrics and actual tool provenanc
   sources:
@@ -291,7 +291,7 @@ capabilities:
     `synth-metrics`: execute assigned mode/frontend → fresh metrics and actual tool provenance. `synth-latch`: bounded latching fixture → reported critical condition. `synth-advisory`: timing miss without hard threshold → advisory. `synth-threshold`: configured threshold violated → design failure. `synth-baseline`: compare declared baseline/candidate → numeric delta with both identities. `synth-frontend-missing`, `synth-frontend-incompatible`: distinct faults → appropriate config/execution failure. `synth-recovery`: restore supported frontend/design → valid fresh metrics.
     Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: F-04
   title: F-04 dry-run → exact part/top/XDC/source inventory without implementation.  i
   sources:
@@ -300,7 +300,7 @@ capabilities:
     `fpga-dry`: dry-run → exact part/top/XDC/source inventory without implementation. `fpga-fresh`: implementation → routed timing/utilization and fresh artifacts. `fpga-cache`: same inputs → authenticated cache hit. `fpga-no-cache`: same inputs no-cache → actual fresh tool execution. `fpga-design-fail`: declared bad design/threshold → rc1 design result. `fpga-authority-fail`: remove run-owned Grant → rc2 without unauthorized execution. `fpga-baseline`: declared pair → exact metrics delta/provenance. `fpga-recovery`: restore authority/design → valid implementation.
     Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-01
   title: S-01 Each of  (picorv32),  (taxi),  (uart),  (taxi),  (picorv32),  (uart),  (
   sources:
@@ -310,7 +310,7 @@ capabilities:
     Each of `review-rtl-bugs` (picorv32), `review-protocol` (taxi), `review-spec` (uart), `review-code-style` (taxi), `review-optimization` (picorv32), `review-security` (uart), `review-tb-quality` (uart) invokes that public focus → report explicitly identifies it. UART: `review-done` seeded real finding → advisory done evidence; `review-clean-blocked` unresolved MINOR or greater → clean not met; `review-clean-waived` explicit finding waiver → clean current; `review-stale` relevant edit → both stale; `review-rerun` corrected source rerun → fresh evidence. `review-guidance`: controlled Project-guide conflict → supplied Project guide wins, bundled guides still present.
     Report/transcript/finding/waiver and source identity; spec review binds actual Ticket/spec path. Document incorrect CRITICAL-only prose as Finding.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-02
   title: S-02 locked explicit small N/K campaign containing killed and surviving mutat
   sources:
@@ -319,7 +319,7 @@ capabilities:
     `mutation-campaign`: locked explicit small N/K campaign containing killed and surviving mutations → pristine baseline, per-mutant outcomes and first killing tests. `mutation-default-dry`: default dry-run → documented 10/10. `mutation-auto-dry`: size-scaled dry-run → 3–25 contract. `mutation-lock-reuse`: rerun same inputs → same valid proposal lock. `mutation-lock-regen`: explicit regen flag → new proposal lock/atomic manifest.
     Lock and manifest digests, isolated source diffs, baseline/per-mutant logs; failure cleanup proves no mutant source remains.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-03
   title: S-03 start independent Specialist → workspace/prompt manifest contains only a
   sources:
@@ -328,7 +328,7 @@ capabilities:
     `isolation-visible`: start independent Specialist → workspace/prompt manifest contains only allowed side. `isolation-hidden`: inspect retained permitted transcript/manifest → opposite RTL/TB side absent. `isolation-complete`: successful completion → source restored. `isolation-failure`: bounded failed Specialist → source restored and scoped workspace cleaned.
     Allowed/forbidden file manifests and before/after hashes, sanitized transcripts; no private filesystem access to bypass isolation.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-04
   title: 'S-04 , , , , ,  (picorv32);  (picorv32 Linux);  (uart); each  under the S-01 '
   sources:
@@ -338,7 +338,7 @@ capabilities:
     `criterion-elab`, `criterion-standalone`, `criterion-lint`, `criterion-sim`, `criterion-cycle`, `criterion-synthesis` (picorv32); `criterion-fpga` (picorv32 Linux); `criterion-mutation` (uart); each `criterion-review-<focus>` under the S-01 focus owner → a real Ticket sealed with that supported family and bound evidence.
     Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; hidden coverage criterion excluded.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-05
   title: S-05 unmet mandatory Criterion → cannot review.  unmet optional Criterion wit
   sources:
@@ -347,16 +347,16 @@ capabilities:
     `mandatory-block`: unmet mandatory Criterion → cannot review. `optional-justify`: unmet optional Criterion with current justification → documented acceptance. `evidence-stale`: relevant edit → prior evidence unusable. `evidence-rerun`: rerun exact sealed contract → current evidence. `out-contract`: undeclared Flow/Target call → rejected. `diagnostic-call`: explicit diagnostic invocation → allowed without satisfying sealed acceptance. `fail-fix-pass`: real failing sim then fix/pass → retained pre-fix failure required and linked.
     Criterion evaluations and all report/source identities before and after; one check per observed acceptance transition.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: S-06
   title: S-06 declared absolute count/PPA bound → computed pass/fail from exact metric
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
   contract: |-
-    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target pair → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
+    `threshold-absolute`: declared absolute count/PPA bound → computed pass/fail from exact metric. `threshold-relative`: baseline-relative bound → exact delta. `threshold-directed`: baseline/candidate Target binding → role direction retained. `threshold-clock`: named-clock bound → only declared clock metric. `baseline-missing`, `baseline-mismatch`: absent/incompatible basis → fail closed. `baseline-recovery`: restore exact compatible basis → evaluated result.
     Both refs, Target recipes, numeric operands and result; no generic report-exists oracle.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-01
   title: 'T-01 create selected detail mode → one complete approval draft.  conflicting '
   sources:
@@ -365,7 +365,7 @@ capabilities:
     `ticket-draft`: create selected detail mode → one complete approval draft. `ticket-guidance`: conflicting Project and explicit one-Ticket creation guidance → explicit override wins. `ticket-invalid-criterion`, `ticket-invalid-scope`, `ticket-invalid-target`: invalid fixture of each class → no enqueue. `ticket-seal`: approved valid draft enqueued → exact approved sealed contract.
     Draft/approval/sealed snapshots and validation errors; no agent impersonates live human approval.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-02
   title: T-02 Separate , , ,  under named owners → accepted correctly typed report wit
   sources:
@@ -375,7 +375,7 @@ capabilities:
     Separate `ticket-type-feature`, `ticket-type-verification`, `ticket-type-bug-fix`, `ticket-type-refactor` under named owners → accepted correctly typed report with type-specific details. `report-retained`: accepted run → durable REPORT.md outside committed tree. `accepted-commit`: accepted work → clean committed source.
     Reports, policy and Git status/history; deliberately configured no-report outcome is recorded separately with justification, not a missing report inferred pass.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-03
   title: T-03 , , ,  normal Ticket → each exact state transition. ,  unmet then comple
   sources:
@@ -384,7 +384,7 @@ capabilities:
     `transition-queue`, `transition-run`, `transition-review`, `transition-done`: normal Ticket → each exact state transition. `dependency-wait`, `dependency-release`: unmet then completed dependency → waiting then queued. `human-block`, `human-unblock`: explicit blocker and real human feedback → blocked then queued. `resume-workspace`: resume → same Ticket, preserved branch commits and evidence; rebuilt disposable checkout is identified from canonical state, not treated as lost work merely because path changes. `done-shortcut`: explicitly authorized successful destination → running to done.
     Board snapshots, transition logs and stable workspace identity; never fabricate human response during unattended operation.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-04
   title: T-04 public triage skill available.  approved bounded correction → done.  res
   sources:
@@ -394,7 +394,7 @@ capabilities:
     `triage-discover`: public triage skill available. `triage-approve`: approved bounded correction → done. `triage-reset`: reset a separate disposable Ticket → clean queued workspace, retired prior branch/worktree, archived prior evidence. `triage-archive`: archive another disposable Ticket → archived. `review-queue-invalid`: ordinary review→queue request → rejection.
     Human decisions, before/after Board and workspace IDs, archived report location. Reset/cleanup only exact owned Tickets.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-05
   title: T-05 commit safe ordinary out-of-Scope authored file → allowed and exact path
   sources:
@@ -403,7 +403,7 @@ capabilities:
     `scope-deviation`: commit safe ordinary out-of-Scope authored file → allowed and exact path recorded in .runtime/scope_deviations.json. `scope-justification`: submit final change set → explicit rationale for every changed file retained; missing rationale cannot satisfy reporting contract. `bookkeeping-reject`: attempt forbidden bookkeeping edit → hard boundary enforced. `report-dirty-staged`, `report-dirty-modified`, `report-dirty-deleted`, `report-dirty-untracked`: each dirty state submitted separately → report rejected. `scope-recovery`: undo protected-input fault, retain justified ordinary deviation, commit clean work and submit → accepted report with deviation visible.
     Rejection diagnostics, staged/tree status and restoration diffs. Current public Usage Scope and CONTEXT supersede historical ordinary-file hard rejection. Migrate old scope-reject as superseded; bookkeeping and acceptance inputs remain protected.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-06
   title: T-06 enqueue baseline-relative Ticket → immutable refs/Target input basis.  D
   sources:
@@ -413,7 +413,7 @@ capabilities:
     `basis-pin`: enqueue baseline-relative Ticket → immutable refs/Target input basis. `basis-edit-reject`: Developer-time control input edit → rejected. `basis-redraft`: return-to-draft/revise/reseal → legitimate new basis. `target-disposition`: accept declared persistent/replacement/ephemeral Target Plan → destination contains exactly derived accepted Targets, ephemeral removed.
     Before/after sealed basis and destination core/history manifests.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-07
   title: T-07 ,  configured destinations → exact destination and expected merge/cleanu
   sources:
@@ -422,7 +422,7 @@ capabilities:
     `success-review`, `success-done`: configured destinations → exact destination and expected merge/cleanup. `run-result`: review run → parse stable BOOLEY_RUN_RESULT. `briefing-json`: regenerate unchanged briefing → deterministic versioned JSON. `briefing-html`: request rich output → generated artifact. `briefing-html-failure`: induce owned renderer/output fault → accepted work unchanged. `briefing-regenerate`: repair fault → rich artifact restored without rerunning accepted work.
     Board/history/worktree disposition, machine record, briefing copies/hashes and renderer diagnostic.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-08
   title: T-08 interrupt after completed Flow → checkpoint retained.  restart → no dupl
   sources:
@@ -432,7 +432,7 @@ capabilities:
     `checkpoint-interrupt`: interrupt after completed Flow → checkpoint retained. `checkpoint-resume`: restart → no duplicate accepted evidence. `subscription-requeue`: safely controlled subscription-limit fixture → waiting/requeue. `known-transient-retry`: configured known stream-stall fixture → bounded retry. `ordinary-crash`: different crash signature → no unjustified retry. `developer-timeout`: bounded timeout fixture → distinct timeout outcome.
     Checkpoint/run IDs, classifications, attempt counts, public configuration and cleanup. Real human-block behavior is T-03; safe public fault induction must be implemented explicitly, never by depleting real quota.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-09
   title: T-09 two runs/two Tickets → separate claims/workspaces.  concurrent runs → no
   sources:
@@ -441,7 +441,7 @@ capabilities:
     `atomic-claim`: two runs/two Tickets → separate claims/workspaces. `artifact-isolation`: concurrent runs → no cross-Ticket source/evidence. `class-cap`: bounded class limit → excess job waits. `queue-cancel`: cancel waiting job → cancelled, no execution. `queue-full`: tiny full queue → admission blocked.
     Ticket IDs/worktree paths, class/admission timeline and file manifests; Interactive priority mapping uses I-04 exact check.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-10
   title: T-10 named run → documented full-screen Console. ,  invoke separately → no st
   sources:
@@ -450,7 +450,7 @@ capabilities:
     `console`: named run → documented full-screen Console. `dry-run`, `check-ready`: invoke separately → no state transition. `idle-drained`: drained loop reaches timeout → correct exit without phantom claim. `board-human`: show/briefing → correct Ticket state. `board-machine`: review record → exact same identity/state.
     Terminal capture, before/after Board snapshots and machine record. Screenshot required only for actual layout claim.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-11
   title: T-11 unattended configuration → no manufactured live approval. ,  separate ru
   sources:
@@ -460,7 +460,7 @@ capabilities:
     `human-policy`: unattended configuration → no manufactured live approval. `report-policy-required`, `report-policy-optional`: separate runs → configured required report or explicit justified no-report result. `timeout-active`, `timeout-wall`: controlled wait/work fixture → configured active versus wall accounting. `model-tier`, `model-role`: independently override tier/role → execution metadata records selected model. `model-invalid-role`, `limit-invalid`: malformed inputs → rejected before agent work.
     Sanitized configuration, elapsed/accounted times and durable provider/model metadata; `policy-recovery`: restore valid config → launch succeeds.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: T-12
   title: T-12 authorized disposable topic/egress and blocked Ticket → received blocked
   sources:
@@ -469,7 +469,7 @@ capabilities:
     `notify-blocked`: authorized disposable topic/egress and blocked Ticket → received blocked notification. `notify-doctor`: automatic Doctor issue → received Doctor notification. `notify-absent`: no topic → transition unchanged/no send. `notify-unavailable-blocked`, `notify-unavailable-doctor`: controlled unavailable notifier → each transition still completes. `notify-completion-drift`: completion → public promised event observed or failed documentation-contract assertion.
     Pre-run topic authority, nonsecret received payload/identity/time and lifecycle logs. Undocumented review/rate-limit/events filtering are not mandatory support.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: W-01
   title: W-01 traced real sim → FST newer than invocation, nonempty and queryable with
   sources:
@@ -479,7 +479,7 @@ capabilities:
     `trace-fresh`: traced real sim → FST newer than invocation, nonempty and queryable with expected scopes/counts. Taxi `trace-native`: direct native FST → no conversion required. PicoRV32 `trace-vcd-convert`, `trace-fifo`: VCD file/FIFO conversion → queryable FST with same ground truth. Taxi `trace-raw-vcd`, `trace-legacy`, `trace-empty`, `trace-truncated`: each invalid query store → actionable rejection. `trace-recovery`: regenerate valid trace → correct data.
     Original/conversion/queried artifact identities, metadata and values; never count raw VCD as successful query store.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: W-02
   title: 'W-02 register file/sim directory → alias and _last resolve expected absolute '
   sources:
@@ -489,7 +489,7 @@ capabilities:
     `alias-register`: register file/sim directory → alias and _last resolve expected absolute path. `alias-restart`: restart context → same mappings queryable. `alias-replace`: replace alias → new path returned. `marker-create`, `marker-list`, `marker-delete`: manipulate named marker → exact persisted state. `trace-same-path`: regenerate trace in place → new mtime/data recognized. `alias-missing`: missing path → error. `alias-stale`: older trace → warning.
     Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: W-03
   title: W-03 , , , , , , , , ,  each command on deterministic known trace → exact hie
   sources:
@@ -499,7 +499,7 @@ capabilities:
     `query-list`, `query-signal`, `query-wave`, `query-value`, `query-find`, `query-sample`, `query-diff`, `query-distance`, `query-stats`, `query-stuck`: each command on deterministic known trace → exact hierarchy/value/time/statistic oracle. `query-pattern-miss`, `query-ambiguous`, `query-limit`: absent pattern, colliding name, bounded output → documented results. `version`, `legacy-translation`, `schema`, `docs-list`, `docs-search`, `docs-show`, `skill`: each public/meta route → installed coherent content or equivalent translated query.
     Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: W-04
   title: W-04 ,  same known edge → post-edge cycle and raw transition correctly relate
   sources:
@@ -510,7 +510,7 @@ capabilities:
     `sync-event`, `async-event`: same known edge → post-edge cycle and raw transition correctly related. `clock-override`: ambiguous clocks with explicit choice → correct sampling. `reset-include`, `reset-skip`: each mode → correct sample set. `time-units`: equivalent physical/cycle/tick tokens → same known event. `literal-slice`: valid Verilog literal/bit slice → expected value. `async-bare-time`, `bad-literal`, `unknown-signal`, `width-mismatch`: independent invalid inputs → documented errors.
     Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: W-05
   title: 'W-05 query known event then scoped open → trace identity, clock row 1, exact '
   sources:
@@ -518,9 +518,9 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
   contract: |-
     `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
-    WCP readback plus rendered screenshot from qualified observer, before/after each state change. Unavailable observer remains unavailable profile, no CLI substitute.
+    WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: ST-01
   title: ST-01 inspect setup config → explicit selected value. PicoRV32  → sanitized co
   sources:
@@ -529,7 +529,7 @@ capabilities:
     `stealth-explicit`: inspect setup config → explicit selected value. PicoRV32 `stealth-history` → sanitized commit prose. UART `nonstealth-history` → verbatim benign commit prose and ordinary cores. UART `stealth-legacy`: omitted-key disposable fixture → documented legacy sanitization fallback, never non-stealth credit.
     Config/history and Project state paths; no private identifiers.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: ST-02
   title: ST-02 authored hidden core → valid projected root core resolves without copied
   sources:
@@ -538,7 +538,7 @@ capabilities:
     `projected-core`: authored hidden core → valid projected root core resolves without copied/symlinked RTL. `projection-refresh`: authored core edit+refresh → new projected content. `native-ignore`: invalid native core with ignore_native_cores → valid authored target still resolves. `dual-repo`: inspect outer/inner histories → Project state excluded outside. `fresh-clone`: clean disposable outer clone → documented hidden-state limitation visible.
     Core paths/content/hash, RTL file metadata and both Git statuses/history; restore fixture after negative clone observation.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: ST-03
   title: ST-03 ,  separate benign banned token/trailer commits → rewritten as documente
   sources:
@@ -547,7 +547,7 @@ capabilities:
     `sanitize-word`, `sanitize-trailer`: separate benign banned token/trailer commits → rewritten as documented. `subject-reject`, `body-reject`: invalid convention/overlong body → refused, not truncated. `escape-sanitized`: documented environment escape → convention/body bypass but sanitization remains. `push-identity-allow`, `push-identity-reject`: disposable local remote and identities → respective allow/reject. `push-path-reject`, `push-symlink-reject`: banned path/target → rejected. `push-guard-escape`: documented guard escape on disposable local remote → documented bypass only.
     Commit messages/diffs, hook output and exact local remote; no public push. `history-recovery`: restore compliant inputs → valid local commit/push and no unsafe files.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: ST-04
   title: ST-04 inspect UID/capabilities → non-root/restricted.  inspect mounts → absent
   sources:
@@ -556,7 +556,7 @@ capabilities:
     `runtime-user`: inspect UID/capabilities → non-root/restricted. `mount-boundary`: inspect mounts → absent host home/SSH/Docker socket. `pdk-readonly`: benign owned-name write attempt to PDK mount → refused. PicoRV32 `vivado-readonly` same on provisioned mount → refused. `network-deny`: controlled undeclared route → blocked. `provider-allow`: real selected-provider call → works through allowed path. `origin-push-deny`: runtime attempts harmless local-fixture origin push → prohibited by documented agent boundary. `interrupt-cleanup`: interrupt owned work → no descendants.
     Mount/capability metadata and benign probe outputs; do not enumerate unrelated secrets. Shared process evidence can map H-06 explicitly.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: D-01
   title: 'D-01 append each defect/friction/impression/win → retained distinct entries. '
   sources:
@@ -566,7 +566,7 @@ capabilities:
     `feedback-kinds`: append each defect/friction/impression/win → retained distinct entries. `feedback-list`: listing → same entries. `feedback-triage`: classify project/Booley/docs/unknown → persisted classifications. `feedback-filed`: mark fixture filed → excluded from next candidate report. `feedback-concurrent`: simultaneous appends → all complete entries retained. `feedback-atomic`: controlled triage/filed rewrite → valid complete log. `feedback-regenerate`: restart/regenerate → current persistent report.
     Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: D-02
   title: D-02 unattended report generation → file only/no outbound send.  benign plant
   sources:
@@ -575,7 +575,7 @@ capabilities:
     `feedback-file-only`: unattended report generation → file only/no outbound send. `feedback-redact`: benign planted private-like fixture → exact intended redaction in preview. `feedback-token`: approved preview token then rerender changed content → old token rejected. `feedback-export`: explicit local export → preview-equivalent file. `feedback-block-submit`: dry-run/unconfirmed submission → nothing sent. `feedback-off`: off mode → no outbound offer.
     Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these probes.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: D-03
   title: D-03 each step follows released README/Setup/Usage/Config/Flow/EDA/Troublesho
   sources:
@@ -584,7 +584,7 @@ capabilities:
     `docs-contract`: each step follows released README/Setup/Usage/Config/Flow/EDA/Troubleshooting/help/skills → sufficient coherent public route or specific Finding with observation first. `docs-recovery`: documented recovery after seeded fault → user can resume from named checkpoint without hidden maintainer knowledge.
     Frozen public sources, first observation timestamp, later verification source if used, exact missing/contradictory instruction.
   applicability: |-
-    Supported outcomes under explicit profile applicability. No hidden, planned or unsupported cross-product receives credit.
+    Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: EDA-verilator-sim
   title: verilator-sim
   sources:

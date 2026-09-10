@@ -299,7 +299,31 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     if not missing:
         return None
 
+    from booley.core.checkout_role import SourceCheckoutProjectError
     from booley.criteria.actions import planned_invocation
+    from booley.criteria.endpoint_catalog import (
+        CriterionEndpointCatalog,
+        EndpointCriterionRelationship,
+    )
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    try:
+        project_criteria_path = (
+            resolve_checkout_project_dir(Path(endpoint.args.work_dir)) / "criteria.toml"
+        )
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        project_criteria_path = None
+
+    endpoint_catalog = CriterionEndpointCatalog.load(
+        project_criteria_path,
+        (
+            EndpointCriterionRelationship(
+                command=endpoint.name,
+                satisfies=tuple(endpoint.satisfies),
+                arguments=tuple(sorted(endpoint.satisfies_args.items())),
+            ),
+        ),
+    )
 
     pending: list[str] = []
     for key, entry in endpoint.state.criteria.items():
@@ -307,7 +331,7 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
             key == family or key.startswith(f"{family}_") for family in endpoint.satisfies
         ):
             continue
-        invocation = planned_invocation(key, entry)
+        invocation = planned_invocation(key, entry, endpoint_catalog)
         pending.append(f"  {key} -> {invocation or endpoint.name}")
     pending_text = "\n".join(pending) if pending else "  (no compatible criterion declared)"
     return EndpointOutcome(

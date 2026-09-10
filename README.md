@@ -37,10 +37,7 @@ See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEAT
 ## Installation
 
 Booley supports Windows and Linux (Ubuntu 24.04 tested); macOS is not
-supported. On Windows, the native host CLI and Docker Desktop workflow are
-functionally supported from a normal Windows checkout. Filesystem-heavy EDA
-performance across Windows bind mounts is still being qualified, so it should
-not yet be assumed equivalent to Linux-native performance. You need:
+supported. You need:
 
 - Python 3.11+
 - [Git 2.37.2+](https://git-scm.com/downloads)
@@ -71,16 +68,14 @@ booley --version
 booley bootstrap
 ```
 
-`pipx` is recommended because it avoids system-Python conflicts. Windows users
-should run the CLI natively, not inside WSL. See
+`pipx` is recommended because it avoids system-Python conflicts. See
 [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
 for first-run, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
+
 `booley bootstrap` prepares reusable host resources: the VS Code Dev Containers
 extension, skills, the shared PDK cache, the base Session Image, and global
-Interactive Mode services. It is recommended after installation and upgrades,
-but optional before Project work: ordinary `booley init` performs the same
-reconciliation first.
+Interactive Mode services.
 
 ## Quick Start
 

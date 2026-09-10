@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 VALIDATOR = Path(__file__).resolve().parents[2] / "qa" / "validate.py"
 
 
@@ -38,7 +40,7 @@ def test_structurally_invalid_scenario_is_rejected(tmp_path):
     (tmp_path / "coverage.yaml").write_text(
         "format_version: 1\ncapabilities:\n- id: H-01\n  title: Install\n"
         "  sources: [https://example.com/contract]\n  contract: Exact release\n"
-        "  applicability: All profiles\n"
+        "  applicability: All Configured Scenarios\n"
     )
     scenario = tmp_path / "scenarios" / "sample"
     scenario.mkdir(parents=True)
@@ -62,10 +64,14 @@ def write_suite(root):
     import yaml
 
     shutil.copytree(Path(__file__).with_name("fixtures"), root, dirs_exist_ok=True)
-    return (
-        yaml.safe_load((root / "scenarios/sample/scenario.yaml").read_text()),
-        yaml.safe_load((root / "profiles.yaml").read_text()),
-    )
+    return yaml.safe_load((root / "scenarios/sample/scenario.yaml").read_text())
+
+
+def write_scenario(root, scenario):
+    """Replace the disposable Scenario fixture."""
+    import yaml
+
+    (root / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
 
 
 def run_validator(root):
@@ -82,7 +88,7 @@ def run_validator(root):
 def test_prerequisites_reject_later_checks_and_step_ids(tmp_path):
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     scenario["steps"][1]["requires"] = ["restore"]
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
     result = subprocess.run(
@@ -99,7 +105,7 @@ def test_prerequisites_reject_later_checks_and_step_ids(tmp_path):
 def test_recovery_cannot_depend_transitively_on_negative_pass(tmp_path):
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     scenario["steps"][2]["requires"] = ["negative"]
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
     result = subprocess.run(
@@ -113,12 +119,11 @@ def test_recovery_cannot_depend_transitively_on_negative_pass(tmp_path):
     assert "recovery" in result.stderr
 
 
-def test_profile_must_select_supporting_checks(tmp_path):
-    import yaml
+def test_scenario_run_must_select_supporting_checks(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["check_sets"][0]["checks"].remove("sample.baseline")
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["check_sets"][0]["checks"].remove("baseline")
+    write_scenario(tmp_path, scenario)
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
         capture_output=True,
@@ -133,7 +138,7 @@ def test_profile_must_select_supporting_checks(tmp_path):
 def test_budget_includes_contingency_and_protects_cleanup(tmp_path):
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     scenario["phases"][0]["minutes"] = 460
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
     result = subprocess.run(
@@ -150,7 +155,7 @@ def test_budget_includes_contingency_and_protects_cleanup(tmp_path):
 def test_asset_symlink_escape_is_rejected(tmp_path):
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     (tmp_path / "scenarios/sample/escape").symlink_to("/etc/passwd")
     scenario["steps"][0]["assets"] = [{"path": "escape", "audience": "coordinator"}]
     (tmp_path / "scenarios/sample/scenario.yaml").write_text(yaml.safe_dump(scenario))
@@ -192,12 +197,11 @@ def test_unused_capability_is_not_coverage(tmp_path):
     assert "H-02" in result.stderr
 
 
-def test_profile_schema_rejects_misspelled_provider(tmp_path):
-    import yaml
+def test_scenario_schema_rejects_misspelled_agent_provider(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["profiles"][0]["runs"][0]["provder"] = "Claude"
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["configured_scenarios"][0]["parameters"]["agent_provder"] = "Claude"
+    write_scenario(tmp_path, scenario)
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
         capture_output=True,
@@ -206,7 +210,28 @@ def test_profile_schema_rejects_misspelled_provider(tmp_path):
         check=False,
     )
     assert result.returncode == 1
-    assert "provder" in result.stderr
+    assert "agent_provder" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["configured_scenario_id", "parameter", "pre_run_requirement", "exclusion_reason"],
+)
+def test_scenario_schema_rejects_whitespace_only_configured_scenario_strings(tmp_path, target):
+    scenario = write_suite(tmp_path)
+    configured = scenario["configured_scenarios"][0]
+    if target == "configured_scenario_id":
+        configured["id"] = " "
+    elif target == "parameter":
+        configured["parameters"]["agent_provider"] = " "
+    elif target == "pre_run_requirement":
+        configured["pre_run_requirements"][0] = " "
+    else:
+        configured["exclusions"] = [{"check": "baseline", "reason": " "}]
+    write_scenario(tmp_path, scenario)
+    result = run_validator(tmp_path)
+    assert result.returncode == 1
+    assert "does not match" in result.stderr
 
 
 def test_coverage_index_is_derived_after_validation(tmp_path):
@@ -234,15 +259,14 @@ def test_coverage_index_is_derived_after_validation(tmp_path):
         "sample.removed",
         "sample.restored",
     ]
-    assert index["H-01"]["profiles"] == ["core"]
+    assert index["H-01"]["configured_scenarios"] == ["sample-linux-cli"]
 
 
-def test_required_check_cannot_disappear_from_all_profiles(tmp_path):
-    import yaml
+def test_required_check_cannot_disappear_from_all_configured_scenarios(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["check_sets"][0]["checks"].remove("sample.removed")
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["check_sets"][0]["checks"].remove("removed")
+    write_scenario(tmp_path, scenario)
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
         capture_output=True,
@@ -251,53 +275,58 @@ def test_required_check_cannot_disappear_from_all_profiles(tmp_path):
         check=False,
     )
     assert result.returncode == 1
-    assert "sample.removed" in result.stderr
+    assert "removed" in result.stderr
 
 
-def test_profile_rejects_unknown_check_set(tmp_path):
-    import yaml
+def test_configured_scenario_rejects_unknown_check_set(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["profiles"][0]["runs"][0]["check_sets"] = ["missing"]
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["configured_scenarios"][0]["check_sets"] = ["missing"]
+    write_scenario(tmp_path, scenario)
     result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "unknown check set missing" in result.stderr
 
 
-def test_profile_rejects_duplicate_checks_across_sets(tmp_path):
+def test_configured_scenario_ids_are_unique_across_scenarios(tmp_path):
     import yaml
 
-    _, profiles = write_suite(tmp_path)
-    profiles["check_sets"].append(
-        {"id": "duplicate", "scenario_id": "sample", "checks": ["sample.baseline"]}
-    )
-    profiles["profiles"][0]["runs"][0]["check_sets"].append("duplicate")
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["scenario_id"] = "second"
+    second = tmp_path / "scenarios" / "second"
+    second.mkdir()
+    (second / "scenario.yaml").write_text(yaml.safe_dump(scenario))
+    result = run_validator(tmp_path)
+    assert result.returncode == 1
+    assert "Configured Scenarios: duplicate IDs" in result.stderr
+
+
+def test_scenario_rejects_duplicate_checks_across_sets(tmp_path):
+
+    scenario = write_suite(tmp_path)
+    scenario["check_sets"].append({"id": "duplicate", "checks": ["baseline"]})
+    scenario["configured_scenarios"][0]["check_sets"].append("duplicate")
+    write_scenario(tmp_path, scenario)
     result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "duplicate values" in result.stderr
 
 
-def test_profile_rejects_cross_scenario_check_set(tmp_path):
-    import yaml
+def test_scenario_rejects_qualified_check_id(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["check_sets"][0]["scenario_id"] = "another-scenario"
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["check_sets"][0]["checks"][0] = "another-scenario.baseline"
+    write_scenario(tmp_path, scenario)
     result = run_validator(tmp_path)
     assert result.returncode == 1
-    assert "cross-scenario check set sample-core" in result.stderr
+    assert "another-scenario.baseline" in result.stderr
 
 
-def test_profile_rejects_unused_check_set(tmp_path):
-    import yaml
+def test_scenario_rejects_unused_check_set(tmp_path):
 
-    _, profiles = write_suite(tmp_path)
-    profiles["check_sets"].append(
-        {"id": "unused", "scenario_id": "sample", "checks": ["sample.unused"]}
-    )
-    (tmp_path / "profiles.yaml").write_text(yaml.safe_dump(profiles))
+    scenario = write_suite(tmp_path)
+    scenario["check_sets"].append({"id": "unused", "checks": ["unused"]})
+    write_scenario(tmp_path, scenario)
     result = run_validator(tmp_path)
     assert result.returncode == 1
     assert "unused check sets ['unused']" in result.stderr
@@ -305,8 +334,8 @@ def test_profile_rejects_unused_check_set(tmp_path):
 
 def test_duplicate_yaml_key_cannot_hide_authored_selection(tmp_path):
     write_suite(tmp_path)
-    path = tmp_path / "profiles.yaml"
-    path.write_text(path.read_text() + "\nprofiles: []\n")
+    path = tmp_path / "scenarios/sample/scenario.yaml"
+    path.write_text(path.read_text() + "\nconfigured_scenarios: []\n")
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--root", str(tmp_path)],
         capture_output=True,
@@ -345,7 +374,7 @@ def test_shared_asset_is_explicit_and_confined(tmp_path):
 
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     shared = tmp_path / "shared/probes"
     shared.mkdir(parents=True)
     asset = shared / "common.md"
@@ -373,7 +402,7 @@ def test_shared_asset_is_explicit_and_confined(tmp_path):
 def test_shared_directory_cannot_redirect_outside_suite(tmp_path):
     import yaml
 
-    scenario, _ = write_suite(tmp_path)
+    scenario = write_suite(tmp_path)
     (tmp_path / "shared").symlink_to("/etc", target_is_directory=True)
     scenario["steps"][0]["assets"] = [
         {"base": "shared", "path": "passwd", "audience": "coordinator"}

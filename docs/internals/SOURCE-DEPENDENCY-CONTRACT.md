@@ -17,8 +17,8 @@ The package layout maps to the canonical concepts indexed by the
 | Session Runtime | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment` | Own shared execution records, processes, paths, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
-| Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint. |
-| Acceptance evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
+| Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
+| Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
 | Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, and execution records. |
@@ -106,7 +106,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | Rule | Source selector | Target selector | Decision | Design reason |
 | --- | --- | --- | --- | --- |
 | D1 | Prefixes `booley.audit`, `booley.config`, `booley.fusesoc`, `booley.targets` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists` | Forbid | Environment/configuration analysis and Target policy must not know Harness, MCP, or Specialist mechanisms. |
-| D2 | Prefix `booley.criteria` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists` | Forbid, subject only to W1-W2 | Criteria is acceptance policy; endpoint discovery is an agent-facing mechanism. |
+| D2 | Prefix `booley.criteria` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists` | Forbid | Criteria is acceptance policy; endpoint discovery is an agent-facing mechanism. |
 | D3 | Prefix `booley.specialists` | Prefix `booley.harness` and exact module `booley.mcp.server` | Forbid | A Specialist returns evidence without depending on its Harness or MCP composition mechanism. |
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Session Runtime mechanisms must remain usable without agent-facing mechanisms. |
@@ -124,7 +124,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 | D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
 
-## Acceptance evidence ownership
+## Criterion evidence ownership
 
 `booley.evidence` is the dependency-neutral owner of values that cross from an
 evidence producer into Criteria policy. `evidence.fields` owns the persisted key
@@ -173,14 +173,10 @@ named rule and gives no source module a blanket exemption.
 
 ## Exact legacy waivers
 
-Waivers are exact, live edges. They permit no package prefix and cannot transfer
-to a replacement edge. Both current waivers retire through
-[#284](https://github.com/boldaxolotl/booley/issues/284).
-
-| Waiver | Rule | Exact source -> exact target | Design explanation | Retirement work |
-| --- | --- | --- | --- | --- |
-| W1 | D2 | `booley.criteria.actions -> booley.mcp.registry` | Invocation rendering currently discovers the endpoint-to-Criterion relationship from MCP registration. This is legacy mechanism knowledge, not desired policy direction. | #284 |
-| W2 | D2 | `booley.criteria.reference -> booley.mcp.registry` | Generated Criteria reference text currently discovers producing endpoints through the MCP registry. | #284 |
+There are no live legacy waivers. The former W1/W2 Criteria-to-MCP edges were
+retired by [#284](https://github.com/boldaxolotl/booley/issues/284): MCP discovery
+now adapts registrations into immutable relationship values at composition roots,
+and Criteria consumes only `CriterionEndpointCatalog`.
 
 ## Dynamic-import inventory
 

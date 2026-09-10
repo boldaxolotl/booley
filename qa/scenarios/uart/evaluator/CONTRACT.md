@@ -2,7 +2,7 @@
 
 This is the public-contract derivation used by the independent evaluator. It does not establish qualification. Only the seven permitted documents at `lowRISC/opentitan@615d3c74fadbbf674c8ca05a70f91094989849fb` were retrieved. No implementation, generated register source, tests, DIFs, HJSON or reference model was consulted. Concrete stimuli below are encoding choices within the agreed scope; scenario-defined observation bounds are explicitly separated from documented facts.
 
-All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain operator-held and inaccessible from the Developer Agent's Project and Session Runtime.
+All IDs begin `opentitan-uart-clean-room-greenfield.`. The family prefixes below expand that prefix, using dots consistently. A register or field expansion produces independent check/result records, not a single aggregate pass. Source authority is the pinned public corpus plus the accepted scenario MMIO addendum. The public evaluator contract and IDs may live in the suite repository; actual evaluator implementation, materialized cases, seed-private inputs and complete logs remain Scenario Operator-held and inaccessible from the Developer Agent's Project and Session Runtime.
 
 ## Exact register map and access expansion
 
@@ -93,7 +93,7 @@ For VAL, steady all-high/all-low input eventually yielding 0xffff/0x0000 is usef
 
 ## Deterministic seed and case materialization
 
-The coordinator supplies one 128-bit run seed as exactly 32 lowercase hexadecimal characters. Store it only in the operator-controlled run declaration and materialized manifest; the implementing Developer Agent receives neither seed nor generated cases. The evaluator delegate receives the frozen materialized cases, not authority to regenerate them. A supplied seed with any other length/alphabet blocks preparation. This is an encoding choice for reproducibility, not a UART behavioral requirement.
+The Scenario Operator supplies one 128-bit run seed as exactly 32 lowercase hexadecimal characters. Store it only in the Scenario Operator-controlled run declaration and materialized manifest; the implementing Developer Agent receives neither seed nor generated cases. The evaluator delegate receives the frozen materialized cases, not authority to regenerate them. A supplied seed with any other length/alphabet blocks preparation. This is an encoding choice for reproducibility, not a UART behavioral requirement.
 
 Use counter-based SHA-256 without a library-specific pseudorandom generator. For family F, supplement index i and block index j, hash the following exact UTF-8/ASCII sequence, including its final LF:
 
@@ -130,7 +130,7 @@ Before evaluating any candidate, freeze a complete materialized manifest in asce
 
 Use these exact **execution ceilings**, clipped to the remaining named phase budget and overall cleanup boundary. They are resource controls, not new RTL timing promises:
 
-- Evaluator compile/elaboration and each operator fixture build: 300 seconds wall time per invocation; its phase deadline may end it sooner.
+- Evaluator compile/elaboration and each Scenario Operator fixture build: 300 seconds wall time per invocation; its phase deadline may end it sooner.
 - Each materialized case, including its reset/setup/recovery: 30 seconds wall time and 1,048,576 source-clock cycles, whichever arrives first. A hung MMIO transaction can produce an earlier true failure under its accepted four-clock circuit contract; otherwise exhausting a ceiling is blocked evidence.
 - NCO-zero no-progress observation: 4096 source clocks after its established setup, with its ordinary case ceilings still active.
 - Timeout-CSR cases: VAL=32 and at most 4096 nominal bit-times of passive observation after each declared FIFO-depth/event operation, also subject to the case ceilings. This horizon is deliberately operational and is **not** a 4096-bit maximum hardware timeout promise.
@@ -148,15 +148,15 @@ next interval is measured from the IRQ event, never from its acknowledgement.
 Each trial observes two subsequent periods and drains the preserved FIFO contents.
 Timeout is disabled during initial FIFO loading; enabling it begins the first epoch.
 Missing or out-of-window IRQ edges are circuit failures under this new public
-requirement. Operational ceilings and invalid operator observations remain blocked.
+requirement. Operational ceilings and invalid Scenario Operator observations remain blocked.
 Raw per-clock pin traces, bus acceptance times and measured reference windows are
 retained even on failure. Other timing situations acquire no implied deadline.
-The eight original timeout case IDs and profile memberships remain unchanged;
+The eight original timeout case IDs and Configured Scenario selections remain unchanged;
 new public/evaluator digests invalidate previous manifests and control evidence.
 
 ## Fixed evidence layout
 
-Within the operator-owned run artifact root, retain `evidence/uart/corpus-manifest.json`, `evidence/uart/interface-manifest.json`, and `evidence/uart/evaluator/manifest.json`. The latter holds evaluator identity, seed and full materialized cases. For each E in `evaluation-0`, `evaluation-1`, `evaluation-2` actually attempted, retain `evidence/uart/evaluator/<E>/candidate.json` with exact accepted commit plus build identity and `build.log`. For every full scenario-qualified case ID C, retain:
+Within the Scenario Operator-owned run artifact root, retain `evidence/uart/corpus-manifest.json`, `evidence/uart/interface-manifest.json`, and `evidence/uart/evaluator/manifest.json`. The latter holds evaluator identity, seed and full materialized cases. For each E in `evaluation-0`, `evaluation-1`, `evaluation-2` actually attempted, retain `evidence/uart/evaluator/<E>/candidate.json` with exact accepted commit plus build identity and `build.log`. For every full scenario-qualified case ID C, retain:
 
 ```text
 evidence/uart/evaluator/<E>/cases/<C>/stimulus.json
@@ -165,7 +165,7 @@ evidence/uart/evaluator/<E>/cases/<C>/trace.vcd
 evidence/uart/evaluator/<E>/cases/<C>/execution.log
 ```
 
-`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full operator evidence outside the Project and Session Runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer Agent's exposure is auditable. Never replace the operator case manifest with the bounded-feedback subset.
+`observations.json` records expected/observed values, source-clock times, raw evaluator classification and circuit/operational bound used; each case's append-only result references these files. The exact file format of implementation logs is not a new oracle decision. Keep full Scenario Operator evidence outside the Project and Session Runtime; only up to five accepted bounded diagnostic excerpts go to each repair. Retain those exact excerpts separately in `evidence/uart/repair-1/diagnostics.json` and `repair-2/diagnostics.json` so the Developer Agent's exposure is auditable. Never replace the Scenario Operator case manifest with the bounded-feedback subset.
 
 ## Frozen corpus identities
 

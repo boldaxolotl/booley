@@ -58,7 +58,7 @@ Prepared_contra = TypeVar("Prepared_contra", contravariant=True)
 
 
 class AcceptanceRecorder(Protocol[Prepared_contra]):
-    """Record immutable acceptance evidence for one prepared request."""
+    """Record immutable Criterion evidence for one prepared request."""
 
     def record_acceptance(self, prepared: Prepared_contra, outcome: EndpointOutcome) -> None:
         """Record evidence before mutable persistence begins."""

@@ -85,7 +85,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     assert "acceptance-input-change-required" in blocked
     assert "logs/<slug>/runs/<NNN>/" in blocked
     assert "retain the original basis" in blocked
-    assert "new authoring generation" in blocked
+    assert "fresh Ticket authoring" in blocked
     assert "`outer_worktree` and `project_worktree`" in blocked
     assert "`booley board return-to-draft" not in blocked
     assert "`booley board enqueue" not in blocked
@@ -167,7 +167,7 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
     for required in (
         "For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
         "For a briefing marked **unaccepted**",
-        "accepted snapshots are immutable",
+        "Criteria Satisfaction Records are immutable",
         "only a successful finalization makes approval available",
         "This is a clean start",
         "Do not selectively retain reviewed work",

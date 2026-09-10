@@ -53,6 +53,10 @@ Verilator-native measurement, immutable Campaigns, deterministic Criteria,
 transactional waivers, canonical persistence, exact pruning, and the report-driven
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
+V2 Campaign persistence keeps statistics in that small manifest and lossless points
+in an integrity-linked compressed point store; retained V1 Campaigns remain readable.
+The Coverage Analyst still receives every validated point. A deterministic, disclosed bounded
+evidence packet or query-driven Analyst remains future work; V2 does not silently sample evidence.
 The previous waveform/LLM scorer and mutable waiver cache have been removed.
 
 Simulation collection controls and the Coverage Criterion are public alongside
@@ -112,7 +116,8 @@ limits stay the same.
 local Markdown Ticket Board. Ticket creation, queue selection, execution, and
 triage should work through either surface. Booley should discover eligible
 issues from configured repositories and labels, claim each issue for exactly
-one Runner, publish the normal executable Ticket Acceptance Basis, and report
+one active `booley run` invocation, publish the normal executable Ticket
+Acceptance Basis, and report
 blocked, review, and done transitions back through labels and comments. Issue
 references should be usable for dependencies, while local Tickets retain the
 complete offline workflow.
@@ -124,7 +129,7 @@ inputs, Criteria, or base revision; retries and recovery use the same snapshot a
 evidence history. Credentials and network operations belong in a trusted
 host-side integration rather than the Session Runtime or Developer Agent, and
 remote updates must be idempotent and conflict-aware so a GitHub outage cannot
-corrupt local work or acceptance evidence.
+corrupt local work or Criterion evidence.
 
 ## Cocotb Support
 

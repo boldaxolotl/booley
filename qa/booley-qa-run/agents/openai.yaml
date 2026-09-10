@@ -1,7 +1,7 @@
 interface:
-  display_name: "Booley QA Run"
-  short_description: "Execute an evidence-producing public QA run"
-  default_prompt: "Use $booley-qa-run to execute a named public QA Profile run definition."
+  display_name: "Booley Scenario Run"
+  short_description: "Execute a public QA Configured Scenario"
+  default_prompt: "Use $booley-qa-run to execute a named public QA Configured Scenario."
 
 policy:
   allow_implicit_invocation: false

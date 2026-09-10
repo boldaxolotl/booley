@@ -2,51 +2,20 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import Any
 
+from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 
 
-@lru_cache(maxsize=1)
-def _endpoint_contracts() -> dict[str, tuple[str, bool]]:
-    """Return criterion family -> (endpoint command, per-target)."""
-    from booley.criteria.templates import load_base_criteria
-    from booley.mcp.registry import build_criterion_endpoint_map, discover_mcp_tools
-
-    definitions = load_base_criteria()
-    endpoint_map = build_criterion_endpoint_map(
-        {definition.name: definition for definition in definitions},
-        discover_mcp_tools(),
-    )
-    per_target = {definition.name: definition.per_target for definition in definitions}
-    return {
-        family: (command, per_target.get(family, False))
-        for family, (command, _region) in endpoint_map.items()
-    }
-
-
-def criterion_family(key: str) -> str | None:
-    """Return the longest built-in family prefix matching *key*."""
-    families = _endpoint_contracts()
-    matches = [
-        family
-        for family in families
-        if key == family
-        or key.startswith(f"{family}_")
-        or key in {f"{family}_clean", f"{family}_done"}
-    ]
-    return max(matches, key=len, default=None)
-
-
-def criterion_target(  # noqa: PLR0911 - ordered ownership and evidence fallbacks
-    key: str, entry: Any, family: str
+def criterion_target(
+    key: str,
+    entry: Any,
+    family: str,
+    *,
+    per_target: bool,
 ) -> str | None:
     """Resolve a criterion's exact Target from params, evidence, or its key."""
-    try:
-        _command, per_target = _endpoint_contracts()[family]
-    except (KeyError, TypeError):
-        return None
     from booley.criteria.templates import TARGET_BOUND_CRITERION_FLOWS
 
     if not per_target and family not in TARGET_BOUND_CRITERION_FLOWS:
@@ -74,18 +43,23 @@ def criterion_target(  # noqa: PLR0911 - ordered ownership and evidence fallback
     return key.removeprefix(f"{family}_")
 
 
-def planned_invocation(key: str, entry: Any) -> str | None:
+def planned_invocation(
+    key: str,
+    entry: Any,
+    endpoint_catalog: CriterionEndpointCatalog,
+) -> str | None:
     """Build the exact terminal invocation that can satisfy *key*."""
-    family = criterion_family(key)
-    if family is None:
+    binding = endpoint_catalog.match(key)
+    if binding is None:
         return None
-    command, _per_target = _endpoint_contracts()[family]
+    family = binding.family
+    command = binding.command
     params = getattr(entry, "params", {}) or {}
     recorded_selector = params.get("_target_selector")
     target = (
         recorded_selector
         if isinstance(recorded_selector, str) and recorded_selector
-        else criterion_target(key, entry, family)
+        else criterion_target(key, entry, family, per_target=binding.per_target)
     )
     if target and "--target" not in command:
         command = f"{command} --target {target}"

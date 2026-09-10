@@ -229,20 +229,22 @@ def _review_snapshot_heads(
         return None
     accepted = read_acceptance(log_dir)
     if accepted.kind == "corrupt":
-        raise ReviewPrepError(f"accepted snapshot is corrupt: {accepted.reason}")
+        raise ReviewPrepError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
     if accepted.kind != "accepted" or accepted.snapshot is None:
         if status == "review":
-            raise ReviewPrepError("review ticket has no accepted snapshot")
+            raise ReviewPrepError("review Ticket has no Criteria Satisfaction Record")
         return None
     expected_roles = {participant.role for participant in basis.participants}
     if set(accepted.snapshot.participant_heads) != expected_roles:
-        raise ReviewPrepError("accepted snapshot participants disagree with Acceptance Basis")
+        raise ReviewPrepError(
+            "Criteria Satisfaction Record participants disagree with Acceptance Basis"
+        )
     try:
         receipt = load_basis_receipt(project_root, slug, basis.as_dict())
     except AcceptanceBasisError as exc:
         raise ReviewPrepError(f"Acceptance Basis receipt is invalid: {exc}") from exc
     if accepted.snapshot.acceptance_basis != receipt:
-        raise ReviewPrepError("accepted snapshot names a different Acceptance Basis")
+        raise ReviewPrepError("Criteria Satisfaction Record names a different Acceptance Basis")
     return accepted.snapshot.participant_heads
 
 
@@ -283,7 +285,7 @@ def _resolve_review_repositories(
     if actual_heads != current_heads:
         raise ReviewPrepError("live review checkouts disagree with Acceptance Basis refs")
     if expected_heads is not None and actual_heads != expected_heads:
-        raise ReviewPrepError("live review heads disagree with the accepted snapshot")
+        raise ReviewPrepError("live review heads disagree with the Criteria Satisfaction Record")
     return worktree, head_sha, repository
 
 

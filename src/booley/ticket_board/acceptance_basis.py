@@ -772,7 +772,7 @@ def write_basis_receipt(
 def load_basis_receipt(
     project_root: Path | str, slug: str, value: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """Return the validated write-once receipt embedded in acceptance evidence."""
+    """Return the validated write-once receipt embedded in Criterion evidence."""
     root = Path(project_root).resolve()
     basis = AcceptanceBasis.from_mapping(value)
     record = load_basis_record(root, slug, basis)
