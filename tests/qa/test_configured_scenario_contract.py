@@ -39,6 +39,9 @@ def test_every_configured_scenario_preserves_reviewed_semantics():
             "pre_run_requirements": configured["pre_run_requirements"],
             "exclusions": configured["exclusions"],
         }
-        assert hashlib.sha256(
-            json.dumps(semantics, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest() == expected["semantics"]
+        assert (
+            hashlib.sha256(
+                json.dumps(semantics, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            == expected["semantics"]
+        )
