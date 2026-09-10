@@ -104,7 +104,7 @@ restart/resume of an interrupted Scenario Operator is deferred: preserve its par
 record, reconcile owned resources, and start a new run. Old results do not satisfy
 required checks in that new run.
 
-Persist ownership and intended disposition in `resources.json` before creating a
+Persist ownership and intended disposition in `cleanup-ledger.json` before creating a
 resource where its identity is known, otherwise immediately upon acquiring it and
 before dependent work. Track branches, worktrees, processes, Session Runtimes,
 Session Images, mounts, registrations, Grants, License Profiles, and relays as applicable. Ownership must
