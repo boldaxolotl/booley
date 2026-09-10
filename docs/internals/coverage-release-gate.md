@@ -15,11 +15,27 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then invoke the Analyst with the produced exact path; model transport is substituted and project bytes remain unchanged. |
 | Ticket Mode | The same suite checks independent persisted Simulation/Coverage verdicts for pass/pass, fail/pass, pass/fail, fail/fail, and collector-blocked combinations. Transaction fault tests cover every publication boundary. |
+| Campaign V2 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, exact deep-load equivalence, V1 compatibility, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
 | Public contracts | CLI aliases and help, MCP boolean schema, exposed Criterion catalog, generated references, docs-schema tests, and transport schema fixture. |
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |
 | Quality | `ruff check src/ tests/`, `ruff format --check .`, and `pyright`, using the exact pinned quality tools. |
 | Packages | Build wheel and sdist; `twine check`, payload rejection, and installed-artifact validation for direct and sdist-built wheels. |
 | Session Image | `tests/docker/verilator_acceptance.py`, release matrix, production collector smoke, and native FST cross-validation. |
+
+## V2 storage characterization, 10 SEP 2026
+
+A deterministic 40,000-point campaign exercises the checked-in structural scale test without
+machine-specific timing thresholds. On the local Python 3.14 host it produced a 3,810-byte V2
+manifest, a 970,291-byte compressed point store, and 26,180,081 decompressed point bytes. The
+equivalent full Analyst request was 27,543,123 bytes and its empty-advisory output was 26,183,483
+bytes, confirming that bounded Analyst evidence remains separate follow-up work.
+
+With `tracemalloc`, summary reads took 0.0024 seconds and 16,910,994 peak traced bytes for the
+one-point fixture versus 0.0029 seconds and the same peak for 40,000 points. The 40,000-point deep
+load took 26.27 seconds and 205,726,188 peak bytes; full Analyst composition took 29.68 seconds and
+175,639,433 peak bytes. These figures characterize one host rather than define portable budgets;
+the structural test requires near-constant manifest size, summary reads with no point-store access,
+lossless deep loading, and compression below the serialized Analyst payload.
 
 The hosted `bwave-smoke` job runs both native pytest suites and checks their
 JUnit report with `--min-tests 18 --max-skips 0`. Missing native prerequisites

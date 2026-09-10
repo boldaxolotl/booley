@@ -46,7 +46,6 @@ def _point(point_id: str, hits: int, *, metric: str = "line") -> CoveragePoint:
 def _campaign(*, simulation_verdict: str = "pass") -> CoverageCampaign:
     points = (_point("point-0", 1), _point("point-1", 0))
     return CoverageCampaign(
-        schema="booley.coverage-campaign/v1",
         campaign_id="campaign:sim_counter:12",
         invocation=MappingProxyType({"id": 12}),
         target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),
@@ -459,11 +458,21 @@ def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> No
     )
 
 
-def test_fingerprint_binds_campaign_schema_version() -> None:
-    campaign_v1 = _campaign()
-    campaign_v2 = replace(campaign_v1, schema="booley.coverage-campaign/v2")
+def test_fingerprint_is_independent_of_campaign_storage_version(tmp_path) -> None:
+    from booley.flows.sim.coverage_campaign import decode_coverage_campaign
+    from booley.flows.sim.coverage_campaign_store import (
+        load_coverage_campaign,
+        publish_coverage_campaign,
+    )
+    from tests.flows.sim.test_coverage_campaign import _valid_document
 
-    first = evaluate_coverage_campaign(campaign_v1, _criterion(), _empty_waivers())
-    second = evaluate_coverage_campaign(campaign_v2, _criterion(), _empty_waivers())
+    document = _valid_document()
+    document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
+    campaign = decode_coverage_campaign(document, _TARGET)
+    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
+    paths = publish_coverage_campaign(tmp_path, evaluated)
+    loaded = load_coverage_campaign(paths.campaign, _TARGET).campaign
 
-    assert first.evaluation["criterion_fingerprint"] != second.evaluation["criterion_fingerprint"]
+    assert (
+        loaded.evaluation["criterion_fingerprint"] == evaluated.evaluation["criterion_fingerprint"]
+    )

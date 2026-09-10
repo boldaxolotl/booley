@@ -238,15 +238,21 @@ directory; `--report-dir` selects an explicit root. Each invocation owns:
   progress.json
   targets/<encoded-target>/
     coverage.json
+    coverage-points.jsonl.gz
     simulation.json
     native/raw/
     native/merged/
     ... hook and queryability evidence
 ```
 
-`coverage.json` uses `booley.coverage-campaign/v1`: exact source/build/tool and
-suite fingerprints, independent per-run verdicts, lossless point identities,
-sparse positive hit incidence, capabilities, rollups, and stored evaluation.
+New `coverage.json` manifests use `booley.coverage-campaign/v2`. They keep exact
+source/build/tool and suite fingerprints, independent per-run verdicts,
+capabilities, rollups, percentages, and stored evaluation in a small summary.
+Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
+positive hit incidence; the manifest binds it by schema, exact relative path,
+compressed and uncompressed byte counts, point count, and SHA-256. Retained V1
+Campaigns with inline points remain readable. Pass consumers the exact
+`coverage.json` path; never pass or edit the point store directly.
 Native artifact paths are relative to the Target directory; Flow pointers are
 relative to the producing work directory. There is no project-wide latest
 Campaign and no cross-Target merge. Missing legacy flat reports require consumers
@@ -262,7 +268,7 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 ```
 
 Native pruning removes that Target's raw and merged databases while retaining
-immutable Campaign, Simulation, and hook evidence. Target-local
+the immutable Campaign manifest and point store, Simulation, and hook evidence. Target-local
 `availability.json` records `pruning` or `pruned`; normalized evidence remains
 analyzable. Full pruning removes the exact invocation's reports and native
 payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its

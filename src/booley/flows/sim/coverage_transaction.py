@@ -14,13 +14,11 @@ from .coverage_campaign import (
     CoverageCampaignValidationError,
     CoverageCollector,
     CoverageTarget,
-    DurableTargetIdentity,
     FrozenJson,
-    decode_coverage_campaign,
     derive_coverage_rollups,
-    encode_coverage_campaign,
     freeze_coverage_mapping,
 )
+from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
 from .coverage_policy import evaluate_coverage_campaign
 from .coverage_provenance import coverage_digest, validate_coverage_sources
@@ -50,7 +48,6 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
     incompatible = result.native_format.compatibility == "incompatible"
     points = () if incompatible else result.points
     return CoverageCampaign(
-        schema="booley.coverage-campaign/v1",
         campaign_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
         invocation=freeze_coverage_mapping(
             {"id": int(plan.invocation_dir.name), "started_at": plan.started_at}
@@ -170,7 +167,7 @@ def run_coverage_target(
 
 
 def _start_target(root: Path) -> None:
-    if (root / "coverage.json").exists() or (root / "native").exists():
+    if any((root / name).exists() for name in ("coverage.json", POINT_STORE_NAME, "native")):
         raise ValueError("Coverage attempts cannot resume; allocate a new invocation")
     root.mkdir(parents=True, exist_ok=True)
     # Exclusive creation also rejects an interrupted build with no native output.
@@ -184,10 +181,8 @@ def _publish(
     root: Path,
     campaign: CoverageCampaign,
 ) -> CoverageTargetOutcome:
-    document = encode_coverage_campaign(campaign)
-    decode_coverage_campaign(document, DurableTargetIdentity(plan.handle.identity))
     campaign_path, simulation_path = root / "coverage.json", root / "simulation.json"
-    write_campaign_json(campaign_path, document)
+    publish_coverage_campaign(root, campaign)
     passed = bool(result.runs) and all(run.simulation_verdict == "pass" for run in result.runs)
     detail = _simulation_projection(plan, campaign, result, passed)
     write_campaign_json(simulation_path, detail)

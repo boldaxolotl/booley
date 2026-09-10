@@ -310,9 +310,17 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(campaign)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(campaign).to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v1"
+    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["observed_evidence"]["campaign_manifest"]["$schema"] == (
+        "booley.coverage-campaign/v2"
+    )
+    assert len(report["observed_evidence"]["points"]) == 1
     assert report["eligibility"] == "eligible"
     assert len(model.calls) == 1
+    prompt = json.loads(model.calls[0].prompt)
+    assert "campaign" not in prompt
+    assert prompt["campaign_manifest"]["rollups"][0]["percent"] == 100.0
+    assert len(prompt["points"]) == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
