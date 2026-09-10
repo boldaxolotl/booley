@@ -82,7 +82,7 @@ and build-matched execution establish the authority's meaning and currency.
    mapping or availability probe does not prove product coverage. Before publishing,
    confirm every retained required behavior has a Check, Configured Scenario assignment, and
    evidence contract. Keep unresolved gaps visible.
-4. Review oracle quality, permitted delegate freedom, pre-run authority, feasible
+4. Review oracle quality, permitted sub-agent freedom, pre-run authority, feasible
    budgets, continuation, and cleanup. Review literal payloads, public expectation
    authority, prerequisite and supporting work, native-host exclusions, and the
    complete 480-minute allocation. Keep Configured Scenario selections explicit, and review content changes

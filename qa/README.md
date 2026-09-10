@@ -21,16 +21,18 @@ Configured Scenarios, acceptance rules, and final qualification decision.
 
 ## Starting a run
 
-Point the agent to [`agents/RUN.md`](agents/RUN.md) and give it a Scenario ID, a
-Configured Scenario ID, an artifact root, and the authority required by that run. The entry point includes a
-prompt template and the completion criteria.
+Explicitly invoke the user-only [`booley-qa-run` skill](booley-qa-run/SKILL.md) with a
+Scenario ID, a Configured Scenario ID, and an artifact root. The skill creates a fresh
+Scenario Run ID. Invocation grants authority for the resources and mutations
+declared by the selected Scenario; anything outside that scope requires separate
+user authorization. The agent never invokes this skill on its own.
 
-The suite is executable, but there is no single `booley qa run` command that
-orchestrates it. `validate.py` checks the authored QA assets only. During an actual
-run, the Scenario Operator follows the selected scenario and protocol, delegates work
-where useful, and writes the evidence record. Once the Human Maintainer has supplied the
-inputs and authority, the run proceeds unattended until completion, a declared stop
-condition, or a request for authority that was not granted at the start.
+QA execution is an agent skill, not a Booley CLI command. The agent executing the
+skill is the Scenario Operator: it follows the selected Scenario and protocol,
+delegates work to sub-agents where useful, and owns the evidence record. `validate.py`
+checks the authored QA assets only; it does not execute a Scenario Run. Once the
+required inputs are available, the skill runs unattended until completion, a declared
+stop condition, or a request for authority outside the Scenario's declared scope.
 
 ## What's in this directory
 
@@ -41,7 +43,8 @@ condition, or a request for authority that was not granted at the start.
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
-| [`agents/`](agents/) | Agent entry point, execution protocol, and run-record format |
+| [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
+| [`agents/`](agents/) | Shared execution protocol and run-record format used by the skill |
 | [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
 | [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, results, and summary; they are not execution evidence and grant no coverage credit |
 
@@ -80,8 +83,8 @@ records the historical decisions behind the production files.
    and retry limits. Capture the expected observation and the required artifact for
    each check. Preserve unexpected failures even when recovery or a later retry
    succeeds.
-5. Record results as defined in [`agents/FORMAT.md`](agents/FORMAT.md). Keep `results.jsonl` and
-   `findings.jsonl` append-only, track owned resources in `resources.json`, retain
+5. Record Check Results as defined in [`agents/FORMAT.md`](agents/FORMAT.md). Keep `results.jsonl` and
+   `findings.jsonl` append-only, track resources in `cleanup-ledger.json`, retain
    immutable artifacts under `evidence/`, and derive `summary.md` from those records.
 6. Clean up on every exit path, then calculate the Scenario Run Outcome. A
    trustworthy required failure makes it `failed`. Missing, blocked,

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Scenario Run"
+  short_description: "Execute a public QA Configured Scenario"
+  default_prompt: "Use $booley-qa-run to execute a named public QA Configured Scenario."
+
+policy:
+  allow_implicit_invocation: false

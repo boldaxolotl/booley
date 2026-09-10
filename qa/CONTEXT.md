@@ -54,6 +54,10 @@ _Avoid_: test runner, coordinator agent, autonomous campaign, delegate
 One execution of a Configured Scenario with exact product, suite, input, tool, and environment identities. It produces Check evidence.
 _Avoid_: QA Run, Job, Ticket run, test invocation
 
+**Check Result**:
+One immutable observation of a Check attempt within a Scenario Run.
+_Avoid_: Run Result, Criterion result, verdict, summary
+
 **Scenario Run Outcome**:
 The evaluation of one Scenario Run's evidence against its selected Checks. Its value is `passed`, `failed`, or `incomplete`, independently of whether execution completed, reached its deadline, or ended in operator error.
 _Avoid_: Qualification, Profile Verdict
