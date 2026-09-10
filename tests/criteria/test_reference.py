@@ -155,3 +155,53 @@ def test_public_coverage_reference_names_explicit_collection() -> None:
     rendered = render_criteria_reference(_ENDPOINTS)
     row = next(line for line in rendered.splitlines() if "`coverage_{target}`" in line)
     assert "`sim --coverage`" in row
+
+
+def test_maintainer_cli_prints_every_reference_block(monkeypatch, capsys) -> None:
+    from booley.dev_support import criteria_reference
+
+    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
+    monkeypatch.setattr(
+        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
+    )
+    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
+
+    assert criteria_reference._main([]) == 0
+
+    assert capsys.readouterr().out == (
+        "<!-- criteria -->\ncriteria\n\n<!-- criteria-params -->\nparams\n\n"
+    )
+
+
+def test_maintainer_cli_updates_reference_blocks_in_place(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from booley.dev_support import criteria_reference
+
+    destination = tmp_path / "reference.md"
+    destination.write_text(
+        """before
+<!-- BEGIN GENERATED: criteria -->
+old criteria
+<!-- END GENERATED: criteria -->
+<!-- BEGIN GENERATED: criteria-params -->
+old params
+<!-- END GENERATED: criteria-params -->
+after
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
+    monkeypatch.setattr(
+        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
+    )
+    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
+
+    assert criteria_reference._main([str(destination)]) == 0
+
+    assert extract_generated(destination.read_text(encoding="utf-8")) == "criteria"
+    assert (
+        extract_generated(destination.read_text(encoding="utf-8"), name="criteria-params")
+        == "params"
+    )
+    assert capsys.readouterr().out == f"updated {destination}\n"
