@@ -406,9 +406,9 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact published booley-rtl release, package SHA-256, matching docs and immutable runtime image digest; no editable/local/development package or source imports.
-  source: https://github.com/boldaxolotl/booley/releases
-  verification: Record version, executable/import origin, package hash and image payload provenance before work.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+  source: https://github.com/boldaxolotl/booley
+  verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: corpus
   kind: git
   value: 615d3c74fadbbf674c8ca05a70f91094989849fb
@@ -461,17 +461,17 @@ phases:
 steps:
 - id: published-release
   phase: prepare
-  action: Install/identify the exact published Booley package.
+  action: Install and identify the exact declared Booley package artifact, published or unreleased.
   checks:
   - id: published-release
     capabilities:
     - H-01
-    stimulus: Install/identify the exact published Booley package.
+    stimulus: Install and identify the exact declared Booley package artifact, published or unreleased.
     expected: |-
-      Package hash/version and matching public documentation identify the release; no development build, editable install, local wheel or Booley-source execution/import.
+      Package hash/version, source commit and matching documentation identify the build; no floating reference, editable install or Booley-source execution/import. A local candidate wheel is allowed when its content hash and source commit are recorded.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      Package hash/version and matching public documentation identify the release; no development build, editable install, local wheel or Booley-source execution/import.
+      Package hash/version, source commit, matching documentation identity, executable/import origin and image provenance identify the build and prove isolation from source checkouts.
     capture: evidence/opentitan-uart-clean-room-greenfield.published-release
 - id: run-inputs
   phase: prepare
@@ -580,10 +580,10 @@ steps:
     - S-06
     stimulus: Inspect material accessible to Developer.
     expected: |-
-      Only frozen corpus, interface stub/addendum, published Booley docs/help/skills and ordinary Project; no HJSON/regtool/RTL/tests/UVM/DIF/model or recursive implementation/current-doc navigation.
+      Only frozen corpus, interface stub/addendum, build-matched Booley docs/help/skills and ordinary Project; no HJSON/regtool/RTL/tests/UVM/DIF/model or recursive implementation/current-doc navigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      Only frozen corpus, interface stub/addendum, published Booley docs/help/skills and ordinary Project; no HJSON/regtool/RTL/tests/UVM/DIF/model or recursive implementation/current-doc navigation.
+      Only frozen corpus, interface stub/addendum, build-matched Booley docs/help/skills and ordinary Project; no HJSON/regtool/RTL/tests/UVM/DIF/model or recursive implementation/current-doc navigation.
     capture: evidence/opentitan-uart-clean-room-greenfield.source-boundary
   requires:
   - published-release
@@ -766,105 +766,105 @@ steps:
   phase: prepare
   action: |-
     Execute `booley-rtl` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.booley-rtl
     capabilities:
     - H-01
     stimulus: |-
       Execute `booley-rtl` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `booley-rtl` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-01.booley-rtl
   requires:
   - published-release
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-01.install
   phase: prepare
   action: |-
     Execute `install` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.install
     capabilities:
     - H-01
     stimulus: |-
       Execute `install` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `install` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-01.install
   requires:
   - published-release
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-01.pip-distro
   phase: prepare
   action: |-
     Execute `pip-distro` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.pip-distro
     capabilities:
     - H-01
     stimulus: |-
       Execute `pip-distro` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `pip-distro` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-01.pip-distro
   requires:
   - published-release
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-01.pip-recovery
   phase: prepare
   action: |-
     Execute `pip-recovery` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.pip-recovery
     capabilities:
     - H-01
     stimulus: |-
       Execute `pip-recovery` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `pip-recovery` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-01.pip-recovery
   requires:
   - published-release
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-02.force-repair
   phase: prepare
@@ -1658,77 +1658,77 @@ steps:
   phase: prepare
   action: |-
     Execute `upgrade-ack` using the attached scenario-owned probe contract.
-    `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+    `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
   checks:
   - id: inventory.H-11.upgrade-ack
     capabilities:
     - H-11
     stimulus: |-
       Execute `upgrade-ack` using the attached scenario-owned probe contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     expected: |-
       Evaluate only the independently named `upgrade-ack` outcome in this contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
     evidence: |-
-      Both released package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-11.upgrade-ack
   requires:
   - published-release
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: f0e7363fe37ecaafbfe96db90d382e2aa8c709697b910f9ad66c292d48361a24
+    sha256: b88d89e38a53d2f30e34ff1cb4410d5b9cbd359a1f4120937bb44c3b86dcc15b
 - id: inventory.H-11.upgrade-heal
   phase: prepare
   action: |-
     Execute `upgrade-heal` using the attached scenario-owned probe contract.
-    `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+    `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
   checks:
   - id: inventory.H-11.upgrade-heal
     capabilities:
     - H-11
     stimulus: |-
       Execute `upgrade-heal` using the attached scenario-owned probe contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     expected: |-
       Evaluate only the independently named `upgrade-heal` outcome in this contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
     evidence: |-
-      Both released package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-11.upgrade-heal
   requires:
   - published-release
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: f0e7363fe37ecaafbfe96db90d382e2aa8c709697b910f9ad66c292d48361a24
+    sha256: b88d89e38a53d2f30e34ff1cb4410d5b9cbd359a1f4120937bb44c3b86dcc15b
 - id: inventory.H-11.upgrade-pending
   phase: prepare
   action: |-
     Execute `upgrade-pending` using the attached scenario-owned probe contract.
-    `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+    `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
   checks:
   - id: inventory.H-11.upgrade-pending
     capabilities:
     - H-11
     stimulus: |-
       Execute `upgrade-pending` using the attached scenario-owned probe contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     expected: |-
       Evaluate only the independently named `upgrade-pending` outcome in this contract.
-      `upgrade-pending`: create Project using immediately preceding published release then install current exact release → pending review identifies endpoints. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
+      `upgrade-pending`: create Project using immediately preceding published release then install the exact declared target build → pending review identifies endpoints. The target may be a published release or an immutable unreleased candidate. `upgrade-heal`: documented heal/health/image reconciliation → current declared payload and clean health. `upgrade-ack`: acknowledge exact verified target → no pending change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
     evidence: |-
-      Both released package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.H-11.upgrade-pending
   requires:
   - published-release
   assets:
   - path: probes/H-11.md
     audience: coordinator
-    sha256: f0e7363fe37ecaafbfe96db90d382e2aa8c709697b910f9ad66c292d48361a24
+    sha256: b88d89e38a53d2f30e34ff1cb4410d5b9cbd359a1f4120937bb44c3b86dcc15b
 - id: inventory.H-12.config-cap
   phase: prepare
   action: |-
@@ -2768,7 +2768,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2799,7 +2799,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2830,7 +2830,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2861,7 +2861,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2892,7 +2892,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2923,7 +2923,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -2954,7 +2954,7 @@ steps:
     sha256: 93782f368b64f492eb20b1be7f410eec293937f6dcc432c9dcaf9df37c88a07e
   - path: probes/legacy-client/README.md
     audience: coordinator
-    sha256: 9e5c120ecb0f1f4d410f57b194145699567a976e4359754195b81066367780f8
+    sha256: 797f38a057bd5540cad61bd2954ad9ba580dc73e9ece04b4127e6e06ab7b0206
   - path: probes/legacy-client/docker_fixture.py
     audience: coordinator
     sha256: 352cf01612b78354642c1b83360539af51ef7b4a5d5af5f99b092edeb3ebecae
@@ -3804,14 +3804,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.I-05.catalog-coherence
   requires:
   - published-release
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
@@ -3830,14 +3830,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.I-05.public-navigation
   requires:
   - published-release
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.P-10.custom-criterion
   phase: interactive
@@ -6818,10 +6818,10 @@ steps:
     - H-06
     stimulus: Probe pre-provisioned digest-pinned external image.
     expected: |-
-      Same exact published release and required EDA present; no hidden download/build allocation, total slice including cleanup at most 15 minutes.
+      Same exact declared Booley build and required EDA present; no hidden download/build allocation, total slice including cleanup at most 15 minutes.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/uart.md
     evidence: |-
-      Same exact published release and required EDA present; no hidden download/build allocation, total slice including cleanup at most 15 minutes.
+      Same exact declared Booley build and required EDA present; no hidden download/build allocation, total slice including cleanup at most 15 minutes.
     capture: evidence/opentitan-uart-clean-room-greenfield.external-prerequisite
   requires:
   - published-release

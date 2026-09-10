@@ -94,7 +94,7 @@ A restoration step's `recovery` record names `baseline`, prior `detection` check
 and its `instruction`. It requires its baseline, and cannot depend directly or
 transitively on the detection's successful result. Cleanup has independent reachability.
 
-Scenario check sets are flat and disjoint: each Check appears in one set. A Scenario
+Scenario check sets are flat and disjoint: each Check appears in one set. A
 Configured Scenario may select several sets, which the validator concatenates into one
 resolved Check list. It rejects missing sets, unused sets, duplicate Checks, and
 unknown exclusions. Supporting Steps are derived from the selected Checks and
@@ -110,4 +110,4 @@ The validator is standalone so authoring does not import the tested Booley produ
 under test.
 Its strict metadata checks reject unknown coverage, Scenario, and Configured Scenario fields without adding
 another persistent schema family. HTTPS authorities are syntax-checked offline;
-review and revision-matched execution must verify their actual content and currency.
+review and build-matched execution must verify their actual content and currency.

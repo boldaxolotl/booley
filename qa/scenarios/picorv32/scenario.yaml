@@ -630,9 +630,9 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact published booley-rtl release, package SHA-256, matching docs and immutable runtime image digest; no editable/local/development package or source imports.
-  source: https://github.com/boldaxolotl/booley/releases
-  verification: Record version, executable/import origin, package hash and image payload provenance before work.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+  source: https://github.com/boldaxolotl/booley
+  verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: project
   kind: git
   value: b8fe2370cb9aa7d93617850169f42f07821865d6
@@ -713,19 +713,19 @@ steps:
   - inputs.project-pin
 - id: inputs.release
   phase: prepare
-  action: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-    imports.
+  action: Install the exact declared package artifact; allow a published release or immutable unreleased candidate,
+    and forbid floating references, editable installs and source-checkout execution/imports.
   checks:
   - id: inputs.release
     capabilities:
     - H-01
-    stimulus: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-      imports.
-    expected: Install exact published release; forbid floating tags, editable/local/development installs and source-checkout
-      imports.
+    stimulus: Install the exact declared package artifact; allow a published release or immutable unreleased candidate,
+      and forbid floating references, editable installs and source-checkout execution/imports.
+    expected: The installed package, source commit, documentation snapshot and image provenance all match the declared
+      build; execution is isolated from source checkouts.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Release/package hash, release-doc identity, runtime import origin and selected image digest in run
-      inputs.
+    evidence: Build/package hash, source commit, matching documentation identity, runtime import origin and selected
+      image digest in run inputs.
     capture: evidence/picorv32-published-demo-continuity.inputs.release
   requires:
   - inputs.project-pin
@@ -835,7 +835,7 @@ steps:
   assets:
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: stealth.attribution-removal
   phase: prepare
   action: Exercise attribution-trailer removal.
@@ -854,7 +854,7 @@ steps:
   assets:
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: doctor.first-product-exercise
   phase: prepare
   action: Initialization/host preparation are setup; plain Doctor is the first Booley product exercise.
@@ -915,53 +915,53 @@ steps:
   phase: prepare
   action: |-
     Execute `prerequisite` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.prerequisite
     capabilities:
     - H-01
     stimulus: |-
       Execute `prerequisite` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `prerequisite` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.H-01.prerequisite
   requires:
   - inputs.project-pin
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-01.prerequisite-recovery
   phase: prepare
   action: |-
     Execute `prerequisite-recovery` using the attached scenario-owned probe contract.
-    `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+    `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
   checks:
   - id: inventory.H-01.prerequisite-recovery
     capabilities:
     - H-01
     stimulus: |-
       Execute `prerequisite-recovery` using the attached scenario-owned probe contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     expected: |-
       Evaluate only the independently named `prerequisite-recovery` outcome in this contract.
-      `install`: install exact published `booley-rtl` in isolated pipx environment and launch from new shell → metadata, executable, package provenance and version agree. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
+      `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared release ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.H-01.prerequisite-recovery
   requires:
   - inputs.project-pin
   assets:
   - path: probes/H-01.md
     audience: coordinator
-    sha256: b663e6e3bf0a36bac2fe8035aaa791da465d35886cf72a48bfee1ce0aedf5a9d
+    sha256: 578ce4452ac0d9b9a5b6a0d2fc57225801d2eb74e5eac4371d1dc59bbcace4ad
     base: shared
 - id: inventory.H-03.init-repeat
   phase: prepare
@@ -1244,7 +1244,7 @@ steps:
     base: shared
   - path: probes/stealth.md
     audience: coordinator
-    sha256: 1edf9faecf1bb1b0921eb6616a3e0dfe3bb903a45d8aaa7264d8f9b8931a6f0c
+    sha256: 4d62024c198631f68990eea0676bd4c33ec4ea094d84b955647dde2c3f69761f
 - id: inventory.ST-02.dual-repo
   phase: prepare
   action: |-
@@ -3152,14 +3152,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.I-05.catalog-coherence
   requires:
   - inputs.project-pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
@@ -3178,14 +3178,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.I-05.public-navigation
   requires:
   - inputs.project-pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.ST-04.interrupt-cleanup
   phase: interactive
@@ -3398,7 +3398,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-fresh
   phase: interactive
   action: |-
@@ -3428,7 +3428,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-vcd-convert
   phase: interactive
   action: |-
@@ -3458,7 +3458,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.ST-04.vivado-readonly
   phase: interactive
   action: |-

@@ -57,8 +57,8 @@ exclusions in the report with their rationale.
 
 ## Outcomes
 
-Evaluate each Scenario Run against all of its selected Checks for the declared product revision
-and suite revision. Its scope cannot be narrowed after seeing results.
+Evaluate each Scenario Run against all of its selected Checks for the declared Booley
+product revision and suite revision. Its scope cannot be narrowed after seeing results.
 
 1. Any trustworthy selected-Check failure or unresolved trustworthy Booley/docs
    defect within the Scenario Run's scope makes its Scenario Run Outcome `failed`.
@@ -96,20 +96,21 @@ passed” is not valid.
 
 ## Revision and currency
 
-Bind every result to exact Scenario Run inputs. For a new Booley product revision,
-execute a Scenario Run against every required Configured Scenario afresh; evidence
-does not carry forward automatically. A behavioral Scenario revision reruns every
-affected required Configured Scenario. A shared behavioral protocol change reruns
-every affected Configured Scenario.
-Editorial changes need no rerun; record that classification. Reports identify the
-actual tested commits and any reviewed editorial-only equivalence.
+Bind every result to exact Scenario Run inputs. For a different Booley product revision,
+whether published or unreleased, execute a Scenario Run against every required Configured
+Scenario afresh; evidence does not carry forward automatically. A behavioral Scenario
+revision reruns every affected required Configured Scenario. A shared behavioral protocol
+change reruns every affected Configured Scenario. Editorial changes need no rerun; record
+that classification. Reports identify the actual tested commits and any reviewed
+editorial-only equivalence.
 
-When only some Scenarios change, a Qualification report may use prior completed
-Scenario Runs from unchanged Scenarios against the same Booley product revision. Review must
+When only some Scenarios change, a Qualification report may use prior completed Scenario
+Runs from unchanged Scenarios against the same Booley product revision. Review must
 confirm that the Scenario inputs, selected Checks, run parameters, shared protocol,
-referenced prompts/evaluator assets, and relevant environment identities are unchanged
-or editorially equivalent. Record the source run and actual tested suite commit;
-otherwise rerun it. A new product revision always requires fresh runs. No per-cell
+referenced prompts/evaluator assets, and relevant environment identities are unchanged or
+editorially equivalent. Record the source run and actual tested suite commit; otherwise
+rerun it. This assembles a report from complete runs, not skipped Checks in a new run. A
+different product revision always requires fresh runs. No per-cell
 invalidation database is required.
 
 The exact named Configured Scenarios live in the three production

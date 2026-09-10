@@ -570,9 +570,9 @@ inputs:
 - id: release
   kind: pre-run
   value: |-
-    Exact published booley-rtl release, package SHA-256, matching docs and immutable runtime image digest; no editable/local/development package or source imports.
-  source: https://github.com/boldaxolotl/booley/releases
-  verification: Record version, executable/import origin, package hash and image payload provenance before work.
+    Exact immutable booley-rtl build, package SHA-256, source commit, matching docs and runtime image digest. A published release or unreleased candidate artifact is allowed; no floating reference, editable install or source-checkout execution/import.
+  source: https://github.com/boldaxolotl/booley
+  verification: Record version, source commit, executable/import origin, package hash, documentation identity and image payload provenance before work.
 - id: upstream
   kind: git
   value: cc70b270b910d369ab1ad7b3855e76399fd461f1
@@ -669,15 +669,15 @@ steps:
 - id: inputs.release
   phase: prepare
   action: |-
-    Install exact published release with package hash, release-doc identity, suite commit/digest, protocol revision and base Session Image digest; forbid local/editable/development/floating inputs.
+    Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Session Image digest; forbid editable, source-checkout and floating inputs.
   checks:
   - id: inputs.release
     capabilities:
     - H-01
     stimulus: |-
-      Install exact published release with package hash, release-doc identity, suite commit/digest, protocol revision and base Session Image digest; forbid local/editable/development/floating inputs.
+      Install the exact declared package artifact, published or unreleased, with package hash, source commit, matching documentation identity, suite commit/digest, protocol revision and base Session Image digest; forbid editable, source-checkout and floating inputs.
     expected: |-
-      Install exact published release with package hash, release-doc identity, suite commit/digest, protocol revision and base Session Image digest; forbid local/editable/development/floating inputs.
+      The installed package, source commit, documentation snapshot, suite/protocol revisions and image provenance all match the declared build; execution is isolated from source checkouts.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
     evidence: Immutable run inputs and runtime import origin.
     capture: evidence/taxi-10g-mac-port-evolution.inputs.release
@@ -890,7 +890,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 8abbd1b2b51ef7d221e1b379fbb085095be54703c11b4aa37ebfe5205ed91454
+    sha256: 29602ece6b67643955bc2191ee7f18aecc69178149e87bbfa94b08289b2d5f35
 - id: physical.constraints
   phase: prepare
   action: |-
@@ -914,7 +914,7 @@ steps:
     sha256: 8b185aacd7397372f8c0e732f438c9d431d668a141d6bccf64c196e490d2e873
   - path: fixtures/physical.md
     audience: setup delegate
-    sha256: 8abbd1b2b51ef7d221e1b379fbb085095be54703c11b4aa37ebfe5205ed91454
+    sha256: 29602ece6b67643955bc2191ee7f18aecc69178149e87bbfa94b08289b2d5f35
 - id: physical.discovery-doctor
   phase: prepare
   action: Include fourth Target in CLI/MCP identity checks and deep Doctor.
@@ -4151,14 +4151,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.I-05.catalog-coherence
   requires:
   - inputs.pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.I-05.public-navigation
   phase: interactive
@@ -4177,14 +4177,14 @@ steps:
       `public-navigation`: record consulted help/cheat/MCP/skill for each step → reproducible public route. `catalog-coherence`: compare advertised Flow/Specialist names → agreement, or distinct docs failure recorded before investigation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
     evidence: |-
-      Exact released documentation/help snapshots; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.I-05.public-navigation
   requires:
   - inputs.pin
   assets:
   - path: probes/I-05.md
     audience: coordinator
-    sha256: a8e16ffa4a13a133b751adbd9fdf91391f7585cc9f57e7b5a133481b860d945e
+    sha256: e2a191915e2bdadb7b113d405ce3b2093c802b1e784c52e01c716a5e3678f244
     base: shared
 - id: inventory.ST-04.interrupt-cleanup
   phase: interactive
@@ -4397,7 +4397,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-fresh
   phase: interactive
   action: |-
@@ -4427,7 +4427,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-legacy
   phase: interactive
   action: |-
@@ -4457,7 +4457,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-native
   phase: interactive
   action: |-
@@ -4487,7 +4487,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-raw-vcd
   phase: interactive
   action: |-
@@ -4517,7 +4517,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-recovery
   phase: interactive
   action: |-
@@ -4547,7 +4547,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-01.trace-truncated
   phase: interactive
   action: |-
@@ -4577,7 +4577,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-02.alias-replace
   phase: interactive
   action: |-
@@ -4612,7 +4612,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-02.marker-wrapper-diff
   phase: interactive
   action: |-
@@ -4647,7 +4647,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-02.marker-wrapper-value
   phase: interactive
   action: |-
@@ -4682,7 +4682,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-02.marker-wrapper-wave
   phase: interactive
   action: |-
@@ -4717,7 +4717,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-02.trace-same-path
   phase: interactive
   action: |-
@@ -4752,7 +4752,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.docs-list
   phase: interactive
   action: |-
@@ -4787,7 +4787,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.docs-search
   phase: interactive
   action: |-
@@ -4822,7 +4822,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.docs-show
   phase: interactive
   action: |-
@@ -4857,7 +4857,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-diff-rejected
   phase: interactive
   action: |-
@@ -4892,7 +4892,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-distance-rejected
   phase: interactive
   action: |-
@@ -4927,7 +4927,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-find-supported
   phase: interactive
   action: |-
@@ -4962,7 +4962,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-list-supported
   phase: interactive
   action: |-
@@ -4997,7 +4997,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-sample-rejected
   phase: interactive
   action: |-
@@ -5032,7 +5032,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-signal-rejected
   phase: interactive
   action: |-
@@ -5067,7 +5067,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-stats-supported
   phase: interactive
   action: |-
@@ -5102,7 +5102,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-stuck-rejected
   phase: interactive
   action: |-
@@ -5137,7 +5137,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-value-supported
   phase: interactive
   action: |-
@@ -5172,7 +5172,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.json-wave-rejected
   phase: interactive
   action: |-
@@ -5207,7 +5207,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.query-ambiguous
   phase: interactive
   action: |-
@@ -5242,7 +5242,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.query-limit
   phase: interactive
   action: |-
@@ -5277,7 +5277,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.query-pattern-miss
   phase: interactive
   action: |-
@@ -5312,7 +5312,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.schema
   phase: interactive
   action: |-
@@ -5347,7 +5347,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.skill
   phase: interactive
   action: |-
@@ -5382,7 +5382,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-03.version
   phase: interactive
   action: |-
@@ -5417,7 +5417,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.async-bare-time
   phase: interactive
   action: |-
@@ -5452,7 +5452,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.bad-literal
   phase: interactive
   action: |-
@@ -5487,7 +5487,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.literal-slice
   phase: interactive
   action: |-
@@ -5522,7 +5522,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-build-rejected
   phase: interactive
   action: |-
@@ -5557,7 +5557,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-diff-rejected
   phase: interactive
   action: |-
@@ -5592,7 +5592,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-distance-rejected
   phase: interactive
   action: |-
@@ -5627,7 +5627,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-docs-rejected
   phase: interactive
   action: |-
@@ -5662,7 +5662,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-find-rejected
   phase: interactive
   action: |-
@@ -5697,7 +5697,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-list-rejected
   phase: interactive
   action: |-
@@ -5732,7 +5732,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-sample-rejected
   phase: interactive
   action: |-
@@ -5767,7 +5767,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-schema-rejected
   phase: interactive
   action: |-
@@ -5802,7 +5802,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-signal-rejected
   phase: interactive
   action: |-
@@ -5837,7 +5837,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-skill-rejected
   phase: interactive
   action: |-
@@ -5872,7 +5872,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-stats-rejected
   phase: interactive
   action: |-
@@ -5907,7 +5907,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-stuck-rejected
   phase: interactive
   action: |-
@@ -5942,7 +5942,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-value-rejected
   phase: interactive
   action: |-
@@ -5977,7 +5977,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-async-bare
   phase: interactive
   action: |-
@@ -6012,7 +6012,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-async-column
   phase: interactive
   action: |-
@@ -6047,7 +6047,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-negative
   phase: interactive
   action: |-
@@ -6082,7 +6082,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-outside
   phase: interactive
   action: |-
@@ -6117,7 +6117,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-render
   phase: interactive
   action: |-
@@ -6152,7 +6152,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-repeat
   phase: interactive
   action: |-
@@ -6187,7 +6187,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.marker-wave-shared-time
   phase: interactive
   action: |-
@@ -6222,7 +6222,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.query-input-recovery
   phase: interactive
   action: |-
@@ -6257,7 +6257,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.reset-include
   phase: interactive
   action: |-
@@ -6292,7 +6292,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.reset-skip
   phase: interactive
   action: |-
@@ -6327,7 +6327,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.time-units
   phase: interactive
   action: |-
@@ -6362,7 +6362,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.unknown-signal
   phase: interactive
   action: |-
@@ -6397,7 +6397,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-build-rejected
   phase: interactive
   action: |-
@@ -6432,7 +6432,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-diff-rejected
   phase: interactive
   action: |-
@@ -6467,7 +6467,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-distance-malformed
   phase: interactive
   action: |-
@@ -6502,7 +6502,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-distance-semantic
   phase: interactive
   action: |-
@@ -6537,7 +6537,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-find-malformed
   phase: interactive
   action: |-
@@ -6572,7 +6572,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-find-semantic
   phase: interactive
   action: |-
@@ -6607,7 +6607,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-list-rejected
   phase: interactive
   action: |-
@@ -6642,7 +6642,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-sample-malformed
   phase: interactive
   action: |-
@@ -6677,7 +6677,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-sample-semantic
   phase: interactive
   action: |-
@@ -6712,7 +6712,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-signal-rejected
   phase: interactive
   action: |-
@@ -6747,7 +6747,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-stats-rejected
   phase: interactive
   action: |-
@@ -6782,7 +6782,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-stuck-rejected
   phase: interactive
   action: |-
@@ -6817,7 +6817,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-value-malformed
   phase: interactive
   action: |-
@@ -6852,7 +6852,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-value-semantic
   phase: interactive
   action: |-
@@ -6887,7 +6887,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-wave-malformed
   phase: interactive
   action: |-
@@ -6922,7 +6922,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.virtual-wave-semantic
   phase: interactive
   action: |-
@@ -6957,7 +6957,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-04.width-mismatch
   phase: interactive
   action: |-
@@ -6992,7 +6992,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.I-01.client-session
   phase: interactive
   action: |-
@@ -7078,7 +7078,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-append
   phase: interactive
   action: |-
@@ -7107,7 +7107,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-bare-fallback
   phase: interactive
   action: |-
@@ -7136,7 +7136,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-cap
   phase: interactive
   action: |-
@@ -7165,7 +7165,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-dropped
   phase: interactive
   action: |-
@@ -7194,7 +7194,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-no-clock
   phase: interactive
   action: |-
@@ -7223,7 +7223,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-no-wcp
   phase: interactive
   action: |-
@@ -7252,7 +7252,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-recovery
   phase: interactive
   action: |-
@@ -7281,7 +7281,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: inventory.W-05.gui-scoped
   phase: interactive
   action: |-
@@ -7310,7 +7310,7 @@ steps:
   - base: shared
     path: probes/bwave-matrices.md
     audience: coordinator
-    sha256: a16a051d9c72772134d0eb056aaf2af3b050c24bc00c3412eb3ab438d2d6564e
+    sha256: 5d78fb500ae800c5ada591881d71545b14e5a8687c92b03ae4a1a9cecc580142
 - id: submodules.fixture
   phase: submodules
   action: |-
@@ -7332,7 +7332,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
   - path: fixtures/build_submodules.py
     audience: coordinator
     sha256: a308078f80982e8967224761af0dbeb98d4fc864ba40fe8535e9255c78a64f8f
@@ -7362,7 +7362,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.simulation-dependency-baseline
   phase: submodules
   action: |-
@@ -7386,7 +7386,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.simulation-missing-top
   phase: submodules
   action: |-
@@ -7411,7 +7411,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.simulation-restore-top
   phase: submodules
   action: Restore the exact recorded `deps/data` hierarchy locally, with no fetch or stub substitution, and rerun
@@ -7433,7 +7433,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
   recovery:
     baseline: submodules.simulation-dependency-baseline
     detection:
@@ -7464,7 +7464,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.simulation-restore-nested
   phase: submodules
   action: Restore the exact leaf commit and rerun the unchanged Target.
@@ -7484,7 +7484,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
   recovery:
     baseline: submodules.simulation-restore-top
     detection:
@@ -7514,7 +7514,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.baseline-historical
   phase: submodules
   action: Run baseline-relative logical synthesis on `synth_submodule_transport` comparing baseline A with candidate
@@ -7538,7 +7538,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.standalone
   phase: submodules
   action: Inspect the repositories materialized by those product operations before their controlled cleanup.
@@ -7560,7 +7560,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.offline
   phase: submodules
   action: Perform the same reconstruction with unreachable committed URLs and default-deny egress.
@@ -7582,7 +7582,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.default-all
   phase: submodules
   action: Omit `[submodules].paths` and materialize a destination with both top-level gitlinks.
@@ -7602,7 +7602,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.select-one
   phase: submodules
   action: Set `paths = ["deps/data"]` for an independently authored generation and materialize.
@@ -7624,7 +7624,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.select-none
   phase: submodules
   action: Set an explicit empty list and materialize.
@@ -7646,7 +7646,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.simulation-excluded-dependency
   phase: submodules
   action: |-
@@ -7671,7 +7671,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.selection-intersection
   phase: submodules
   action: Include an allowed path not present as a gitlink in that destination revision.
@@ -7691,7 +7691,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.paired-always
   phase: submodules
   action: With outer `paths = []`, materialize a destination whose paired Project repository pins control.
@@ -7711,7 +7711,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.missing
   phase: submodules
   action: Remove one initialized source submodule only in a disposable variant, then trigger workspace materialization.
@@ -7731,7 +7731,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.dirty
   phase: submodules
   action: Change a tracked source file without committing in a disposable variant, then materialize.
@@ -7753,7 +7753,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.shallow
   phase: submodules
   action: Supply a demonstrably shallow local source variant and materialize.
@@ -7773,7 +7773,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.incomplete-objects
   phase: submodules
   action: |-
@@ -7797,7 +7797,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.rollback
   phase: submodules
   action: |-
@@ -7821,7 +7821,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.matching-destination
   phase: submodules
   action: |-
@@ -7845,7 +7845,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.restore
   phase: submodules
   action: Restore the complete clean source hierarchy and repeat ordinary materialization and the fixture simulation.
@@ -7863,7 +7863,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
   recovery:
     baseline: submodules.fixture
     detection:
@@ -7894,7 +7894,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: submodules.cleanup
   phase: submodules
   action: Archive companion manifests/reports and release every owned companion resource.
@@ -7916,7 +7916,7 @@ steps:
   assets:
   - path: fixtures/submodules.md
     audience: coordinator
-    sha256: d623c818217126afdeaedddedeb19db5a1ed076f1cde121f7acb787c8754cd5b
+    sha256: 857ddc8a9263134bdfef35727453ed1055b0c9d551ccbbe3339e9b71b3b6de1f
 - id: create.strengthen-10g-mac-observability.payload
   phase: ticket1
   action: |-
