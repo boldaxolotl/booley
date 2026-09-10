@@ -1,16 +1,22 @@
 {
   "format_version": 1,
   "illustrative_only": true,
-  "run_id": "example-run",
+  "run_id": "EXAMPLE_EXECUTION_ID",
   "scenario_id": "example-wishbone",
-  "profiles": ["example-core", "example-gui"],
+  "configured_scenario_id": "example-run-vscode",
+  "parameters": {
+    "host_os": "Ubuntu 24.04",
+    "cpu_architecture": "x86-64",
+    "native_host": true,
+    "agent_provider": "Codex",
+    "interactive_mode_client": "supported VS Code client",
+    "ticket_mode_backend": "Codex"
+  },
   "suite_commit": "EXAMPLE_ONLY",
-  "booley_release": "EXAMPLE_ONLY",
+  "booley_product_revision": "EXAMPLE_ONLY",
   "package_identity": "EXAMPLE_ONLY",
   "ip_commit": "EXAMPLE_ONLY",
   "image_identity": "EXAMPLE_ONLY",
-  "platform": "Ubuntu 24.04 x86-64",
-  "provider": "Codex",
   "deadline": "2026-09-08T20:00:00Z",
   "authority": ["disposable fault injection", "restore and clean owned resources"],
   "capabilities": {

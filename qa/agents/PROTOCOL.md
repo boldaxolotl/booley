@@ -5,14 +5,15 @@ checks and preserve unexpected observations. Run purpose is descriptive metadata
 
 ## Prepare
 
-The coordinator assigns actual setup, development, evaluation, diagnostic, and
+The Scenario Operator assigns actual setup, development, evaluation, diagnostic, and
 cleanup work to delegates. It owns sequencing, evidence integration, and the report.
 Record delegate identity and assignment with the step; no delegation event system
 is required. Delegates cannot grant authority or change acceptance requirements.
 
-Before product exercises, freeze a run ID, selected profile, exact immutable Booley
-build and package identity, matching documentation snapshot, suite commit, pinned IP
-inputs, native-host OS and architecture, provider, Runtime Attachment, agent backend,
+Before product exercises, freeze a run ID, Configured Scenario ID and declared
+parameters, exact immutable Booley product revision and artifact or package identity,
+matching documentation snapshot, suite commit, pinned IP inputs, native-host OS and
+architecture, provider, Runtime Attachment, agent backend,
 relevant Session Image and EDA tool identities, deadline, artifact root, pre-run
 capability probes, and granted authority in `run.json`. Record initial identities
 there; Session Image identities created by Project Setup and later Git repository or
@@ -20,12 +21,14 @@ accepted-commit identities belong in the producing step's result and evidence.
 Missing required initial identity blocks execution. Missing authority means denied.
 
 Runs are unattended. Authority covers only the declared actions and owned resources.
-Use the documentation and packaged skills matching the tested build, CLI/MCP help,
+Use Booley documentation and packaged skills matching the tested build, CLI/MCP help,
 and ordinary Project inspection. Consult Booley source for verification/classification
-only after capturing the original observation. The tested build may be a published
-release or an unreleased candidate. Candidate packages, including local wheels, must be
-immutable artifacts bound to a source commit and content hash. Floating references,
-editable installs, and execution or imports from a source checkout are excluded.
+only after capturing the original observation. Use the exact artifact form declared by
+the Configured Scenario; undeclared substitutions are excluded. The tested build may be
+a published release or an unreleased candidate. Candidate packages, including local
+wheels, must be immutable artifacts bound to a source commit and content hash. Floating
+references, editable installs, and execution or imports from a source checkout are
+excluded.
 
 ## Execute
 
@@ -46,9 +49,9 @@ artifacts; documentation checks identify the consulted revision and observed
 behavior. Console text is authoritative when the diagnostic text itself is the
 contract. Preserve Booley's underlying grades and artifact meanings in the evidence.
 
-Delegates retain diagnostic and implementation freedom allowed by the journey. Exact
+Delegates retain diagnostic and implementation freedom allowed by the Scenario. Exact
 commands or prose are mandatory only where the design says their literal form is
-under test. Apply the journey's existing timeouts and narrow retry allowances.
+under test. Apply the Scenario's existing timeouts and narrow retry allowances.
 Prerequisites may reference earlier checks; an unexpected failure blocks dependent
 work until the required state is demonstrably restored. Continue independent work
 while authority, evidence, and resources remain controlled.
@@ -72,11 +75,11 @@ Use the files and minimum fields in [Format](FORMAT.md). Check outcomes are:
 |---|---|
 | `pass` | Trustworthy evidence satisfies the declared expectation |
 | `fail` | Trustworthy evidence contradicts it |
-| `blocked` | A selected required check lacks trustworthy evidence, including failed prerequisites, timeout, infrastructure/operator error, or invalid execution |
+| `blocked` | A selected required check lacks trustworthy evidence, including failed prerequisites, timeout, infrastructure/Scenario Operator error, or invalid execution |
 | `unavailable` | A pre-run probe proved an applicable declared capability absent |
 
 A capability lost after declaration is fail or blocked, never retrospectively
-unavailable. Product-inapplicable checks are excluded explicitly by the profile;
+unavailable. Product-inapplicable checks are excluded explicitly by the Configured Scenario;
 they are not passes. A selected check with no result is blocked at finalization.
 
 Append observations and corrections to `results.jsonl`; corrections identify the
@@ -95,20 +98,20 @@ values. Do not invoke Booley Feedback or submit reports externally during a run.
 
 ## Recover and finish
 
-Keep the journey's named phase recovery points with saved source identities and
+Keep the Scenario's named phase recovery points with saved source identities and
 artifact references. They support bounded recovery within a live run. General
-restart/resume of an interrupted coordinator is deferred: preserve its partial
+restart/resume of an interrupted Scenario Operator is deferred: preserve its partial
 record, reconcile owned resources, and start a new run. Old results do not satisfy
 required checks in that new run.
 
 Persist ownership and intended disposition in `resources.json` before creating a
 resource where its identity is known, otherwise immediately upon acquiring it and
 before dependent work. Track branches, worktrees, processes, Session Runtimes,
-Session Images, mounts, registrations, Grants, profiles, and relays as applicable. Ownership must
+Session Images, mounts, registrations, Grants, License Profiles, and relays as applicable. Ownership must
 be specific enough for cleanup after an interrupted run without touching others'
 state. Update the ledger as resources are released; retain cleanup result evidence.
 
-Start cleanup by the journey's declared reserve boundary, before its absolute
+Start cleanup by the Scenario's declared reserve boundary, before its absolute
 deadline. Stop new work, retain results, and complete cleanup within that deadline.
 If the deadline is nevertheless exceeded, preserve the overrun and attempt remaining
 cleanup; never extend the run or claim timely completion. Stop
@@ -117,7 +120,7 @@ independent work remains. Cleanup runs after success, failure, or interruption.
 Preserve borrowed installations, credentials, caches, and other pre-existing state.
 
 Finalize missing checks as blocked, list owned-resource disposition, and report
-operational completion as `completed`, `deadline reached`, or `operator error`.
+execution status as `completed`, `deadline reached`, or `operator error`.
 Calculate qualification using [Qualification](../user/QUALIFICATION.md). Incomplete
 mandatory cleanup prevents a pass without concealing trustworthy product failures.
 

@@ -6,4 +6,4 @@ Feature Ticket: **Implement the documented standalone UART**, type Feature, scop
 
 Mandatory Criteria: Elaboration Check and complete Simulation on `sim_uart`; clean lint on `lint_uart`; successful logical synthesis on `synth_uart`; clean RTL-bugs, protocol, specification and TB-quality reviews. Bind the specification review to immutable corpus/addendum paths. Require fresh netlist/reports for synthesis. Do not invent a relative PPA improvement, hidden coverage Criterion or mutation-score gate.
 
-Success disposition is `done`, with local merge, Workspace cleanup and triage report enabled. Record Scope, Criteria, Targets, Acceptance Basis, Board transitions, reports and accepted commit. **Independent conformance is a separate operator verdict; Ticket acceptance cannot alone make the scenario pass.**
+Success disposition is `done`, with local merge, Workspace cleanup and triage report enabled. Record Scope, Criteria, Targets, Acceptance Basis, Board transitions, reports and accepted commit. **Independent conformance is a separate Scenario Operator verdict; Ticket acceptance cannot alone make the scenario pass.**
