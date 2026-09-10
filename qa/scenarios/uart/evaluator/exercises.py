@@ -383,7 +383,7 @@ async def injected_irq(driver: Driver, bit: int, active: bool | None = None) -> 
 
 
 async def masked_timeout_state(driver: Driver) -> None:
-    """Masked-IRQ probes cannot apply the public rule requiring enabled IRQs."""
+    """Masked-IRQ checks cannot apply the public rule requiring enabled IRQs."""
     for _ in range(4096 * 64):
         if await driver.read(0) & 64:
             return

@@ -13,15 +13,15 @@ version.
 | File | Minimum content |
 |---|---|
 | `run.json` | Fresh, unique Scenario Run ID, Configured Scenario ID, declared parameters, exact identities, initial inputs, authority, deadline, and evidence for pre-run requirements |
-| `results.jsonl` | Append-only Check Results: result ID, Step ID, Check ID, timestamp, attempt, status, expected and observed outcomes, evidence references, producing-Step identities, and recovery or correction links when applicable |
-| `findings.jsonl` | Original Findings and appended status updates, stable source IDs, kind, classification, original text, result links, evidence, and reproduction data as appropriate |
+| `check-results.jsonl` | Append-only Check Results: Check Result ID, Step ID, Check ID, timestamp, attempt, status, expected and observed outcomes, evidence references, producing-Step identities, and recovery or correction links when applicable |
+| `findings.jsonl` | Original Findings and appended status updates, stable source IDs, kind, classification, original text, Check Result links, evidence, and reproduction data as appropriate |
 | `cleanup-ledger.json` | Mutable cleanup ledger for resources owned or borrowed by the Scenario Run: exact identity, ownership, intended disposition, actual cleanup result, and evidence. It must support safe cleanup after interruption without affecting unrelated resources |
 | `evidence/` | Immutable artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
 | `summary.md` | Scenario Run Outcome and, when applicable, Qualification; tested identities, execution status, missing and failed Checks, Findings, deviations, and cleanup |
 
 The containing directory supplies the Scenario Run ID to Check Result and Finding records;
 external references use the Scenario Run ID plus the record ID. Common Booley product
-revision and Runtime Image inputs need not repeat in every result record. Changes
+revision and Runtime Image inputs need not repeat in every Check Result. Changes
 created by Steps are recorded as outputs rather than mutations to the original
 `run.json`. Retain evidence outside disposable Project state.
 

@@ -51,7 +51,7 @@ steps:
   checks:
   - id: baseline
     capabilities:
-    - H-01
+    - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: Read the version
     expected: The installed version equals the frozen release
     authority_ref: https://example.com/release
@@ -65,7 +65,7 @@ steps:
   checks:
   - id: negative
     capabilities:
-    - H-01
+    - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: Read the version
     expected: The installed version equals the frozen release
     authority_ref: https://example.com/release
@@ -79,7 +79,7 @@ steps:
   checks:
   - id: restored
     capabilities:
-    - H-01
+    - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: Read the version
     expected: The installed version equals the frozen release
     authority_ref: https://example.com/release
@@ -96,7 +96,7 @@ steps:
   checks:
   - id: removed
     capabilities:
-    - H-01
+    - PRODUCT-ARTIFACT-INSTALLATION
     stimulus: Read the version
     expected: The installed version equals the frozen release
     authority_ref: https://example.com/release

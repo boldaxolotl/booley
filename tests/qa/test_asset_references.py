@@ -31,7 +31,7 @@ def test_windows_checkout_preserves_hashed_qa_bytes():
     for name in [
         "qa/scenarios/uart/spec/corpus/hw/ip/uart/README.md",
         "qa/scenarios/uart/evaluator/controls.py",
-        "qa/shared/probes/H-01.md",
+        "qa/scenarios/taxi/fixtures/known-trace-events.json",
         "qa/scenarios/taxi/fixtures/fixture.core",
     ]:
         committed = subprocess.run(

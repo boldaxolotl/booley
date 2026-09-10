@@ -13,7 +13,7 @@ required CLI Configured Scenario is included.
 
 Execution status: completed. Cleanup: complete. No Findings in this
 illustrative slice. Check outcomes: four passed, one unavailable. Records:
-[results.jsonl](results.jsonl). Evidence references are fictional examples.
+[check-results.jsonl](check-results.jsonl). Evidence references are fictional examples.
 
 No complete Scenario, VS Code Runtime Attachment, Waveform Viewer, or real Booley
 product revision is qualified by this example.

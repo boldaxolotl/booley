@@ -1,4 +1,4 @@
-# H-12 host-policy inputs
+# HOST-POLICY host-policy inputs
 
 Use only a disposable native QA user and a dedicated Docker daemon: host policy
 applies across Projects on that daemon. Never replace the Human Maintainer's real policy.

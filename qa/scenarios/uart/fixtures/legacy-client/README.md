@@ -1,4 +1,4 @@
-# H-06 legacy Runtime Attachment fixture procedure
+# SESSION-RUNTIME-LIFECYCLE legacy Runtime Attachment fixture procedure
 
 Provision this matrix on the native QA host with a real VS Code Dev Containers
 Runtime Attachment and a disposable Docker daemon. Headless Docker output cannot

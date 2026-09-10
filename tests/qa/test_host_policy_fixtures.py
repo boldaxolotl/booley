@@ -6,7 +6,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, load_host_policy
 
-ROOT = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/probes/host-policy"
+ROOT = Path(__file__).resolve().parents[2] / "qa/scenarios/uart/fixtures/host-policy"
 
 
 @pytest.mark.parametrize("variant", ["scheme", "path", "port", "ip", "wildcard", "key"])

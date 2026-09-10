@@ -58,7 +58,7 @@ exclusions in the report with their rationale.
 ## Outcomes
 
 Evaluate each Scenario Run against all of its selected Checks for the declared Booley
-product revision and suite revision. Its scope cannot be narrowed after seeing results.
+product revision and suite revision. Its scope cannot be narrowed after seeing Check Results.
 
 1. Any trustworthy selected-Check failure or unresolved trustworthy Booley/docs
    defect within the Scenario Run's scope makes its Scenario Run Outcome `failed`.
@@ -96,7 +96,7 @@ passed” is not valid.
 
 ## Revision and currency
 
-Bind every result to exact Scenario Run inputs. For a different Booley product revision,
+Bind every Check Result to exact Scenario Run inputs. For a different Booley product revision,
 whether published or unreleased, execute a Scenario Run against every required Configured
 Scenario afresh; evidence does not carry forward automatically. A behavioral Scenario
 revision reruns every affected required Configured Scenario. A shared behavioral protocol
@@ -116,4 +116,4 @@ invalidation database is required.
 The exact named Configured Scenarios live in the three production
 `scenario.yaml` files. Each declares its required status, parameters, pre-run
 requirements, check sets, and exclusions. The current implementation has no full
-Qualification results.
+Qualification evidence.

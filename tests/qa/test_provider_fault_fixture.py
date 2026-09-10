@@ -9,7 +9,7 @@ import pytest
 
 FIXTURE = (
     Path(__file__).resolve().parents[2]
-    / "qa/scenarios/taxi/probes/provider-fault/codex_fixture.py"
+    / "qa/scenarios/taxi/fixtures/provider-fault/codex_fixture.py"
 )
 
 

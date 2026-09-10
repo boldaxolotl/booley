@@ -7,7 +7,7 @@ It is not a fourth IP Scenario or a consumer wrapper around Taxi.
 
 Public authority: [Submodules](../../../../docs/user/CONFIG.md#submodules), reconciled
 against the documentation snapshot matching the tested Booley build. The phase
-closes the submodule part of inventory P-09; normal flat/vendored source handling
+closes the submodule part of inventory VENDORED-CORE-DISCOVERY; normal flat/vendored source handling
 continues to belong to the production IP Scenarios.
 
 ## Fixture and pre-run authority
@@ -62,7 +62,7 @@ constants for their respective revisions. Both versions are valid passing design
 `synth_submodule_transport` uses logical synthesis of the root-only transport
 module, independent of selected dependency source paths. Baseline-relative
 synthesis through this Target triggers public Ticket Workspace reconstruction even in
-selection probes that intentionally omit the data submodule; those probes do
+selection checks that intentionally omit the data submodule; those Checks do
 not falsely require a simulation whose inputs they excluded.
 
 The maintainer specifically requires proof that a missing required submodule
@@ -115,7 +115,7 @@ is restored before the next check. Fixture creation itself is not product proof.
 | `submodules.taxi-unchanged` | Compare real Taxi Project checkpoints before/after companion work. | Same accepted source/configuration/Runtime Image identities and clean status; companion does not replace any Taxi regression evidence. |
 | `submodules.cleanup` | Archive companion manifests/reports and release every owned companion resource. | Ledger reconciled, fixture repositories, Session Runtimes, worktrees, and inventory roots removed; Taxi and borrowed state preserved. |
 
-The source-state and selection probes use separate disposable Ticket drafts
+The source-state and selection Checks use separate disposable Ticket drafts
 or copied fixtures so they never edit a live Ticket's protected acceptance inputs.
 They may use the documented Booley Flow path that produces the baseline Ticket Workspace to avoid
 paying for an LLM Ticket per negative fixture. An internal Python function call or

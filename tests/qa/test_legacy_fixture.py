@@ -9,7 +9,7 @@ import pytest
 def test_missing_bind_fault_preserves_exact_bytes_and_rejects_escape(tmp_path):
     path = (
         Path(__file__).resolve().parents[2]
-        / "qa/scenarios/uart/probes/legacy-client/docker_fixture.py"
+        / "qa/scenarios/uart/fixtures/legacy-client/docker_fixture.py"
     )
     spec = importlib.util.spec_from_file_location("legacy_fixture", path)
     fixture = importlib.util.module_from_spec(spec)

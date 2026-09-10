@@ -38,15 +38,15 @@ stop condition, or a request for authority outside the Scenario's declared scope
 
 | Path | Contents |
 |---|---|
-| [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, probes, fixtures, specifications, and evaluator material |
-| [`shared/probes/`](shared/probes/) | Probe contracts used by more than one scenario |
+| [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, fixtures, specifications, and evaluator material |
+| [`shared/`](shared/) | Reference material used by Checks in more than one Scenario |
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`agents/`](agents/) | Shared execution protocol and run-record format used by the skill |
 | [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
-| [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, results, and summary; they are not execution evidence and grant no coverage credit |
+| [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, Check Results, and summary; they are not execution evidence and grant no coverage credit |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
@@ -77,13 +77,13 @@ records the historical decisions behind the production files.
    oracle.
 3. Prepare the run. Record the exact Booley product revision and artifact, matching docs and image,
    suite and input revisions, native host, provider, EDA provisioning, authority,
-   deadline, artifact root, and capability probes in `run.json`. The artifact form
+   deadline, artifact root, and capability assessments in `run.json`. The artifact form
    must match the Configured Scenario; undeclared substitutions are invalid.
 4. Execute the selected checks in scenario order. Stay within the declared authority
    and retry limits. Capture the expected observation and the required artifact for
    each check. Preserve unexpected failures even when recovery or a later retry
    succeeds.
-5. Record Check Results as defined in [`agents/FORMAT.md`](agents/FORMAT.md). Keep `results.jsonl` and
+5. Record Check Results as defined in [`agents/FORMAT.md`](agents/FORMAT.md). Keep `check-results.jsonl` and
    `findings.jsonl` append-only, track resources in `cleanup-ledger.json`, retain
    immutable artifacts under `evidence/`, and derive `summary.md` from those records.
 6. Clean up on every exit path, then calculate the Scenario Run Outcome. A
@@ -122,14 +122,14 @@ changing QA assets, also run `python -m pytest tests/qa/` as required by the
 ## Current status
 
 The repository contains the production Scenarios and validation tooling, but no
-full qualification results. The exact, immutable Booley build under test may be a
+full qualification evidence. The exact, immutable Booley build under test may be a
 published release or an unreleased candidate, with package/image provenance and a
 matching documentation snapshot. Execution also requires the reference native hosts,
 provider access, authorized disposable resources, declared EDA provisioning, and
 independent evidence storage. GUI Configured Scenarios require actual supported VS Code
 clients, WCP, and a qualified screenshot observer; no headless substitute or narrower
 configuration is implied. Record implementation progress in the relevant pull request
-or issue, and put execution results in run records.
+or issue, and put Check Results in run records.
 
 For the UART scenario, exact-a/VAL=32 timeout comparisons use the approved public
 30 to 34 bit-time window in the [timing addendum](scenarios/uart/spec/timing-addendum.md).

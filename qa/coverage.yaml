@@ -1,7 +1,7 @@
 format_version: 1
 capabilities:
-- id: H-01
-  title: H-01 install exact declared artifact in isolated pipx environment and launch from new shell
+- id: PRODUCT-ARTIFACT-INSTALLATION
+  title: Product artifact installation
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/README.md#installation
   contract: |-
@@ -9,8 +9,8 @@ capabilities:
     Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-02
-  title: H-02 bootstrap check-only before reconciliation → rc1 and no mutation.  plain
+- id: HOST-BOOTSTRAP
+  title: Host bootstrap
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SETUP.md#host-bootstrap--host
   contract: |-
@@ -18,8 +18,8 @@ capabilities:
     Before/after resource identities, image/PDK/skill links and user-file hashes; `repair-ready`: subsequent check-only succeeds.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-03
-  title: 'H-03 repeat plain init → no unintended file/spec drift.  check-only on stale '
+- id: PROJECT-INITIALIZATION
+  title: Project initialization
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SETUP.md#initialize-the-project--host
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md#windows-first-run-problems
@@ -28,8 +28,8 @@ capabilities:
     Generated config/devcontainer, sanitized policy, hashes. Windows: `lf-auto` introduces clean CRLF fixture → local Git policy and LF reconciliation; `lf-compat` repeats with compatibility flag → accepted; `lf-dirty`, `lf-protected`, `lf-hardlink` each introduces named unsafe file class → refusal without changed bytes. `lf-recovery`: remove unsafe fixture condition and retry → normalized safe file.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-04
-  title: H-04 use accepted UART scaffold choices → documented .core, TB, lint and conf
+- id: PROJECT-SCAFFOLDING
+  title: Project scaffolding
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SETUP.md#what---scaffold-adds
   contract: |-
@@ -37,8 +37,8 @@ capabilities:
     Scaffold options, generated tree manifest, initial Doctor/Target results; do not claim every scaffold cross-product.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-05
-  title: 'H-05 ,  independently store disposable credential through documented forms → '
+- id: AGENT-AUTHENTICATION
+  title: Agent authentication
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#auth--billing
   contract: |-
@@ -46,8 +46,8 @@ capabilities:
     Redacted status and paths only, no token bytes. `auth-recovery`: restore disposable credential → ready; borrowed real credential remains byte-identical and unread into evidence.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-06
-  title: 'H-06 absent runtime→up/status/validate → running issued spec.  child returns '
+- id: SESSION-RUNTIME-LIFECYCLE
+  title: Session Runtime lifecycle
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#entering-the-session-runtime-without-vs-code
   - |-
@@ -57,8 +57,8 @@ capabilities:
     Runtime IDs/spec digest/process listing before/after. `runtime-retry`: repeat up/enter after interruption → usable clean runtime on both OSes. VS Code: `legacy-replace` exactly one authenticated legacy container → only it replaced; `legacy-refuse-ambiguous`, `legacy-refuse-foreign`, `legacy-refuse-headless`, `legacy-refuse-multiple` → each refused with all other identities intact; `legacy-poststop-failure` → exact restart command after validation failure; `legacy-restart` → supplied command restores usable runtime, named volumes unchanged.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-07
-  title: H-07 import bounded disposable root containing directory symlink → only expli
+- id: PROJECT-INVENTORY
+  title: Project inventory
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#cli-reference
   contract: |-
@@ -66,17 +66,17 @@ capabilities:
     Inventory snapshots and import tree; restore moved root before ledger cleanup, foreign roots unchanged.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-08
-  title: H-08 register/list/show approved exact installation under run-unique name → c
+- id: HOST-EDA-PROVISIONING
+  title: Host EDA provisioning
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#commercial-eda-provisioning
   contract: |-
     `installation-crud`: register/list/show approved exact installation under run-unique name → canonical identity/version stable. `grant`: grant exact canonical Project → inventory shows exact relationship. `mount`: start runtime → fixed `/opt/booley-eda/vivado` read-only mount and executable version. `grant-denied`: revoke Grant then request runtime/tool → authority failure, no mount. `grant-recovery`: restore Grant → same mount usable. `installation-cleanup`: revoke/remove owned registration → absent, installation bytes untouched.
-    Host registry snapshots, runtime mount metadata, write-rejection probe, actual FPGA report. Windows expected not runnable only for platform-scoped portions.
+    Host registry snapshots, runtime mount metadata, write-rejection check, actual FPGA report. Windows expected not runnable only for platform-scoped portions.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-09
-  title: H-09 register/list/show disposable License Profile → same safe identity.  att
+- id: EDA-LICENSE-POLICY
+  title: EDA license policy
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy
   contract: |-
@@ -84,8 +84,8 @@ capabilities:
     Redacted registry/Grant/runtime policy, destination and cleanup evidence. Actual paid checkout/accounting/concurrency/return are optional experimental checks with per-run site authority; never inferred from relay success.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. Paid-seat observations remain optional experimental with site authority; common CRUD is supported.
-- id: H-10
-  title: 'H-10 ,  run separately → current structured last.json and complete last.log, '
+- id: DOCTOR-DIAGNOSTICS
+  title: Doctor diagnostics
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#first-verify-your-setup
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#doctor-waivers-doctor-waiverstoml
@@ -94,8 +94,8 @@ capabilities:
     Separate report/log copies before overwrite, waiver text with expiry, config diffs. Deep Doctor retains manually suggested FPGA command rather than silently claiming FPGA execution.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-11
-  title: H-11 create Project using immediately preceding published release then install target build
+- id: PRODUCT-UPGRADE
+  title: Product upgrade
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md
   contract: |-
@@ -103,8 +103,8 @@ capabilities:
     Preceding release and target-build package identities, image payloads, health reports and upgrade state before/after. No acknowledgement following unsuccessful repair.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-12
-  title: H-12 absent disposable host config → documented defaults. , ,  separately ove
+- id: HOST-POLICY
+  title: Host policy
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#host-configuration-configtoml
   contract: |-
@@ -112,18 +112,18 @@ capabilities:
     Policy hashes, admission timestamps/runtime counts, controlled network results and owned-resource snapshots; no unrelated external targets.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: H-13
-  title: H-13 inspect package license metadata and generated state/artifact paths → Ap
+- id: LOCAL-FIRST-OPERATION
+  title: Local-first operation
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#open-source-and-local-first
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
   contract: |-
     `license-locality`: inspect package license metadata and generated state/artifact paths → Apache-2.0 and local persistence. `route-policy`: compare observed provider/relay/notification/egress routes to declared policy → each external route explicitly authorized; undeclared route blocked.
-    Package metadata, local path manifest, sanitized route policy and probe results; link ST-04 evidence rather than treating local-first as offline providers.
+    Package metadata, local path manifest, sanitized route policy and assessment results; link SECURITY-RUNTIME-ISOLATION evidence rather than treating local-first as offline providers.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-01
-  title: P-01 invoke published setup port/new route → one complete approved plan befor
+- id: PROJECT-SETUP
+  title: Project setup
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SETUP.md#porting-an-existing-project-plan-then-execute
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-setup/SKILL.md
@@ -132,8 +132,8 @@ capabilities:
     Approved plan, public route citations, generated diff, native logs and Finding record; no source-assisted workaround before capture.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-02
-  title: P-02 list/filter/detail/JSON/MCP same targets → same qualified identities and
+- id: TARGET-CATALOG
+  title: Target catalog
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md#targets
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#target-authoring
@@ -142,8 +142,8 @@ capabilities:
     Core manifests, discovery outputs, resolved build inputs; `target-recovery`: restore valid qualified selector → Flow completes with expected identity.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-03
-  title: 'P-03 discover authored sim/lint/synth/fpga naming and native vendored target '
+- id: TARGET-SELECTION
+  title: Target selection
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#target-authoring
   contract: |-
@@ -151,8 +151,8 @@ capabilities:
     Listings and per-target Doctor reports; no claim that hidden selftest is ordinary public discovery.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-04
-  title: P-04 , , ,  fixture emits each combination → pass, fail, fail, inconclusive r
+- id: SIMULATION-TEST-PROTOCOL
+  title: Simulation test protocol
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#simulation--passfail-sentinels-flowssim
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#tests-teststoml
@@ -161,8 +161,8 @@ capabilities:
     Per-test verdicts and raw logs; `sentinel-recovery` restores valid fixture → pass; malformed count is not silently zero.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-05
-  title: P-05 ,  full/focused multi-file package → expected registered tests only, ver
+- id: COCOTB-TEST-EXECUTION
+  title: Cocotb test execution
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#cocotb-targets-python-testbenches
   contract: |-
@@ -170,8 +170,8 @@ capabilities:
     cocotb version, module/package manifest, selection environment excluding secrets, XML/JSON and display transcripts.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-06
-  title: P-06 documented env/pre-run substitution/workdir stages firmware/vector → tes
+- id: SIMULATION-EXECUTION-GUARDS
+  title: Simulation execution guards
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#simulation--passfail-sentinels-flowssim
   contract: |-
@@ -179,8 +179,8 @@ capabilities:
     Environment variable names/nonsecret values, command/workdir, staged artifact digest, kill diagnostics/process evidence.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-07
-  title: P-07 bake pinned requirements → runtime dependency versions match image ident
+- id: PROJECT-RUNTIME-IMAGE
+  title: Project Runtime Image
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#sandbox-sandbox
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#advanced-setups
@@ -189,8 +189,8 @@ capabilities:
     Image/pip manifests and payload provenance, skill mount metadata, hook counter/log and workspace identity.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-08
-  title: P-08 inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supp
+- id: RISC-V-TOOLCHAIN
+  title: RISC-V toolchain
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
   contract: |-
@@ -198,8 +198,8 @@ capabilities:
     Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-09
-  title: P-09 invalid core behind FUSESOC_IGNORE → excluded while valid native core re
+- id: VENDORED-CORE-DISCOVERY
+  title: Vendored core discovery
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#flat-and-vendored-repos
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#submodules
@@ -208,8 +208,8 @@ capabilities:
     Vendored/core manifest and discovery output. Direct Taxi checkout has no submodules and earns no submodule credit. Companion must prove both Ticket and baseline worktrees offline and must fail simulation when required submodule RTL is missing; root-only synthesis earns no functional-dependency credit.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: P-10
-  title: P-10 install deterministic public Custom Flow/endpoint and Criterion → advert
+- id: CUSTOM-FLOW-EXTENSIONS
+  title: Custom Flow extensions
   sources:
   - |-
     https://github.com/boldaxolotl/booley/blob/main/docs/internals/MCP-TOOLS.md#chapter-1-discovery-visibility-and-configuration
@@ -218,8 +218,8 @@ capabilities:
     Extension fixture source, public schema, Doctor output and Criterion/report binding; never substitute custom result for built-in sim.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: I-01
-  title: I-01 actual selected VS Code client calls status/targets/Flow/Specialist → ru
+- id: INTERACTIVE-MODE
+  title: Interactive Mode
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#interactive-mode
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#interactive-mode
@@ -228,8 +228,8 @@ capabilities:
     Supported-client transcript is required for client coverage; shell/MCP harness cannot replace it. Provider compatibility executions remain separate.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: I-02
-  title: I-02 discover tools in each actual supported client → public argument contrac
+- id: MCP-JOB-CONTROL
+  title: MCP job control
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/mcp/server.py
   contract: |-
@@ -237,8 +237,8 @@ capabilities:
     run_id, timing, reports, queue/running snapshots and process cleanup.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: I-03
-  title: 'I-03 compare Interactive/Ticket discovery → submit_run_report hidden/visible '
+- id: MODE-SPECIFIC-MCP
+  title: Mode-specific MCP surface
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/TROUBLESHOOTING.md#an-mcp-tool-is-missing-from-mcp
   contract: |-
@@ -246,8 +246,8 @@ capabilities:
     Mode/config identity and tool lists; hidden maturity tools not promoted.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: I-04
-  title: I-04 two read-only Interactive jobs and Ticket work → class limits respected.
+- id: JOB-ADMISSION-CONTROL
+  title: Job admission control
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#parallel-instances
   contract: |-
@@ -255,8 +255,8 @@ capabilities:
     Admission/start/end ordering, class configuration and distinct caller IDs; restoration diff proves fixture cleanup.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: I-05
-  title: I-05 record consulted help/cheat/MCP/skill for each step → reproducible publi
+- id: PUBLIC-CAPABILITY-DISCOVERY
+  title: Public capability discovery
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/cheatsheet.md
   contract: |-
@@ -264,17 +264,17 @@ capabilities:
     Exact documentation/help snapshots matching the tested build; unavailable GUI does not erase accessible CLI documentation checks.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: F-01
-  title: F-01 use independently named subchecks , , ,  → correct normalized result and
+- id: SIMULATION-FLOW
+  title: Simulation Flow
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#sim
   contract: |-
     `sim-grades`: use independently named subchecks `sim-pass`, `sim-design-fail`, `sim-inconclusive`, `sim-infra` → correct normalized result and report class. `sim-multi`: selected pass+fail+pass Targets → all attempted, strongest grade retained. `sim-elab`: elab-only → durable successful elaboration. `sim-elab-args`: add run-only argument to elab → rejected. `sim-standalone-pass`, `sim-standalone-fail`: standalone good/bad module → distinct results. `sim-elab-persistence`: successful elaboration followed by failing run → elaboration remains durable.
-    sim target JSON, artifacts/logs, exact target/test lists; restored failing fixture rerun earns separate `sim-recovery`. Focus/skip/traces reuse P-04/P-05/W-01 only through named mapping.
+    sim target JSON, artifacts/logs, exact target/test lists; restored failing fixture rerun earns separate `sim-recovery`. Focus/skip/traces reuse SIMULATION-TEST-PROTOCOL/COCOTB-TEST-EXECUTION/TRACE-ARTIFACT only through named mapping.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: F-02
-  title: F-02 , , ,  separate clean/warning/syntax/tool-availability inputs → distinct
+- id: LINT-FLOW
+  title: Lint Flow
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#lint
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#lint-triage
@@ -283,8 +283,8 @@ capabilities:
     Both linter versions, native waiver files, complete findings/report and filtered file lists.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: F-03
-  title: F-03 execute assigned mode/frontend → fresh metrics and actual tool provenanc
+- id: SYNTHESIS-FLOW
+  title: Synthesis Flow
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#synth
   contract: |-
@@ -292,8 +292,8 @@ capabilities:
     Yosys/OpenROAD/frontend logs and versions, SDC/default clock, selected profile/expert override, metrics/baseline recipe. No signoff claim.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: F-04
-  title: F-04 dry-run → exact part/top/XDC/source inventory without implementation.  i
+- id: FPGA-FLOW
+  title: FPGA Flow
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FLOW_REFERENCE.md#fpga
   contract: |-
@@ -301,8 +301,8 @@ capabilities:
     Vivado 2025.2 log, source/cache keys, routed reports and baseline identities; Windows expected not runnable.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-01
-  title: S-01 Each of  (picorv32),  (taxi),  (uart),  (taxi),  (picorv32),  (uart),  (
+- id: SPECIALIST-REVIEWS
+  title: Specialist reviews
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#reviewer
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#expert-written-rtl-guides
@@ -311,8 +311,8 @@ capabilities:
     Report/transcript/finding/waiver and source identity; spec review binds actual Ticket/spec path. Document incorrect CRITICAL-only prose as Finding.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-02
-  title: S-02 locked explicit small N/K campaign containing killed and surviving mutat
+- id: MUTATION-TESTING
+  title: Mutation testing
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#mutation_tester
   contract: |-
@@ -320,8 +320,8 @@ capabilities:
     Lock and manifest digests, isolated source diffs, baseline/per-mutant logs; failure cleanup proves no mutant source remains.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-03
-  title: S-03 start independent Specialist → workspace/prompt manifest contains only a
+- id: SPECIALIST-ISOLATION
+  title: Specialist isolation
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/CONTEXT.md#flows-eda-tools-and-mcp-tools
   contract: |-
@@ -329,18 +329,18 @@ capabilities:
     Allowed/forbidden file manifests and before/after hashes, sanitized transcripts; no private filesystem access to bypass isolation.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-04
-  title: 'S-04 , , , , ,  (picorv32);  (picorv32 Linux);  (uart); each  under the S-01 '
+- id: CRITERION-EVIDENCE-BINDING
+  title: Criterion evidence binding
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/criteria.toml
   contract: |-
-    `criterion-elab`, `criterion-standalone`, `criterion-lint`, `criterion-sim`, `criterion-cycle`, `criterion-synthesis` (picorv32); `criterion-fpga` (picorv32 Linux); `criterion-mutation` (uart); each `criterion-review-<focus>` under the S-01 focus owner → a real Ticket sealed with that supported family and bound evidence.
+    `criterion-elab`, `criterion-standalone`, `criterion-lint`, `criterion-sim`, `criterion-cycle`, `criterion-synthesis` (picorv32); `criterion-fpga` (picorv32 Linux); `criterion-mutation` (uart); each `criterion-review-<focus>` under the SPECIALIST-REVIEWS focus owner → a real Ticket sealed with that supported family and bound evidence.
     Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; hidden coverage criterion excluded.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-05
-  title: S-05 unmet mandatory Criterion → cannot review.  unmet optional Criterion wit
+- id: CRITERION-ACCEPTANCE-POLICY
+  title: Criterion acceptance policy
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
   contract: |-
@@ -348,8 +348,8 @@ capabilities:
     Criterion evaluations and all report/source identities before and after; one check per observed acceptance transition.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: S-06
-  title: S-06 declared absolute count/PPA bound → computed pass/fail from exact metric
+- id: METRIC-THRESHOLD-CRITERIA
+  title: Metric-threshold Criteria
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
   contract: |-
@@ -357,8 +357,8 @@ capabilities:
     Both refs, Target recipes, numeric operands and result; no generic report-exists oracle.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-01
-  title: 'T-01 create selected detail mode → one complete approval draft.  conflicting '
+- id: TICKET-AUTHORING
+  title: Ticket authoring
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
   contract: |-
@@ -366,8 +366,8 @@ capabilities:
     Draft/approval/sealed snapshots and validation errors; no agent impersonates live human approval.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-02
-  title: T-02 Separate , , ,  under named owners → accepted correctly typed report wit
+- id: TICKET-DELIVERABLES
+  title: Ticket deliverables
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#ticket-driven-workflow
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/mcp/submit_run_report.py
@@ -376,8 +376,8 @@ capabilities:
     Reports, policy and Git status/history; deliberately configured no-report outcome is recorded separately with justification, not a missing report inferred pass.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-03
-  title: T-03 , , ,  normal Ticket → each exact state transition. ,  unmet then comple
+- id: TICKET-LIFECYCLE
+  title: Ticket lifecycle
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#ticket-board-lifecycle
   contract: |-
@@ -385,8 +385,8 @@ capabilities:
     Board snapshots, transition logs and stable workspace identity; never fabricate human response during unattended operation.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-04
-  title: T-04 public triage skill available.  approved bounded correction → done.  res
+- id: TICKET-TRIAGE
+  title: Ticket triage
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#ticket-board-lifecycle
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/SKILL.md
@@ -395,8 +395,8 @@ capabilities:
     Human decisions, before/after Board and workspace IDs, archived report location. Reset/cleanup only exact owned Tickets.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-05
-  title: T-05 commit safe ordinary out-of-Scope authored file → allowed and exact path
+- id: TICKET-SCOPE
+  title: Ticket Scope
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/dev_support/scope_precommit_hook.py
   contract: |-
@@ -404,8 +404,8 @@ capabilities:
     Rejection diagnostics, staged/tree status and restoration diffs. Current public Usage Scope and CONTEXT supersede historical ordinary-file hard rejection. Migrate old scope-reject as superseded; bookkeeping and acceptance inputs remain protected.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-06
-  title: T-06 enqueue baseline-relative Ticket → immutable refs/Target input basis.  D
+- id: TICKET-ACCEPTANCE-BASIS
+  title: Ticket acceptance basis
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#threshold-parameters
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#where-the-work-lands-on_success
@@ -414,8 +414,8 @@ capabilities:
     Before/after sealed basis and destination core/history manifests.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-07
-  title: T-07 ,  configured destinations → exact destination and expected merge/cleanu
+- id: TICKET-INTEGRATION
+  title: Ticket integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#where-the-work-lands-on_success
   contract: |-
@@ -423,27 +423,27 @@ capabilities:
     Board/history/worktree disposition, machine record, briefing copies/hashes and renderer diagnostic.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-08
-  title: T-08 interrupt after completed Flow → checkpoint retained.  restart → no dupl
+- id: TICKET-RESILIENCE
+  title: Ticket resilience
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#running-unattended
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#auto-retry-on-transient-crashes-developerauto_retry
   contract: |-
     `checkpoint-interrupt`: interrupt after completed Flow → checkpoint retained. `checkpoint-resume`: restart → no duplicate accepted evidence. `subscription-requeue`: safely controlled subscription-limit fixture → waiting/requeue. `known-transient-retry`: configured known stream-stall fixture → bounded retry. `ordinary-crash`: different crash signature → no unjustified retry. `developer-timeout`: bounded timeout fixture → distinct timeout outcome.
-    Checkpoint/run IDs, classifications, attempt counts, public configuration and cleanup. Real human-block behavior is T-03; safe public fault induction must be implemented explicitly, never by depleting real quota.
+    Checkpoint/run IDs, classifications, attempt counts, public configuration and cleanup. Real human-block behavior is TICKET-LIFECYCLE; safe public fault induction must be implemented explicitly, never by depleting real quota.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-09
-  title: T-09 two runs/two Tickets → separate claims/workspaces.  concurrent runs → no
+- id: TICKET-CONCURRENCY
+  title: Ticket concurrency
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#concurrent-tickets
   contract: |-
     `atomic-claim`: two runs/two Tickets → separate claims/workspaces. `artifact-isolation`: concurrent runs → no cross-Ticket source/evidence. `class-cap`: bounded class limit → excess job waits. `queue-cancel`: cancel waiting job → cancelled, no execution. `queue-full`: tiny full queue → admission blocked.
-    Ticket IDs/worktree paths, class/admission timeline and file manifests; Interactive priority mapping uses I-04 exact check.
+    Ticket IDs/worktree paths, class/admission timeline and file manifests; Interactive priority mapping uses JOB-ADMISSION-CONTROL exact check.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-10
-  title: T-10 named run → documented full-screen Console. ,  invoke separately → no st
+- id: TICKET-OPERATOR-INTERFACE
+  title: Ticket operator interface
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#cli-reference
   contract: |-
@@ -451,8 +451,8 @@ capabilities:
     Terminal capture, before/after Board snapshots and machine record. Screenshot required only for actual layout claim.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-11
-  title: T-11 unattended configuration → no manufactured live approval. ,  separate ru
+- id: TICKET-EXECUTION-POLICY
+  title: Ticket execution policy
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#developer-agent-policy-developer
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#model-selection-models
@@ -461,8 +461,8 @@ capabilities:
     Sanitized configuration, elapsed/accounted times and durable provider/model metadata; `policy-recovery`: restore valid config → launch succeeds.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: T-12
-  title: T-12 authorized disposable topic/egress and blocked Ticket → received blocked
+- id: TICKET-NOTIFICATIONS
+  title: Ticket notifications
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#push-notifications
   contract: |-
@@ -470,8 +470,8 @@ capabilities:
     Pre-run topic authority, nonsecret received payload/identity/time and lifecycle logs. Undocumented review/rate-limit/events filtering are not mandatory support.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: W-01
-  title: W-01 traced real sim → FST newer than invocation, nonempty and queryable with
+- id: TRACE-ARTIFACT
+  title: Trace Artifact
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/FEATURES.md#waveform-based-debug
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/build.md
@@ -480,8 +480,8 @@ capabilities:
     Original/conversion/queried artifact identities, metadata and values; never count raw VCD as successful query store.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: W-02
-  title: 'W-02 register file/sim directory → alias and _last resolve expected absolute '
+- id: TRACE-REGISTRY
+  title: Trace registry
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/sessions.py
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
@@ -490,8 +490,8 @@ capabilities:
     Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: W-03
-  title: W-03 , , , , , , , , ,  each command on deterministic known trace → exact hie
+- id: WAVEFORM-QUERY
+  title: Waveform queries
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
@@ -500,8 +500,8 @@ capabilities:
     Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: W-04
-  title: W-04 ,  same known edge → post-edge cycle and raw transition correctly relate
+- id: WAVEFORM-TIME-MODEL
+  title: Waveform time model
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/time-tokens.md
@@ -511,8 +511,8 @@ capabilities:
     Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: W-05
-  title: 'W-05 query known event then scoped open → trace identity, clock row 1, exact '
+- id: WAVEFORM-VIEWER
+  title: Waveform Viewer
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
@@ -521,8 +521,8 @@ capabilities:
     WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: ST-01
-  title: ST-01 inspect setup config → explicit selected value. PicoRV32  → sanitized co
+- id: STEALTH-MODE
+  title: Stealth Mode
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#stealth-mode-stealth
   contract: |-
@@ -530,8 +530,8 @@ capabilities:
     Config/history and Project state paths; no private identifiers.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: ST-02
-  title: ST-02 authored hidden core → valid projected root core resolves without copied
+- id: STEALTH-CORE-PROJECTION
+  title: Stealth core projection
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#stealth-mode-stealth
   contract: |-
@@ -539,8 +539,8 @@ capabilities:
     Core paths/content/hash, RTL file metadata and both Git statuses/history; restore fixture after negative clone observation.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: ST-03
-  title: ST-03 ,  separate benign banned token/trailer commits → rewritten as documente
+- id: GIT-SAFETY-POLICY
+  title: Git safety policy
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#enforcing-the-subject-convention-enforce_convention
   contract: |-
@@ -548,17 +548,17 @@ capabilities:
     Commit messages/diffs, hook output and exact local remote; no public push. `history-recovery`: restore compliant inputs → valid local commit/push and no unsafe files.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: ST-04
-  title: ST-04 inspect UID/capabilities → non-root/restricted.  inspect mounts → absent
+- id: SECURITY-RUNTIME-ISOLATION
+  title: Session Runtime isolation
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
   contract: |-
     `runtime-user`: inspect UID/capabilities → non-root/restricted. `mount-boundary`: inspect mounts → absent host home/SSH/Docker socket. `pdk-readonly`: benign owned-name write attempt to PDK mount → refused. PicoRV32 `vivado-readonly` same on provisioned mount → refused. `network-deny`: controlled undeclared route → blocked. `provider-allow`: real selected-provider call → works through allowed path. `origin-push-deny`: runtime attempts harmless local-fixture origin push → prohibited by documented agent boundary. `interrupt-cleanup`: interrupt owned work → no descendants.
-    Mount/capability metadata and benign probe outputs; do not enumerate unrelated secrets. Shared process evidence can map H-06 explicitly.
+    Mount/capability metadata and benign check outputs; do not enumerate unrelated secrets. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: D-01
-  title: 'D-01 append each defect/friction/impression/win → retained distinct entries. '
+- id: FINDINGS-LOG
+  title: Findings Log
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/feedback/findings.py
@@ -567,17 +567,17 @@ capabilities:
     Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: D-02
-  title: D-02 unattended report generation → file only/no outbound send.  benign plant
+- id: FEEDBACK-REPORTING
+  title: Feedback reporting
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#what-the-offer-looks-like-ask-and-email
   contract: |-
     `feedback-file-only`: unattended report generation → file only/no outbound send. `feedback-redact`: benign planted private-like fixture → exact intended redaction in preview. `feedback-token`: approved preview token then rerender changed content → old token rejected. `feedback-export`: explicit local export → preview-equivalent file. `feedback-block-submit`: dry-run/unconfirmed submission → nothing sent. `feedback-off`: off mode → no outbound offer.
-    Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these probes.
+    Exact sanitized preview/export and confirmation metadata without secrets; actual issue/mail send remains outside these Checks.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: D-03
-  title: D-03 each step follows released README/Setup/Usage/Config/Flow/EDA/Troublesho
+- id: DOCUMENTATION-USABILITY
+  title: Documentation usability
   sources:
   - https://github.com/boldaxolotl/booley/issues/376#issuecomment-5596872672
   contract: |-
@@ -585,113 +585,113 @@ capabilities:
     Frozen public sources, first observation timestamp, later verification source if used, exact missing/contradictory instruction.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
-- id: EDA-verilator-sim
-  title: verilator-sim
+- id: EDA-VERILATOR-SIMULATION
+  title: Verilator simulation integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-verilator-lint
-  title: verilator-lint
+- id: EDA-VERILATOR-LINT
+  title: Verilator lint integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-icarus-sim
-  title: icarus-sim
+- id: EDA-ICARUS-SIMULATION
+  title: Icarus simulation integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-verible-lint
-  title: verible-lint
+- id: EDA-VERIBLE-LINT
+  title: Verible lint integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-yosys-logical
-  title: yosys-logical
+- id: EDA-YOSYS-LOGICAL-SYNTHESIS
+  title: Yosys logical synthesis integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-slang
-  title: slang
+- id: EDA-SLANG
+  title: Slang integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-yosys-physical
-  title: yosys-physical
+- id: EDA-YOSYS-PHYSICAL-SYNTHESIS
+  title: Yosys physical synthesis integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-sv2v
-  title: sv2v
+- id: EDA-SV2V
+  title: sv2v integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-openroad
-  title: openroad
+- id: EDA-OPENROAD
+  title: OpenROAD integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-vivado
-  title: vivado
+- id: EDA-VIVADO
+  title: Vivado integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-bwave-icarus
-  title: bwave-icarus
+- id: EDA-BWAVE-ICARUS
+  title: B-Wave with Icarus integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-bwave-verilator
-  title: bwave-verilator
+- id: EDA-BWAVE-VERILATOR
+  title: B-Wave with Verilator integration
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-resolve-sim
-  title: resolve-sim
+- id: EDA-SIMULATION-RESOLUTION
+  title: Simulation EDA tool resolution
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-resolve-lint
-  title: resolve-lint
+- id: EDA-LINT-RESOLUTION
+  title: Lint EDA tool resolution
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-resolve-synth
-  title: resolve-synth
+- id: EDA-SYNTHESIS-RESOLUTION
+  title: Synthesis EDA tool resolution
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-
     Fresh actual invocation, exact version and qualified Target, resolved FuseSoC/Edalize top, parameters, sources and recipe; complete log and content-verified resulting artifact. Presence, exit zero or cached results alone are insufficient.
   applicability: Vivado requires provisioned Linux x86-64; other declared integrations require both core platforms.
-- id: EDA-resolve-fpga
-  title: resolve-fpga
+- id: EDA-FPGA-RESOLUTION
+  title: FPGA EDA tool resolution
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md
   contract: |-

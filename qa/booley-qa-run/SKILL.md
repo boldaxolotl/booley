@@ -18,7 +18,7 @@ Confirm these before starting product exercises:
 - writable artifact root outside disposable Project state;
 - credentials and licensed EDA access required by the selected Configured Scenario.
 
-If an input is missing, report it and stop before product work. Capability probes may
+If an input is missing, report it and stop before product work. Capability assessments may
 mark declared infrastructure unavailable, but they do not change the Configured
 Scenario's scope. Keep secret values out of prompts and run records; obtain them
 through the approved provider and EDA mechanisms.
@@ -62,6 +62,6 @@ outside the declared scope still requires the Human Maintainer's explicit author
    Scenario Run Outcome and aggregate Qualification under
    [Qualification](../user/QUALIFICATION.md), and write `summary.md`.
 
-The run is complete when every selected Check has a recorded outcome, mandatory
+The run is complete when every selected Check has a Check Result, mandatory
 cleanup has evidence, owned resources are reconciled, and the summary names the
 Scenario Run Outcome, aggregate Qualification where applicable, and execution status.

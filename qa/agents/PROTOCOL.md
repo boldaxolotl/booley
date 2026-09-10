@@ -18,7 +18,7 @@ revision and artifact or package identity,
 matching documentation snapshot, suite commit, pinned IP inputs, native-host OS and
 architecture, provider, Runtime Attachment, agent backend,
 relevant Runtime Image and EDA tool identities, deadline, artifact root, pre-run
-capability probes, and the Scenario authority granted by explicit skill invocation in
+capability assessments, and the Scenario authority granted by explicit skill invocation in
 `run.json`. Record initial identities there; Runtime Image identities created by
 Project Setup and later Git repository or
 accepted-commit identities belong in the producing Step's Check Result and evidence.
@@ -81,15 +81,15 @@ Use the files and minimum fields in [Format](FORMAT.md). Check outcomes are:
 | `pass` | Trustworthy evidence satisfies the declared expectation |
 | `fail` | Trustworthy evidence contradicts it |
 | `blocked` | A selected required check lacks trustworthy evidence, including failed prerequisites, timeout, infrastructure/Scenario Operator error, or invalid execution |
-| `unavailable` | A pre-run probe proved an applicable declared capability absent |
+| `unavailable` | A pre-run assessment proved an applicable declared capability absent |
 
 A capability lost after declaration is fail or blocked, never retrospectively
 unavailable. Product-inapplicable checks are excluded explicitly by the Configured
 Scenario; they are not passes. A selected Check with no Check Result is blocked at
 finalization.
 
-Append every Check Result and its corrections to `results.jsonl`; corrections identify
-the record and evidence of the recording mistake. Correcting a recording mistake does
+Append Check Results and corrections to `check-results.jsonl`; corrections identify the
+Check Result and evidence of the recording mistake. Correcting a recording mistake does
 not authorize erasing a real failure. Preserve every trustworthy failed attempt.
 Conflicting trustworthy Check Results produce a flaky Finding and prevent qualification.
 
@@ -115,10 +115,10 @@ resource where its identity is known, otherwise immediately upon acquiring it an
 before dependent work. Track branches, worktrees, processes, Session Runtimes,
 Runtime Images, mounts, registrations, Grants, License Profiles, and relays as applicable. Ownership must
 be specific enough for cleanup after an interrupted run without touching others'
-state. Update the ledger as resources are released; retain cleanup result evidence.
+state. Update the ledger as resources are released; retain cleanup evidence.
 
 Start cleanup by the Scenario's declared reserve boundary, before its absolute
-deadline. Stop new work, retain results, and complete cleanup within that deadline.
+deadline. Stop new work, retain Check Results, and complete cleanup within that deadline.
 If the deadline is nevertheless exceeded, preserve the overrun and attempt remaining
 cleanup; never extend the run or claim timely completion. Stop
 earlier if authority, evidence integrity, or resource control is lost, or no runnable
@@ -136,7 +136,7 @@ required RTL dependencies and the prescribed warm/cold failure and restoration
 observations. Fixture-construction tests and root-only synthesis are not functional
 Simulation Flow credit.
 
-The inventory's D-01/D-02 probes exercise Booley Feedback using disposable file-only
-fixtures. Their outputs are scenario evidence, not the suite's reporting channel.
-They authorize no submission, email or issue. Keep suite results/findings separate
+The FINDINGS-LOG and FEEDBACK-REPORTING Checks exercise Booley Feedback using disposable file-only
+fixtures. Their outputs are Scenario evidence, not the suite's reporting channel.
+They authorize no submission, email or issue. Keep suite Check Results and Findings separate
 and directly usable by Consolidate Findings.
