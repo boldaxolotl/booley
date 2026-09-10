@@ -1,4 +1,4 @@
-"""Validate release-sensitive CI wiring without building a Session Image."""
+"""Validate release-sensitive CI wiring without building a Runtime Image."""
 
 from __future__ import annotations
 

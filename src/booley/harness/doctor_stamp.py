@@ -1,6 +1,6 @@
 """Doctor freshness stamp -- "when did doctor last bless this environment?"
 
-``booley doctor`` is the diagnosis command and preflight is the per-ticket gate,
+``booley doctor`` is the diagnosis command and Ticket Preflight is the per-ticket gate,
 but nothing used to bridge them: an environment could drift for weeks (stale
 sandbox wheel, regenerated devcontainer, edited ``booley.toml``) and burn a
 multi-hour ticket sweep before anyone thought to re-run doctor. The stamp

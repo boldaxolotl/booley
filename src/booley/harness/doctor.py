@@ -689,7 +689,7 @@ def _run_runtime_phase(
     reporter: _Reporter,
     progress: Check,
 ) -> None:
-    """Run runtime-location, container, MCP, and preflight-parity checks."""
+    """Run runtime-location, container, MCP, and Ticket Preflight parity checks."""
     progress("Session Runtime/auth checks")
     sandbox_image = _sandbox_image(project)
     _check_runtime_location(
@@ -718,8 +718,8 @@ def _run_runtime_phase(
         verbose,
         reporter,
     )
-    progress("run/preflight checks")
-    _run_preflight_parity_checks(project, reporter)
+    progress("Ticket Preflight parity checks")
+    _run_ticket_preflight_parity_checks(project, reporter)
 
 
 def _run_flow_and_core_phase(
@@ -2115,7 +2115,7 @@ def _check_image_bakes_current_booley(
     _pass: Check,
     _warn: Check,
 ) -> None:
-    """Report managed Session Image freshness from authoritative provenance."""
+    """Report managed Runtime Image freshness from authoritative provenance."""
     _warn = _warning_sink(
         _warn,
         "sandbox.image-stale",
@@ -2872,7 +2872,7 @@ def _check_runtime_booley_version(
     _pass: Check,
     _fail: Fail,
 ) -> None:
-    """Require the host package and issued Session Runtime image to agree."""
+    """Require the host package and issued Runtime Image to agree."""
     try:
         result = _probe_runtime_booley_version(docker_exe, image)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2886,7 +2886,7 @@ def _check_runtime_booley_version(
     if result.returncode != 0 or not runtime_version:
         detail = (result.stderr or result.stdout).strip()
         _fail(
-            "issued Session Runtime image cannot report its Booley version",
+            "issued Runtime Image cannot report its Booley version",
             f"rebuild it with `booley init --force` ({detail or f'exit {result.returncode}'})",
         )
         return
@@ -3009,7 +3009,7 @@ def _check_mounted_vivado_runtime(  # noqa: PLR0911 - ordered fail-closed runtim
     try:
         digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
     except OSError as exc:
-        _fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Session Runtime image")
+        _fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Runtime Image")
         return
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         _fail(
@@ -3024,8 +3024,8 @@ def _check_mounted_vivado_runtime(  # noqa: PLR0911 - ordered fail-closed runtim
     )
     if any(not path.is_file() for path in compatibility):
         _fail(
-            "Session Runtime image lacks the fixed Vivado compatibility libraries or locale",
-            "rebuild the Session Runtime image and reissue the spec",
+            "Runtime Image lacks the fixed Vivado compatibility libraries or locale",
+            "rebuild the Runtime Image and reissue the spec",
         )
         return
     try:
@@ -3662,7 +3662,7 @@ def _check_issued_image_keepers(
         return
     tags = idk.issued_image_tags()
     if not tags:
-        _pass("no retained Session Runtime image keepers")
+        _pass("no retained Runtime Image keepers")
         return
 
     from booley.eda.provisioning import runtime_spec
@@ -3670,7 +3670,7 @@ def _check_issued_image_keepers(
     mine = runtime_spec.keeper_image(project.project_root)
     others = [tag for tag in tags if tag != mine]
     if mine in tags:
-        _pass("issued Session Runtime image is retained for this Project")
+        _pass("issued Runtime Image is retained for this Project")
     if others:
         _note(
             f"{len(others)} issued image keeper(s) from other projects persist; "
@@ -3822,11 +3822,11 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     }
 
 
-def _run_preflight_parity_checks(
+def _run_ticket_preflight_parity_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
 ) -> None:
-    """Mirror cheap run preflight checks in doctor output."""
+    """Mirror cheap Ticket Preflight checks in doctor output."""
     banner("Run checks")
     if project is None:
         reporter.skip_("run checks skipped - project config invalid")
@@ -3998,13 +3998,13 @@ def _check_ticket_board_import(project_root: Path, _pass: Check, _fail: Fail) ->
 
 def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail: Fail) -> None:
     try:
-        from booley.harness.preflight import (
-            PreflightError,
+        from booley.harness.ticket_preflight import (
+            TicketPreflightError,
             _validate_custom_endpoints_and_criteria,
         )
 
         _validate_custom_endpoints_and_criteria(project_root)
-    except PreflightError as exc:
+    except TicketPreflightError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
     except (ImportError, OSError, ValueError) as exc:
@@ -4103,16 +4103,18 @@ def _run_flow_audit(
             _skip("fpga not applicable - no [flows.fpga] table or marked Doctor Target")
             continue
         _pass(f"{flow_name} executes in the Session Runtime")
-        # Pre-Run Commands (ADR 0039): a true observation about healthy config —
+        # Pre-Sim Commands (ADR 0039): a true observation about healthy config —
         # the lines run inside the Session Runtime before every sim run, so their
         # cost and side effects are worth a heads-up in the audit.
         if flow_name == "sim":
             flows_tbl = project.booley_toml.get("flows", {})
             sim_tbl = flows_tbl.get("sim", {}) if isinstance(flows_tbl, dict) else {}
-            pre_run = sim_tbl.get("pre_run_commands") if isinstance(sim_tbl, dict) else None
-            if pre_run:
+            pre_sim_commands = (
+                sim_tbl.get("pre_run_commands") if isinstance(sim_tbl, dict) else None
+            )
+            if pre_sim_commands:
                 _note(
-                    f"sim pre_run_commands configured ({len(pre_run)} "
+                    f"sim pre_run_commands configured ({len(pre_sim_commands)} "
                     f"line(s)); they run in the Session Runtime before "
                     "each sim run (BOOLEY_* env contract, ADR 0039)"
                 )
@@ -4218,7 +4220,7 @@ def _check_session_binary(
         else:
             _fail(
                 f"{flow_name}: '{binary}' is not on this container's PATH",
-                f"bake {binary} into the Session Runtime image and rebuild (booley init --force)",
+                f"bake {binary} into the Runtime Image and rebuild (booley init --force)",
             )
         return
     if not flow_runtime.available:
@@ -4241,7 +4243,7 @@ def _check_session_binary(
     else:
         _fail(
             f"{flow_name}: '{binary}' is not on the issued Session Runtime PATH",
-            f"bake {binary} into the Session Runtime image and rebuild (booley init --force)",
+            f"bake {binary} into the Runtime Image and rebuild (booley init --force)",
         )
 
 

@@ -35,7 +35,7 @@ from booley.flows.sim.build import (
 from booley.flows.sim.config import (
     resolve_cycle_sentinels,
     resolve_max_rundir_bytes,
-    resolve_pre_run_commands,
+    resolve_pre_sim_commands,
     resolve_run_cwd,
     resolve_sim_time_grace_s,
     resolve_sim_timeout_ms,
@@ -60,7 +60,7 @@ from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invo
 from .contract import (
     DefaultSelection,
     NamedTests,
-    PreRunEvidence,
+    PreSimEvidence,
     SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
@@ -74,7 +74,7 @@ from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,
 )
-from .pre_run import run_pre_run_commands
+from .pre_sim import run_pre_sim_commands
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -93,7 +93,7 @@ class _Attempt:
     trace_requested: bool
     work: PreparedSimulationWork
     wrapper_timeout_s: int
-    pre_run_commands: tuple[str, ...]
+    pre_sim_commands: tuple[str, ...]
     simulator_environment: tuple[tuple[str, str], ...]
     cycle_sentinels: tuple[str, ...]
     workload_inputs: tuple[Mapping[str, Any], ...]
@@ -165,7 +165,7 @@ class SimulationExecution:
         )
         tests = tuple(test for result in results for test in result.tests)
         builds = tuple(build for result in results for build in result.builds)
-        pre_runs = tuple(item for result in results for item in result.pre_runs)
+        pre_sim_runs = tuple(item for result in results for item in result.pre_sim_runs)
         artifacts = tuple(item for result in results for item in result.artifacts)
         return _aggregate(
             handle,
@@ -173,7 +173,7 @@ class SimulationExecution:
             results,
             tests,
             builds,
-            pre_runs,
+            pre_sim_runs,
             artifacts,
             failure,
             started,
@@ -218,15 +218,15 @@ class SimulationExecution:
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
-        pre_run = self._run_pre_run(handle, attempt)
+        pre_sim = self._run_pre_sim(handle, attempt)
         attempt = _with_workload_inputs(handle, attempt)
-        if pre_run is not None and pre_run.status != "passed":
+        if pre_sim is not None and pre_sim.status != "passed":
             failure = (
-                _pre_run_infrastructure_failure
-                if pre_run.status == "spawn_error"
-                else _pre_run_failure
+                _pre_sim_infrastructure_failure
+                if pre_sim.status == "spawn_error"
+                else _pre_sim_failure
             )
-            return failure(handle, attempt, pre_run, started)
+            return failure(handle, attempt, pre_sim, started)
         trace_policy = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
         compatibility_policy = CompatibilityArtifactPolicy.capture(attempt.prepared.build_root)
         executed = self._execute_adapter(attempt)
@@ -234,10 +234,10 @@ class SimulationExecution:
         processing_started = time.monotonic()
         build = classify_build_outcome(process, attempt.identity.attempt_token)
         if build.failure_kind == "infrastructure":
-            return _infrastructure_failure(handle, attempt, build, pre_run, started)
+            return _infrastructure_failure(handle, attempt, build, pre_sim, started)
         adapter_error = _adapter_attempt_error(executed, build)
         if adapter_error is not None:
-            return _transport_failure(handle, attempt, build, pre_run, adapter_error, started)
+            return _transport_failure(handle, attempt, build, pre_sim, adapter_error, started)
         adapter = None if build.design_failed else executed.result
         try:
             return self._completed_group(
@@ -246,14 +246,14 @@ class SimulationExecution:
                 process,
                 build,
                 adapter,
-                pre_run,
+                pre_sim,
                 trace_policy,
                 compatibility_policy,
                 processing_started,
                 started,
             )
         except SimulationArtifactPersistenceError as exc:
-            return _artifact_failure(handle, attempt, build, pre_run, str(exc), started)
+            return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
 
     def _execute_adapter(self, attempt: _Attempt) -> AdapterAttemptOutcome:
         request = AdapterAttemptRequest(
@@ -284,7 +284,7 @@ class SimulationExecution:
             trace=self._options.trace,
             trace_mode=trace_mode.value,
         )
-        pre_run_commands = tuple(resolve_pre_run_commands(handle.project_root))
+        pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
         simulator_environment = tuple(simulation_target_environment(handle).items())
         try:
             invocation = prepare_adapter_invocation(work)
@@ -306,7 +306,7 @@ class SimulationExecution:
             work=work,
             wrapper_timeout_s=work.timeout_s
             + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
-            pre_run_commands=pre_run_commands,
+            pre_sim_commands=pre_sim_commands,
             simulator_environment=simulator_environment,
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
             workload_inputs=(),
@@ -341,15 +341,15 @@ class SimulationExecution:
             if overlay is not None:
                 overlay.cleanup()
 
-    def _run_pre_run(self, handle: TargetHandle, attempt: _Attempt) -> PreRunEvidence | None:
-        return run_pre_run_commands(
+    def _run_pre_sim(self, handle: TargetHandle, attempt: _Attempt) -> PreSimEvidence | None:
+        return run_pre_sim_commands(
             handle,
             test_names=attempt.test_names,
             build_root=attempt.prepared.build_root,
             eda_tool=attempt.prepared.eda_tool,
             timeout_s=attempt.wrapper_timeout_s,
             simulator_environment=dict(attempt.simulator_environment),
-            commands=attempt.pre_run_commands,
+            commands=attempt.pre_sim_commands,
             run_cwd=attempt.work.run_cwd,
         )
 
@@ -360,7 +360,7 @@ class SimulationExecution:
         process: SubprocessResult,
         build: BuildOutcome,
         adapter: AdapterResult | None,
-        pre_run: PreRunEvidence | None,
+        pre_sim: PreSimEvidence | None,
         trace_policy: TraceArtifactPolicy | None,
         compatibility_policy: CompatibilityArtifactPolicy,
         processing_started: float,
@@ -387,7 +387,7 @@ class SimulationExecution:
             attempt,
             process,
             build,
-            pre_run,
+            pre_sim,
             output,
             time.monotonic() - processing_started,
         )
@@ -397,7 +397,7 @@ class SimulationExecution:
             attempt,
             tests,
             build,
-            pre_run,
+            pre_sim,
             artifacts,
             started,
             adapter.diagnostics if adapter is not None else (),
@@ -428,7 +428,7 @@ class SimulationExecution:
         steps = [
             *_preview_exports(handle, test_names, build_root),
             shlex.join(setup),
-            *resolve_pre_run_commands(root),
+            *resolve_pre_sim_commands(root),
             shlex.join(edam_layer.make_command(rel)),
             shlex.join(prepare_adapter_invocation(work)),
         ]
@@ -654,21 +654,21 @@ def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: P
     return [f"export {name}={shlex.quote(value)}" for name, value in values.items()]
 
 
-def _pre_run_failure(
+def _pre_sim_failure(
     handle: TargetHandle,
     attempt: _Attempt,
-    evidence: PreRunEvidence,
+    evidence: PreSimEvidence,
     started: float,
 ) -> SimulationTargetOutcome:
     names = attempt.test_names or (handle.selector,)
-    detail = evidence.detail or f"pre-run commands {evidence.status}"
+    detail = evidence.detail or f"pre-sim commands {evidence.status}"
     tests = tuple(
         SimulationTestOutcome(
             name=name,
             verdict="elab_error",
             passed=False,
             elapsed_s=evidence.elapsed_s,
-            error_tail=f"pre-run commands failed ({evidence.status}): {detail}",
+            error_tail=f"pre-sim commands failed ({evidence.status}): {detail}",
             elab_failed=True,
         )
         for name in names
@@ -678,7 +678,7 @@ def _pre_run_failure(
             tests[0],
             phase_timings_s={
                 "setup": round(attempt.setup_s, 3),
-                "pre_run": round(evidence.elapsed_s, 3),
+                "pre_sim": round(evidence.elapsed_s, 3),
                 "build": 0.0,
                 "run": 0.0,
                 "result_processing": 0.0,
@@ -689,16 +689,16 @@ def _pre_run_failure(
     return _group_outcome(handle, attempt, tests, None, evidence, (), started)
 
 
-def _pre_run_infrastructure_failure(
+def _pre_sim_infrastructure_failure(
     handle: TargetHandle,
     attempt: _Attempt,
-    evidence: PreRunEvidence,
+    evidence: PreSimEvidence,
     started: float,
 ) -> SimulationTargetOutcome:
-    detail = evidence.detail or "could not start Pre-Run Commands"
+    detail = evidence.detail or "could not start Pre-Sim Commands"
     failure = SimulationInfrastructureFailure(
-        "pre_run",
-        "Pre-Run Commands could not start",
+        "pre_sim",
+        "Pre-Sim Commands could not start",
         missing_executable=find_missing_executable(detail) or "",
         detail=detail,
     )
@@ -709,42 +709,42 @@ def _infrastructure_failure(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     started: float,
 ) -> SimulationTargetOutcome:
     failure = SimulationInfrastructureFailure("build", build.reason, detail=build.output)
-    return _error_outcome(handle, attempt, build, pre_run, failure, started)
+    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
 def _transport_failure(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     detail: str,
     started: float,
 ) -> SimulationTargetOutcome:
     failure = SimulationInfrastructureFailure("adapter_protocol", detail, detail=detail)
-    return _error_outcome(handle, attempt, build, pre_run, failure, started)
+    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
 def _artifact_failure(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome | None,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     detail: str,
     started: float,
 ) -> SimulationTargetOutcome:
     failure = SimulationInfrastructureFailure("artifact_persistence", detail, detail=detail)
-    return _error_outcome(handle, attempt, build, pre_run, failure, started)
+    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
 def _error_outcome(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome | None,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     failure: SimulationInfrastructureFailure,
     started: float,
 ) -> SimulationTargetOutcome:
@@ -758,7 +758,7 @@ def _error_outcome(
         elapsed_s=time.monotonic() - started,
         tests=(),
         builds=(build,) if build is not None else (),
-        pre_runs=(pre_run,) if pre_run is not None else (),
+        pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
         infrastructure_failure=failure,
     )
 
@@ -806,7 +806,7 @@ def _group_outcome(
     attempt: _Attempt,
     tests: tuple[SimulationTestOutcome, ...],
     build: BuildOutcome | None,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     artifacts: tuple[SimulationArtifactEvidence, ...],
     started: float,
     diagnostics: tuple[str, ...] = (),
@@ -830,7 +830,7 @@ def _group_outcome(
         elapsed_s=elapsed_s,
         tests=tests,
         builds=(build,) if build is not None else (),
-        pre_runs=(pre_run,) if pre_run is not None else (),
+        pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
         artifacts=artifacts,
         diagnostics=diagnostics,
         phase_timings_s=_target_phase_timings(tests, elapsed_s),
@@ -843,7 +843,7 @@ def _aggregate(
     groups: list[SimulationTargetOutcome],
     tests: tuple[SimulationTestOutcome, ...],
     builds: tuple[BuildOutcome, ...],
-    pre_runs: tuple[PreRunEvidence, ...],
+    pre_sim_runs: tuple[PreSimEvidence, ...],
     artifacts: tuple[SimulationArtifactEvidence, ...],
     failure: SimulationInfrastructureFailure | None,
     started: float,
@@ -870,7 +870,7 @@ def _aggregate(
         elapsed_s=elapsed_s,
         tests=tests,
         builds=builds,
-        pre_runs=pre_runs,
+        pre_sim_runs=pre_sim_runs,
         artifacts=artifacts,
         diagnostics=tuple(note for group in groups for note in group.diagnostics),
         infrastructure_failure=failure,
@@ -1031,7 +1031,7 @@ def _workload_snapshot(
 ) -> Mapping[str, Any]:
     controls = {
         "cycle_sentinels": list(attempt.cycle_sentinels),
-        "pre_run_commands": list(attempt.pre_run_commands),
+        "pre_run_commands": list(attempt.pre_sim_commands),
         "run_cwd": attempt.work.run_cwd,
         "environment": dict(attempt.simulator_environment),
     }
@@ -1199,7 +1199,7 @@ def _attach_group_telemetry(
     attempt: _Attempt,
     process: SubprocessResult,
     build: BuildOutcome,
-    pre_run: PreRunEvidence | None,
+    pre_sim: PreSimEvidence | None,
     output: str,
     result_processing_s: float,
 ) -> tuple[SimulationTestOutcome, ...]:
@@ -1211,7 +1211,7 @@ def _attach_group_telemetry(
         run_s = max(0.0, process.duration_s - build_s) if build.passed else 0.0
     phases = {
         "setup": round(attempt.setup_s, 3),
-        "pre_run": round(pre_run.elapsed_s if pre_run else 0.0, 3),
+        "pre_sim": round(pre_sim.elapsed_s if pre_sim else 0.0, 3),
         "build": round(build_s, 3),
         "run": round(run_s, 3),
         "result_processing": round(result_processing_s, 3),

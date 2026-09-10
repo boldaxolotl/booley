@@ -33,9 +33,9 @@ def test_progress_output_flushes_each_redirected_line(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "stdout", redirected)
 
     configure_progress_output()
-    print("Session Image build started")
+    print("Runtime Image build started")
 
-    assert raw.getvalue().decode("utf-8").splitlines() == ["Session Image build started"]
+    assert raw.getvalue().decode("utf-8").splitlines() == ["Runtime Image build started"]
 
 
 # ---------------------------------------------------------------------------

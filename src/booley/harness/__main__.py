@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .blocking import EXIT_USER_QUIT, UserQuitError
 from .developer import run_ticket
-from .preflight import PreflightError
+from .ticket_preflight import TicketPreflightError
 
 
 def main() -> int:
@@ -104,7 +104,7 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
         return 130
     except UserQuitError:
         return EXIT_USER_QUIT
-    except PreflightError as e:
+    except TicketPreflightError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
     except Exception as e:

@@ -177,21 +177,21 @@ def make_setup_bypass(worktree_factory):
 
 
 # ---------------------------------------------------------------------------
-# Preflight bypass (autouse)
+# Ticket Preflight bypass (autouse)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
-def _bypass_preflight():
-    """Disable preflight checks for all E2E tests.
+def _bypass_ticket_preflight():
+    """Disable Ticket Preflight checks for all E2E tests.
 
     Patches at the developer call site because developer.py does
-    ``from .preflight import run_preflight`` at import time, which caches
+    ``from .ticket_preflight import run_ticket_preflight`` at import time, which caches
     the reference in developer's namespace.  Patching the source module
     only works if developer hasn't been imported yet -- true in isolation
     but not when non-e2e tests have already primed the module cache.
     """
-    with patch("booley.harness.developer.run_preflight"):
+    with patch("booley.harness.developer.run_ticket_preflight"):
         yield
 
 

@@ -183,10 +183,10 @@ def tag_image(source: str, target: str) -> None:
     try:
         result = _run_docker(["image", "tag", source, target], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
-        raise RuntimeError(f"cannot retain issued Session Runtime image: {exc}") from exc
+        raise RuntimeError(f"cannot retain issued Runtime Image: {exc}") from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "docker image tag failed"
-        raise RuntimeError(f"cannot retain issued Session Runtime image: {detail}")
+        raise RuntimeError(f"cannot retain issued Runtime Image: {detail}")
 
 
 def issued_image_tags() -> list[str]:

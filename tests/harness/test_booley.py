@@ -2113,7 +2113,7 @@ class TestCheckFastFailure:
     _run_harness pre-activates that slug itself, so the post-failure
     "0 executable" recheck reflects our OWN activation, not another runner.
     The old code misread that as a race and polled forever, masking fatal
-    preflight failures (e.g. Docker permission denied).
+    Ticket Preflight failures (e.g. Docker permission denied).
     """
 
     @staticmethod

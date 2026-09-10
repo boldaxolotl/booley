@@ -168,7 +168,7 @@ BOOLEY_TOML_SKELETON = """\
 # it has inspected the repository's docs, manifests, filelists, scripts, and CI.
 #
 # Does a test need a non-RTL build step before it can run (e.g. cross-compile
-# the selected test's firmware)? Declare it as Pre-Run Commands (ADR 0039) —
+# the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
 # shell lines run inside the Session Runtime immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
@@ -1036,24 +1036,24 @@ def _step_project_image(ctx: InitContext) -> None:
 def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
     """Present every cleanup outcome without hiding the image reconciliation result."""
     if result.cleanup.pending:
-        warn("obsolete Session Image tags can be removed: " + ", ".join(result.cleanup.pending))
-        ctx.record("docker_image", "warn", "obsolete Session Image tags remain")
+        warn("obsolete Runtime Image tags can be removed: " + ", ".join(result.cleanup.pending))
+        ctx.record("docker_image", "warn", "obsolete Runtime Image tags remain")
     if result.cleanup.removed:
-        ok("removed obsolete Session Image tags: " + ", ".join(result.cleanup.removed))
-        ctx.record("docker_image", "ok", "removed obsolete Session Image tags")
+        ok("removed obsolete Runtime Image tags: " + ", ".join(result.cleanup.removed))
+        ctx.record("docker_image", "ok", "removed obsolete Runtime Image tags")
     if result.cleanup.retained_required:
         warn(
-            "retained obsolete Session Image tags required by containers: "
+            "retained obsolete Runtime Image tags required by containers: "
             + ", ".join(result.cleanup.retained_required)
         )
-        ctx.record("docker_image", "warn", "obsolete Session Image tags are in use")
+        ctx.record("docker_image", "warn", "obsolete Runtime Image tags are in use")
 
 
 def _step_image_lifecycle(
     ctx: InitContext, *, base_result: LifecycleResult | None = None
 ) -> LifecycleResult | None:
-    """Reconcile the authoritative Session Image chain for initialization."""
-    ctx.step_banner("Session Image lifecycle")
+    """Reconcile the authoritative Runtime Image chain for initialization."""
+    ctx.step_banner("Runtime Image lifecycle")
     intent = (
         ImageLifecycleIntent.CHECK
         if ctx.check_only
@@ -1079,16 +1079,16 @@ def _step_image_lifecycle(
         for diagnostic in result.diagnostics:
             warn(diagnostic.message)
         _report_image_cleanup(ctx, result)
-        ctx.record("docker_image", "warn", "Session Image provenance is stale")
+        ctx.record("docker_image", "warn", "Runtime Image provenance is stale")
         return result
     _report_image_cleanup(ctx, result)
     if result.cleanup.pending:
         return result
     if result.changed_images:
-        ok("reconciled Session Images: " + ", ".join(result.changed_images))
+        ok("reconciled Runtime Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
     elif not result.cleanup.removed:
-        skip(f"Session Image {result.selected_reference} is current")
+        skip(f"Runtime Image {result.selected_reference} is current")
         ctx.record("docker_image", "skip", "current")
     return result
 
@@ -1098,10 +1098,10 @@ def _step_image_lifecycle(
 # ---------------------------------------------------------------------------
 
 
-def inspect_refreshable_session_image(
+def inspect_refreshable_runtime_image(
     project_root: Path, *, verbose: bool = False
 ) -> LifecycleResult:
-    """Reject a user-managed Session Image before refresh causes downtime."""
+    """Reject a user-managed Runtime Image before refresh causes downtime."""
     inspection = reconcile_images(
         ProjectImageScope(project_root),
         ImageLifecycleIntent.CHECK,
@@ -1116,13 +1116,13 @@ def inspect_refreshable_session_image(
     return inspection
 
 
-def refresh_session_image(
+def refresh_runtime_image(
     project_root: Path,
     *,
     verbose: bool = False,
     inspection: LifecycleResult | None = None,
 ) -> LifecycleResult:
-    """Rebuild the configured Session Runtime image from current Booley sources.
+    """Rebuild the configured Runtime Image from current Booley sources.
 
     This is the implementation behind ``booley session refresh``. It reuses
     init's image builders with ``force=True`` but never rewrites booley.toml or
@@ -1131,7 +1131,7 @@ def refresh_session_image(
     user-managed and is rejected with an actionable error.
     """
     if inspection is None:
-        inspect_refreshable_session_image(project_root, verbose=verbose)
+        inspect_refreshable_runtime_image(project_root, verbose=verbose)
     bootstrap = reconcile_bootstrap(ImageLifecycleIntent.REFRESH, verbose=verbose)
     base = _usable_bootstrap_base(bootstrap)
     if not bootstrap.ready or base is None:
@@ -1154,7 +1154,7 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, session_image_id=image_id)
+    _step_interactive(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
         raise RuntimeError("Session Runtime spec reissuance failed: " + "; ".join(failures))
@@ -1435,7 +1435,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
     agent_app: str | None = None,
-    session_image_id: str | None = None,
+    runtime_image_id: str | None = None,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
@@ -1511,7 +1511,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         _mask_source_dir().mkdir(parents=True, exist_ok=True)
     spec = dc.build_devcontainer_spec(
         app,
-        image=session_image_id or pi.project_sandbox_image(ctx.project_root),
+        image=runtime_image_id or pi.project_sandbox_image(ctx.project_root),
         project_dir_source=docker_mount_path(project_data_source),
         project_id=dc.canonical_project_id(ctx.project_root),
         # docker_mount_path keeps every mount source in ONE path style — the
@@ -1549,13 +1549,13 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     )
 
     try:
-        if session_image_id is None:
+        if runtime_image_id is None:
             eda_runtime_spec.pin_image(spec)
         else:
-            eda_runtime_spec.pin_image(spec, expected_image_id=session_image_id)
+            eda_runtime_spec.pin_image(spec, expected_image_id=runtime_image_id)
         eda_runtime_spec.seal(ctx.project_root, spec)
     except eda_runtime_spec.RuntimeSpecError as exc:
-        err(f"could not pin Session Runtime image: {exc}")
+        err(f"could not pin Runtime Image: {exc}")
         ctx.record("interactive", "err", str(exc))
         return
 
@@ -1882,7 +1882,7 @@ def _step_project_inventory(ctx: InitContext) -> None:
             f"retry with `booley projects discover {ctx.project_root}`",
         )
         return
-    ok(f"remembered Project root {project_root}")
+    ok(f"remembered Project path {project_root}")
     ctx.record("project_inventory", "ok", str(project_root))
 
 
@@ -2145,7 +2145,7 @@ def _reconcile_initialized_image(
     return _step_image_lifecycle(ctx)
 
 
-def _selected_session_image_id(result: LifecycleResult | None) -> str | None:
+def _selected_runtime_image_id(result: LifecycleResult | None) -> str | None:
     """Return the verified image identity suitable for Session issuance."""
     if result is None or result.status not in {
         ImageLifecycleStatus.CURRENT,
@@ -2194,12 +2194,12 @@ def _run_project_init_steps(
     _step_worktree_prune_guard(ctx)
     _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
     _step_guidance_links(ctx, guidance_plan)
-    session_image_id = _selected_session_image_id(image_result)
+    runtime_image_id = _selected_runtime_image_id(image_result)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,
         agent_app=selection.provider,
-        session_image_id=session_image_id,
+        runtime_image_id=runtime_image_id,
     )
     _step_project_inventory(ctx)
     _step_advisories(ctx)

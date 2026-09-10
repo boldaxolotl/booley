@@ -9,7 +9,7 @@ from typing import Any, Literal
 from booley.flows.sim.build import BuildOutcome
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
-PreRunStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
+PreSimStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
 
 
 class InvalidSimulationRequestError(ValueError):
@@ -59,12 +59,12 @@ class SimulationOptions:
 
 
 @dataclass(frozen=True)
-class PreRunEvidence:
-    """Outcome of one Project-owned Pre-Run Commands firing."""
+class PreSimEvidence:
+    """Outcome of one Project-owned Pre-Sim Commands firing."""
 
     commands: tuple[str, ...]
     test_names: tuple[str, ...]
-    status: PreRunStatus
+    status: PreSimStatus
     elapsed_s: float
     detail: str = ""
 
@@ -131,7 +131,7 @@ class SimulationTargetOutcome:
     elapsed_s: float
     tests: tuple[SimulationTestOutcome, ...]
     builds: tuple[BuildOutcome, ...] = ()
-    pre_runs: tuple[PreRunEvidence, ...] = ()
+    pre_sim_runs: tuple[PreSimEvidence, ...] = ()
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
     diagnostics: tuple[str, ...] = ()
     infrastructure_failure: SimulationInfrastructureFailure | None = None
@@ -157,8 +157,8 @@ __all__ = [
     "DefaultSelection",
     "InvalidSimulationRequestError",
     "NamedTests",
-    "PreRunEvidence",
-    "PreRunStatus",
+    "PreSimEvidence",
+    "PreSimStatus",
     "SimulationArtifactEvidence",
     "SimulationInfrastructureFailure",
     "SimulationOptions",

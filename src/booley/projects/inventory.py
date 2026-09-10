@@ -1,4 +1,4 @@
-"""Host-owned Remembered Project Root inventory."""
+"""Host-owned inventory of remembered Project paths."""
 
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ _LOCK_FILENAME = "projects.lock"
 
 
 class ProjectInventoryError(RuntimeError):
-    """Remembered Project Root persistence or discovery failed."""
+    """Persistence or discovery of a remembered Project path failed."""
 
 
 class ProjectStatus(StrEnum):
-    """Observed availability of one Remembered Project Root."""
+    """Observed availability of one remembered Project path."""
 
     PRESENT = "present"
     MISSING = "missing"
@@ -43,7 +43,7 @@ class ProjectGrantSummary:
 
 @dataclass(frozen=True, slots=True)
 class ProjectInventoryEntry:
-    """One Remembered Project Root and its joined host administration state."""
+    """One remembered Project path and its joined host administration state."""
 
     project_root: str
     status: ProjectStatus
@@ -73,7 +73,7 @@ def discover_projects(search_roots: tuple[Path, ...]) -> tuple[Path, ...]:
 
 
 def forget_project(project_root: Path) -> Path:
-    """Forget one exact Remembered Project Root."""
+    """Forget one exact remembered Project path."""
     with _locked_roots() as roots:
         identity = _remembered_identity(project_root, roots)
         if any(grant.project_root == identity for grant in _authority_grants()):
@@ -85,7 +85,7 @@ def forget_project(project_root: Path) -> Path:
 
 
 def project_inventory() -> tuple[ProjectInventoryEntry, ...]:
-    """Return every Remembered Project Root in deterministic path order."""
+    """Return every remembered Project path in deterministic path order."""
     remembered = _load_roots()
     grants_by_root: dict[str, list[ProjectGrantSummary]] = {}
     for grant in _authority_grants():

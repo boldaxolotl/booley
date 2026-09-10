@@ -11,7 +11,7 @@ and nested actions.
 |---------|---------|
 | `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley init` | Initialize, scaffold, or reseed project integration |
-| `booley projects` | List remembered Project roots and their Grants |
+| `booley projects` | List remembered Project paths and their Grants |
 | `booley auth` | Configure or inspect agent credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley session` | Start, enter, inspect, refresh, or stop the Session Runtime |

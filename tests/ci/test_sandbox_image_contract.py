@@ -1,4 +1,4 @@
-"""Mutation-backed tests for the parsed Session Image graph contract."""
+"""Mutation-backed tests for the parsed Runtime Image graph contract."""
 
 from __future__ import annotations
 

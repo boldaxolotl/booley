@@ -1183,14 +1183,14 @@ steps:
       `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.P-08.riscv-firmware
   requires:
   - inputs.project-pin
   assets:
   - path: probes/P-08.md
     audience: coordinator
-    sha256: 538b474fdcd47f9a43bdc196ae3fb120d38d5896d8dcf9b503225b0b26be1913
+    sha256: 430b1bb44e5a0470a555067a0db578c3a6d3f6b82dc581f01a5d78687593c234
 - id: inventory.P-08.riscv-tools
   phase: prepare
   action: |-
@@ -1208,14 +1208,14 @@ steps:
       `riscv-tools`: inspect runtime GCC/srec_cat/dtc/Spike and offline specs → declared supported image tools ready. `riscv-firmware`: pre-run real firmware build and Spike use → fresh named firmware and expected execution evidence.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv
     evidence: |-
-      Storage proof, versions, compile and execution logs, firmware digest; link existing Session Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Storage proof, versions, compile and execution logs, firmware digest; link existing Runtime Image recovery checks in this Scenario. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.P-08.riscv-tools
   requires:
   - inputs.project-pin
   assets:
   - path: probes/P-08.md
     audience: coordinator
-    sha256: 538b474fdcd47f9a43bdc196ae3fb120d38d5896d8dcf9b503225b0b26be1913
+    sha256: 430b1bb44e5a0470a555067a0db578c3a6d3f6b82dc581f01a5d78687593c234
 - id: inventory.ST-01.stealth-history
   phase: prepare
   action: |-

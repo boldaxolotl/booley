@@ -1,4 +1,4 @@
-"""Host-owned Remembered Project Root inventory contracts."""
+"""Host-owned remembered Project path inventory contracts."""
 
 from __future__ import annotations
 

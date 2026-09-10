@@ -48,7 +48,11 @@ def _exercise_commands(
         env=env,
     )
     _run([str(python), "-I", "-m", "booley.ticket_board", "show", slug], project=project, env=env)
-    preflight = "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
+    preflight = (
+        "from pathlib import Path; "
+        "from booley.harness.ticket_preflight import run_ticket_preflight; "
+        "run_ticket_preflight(Path.cwd())"
+    )
     _run([str(python), "-I", "-c", preflight], project=project, env=env)
     _run([str(booley), "board", "show"], project=project, env=env)
 

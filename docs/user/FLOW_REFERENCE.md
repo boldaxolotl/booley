@@ -37,7 +37,7 @@ Common controls:
   requires it when the Flow/Target pair is outside the Acceptance Basis.
 - `--dry-run` resolves and validates the requested work and prints the same
   normalized plan shape for every built-in Flow. It does not run EDA or
-  Pre-Run Commands and does not update Booley-managed durable state.
+  Pre-Sim Commands and does not update Booley-managed durable state.
 - `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
   work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
   workload-specific default. Queue time is not charged. The old `--timeout`
@@ -91,7 +91,7 @@ possible; ambient environment values and secrets are excluded.
 Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
 selected Target or baseline cannot be planned, while retaining successfully
 planned work units for diagnosis. It never acquires a heavy execution slot,
-runs an EDA or Pre-Run command, changes timeline or Criteria state, records
+runs an EDA tool or Pre-Sim Commands, changes timeline or Criteria state, records
 Criterion evidence, populates implementation caches, or writes a normal
 verdict report. FuseSoC setup and declared generators may run when authoritative
 resolution requires them, using disposable scratch; this possibility is named
@@ -156,7 +156,7 @@ starts, so a later runtime failure cannot erase successful elaboration evidence.
 Infrastructure failure before or during the build leaves that Criterion
 unchanged.
 
-Elaboration Check mode skips Pre-Run Commands, test selection, Cocotb Python,
+Elaboration Check mode skips Pre-Sim Commands, test selection, Cocotb Python,
 run guards, sentinels, and tracing. Run-only arguments such as `--test`,
 `--skip`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
 this mode. Only Simulation Targets are eligible. A compiler diagnostic that
@@ -178,7 +178,7 @@ Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
 |---|---|
 | `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
 | `passed`, `complete`, `elapsed_s` | Target-level verdict, whether terminal publication completed, and execution duration. An interrupted publication leaves `complete: false` as an explicitly recoverable checkpoint. |
-| `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_run`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
+| `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_sim`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
 | `tests[]` | Per-test `name`, `passed`, `verdict`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
@@ -222,7 +222,7 @@ A different explicit suite still collects evidence but blocks gated evaluation.
 Only a durably persisted `pass` satisfies `coverage_<target>`. Simulation failure,
 collection completeness, and policy evaluation remain independent: a failing
 simulation can produce valid passing coverage, and passing simulation can miss a
-threshold. Exit precedence is `2` for Preflight, collection, infrastructure,
+threshold. Exit precedence is `2` for Coverage Preflight, collection, infrastructure,
 persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
 simulation failure or valid threshold miss; otherwise `0`, including ungated
 collection. Structured `detail.targets[selector]` retains each Target's

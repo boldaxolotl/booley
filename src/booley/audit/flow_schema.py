@@ -262,8 +262,8 @@ def _flow_shape_findings(
                     f"fix [flows.{flow_name}].enabled",
                 )
             )
-    pre_run = section.get("pre_run_commands")
-    if pre_run is not None and not is_str_list(pre_run):
+    pre_sim_commands = section.get("pre_run_commands")
+    if pre_sim_commands is not None and not is_str_list(pre_sim_commands):
         findings.append(
             fail_finding(
                 f"booley.toml [flows.{flow_name}].pre_run_commands must be a "

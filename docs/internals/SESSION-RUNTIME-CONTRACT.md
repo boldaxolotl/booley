@@ -1,7 +1,7 @@
-# Session Runtime image contract
+# Runtime Image contract
 
 This contract defines the required behavior of Booley's standard and RISC-V
-Session Runtime images. Image-size work may change packaging, layers, debug
+Runtime Images. Image-size work may change packaging, layers, debug
 symbols, and implementation details. Removing required behavior needs a separately
 reviewed contract change.
 

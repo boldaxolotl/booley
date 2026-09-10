@@ -94,7 +94,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
         events.append("bootstrap")
         return result
 
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.refresh.side_effect = refresh_image
     images.reissue.side_effect = lambda *_args, **_kwargs: events.append("reissue")
 
@@ -128,7 +128,7 @@ def test_bootstrap_failure_restores_exact_parked_session_and_spec(
     parked = _parked(tmp_path)
     snapshot = _snapshot(tmp_path)
     events: list[str] = []
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.refresh.side_effect = RuntimeError("other active Session")
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
@@ -159,7 +159,7 @@ def test_bootstrap_failure_restores_exact_parked_session_and_spec(
 def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     parked = _parked(tmp_path)
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.refresh.side_effect = RuntimeError("bootstrap failed")
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
@@ -186,7 +186,7 @@ def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypa
 
 
 def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> None:
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value="vscode-owned"),
         pytest.raises(sr.SessionError, match="VS Code owns"),
@@ -203,7 +203,7 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monk
     prior_issuance = _issuance(tmp_path)
     candidate_issuance = _issuance(tmp_path, "sha256:fresh")
     events: list[str] = []
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.refresh.return_value = result
     with (
         patch.object(
@@ -258,7 +258,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     result = session_refresh.RefreshImage("booley-sandbox", None)  # type: ignore[arg-type]
     snapshot = _snapshot(tmp_path)
-    images = Mock(spec=session_refresh.SessionImageOperations)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.refresh.return_value = result
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
@@ -267,7 +267,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
         patch.object(sr, "plan_session_refresh", return_value=None),
         patch.object(session_refresh, "restore_session_spec") as restore,
         patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(sr.SessionError, match="immutable Session Image ID"),
+        pytest.raises(sr.SessionError, match="immutable Runtime Image ID"),
     ):
         session_refresh.refresh(tmp_path, images)
 
@@ -293,14 +293,14 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
     with (
         patch.object(
             harness_refresh.init_cmd,
-            "inspect_refreshable_session_image",
+            "inspect_refreshable_runtime_image",
             side_effect=lambda root, *, verbose: (
                 events.append(("inspect", root, verbose)) or inspection
             ),
         ),
         patch.object(
             harness_refresh.init_cmd,
-            "refresh_session_image",
+            "refresh_runtime_image",
             side_effect=lambda root, *, verbose, inspection: (
                 events.append(("refresh", root, verbose, inspection)) or refreshed
             ),

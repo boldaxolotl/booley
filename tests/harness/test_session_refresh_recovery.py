@@ -276,7 +276,7 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
     ):
         session_refresh.refresh(
             project,
-            Mock(spec=session_refresh.SessionImageOperations),
+            Mock(spec=session_refresh.RuntimeImageOperations),
         )
 
 
@@ -401,7 +401,7 @@ def test_refresh_stops_after_recovering_shared_host_state(tmp_path: Path) -> Non
     ):
         session_refresh.refresh(
             project,
-            Mock(spec=session_refresh.SessionImageOperations),
+            Mock(spec=session_refresh.RuntimeImageOperations),
         )
 
     refresh_unlocked.assert_not_called()

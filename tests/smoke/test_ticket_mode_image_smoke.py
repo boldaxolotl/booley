@@ -1,4 +1,4 @@
-"""Opt-in Ticket Mode boundary smoke against the production Session Runtime image."""
+"""Opt-in Ticket Mode boundary smoke against the production Runtime Image."""
 
 from __future__ import annotations
 

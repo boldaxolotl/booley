@@ -1,4 +1,4 @@
-"""Project Initialization adapters for Session Image reconciliation."""
+"""Project Initialization adapters for Runtime Image reconciliation."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class _LegacyBuildAdapter:
         if shipped and not (source_root / "pyproject.toml").is_file():
             if not _try_pull_image(node.payload.version, node.reference):
                 raise ImageLifecycleError(
-                    f"could not pull current packaged Session Image {node.reference}"
+                    f"could not pull current packaged Runtime Image {node.reference}"
                 )
             return
 

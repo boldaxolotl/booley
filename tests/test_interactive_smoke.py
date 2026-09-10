@@ -512,8 +512,8 @@ class TestInitInteractive:
         monkeypatch.setattr(
             init_cmd,
             "_step_interactive",
-            lambda _ctx, *, nangate_pdk_root, session_image_id=None: seen.append(
-                (nangate_pdk_root, session_image_id)
+            lambda _ctx, *, nangate_pdk_root, runtime_image_id=None: seen.append(
+                (nangate_pdk_root, runtime_image_id)
             ),
         )
 

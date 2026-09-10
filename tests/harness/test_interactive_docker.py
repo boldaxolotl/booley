@@ -60,6 +60,14 @@ class TestIssuedImageKeepers:
         with pytest.raises(RuntimeError, match="no space"):
             idk.tag_image("sha256:abc", "booley-issued-" + "a" * 64 + ":session")
 
+    def test_tag_image_surfaces_missing_docker(self, monkeypatch):
+        def missing(*_args, **_kwargs):
+            raise FileNotFoundError("docker")
+
+        monkeypatch.setattr(idk, "_run_docker", missing)
+        with pytest.raises(RuntimeError, match="cannot retain issued Runtime Image"):
+            idk.tag_image("sha256:abc", "booley-issued-" + "a" * 64 + ":session")
+
     def test_lists_only_well_formed_keeper_tags(self, fake_docker):
         keeper = "booley-issued-" + "a" * 64 + ":session"
         fake_docker(

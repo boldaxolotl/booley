@@ -26,7 +26,7 @@ from booley.targets.catalog import TargetCatalog
 
 pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("verilator_coverage") is None,
-    reason="real smoke runs inside the pinned Booley Session Image",
+    reason="real smoke runs inside the pinned Booley Runtime Image",
 )
 _TOOL_TIMEOUT_S = 120
 

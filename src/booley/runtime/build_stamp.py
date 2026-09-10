@@ -90,7 +90,7 @@ def resolve_source_updated_at(booley_root: Path) -> str:
 
 
 def iter_payload_files(booley_root: Path) -> Iterator[Path]:
-    """Yield the canonical source inputs baked into a Session Image payload."""
+    """Yield the canonical source inputs baked into a Runtime Image payload."""
     for relative in _PAYLOAD_TREES:
         root = booley_root / relative
         if not root.is_dir():
@@ -108,7 +108,7 @@ def iter_payload_files(booley_root: Path) -> Iterator[Path]:
 
 
 def resolve_payload_fingerprint(booley_root: Path) -> str | None:
-    """Return a path-and-content SHA-256 for every Session Image payload input."""
+    """Return a path-and-content SHA-256 for every Runtime Image payload input."""
     files = sorted(set(iter_payload_files(booley_root)))
     if not files:
         return None

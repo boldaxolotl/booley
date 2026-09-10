@@ -59,7 +59,7 @@ class TestPhaseTransitions:
         assert app.phase is ConsolePhase.EXITED
 
     def test_setup_can_skip_to_teardown(self):
-        """Preflight abort: harness gives up before reaching RUNNING."""
+        """Ticket Preflight abort: harness gives up before reaching RUNNING."""
         app = ConsoleApp()
         app.transition_to(ConsolePhase.SETUP)
         assert app.transition_to(ConsolePhase.TEARDOWN) is True
