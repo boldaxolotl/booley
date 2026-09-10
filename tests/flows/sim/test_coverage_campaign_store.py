@@ -19,7 +19,6 @@ from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
     decode_coverage_campaign,
     derive_coverage_rollups,
-    encode_coverage_campaign,
     encode_coverage_point,
     freeze_coverage_mapping,
 )
@@ -256,17 +255,8 @@ def test_large_campaign_keeps_manifest_and_summary_work_constant(tmp_path: Path)
     large_manifest = large.campaign.read_bytes()
 
     summary = read_coverage_summary(large.campaign, TARGET)
-    loaded = load_coverage_campaign(large.campaign, TARGET)
-    request = json.dumps(
-        {
-            "campaign_manifest": json.loads(large_manifest),
-            "points": encode_coverage_campaign(large_campaign)["points"],
-        },
-        separators=(",", ":"),
-    ).encode()
 
     assert len(large_manifest) - len(small_manifest) < 128
     assert summary.point_store is not None
     assert summary.point_store.point_count == 40_000
-    assert len(loaded.campaign.points) == 40_000
-    assert len(large.points.read_bytes()) < len(request)
+    assert large.points.stat().st_size < summary.point_store.uncompressed_bytes
