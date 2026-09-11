@@ -92,11 +92,58 @@ def _assessment() -> dict:
     }
 
 
+def _facts(ctx: Context, *, run_economics: str = "unavailable") -> dict:
+    state = json.loads((ctx.log_dir / ".runtime" / "booley_state.json").read_text())
+    scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
+    scope = json.loads(scope_path.read_text()) if scope_path.is_file() else {}
+    evidence = tp.ResolvedReviewEvidence.capture(
+        state=state,
+        scope=scope,
+        dirty_worktree=[],
+        developer_crashes=[],
+        missing_evidence=[],
+    )
+    return tp.build_review_facts(ctx, evidence, run_economics=run_economics)
+
+
+def test_review_facts_consume_frozen_board_evidence(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
+    captured_state = json.loads(state_path.read_text(encoding="utf-8"))
+    captured_state["criteria"]["captured_only"] = {"mandatory": False, "met": True}
+    evidence = tp.ResolvedReviewEvidence.capture(
+        state=captured_state,
+        scope={"decidable": False, "harness_paths": ["captured/path"]},
+        dirty_worktree=[" M captured.sv"],
+        developer_crashes=["captured.crash.json"],
+        missing_evidence=["captured.txt"],
+    )
+    state_path.unlink()
+    scope_path.write_text(
+        json.dumps({"decidable": True, "harness_paths": ["live/path"]}),
+        encoding="utf-8",
+    )
+
+    facts = tp.build_review_facts(ctx, evidence)
+
+    assert "captured_only" in {row["criterion"] for row in facts["criteria"]}
+    assert facts["health"] == {
+        "dirty_worktree": [" M captured.sv"],
+        "exit_2_tools": [],
+        "developer_crashes": ["captured.crash.json"],
+        "missing_evidence": ["captured.txt"],
+        "harness_paths": ["captured/path"],
+        "scope_undecidable": True,
+        "unverified_transitions": [],
+    }
+
+
 def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     tmp_path: Path, monkeypatch
 ):
     ctx = _context(tmp_path)
-    facts = tp.build_review_facts(ctx, run_economics="tokens=10 cost=$0.01")
+    facts = _facts(ctx, run_economics="tokens=10 cost=$0.01")
 
     assert [row["subject"] for row in facts["commits"]] == ["rename implementation"]
     assert [row["criterion"] for row in facts["criteria"]] == [
@@ -134,7 +181,7 @@ def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, mo
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx, run_economics="tokens=10 cost=$0.01")
+    facts = _facts(ctx, run_economics="tokens=10 cost=$0.01")
 
     waiver = facts["review_dispositions"][0]
     assert waiver["disposition"] == "waived"
@@ -177,7 +224,7 @@ def test_cycle_comparison_is_prominent_and_discloses_workload_drift(
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
 
@@ -211,7 +258,7 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
         {"worktree": project, "base_sha": base, "head_sha": head},
     )()
     ctx = replace(ctx, project_repository=project_repository)
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
 
     assert facts["commits"][-1]["repository"] == "project"
     assert facts["commits"][-1]["subject"] == "update project core"
@@ -238,7 +285,7 @@ def test_review_facts_classify_symlink_binary_and_submodule_content(tmp_path: Pa
     _git(ctx.worktree, "add", "rtl/link.sv", "rtl/blob.bin")
     _git(ctx.worktree, "commit", "-qm", "add special content")
     ctx = replace(ctx, head_sha=_git(ctx.worktree, "rev-parse", "HEAD"))
-    changes = {row["path"]: row for row in tp.build_review_facts(ctx)["changed_files"]}
+    changes = {row["path"]: row for row in _facts(ctx)["changed_files"]}
 
     assert changes["rtl/link.sv"]["content_kind"] == "symlink"
     assert changes["rtl/link.sv"]["presentation"] == "text"
@@ -278,7 +325,7 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
     mutation = next(row for row in facts["criteria"] if row["criterion"] == "mutation_score")
@@ -325,7 +372,7 @@ def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeyp
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
 
@@ -370,7 +417,7 @@ def test_review_facts_and_briefing_reveal_fpga_recipe_changes(tmp_path: Path, mo
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
 
@@ -387,7 +434,7 @@ def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["criteria"]["sim_pass"].update({"params": {"from_state": "fail"}, "ever_failed": False})
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
 
     assert facts["health"]["unverified_transitions"] == ["sim_pass"]
 
@@ -576,7 +623,7 @@ def test_review_shows_developer_justifications_in_scope_and_file_sections(tmp_pa
         "detail": {"file_justifications": {"rtl/new.sv": reason}},
     }
     state_path.write_text(json.dumps(state))
-    facts = tp.build_review_facts(ctx)
+    facts = _facts(ctx)
     facts["assessment"] = {
         "scope_deviations": [
             {"path": "rtl/new.sv", "classification": "Needs review", "reason": "Outside scope"}
@@ -604,4 +651,4 @@ def test_review_rejects_malformed_persisted_justifications(tmp_path):
     for state in malformed:
         state_path.write_text(json.dumps(state))
         with pytest.raises(tp.TriagePackageError, match="file justifications"):
-            tp.build_review_facts(ctx)
+            _facts(ctx)

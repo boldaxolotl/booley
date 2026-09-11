@@ -165,6 +165,10 @@ def assert_idle(log_dir: Path) -> None:
     if operation.get("phase") == "interactive":
         from booley.ticket_board.ticket_jobs import active_ticket_jobs
 
+        try:
+            require_str(operation, "token")
+        except (TypeError, ValueError) as exc:
+            raise ReviewEntryError("interactive review operation identity is invalid") from exc
         if active_ticket_jobs(log_dir):
             raise ReviewEntryError("interactive review Jobs are still active")
     if operation.get("phase") in {"publishing", "accepting"}:

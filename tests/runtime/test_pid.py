@@ -97,8 +97,8 @@ def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None
     identity = runtime_pid.capture_process_identity(123, proc_root=tmp_path)
     assert identity == runtime_pid.ProcessIdentity(
         pid=123,
-        pid_namespace="pid:[10]",
-        start_ticks=100,
+        identity_scope="pid:[10]",
+        start_token=100,
     )
     assert runtime_pid.observe_process(identity, proc_root=tmp_path).state is runtime_pid.RUNNING
 
@@ -115,19 +115,62 @@ def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None
 def test_process_identity_owns_protocol_serialization() -> None:
     identity = runtime_pid.ProcessIdentity(
         pid=123,
-        pid_namespace="pid:[10]",
-        start_ticks=100,
+        identity_scope="pid:[10]",
+        start_token=100,
     )
 
     assert identity.to_payload() == {
         "pid": 123,
-        "pid_namespace": "pid:[10]",
-        "start_ticks": 100,
+        "identity_kind": "linux-procfs-start",
+        "identity_scope": "pid:[10]",
+        "start_token": 100,
     }
     assert runtime_pid.ProcessIdentity.from_payload(identity.to_payload()) == identity
+    assert (
+        runtime_pid.ProcessIdentity.from_payload(
+            {"pid": 123, "pid_namespace": "pid:[10]", "start_ticks": 100}
+        )
+        == identity
+    )
     assert (
         runtime_pid.ProcessIdentity.from_payload(
             {"pid": True, "pid_namespace": "pid:[10]", "start_ticks": 100}
         )
         is None
     )
+    assert (
+        runtime_pid.ProcessIdentity.from_payload(
+            {
+                "pid": 123,
+                "identity_kind": "unknown",
+                "identity_scope": "opaque",
+                "start_token": 100,
+            }
+        )
+        is None
+    )
+
+
+def test_windows_observation_rejects_terminated_matching_identity(monkeypatch) -> None:
+    identity = runtime_pid.ProcessIdentity(
+        123, "windows", 100, identity_kind="windows-creation-time"
+    )
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
+    monkeypatch.setattr(runtime_pid, "_windows_process_identity", lambda _pid: identity)
+    monkeypatch.setattr(runtime_pid, "_windows_pid_alive", lambda _pid: False)
+
+    assert runtime_pid.observe_process(identity).state is runtime_pid.DEAD
+
+
+def test_portable_posix_identity_uses_stable_process_start(monkeypatch) -> None:
+    completed = type("Completed", (), {"returncode": 0, "stdout": "Mon Sep 11 12:00:00 2026\n"})()
+    monkeypatch.setattr(runtime_pid.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime_pid.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(runtime_pid, "is_pid_alive", lambda _pid: True)
+
+    identity = runtime_pid.capture_process_identity(123)
+
+    assert identity is not None
+    assert identity.identity_scope == "ps:darwin"
+    assert identity.identity_kind == "posix-ps-start"
+    assert runtime_pid.observe_process(identity).state is runtime_pid.RUNNING

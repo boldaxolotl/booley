@@ -458,14 +458,16 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
     root, tio, worktree = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
     entry = read_entry(tio.logs_dir / "demo")
-    operation = {
-        "pid": os.getpid(),
-        "phase": "interactive",
-        "token": "fixture",
-        "basis_id": entry["basis_id"],
-    }
     with tio._ticket_lock("demo", review_operation=True):
-        _, env = interactive._environment(tio, "demo", operation)
+        board = tio.find_ticket("demo")
+        worktree, env, lease = interactive._environment(
+            tio,
+            "demo",
+            lease_id="fixture",
+            basis_id=entry["basis_id"],
+            review_ticket=tio.tickets_dir / board["file"],
+        )
+        operation = lease.operation_record(owner_pid=os.getpid())
         requests._write(requests.operation_path(tio.logs_dir / "demo"), operation)
     for key, value in env.items():
         if key.startswith("BOOLEY_") or key == "TICKETS_DIR":
@@ -478,6 +480,95 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
         execution_context.validate_recording(worktree)
 
 
+def test_review_exec_rejects_preexisting_basis_drift(blocked):
+    from booley.ticket_board import review_execution as interactive
+    from booley.ticket_board.review_records import ReviewEntryError
+
+    root, tio, _worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    board = tio.find_ticket("demo")
+
+    with pytest.raises(ReviewEntryError, match="Acceptance Basis"):
+        interactive._environment(
+            tio,
+            "demo",
+            lease_id="fixture",
+            basis_id="stale-basis",
+            review_ticket=tio.tickets_dir / board["file"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("basis", "Acceptance Basis runtime Ticket"),
+        ("status", "Ticket Board review Ticket"),
+        ("acceptance", "accepted Criteria Satisfaction Record"),
+        ("job", "matching detached job"),
+    ],
+)
+def test_review_exec_lease_rejects_lifecycle_drift(blocked, monkeypatch, drift, message):
+    import os
+
+    from booley.runtime import execution_lease as execution_context
+    from booley.runtime.execution_lease import ExecutionLeaseError
+    from booley.ticket_board import review_execution as interactive
+    from booley.ticket_board import review_lifecycle as requests
+
+    root, tio, worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    entry = read_entry(tio.logs_dir / "demo")
+    with tio._ticket_lock("demo", review_operation=True):
+        board = tio.find_ticket("demo")
+        _, env, lease = interactive._environment(
+            tio,
+            "demo",
+            lease_id="fixture",
+            basis_id=entry["basis_id"],
+            review_ticket=tio.tickets_dir / board["file"],
+        )
+        requests._write(
+            requests.operation_path(tio.logs_dir / "demo"),
+            lease.operation_record(owner_pid=os.getpid()),
+        )
+    for key, value in env.items():
+        if key.startswith("BOOLEY_") or key == "TICKETS_DIR":
+            monkeypatch.setenv(key, value)
+    if drift == "basis":
+        runtime_ticket = lease.required_files[1].path
+        runtime_ticket.write_text(runtime_ticket.read_text() + "drift\n")
+    elif drift == "status":
+        lease.required_files[0].path.replace(tio.tickets_dir / "board" / "blocked" / "demo.md")
+    elif drift == "acceptance":
+        accepted = lease.absent_paths[0].path
+        accepted.parent.mkdir(parents=True, exist_ok=True)
+        accepted.write_text("{}\n")
+    else:
+        from booley.runtime.pid import DEAD, ProcessIdentity, ProcessObservation
+
+        operation = lease.operation_record(owner_pid=os.getpid())
+        operation["pid"] = 999999
+        operation["owner_identity"] = ProcessIdentity(
+            pid=999999, identity_scope="synthetic", start_token=1
+        ).to_payload()
+        requests._write(
+            requests.operation_path(tio.logs_dir / "demo"),
+            operation,
+        )
+        monkeypatch.setattr(
+            execution_context,
+            "observe_process",
+            lambda _identity: ProcessObservation(DEAD),
+        )
+        monkeypatch.setattr(
+            execution_context,
+            "active_jobs",
+            lambda _root: [SimpleNamespace(lease_id="another-lease")],
+        )
+    with pytest.raises(ExecutionLeaseError, match=message):
+        execution_context.validate_recording(worktree)
+
+
 def test_live_job_blocks_request_without_mutation(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
 
@@ -487,6 +578,64 @@ def test_live_job_blocks_request_without_mutation(blocked, monkeypatch):
     assert not outcome.ready
     assert "Jobs are active" in outcome.message
     assert tio.find_ticket("demo")["status"] == "blocked"
+
+
+def test_malformed_job_record_blocks_request_without_mutation(blocked):
+    root, tio, _worktree = blocked
+    jobs = tio.logs_dir / "demo" / ".runtime" / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    jobs.joinpath("broken.json").write_text("{not json", encoding="utf-8")
+
+    outcome = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+
+    assert not outcome.ready
+    assert "repair or removal" in outcome.message
+    assert tio.find_ticket("demo")["status"] == "blocked"
+
+
+@pytest.mark.parametrize("token", [None, "another-lease"])
+def test_review_mutation_fails_closed_for_legacy_or_unrelated_jobs(blocked, monkeypatch, token):
+    from booley.ticket_board import review_lifecycle as requests
+    from booley.ticket_board import review_records, ticket_jobs
+
+    root, tio, _worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    operation = {"pid": 999999, "phase": "interactive"}
+    if token is not None:
+        operation["token"] = token
+    requests._write(requests.operation_path(tio.logs_dir / "demo"), operation)
+    monkeypatch.setattr(review_records, "is_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        ticket_jobs,
+        "active_ticket_jobs",
+        lambda _log_dir: [SimpleNamespace(lease_id=None)],
+    )
+
+    outcome = asyncio.run(request_review_command(root, "demo", action="refresh"))
+
+    assert not outcome.ready
+    assert (
+        "operation identity is invalid" in outcome.message
+        or "Jobs are still active" in outcome.message
+    )
+
+
+def test_review_exec_cleanup_preserves_lease_for_any_active_ticket_job(blocked, monkeypatch):
+    import sys
+
+    from booley.ticket_board import review_execution as interactive
+    from booley.ticket_board import review_lifecycle as requests
+
+    root, tio, _worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    monkeypatch.setattr(requests, "active_ticket_jobs", lambda _log_dir: [])
+    monkeypatch.setattr(
+        interactive,
+        "active_ticket_jobs",
+        lambda _log_dir: [SimpleNamespace(lease_id=None)],
+    )
+    assert interactive.run_review_command(root, "demo", [sys.executable, "-c", "pass"]) == 0
+    assert requests.operation_path(tio.logs_dir / "demo").is_file()
 
 
 def test_missing_diff_artifact_invalidates_inspection(blocked):

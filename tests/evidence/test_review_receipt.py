@@ -136,6 +136,75 @@ def test_ticket_linked_spec_is_resolved_without_ticket_board_dependency(
     assert contract["spec_digest"]
 
 
+def test_malformed_ticket_frontmatter_raises_review_context_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "ticket.md").write_text("---\nspec: [unterminated\n---\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    with pytest.raises(ReviewContextError, match="frontmatter"):
+        build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=tmp_path,
+                category="rtl",
+                focus="spec",
+                scope=(),
+                mode="done",
+            )
+        )
+
+
+def test_unreadable_ticket_frontmatter_raises_review_context_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    ticket = logs / "ticket.md"
+    ticket.write_text("---\nspec: spec.md\n---\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    original_read_text = Path.read_text
+
+    def fail_ticket_read(path: Path, *args, **kwargs) -> str:
+        if path == ticket:
+            raise OSError("synthetic read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_ticket_read)
+
+    with pytest.raises(ReviewContextError, match="frontmatter"):
+        build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=tmp_path,
+                category="rtl",
+                focus="spec",
+                scope=(),
+                mode="done",
+            )
+        )
+
+
+def test_ticket_board_policy_digest_controls_receipt_freshness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "rtl").mkdir()
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="tb",
+            focus="bugs",
+            scope=(),
+            mode="clean",
+            tb_policy_digest="policy-a",
+        )
+    )
+    detail = {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}
+
+    assert review_receipt_drift(detail, tmp_path, tb_policy_digest="policy-a") == []
+    assert review_receipt_drift(detail, tmp_path, tb_policy_digest="policy-b") == ["tb_policy"]
+
+
 def test_explicit_spec_is_tracked_in_standalone_mode(tmp_path: Path, monkeypatch) -> None:
     spec = tmp_path / "spec.md"
     spec.write_text("Latency is three cycles.\n", encoding="utf-8")

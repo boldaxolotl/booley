@@ -135,9 +135,9 @@ job/operation fencing, publication, and interrupted-publication recovery.
 
 `review.generation` is the sole reverse composition seam. It accepts the resolved
 context and immutable participant heads selected by Ticket Board and returns review
-packages and render outcomes. It does not inspect Board state or perform lifecycle
-transitions. Generic detached-job waiting and execution-lease identity live in
-Runtime; `ticket_board.ticket_jobs` adapts generic job discovery to a Ticket,
+packages and render outcomes. It does not inspect Ticket Board state or perform
+lifecycle transitions. Generic detached-job waiting and execution-lease identity live
+in Runtime; `ticket_board.ticket_jobs` adapts generic job discovery to a Ticket,
 while Ticket Board issues the generic execution lease consumed by Flow publication.
 Reviewer receipts and dispositions live in `booley.evidence`
 because both Specialists and acceptance policy consume them.

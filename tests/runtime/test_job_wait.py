@@ -40,3 +40,20 @@ async def test_timeout_names_jobs_that_are_still_active(tmp_path: Path, monkeypa
 
     with pytest.raises(job_wait.JobWaitTimeoutError, match="mutation_tester-x-1"):
         await job_wait.wait_for_jobs(tmp_path, max_wait_seconds=0)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{not json",
+        '{"run_id":"job","endpoint":"sim","started_at":"bad","timeout_s":60}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2999-01-01T00:00:00Z","timeout_s":60}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":"unbounded"}',
+    ],
+)
+def test_active_jobs_fails_closed_on_malformed_records(tmp_path: Path, contents: str) -> None:
+    tmp_path.joinpath("job.json").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(jobrec.JobRecordError, match="repair or removal"):
+        job_wait.active_jobs(tmp_path)

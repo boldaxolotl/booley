@@ -33,6 +33,13 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_list,
+    require_str,
+)
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,15 @@ DEADLINE_SLACK_SECONDS = 120.0
 # Treat that short pid-less interval as active so a finalization fence cannot
 # slip between record creation and process spawn.
 SPAWN_GRACE_SECONDS = 30.0
+
+# Durable timestamps cross process boundaries and can differ slightly when a
+# host clock steps.  Larger future offsets are not safe for lifecycle fencing:
+# a PID-less Job would otherwise remain in its spawn grace indefinitely.
+MAX_CLOCK_SKEW_SECONDS = 5.0
+
+
+class JobRecordError(RuntimeError):
+    """One or more durable Job records cannot safely participate in fencing."""
 
 
 @dataclass
@@ -174,6 +190,65 @@ def parse_stamp(stamp: object) -> float | None:
         return parse_timestamp(stamp).timestamp()
     except ValueError:
         return None
+
+
+def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
+    data = require_dict(record.to_dict(), field="Job record")
+    require_str(data, "run_id")
+    require_str(data, "endpoint")
+    require_str(data, "started_at")
+    timeout_s = require_int(data.get("timeout_s"), field="Job timeout")
+    if timeout_s <= 0:
+        raise BoundaryError("Job timeout must be positive")
+    argv = require_list(data.get("argv"), field="Job argv")
+    for index, value in enumerate(argv):
+        key = f"Job argv[{index}]"
+        require_str({key: value}, key)
+    status = require_str(data, "status")
+    if status not in {STATUS_RUNNING, STATUS_DONE, STATUS_FAILED, STATUS_CANCELLED}:
+        raise BoundaryError(f"unsupported Job status {status}")
+    if record.pid is not None and require_int(record.pid, field="Job pid") <= 0:
+        raise BoundaryError("Job pid must be positive")
+    if record.exit_code is not None:
+        require_int(record.exit_code, field="Job exit code")
+    if record.lease_id is not None:
+        require_str({"lease_id": record.lease_id}, "lease_id")
+    started_at = parse_stamp(record.started_at)
+    if started_at is None:
+        raise BoundaryError("Job started_at must be an RFC 3339 timestamp")
+    current = time.time() if now is None else now
+    if started_at > current + MAX_CLOCK_SKEW_SECONDS:
+        raise BoundaryError("Job started_at is in the future")
+    if record.run_started_at is not None:
+        run_started_at = parse_stamp(record.run_started_at)
+        if run_started_at is None:
+            raise BoundaryError("Job run_started_at must be an RFC 3339 timestamp")
+        if run_started_at > current + MAX_CLOCK_SKEW_SECONDS:
+            raise BoundaryError("Job run_started_at is in the future")
+        if run_started_at < started_at:
+            raise BoundaryError("Job run_started_at precedes started_at")
+
+
+def strict_records(root: Path | None) -> list[JobRecord]:
+    """Read every record or fail closed when any durable entry is malformed."""
+    if root is None or not root.is_dir():
+        return []
+    records: list[JobRecord] = []
+    malformed: list[str] = []
+    for path in root.glob("*.json"):
+        record = read_record(path.stem, root)
+        try:
+            if record is None:
+                raise BoundaryError("record is unreadable")
+            _validate_record(record)
+        except (BoundaryError, TypeError, ValueError) as exc:
+            malformed.append(f"{path.name}: {exc}")
+        else:
+            records.append(record)
+    if malformed:
+        detail = "; ".join(sorted(malformed))
+        raise JobRecordError(f"malformed Job records require repair or removal: {detail}")
+    return records
 
 
 def _proc_cmdline(pid: int) -> list[str] | None:

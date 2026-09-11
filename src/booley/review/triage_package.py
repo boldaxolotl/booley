@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -29,6 +30,44 @@ _GIT_STATUS_ACTIONS = {
 
 class TriagePackageError(RuntimeError):
     """A triage package is incomplete, malformed, or cannot be prepared."""
+
+
+@dataclass(frozen=True)
+class ResolvedReviewEvidence:
+    """Immutable Ticket Board snapshot consumed by review generation."""
+
+    state_json: str
+    scope_json: str
+    dirty_worktree: tuple[str, ...]
+    developer_crashes: tuple[str, ...]
+    missing_evidence: tuple[str, ...]
+
+    @classmethod
+    def capture(
+        cls,
+        *,
+        state: Mapping[str, Any],
+        scope: Mapping[str, Any],
+        dirty_worktree: list[str],
+        developer_crashes: list[str],
+        missing_evidence: list[str],
+    ) -> ResolvedReviewEvidence:
+        """Freeze caller-resolved evidence at the Ticket Board seam."""
+        return cls(
+            state_json=json.dumps(state, sort_keys=True, separators=(",", ":")),
+            scope_json=json.dumps(scope, sort_keys=True, separators=(",", ":")),
+            dirty_worktree=tuple(dirty_worktree),
+            developer_crashes=tuple(developer_crashes),
+            missing_evidence=tuple(missing_evidence),
+        )
+
+    def state(self) -> dict[str, Any]:
+        """Return a private mutable projection for deterministic transforms."""
+        return require_dict(json.loads(self.state_json), field="resolved review state")
+
+    def scope(self) -> dict[str, Any]:
+        """Return a private mutable projection for deterministic transforms."""
+        return require_dict(json.loads(self.scope_json), field="resolved review scope")
 
 
 class TriageContext(Protocol):
@@ -573,14 +612,10 @@ def _materialize_diffs(ctx: TriageContext, changes: list[dict[str, Any]]) -> lis
     return rows
 
 
-def _scope(ctx: TriageContext) -> dict[str, Any]:
-    path = ctx.log_dir / ".runtime" / "scope_deviations.json"
-    value = _read_json(path, {})
-    return value if isinstance(value, dict) else {}
-
-
 def _health(
-    ctx: TriageContext, state: Mapping[str, Any], scope: Mapping[str, Any]
+    evidence: ResolvedReviewEvidence,
+    state: Mapping[str, Any],
+    scope: Mapping[str, Any],
 ) -> dict[str, Any]:
     timeline = state.get("timeline") if isinstance(state.get("timeline"), list) else []
     exit_2 = [
@@ -588,27 +623,11 @@ def _health(
         for item in timeline
         if isinstance(item, dict) and item.get("exit_code") == 2
     ]
-    crash_dir = ctx.log_dir / ".runtime" / "developer"
-    crashes = sorted(str(path) for path in crash_dir.glob("*.crash.json"))
-    missing = []
-    for name, path in (
-        ("REPORT.md", ctx.log_dir / "REPORT.md"),
-        ("booley_state.json", ctx.log_dir / ".runtime" / "booley_state.json"),
-    ):
-        if not path.is_file():
-            missing.append(name)
-    dirty = _git(ctx, "status", "--short").splitlines()
-    project = getattr(ctx, "project_repository", None)
-    if project is not None:
-        dirty.extend(
-            f"{line[:3]}.booley_project/{line[3:]}"
-            for line in _git_at(project.worktree, "status", "--short").splitlines()
-        )
     return {
-        "dirty_worktree": dirty,
+        "dirty_worktree": list(evidence.dirty_worktree),
         "exit_2_tools": exit_2,
-        "developer_crashes": crashes,
-        "missing_evidence": missing,
+        "developer_crashes": list(evidence.developer_crashes),
+        "missing_evidence": list(evidence.missing_evidence),
         "harness_paths": scope.get("harness_paths", []),
         "scope_undecidable": scope.get("decidable") is False,
         "unverified_transitions": _unverified_transitions(state),
@@ -656,15 +675,18 @@ def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
 
 
 def build_review_facts(
-    ctx: TriageContext, *, run_economics: str = "unavailable"
+    ctx: TriageContext,
+    evidence: ResolvedReviewEvidence,
+    *,
+    run_economics: str = "unavailable",
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
-    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
     inspection = getattr(ctx, "inspection", None)
-    state = inspection["state"] if inspection else _read_json(state_path, {})
-    if not isinstance(state, dict):
-        raise TriagePackageError(f"invalid state file: {state_path}")
-    scope = _scope(ctx)
+    try:
+        state = evidence.state()
+        scope = evidence.scope()
+    except (BoundaryError, json.JSONDecodeError) as exc:
+        raise TriagePackageError(f"invalid resolved review evidence: {exc}") from exc
     scope["file_justifications"] = _file_justifications(state)
     changes = _materialize_diffs(ctx, _changed_files(ctx))
     repositories = [
@@ -724,7 +746,7 @@ def build_review_facts(
         "changed_files": changes,
         "developer_report_path": str(ctx.log_dir / "REPORT.md"),
         "run_economics": run_economics,
-        "health": _health(ctx, state, scope),
+        "health": _health(evidence, state, scope),
     }
 
 

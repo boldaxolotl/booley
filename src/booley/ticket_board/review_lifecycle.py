@@ -12,6 +12,7 @@ from typing import Any, Literal
 from booley.core.boundary import require_dict
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate, extract_sim_targets
+from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_basis import load_basis_receipt, load_basis_record
@@ -24,7 +25,7 @@ from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.logs import load_progress
 from booley.ticket_board.persistence import atomic_replace_bytes
-from booley.ticket_board.ticket_jobs import active_ticket_jobs
+from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
 from . import review_preparation as prep
 from .review_records import (
@@ -44,6 +45,16 @@ from .review_records import (
 ReviewPrepError = prep.ReviewPrepError
 ReviewPrepOutcome = prep.ReviewPrepOutcome
 ReviewBriefingOutcome = prep.ReviewBriefingOutcome
+
+
+def active_review_jobs(log_dir: Path) -> list[JobRecord]:
+    """Return jobs that must finish before review admission or handoff."""
+    return active_ticket_jobs(log_dir)
+
+
+async def wait_for_review_jobs(log_dir: Path) -> list[JobRecord]:
+    """Wait at the Ticket Board lifecycle boundary for review-blocking jobs."""
+    return await wait_for_ticket_jobs(log_dir)
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:

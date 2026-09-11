@@ -15,6 +15,7 @@ from .explanation import (
     render_explanation_html,
 )
 from .triage_package import (
+    ResolvedReviewEvidence,
     TriagePackageError,
     build_review_facts,
     load_triage_package,
@@ -26,6 +27,7 @@ from .triage_package import (
 
 __all__ = [
     "ExplanationError",
+    "ResolvedReviewEvidence",
     "ReviewEvidenceError",
     "ReviewEvidencePackage",
     "ReviewPackage",

@@ -16,7 +16,7 @@ class JobWaitTimeoutError(RuntimeError):
 
 def active_jobs(jobs_root: Path) -> list[jobrec.JobRecord]:
     """Return live detached jobs below one caller-resolved records root."""
-    return [rec for rec in jobrec.list_records(jobs_root) if jobrec.is_active(rec, is_pid_alive)]
+    return [rec for rec in jobrec.strict_records(jobs_root) if jobrec.is_active(rec, is_pid_alive)]
 
 
 async def wait_for_jobs(

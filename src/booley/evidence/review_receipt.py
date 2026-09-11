@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+from booley.core.boundary import as_str
+from booley.markdown import MarkdownDocumentError, parse_yaml_frontmatter
 
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
@@ -68,17 +69,18 @@ def _decisions_path(work_dir: Path, ticket: Path | None) -> Path | None:
 
 
 def _linked_spec_path(ticket: Path, work_dir: Path) -> Path | None:
-    text = ticket.read_text(encoding="utf-8", errors="replace")
-    fields: Mapping[str, Any] = {}
-    if text.startswith("---\n"):
-        _opening, separator, remainder = text.partition("\n")
-        frontmatter, closing, _body = remainder.partition("\n---\n")
-        if separator and closing:
-            parsed = yaml.safe_load(frontmatter)
-            if isinstance(parsed, Mapping):
-                fields = parsed
-    value = fields.get("spec")
-    if not isinstance(value, str) or not value.strip():
+    try:
+        text = ticket.read_text(encoding="utf-8", errors="replace")
+        fields: Mapping[str, Any] = parse_yaml_frontmatter(text)
+    except (OSError, MarkdownDocumentError) as exc:
+        raise ReviewContextError(f"Could not parse persisted Ticket frontmatter: {exc}") from exc
+    raw_value = fields.get("spec")
+    value = as_str(raw_value)
+    if raw_value is not None and value is None:
+        raise ReviewContextError("Persisted Ticket spec must be a string")
+    if value is None:
+        return None
+    if not value.strip():
         return None
     return _resolved(Path(value.strip()), work_dir)
 

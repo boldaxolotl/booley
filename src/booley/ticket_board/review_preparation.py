@@ -24,6 +24,7 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.review.generation import (
     ExplanationError,
+    ResolvedReviewEvidence,
     ReviewEvidenceError,
     ReviewEvidencePackage,
     ReviewPackage,
@@ -82,7 +83,54 @@ def _usage_summary(ctx: ReviewPrepContext) -> str:
 
 
 def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
-    return build_review_facts(ctx, run_economics=_usage_summary(ctx))
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    if ctx.inspection is not None:
+        state = ctx.inspection["state"]
+    else:
+        try:
+            state = require_dict(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                field="review state",
+            )
+        except (OSError, json.JSONDecodeError, BoundaryError):
+            state = {}
+    scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
+    try:
+        scope = require_dict(
+            json.loads(scope_path.read_text(encoding="utf-8")),
+            field="review scope",
+        )
+    except (OSError, json.JSONDecodeError, BoundaryError):
+        scope = {}
+    dirty = _git(ctx.worktree, "status", "--short").splitlines()
+    if ctx.project_repository is not None:
+        dirty.extend(
+            f"{line[:3]}.booley_project/{line[3:]}"
+            for line in _git(
+                ctx.project_repository.worktree,
+                "status",
+                "--short",
+            ).splitlines()
+        )
+    crashes = sorted(
+        str(path) for path in (ctx.log_dir / ".runtime" / "developer").glob("*.crash.json")
+    )
+    missing = [
+        name
+        for name, path in (
+            ("REPORT.md", ctx.log_dir / "REPORT.md"),
+            ("booley_state.json", state_path),
+        )
+        if not path.is_file()
+    ]
+    evidence = ResolvedReviewEvidence.capture(
+        state=state,
+        scope=scope,
+        dirty_worktree=dirty,
+        developer_crashes=crashes,
+        missing_evidence=missing,
+    )
+    return build_review_facts(ctx, evidence, run_economics=_usage_summary(ctx))
 
 
 class ReviewPrepError(RuntimeError):

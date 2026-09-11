@@ -15,9 +15,12 @@ def jobs_root(log_dir: Path) -> Path:
     return ticket_runtime_dir(log_dir) / "jobs"
 
 
-def active_ticket_jobs(log_dir: Path) -> list[jobrec.JobRecord]:
+def active_ticket_jobs(log_dir: Path, *, lease_id: str | None = None) -> list[jobrec.JobRecord]:
     """Return active detached jobs belonging to one Ticket."""
-    return active_jobs(jobs_root(log_dir))
+    records = active_jobs(jobs_root(log_dir))
+    if lease_id is None:
+        return records
+    return [record for record in records if record.lease_id == lease_id]
 
 
 async def wait_for_ticket_jobs(

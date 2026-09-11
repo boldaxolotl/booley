@@ -10,7 +10,7 @@ import pytest
 
 from booley.harness import developer
 from booley.harness.models import TicketContext
-from booley.ticket_board import ticket_jobs
+from booley.ticket_board import review_lifecycle
 
 
 @pytest.mark.asyncio
@@ -25,8 +25,8 @@ async def test_developer_drains_jobs_before_final_bookkeeping(tmp_path: Path, mo
     )
     active = [SimpleNamespace(endpoint="mutation_tester")]
     wait = AsyncMock()
-    monkeypatch.setattr(ticket_jobs, "active_ticket_jobs", lambda _log_dir: active)
-    monkeypatch.setattr(ticket_jobs, "wait_for_ticket_jobs", wait)
+    monkeypatch.setattr(review_lifecycle, "active_review_jobs", lambda _log_dir: active)
+    monkeypatch.setattr(review_lifecycle, "wait_for_review_jobs", wait)
     monkeypatch.setattr(developer.terminal, "raw", lambda _line: None)
 
     await developer._drain_outstanding_ticket_jobs(ctx)
