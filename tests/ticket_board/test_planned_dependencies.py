@@ -152,6 +152,99 @@ def test_provider_target_merge_inserts_referenced_fileset_only(tmp_path: Path) -
     assert set(document["targets"]) == {"current", "future"}
 
 
+def test_provider_target_merge_creates_missing_filesets_section(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(
+        source / "toy.core",
+        "  future: {filesets: [tb]}\n",
+        filesets="  tb: {files: [tb.sv]}\n",
+    )
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  current: {}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+    assert set(document["targets"]) == {"current", "future"}
+
+
+def test_provider_target_merge_populates_empty_filesets_section(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(
+        source / "toy.core",
+        "  future: {filesets: [tb]}\n",
+        filesets="  tb: {files: [tb.sv]}\n",
+    )
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets: {}\ntargets:\n  current: {}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+
+
+def test_provider_target_merge_rejects_inline_destination_filesets(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(source / "toy.core", "  future: {filesets: [tb]}\n", filesets="  tb: {}\n")
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets: {rtl: {}}\n"
+        "targets:\n  current: {filesets: [rtl]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlannedDependencyError, match="inline filesets mapping"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+
+@pytest.mark.parametrize(
+    ("filesets", "target", "message"),
+    [
+        (None, {"filesets": ["missing"]}, "undefined fileset"),
+        ({}, "invalid", "Target definition is not a mapping"),
+        (None, {"filesets": []}, None),
+        ([], {"filesets": []}, "filesets must be a mapping"),
+    ],
+)
+def test_provider_target_merge_validates_source_filesets(
+    tmp_path: Path, filesets: object, target: object, message: str | None
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    document = {
+        "CAPI=2": None,
+        "name": "acme:lib:toy:1.0",
+        "filesets": filesets,
+        "targets": {"future": target},
+    }
+    (source / "toy.core").write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    if message is None:
+        assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+        return
+    with pytest.raises(PlannedDependencyError, match=message):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+
+def test_fileset_spans_reject_missing_filesets_section() -> None:
+    text = "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  future: {}\n"
+
+    with pytest.raises(target_surface_edit.TargetSurfaceEditError, match="filesets block"):
+        target_surface_edit.fileset_definition_spans(text, Path("toy.core"), ("tb",))
+
+
 def test_provider_target_merge_rejects_referenced_fileset_conflict(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
