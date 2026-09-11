@@ -287,6 +287,54 @@ class TestAcceptanceProgress:
         assert tio.find_ticket("partial")["acceptance_state"] == "initializing"
         assert scan_all_tickets(tio.tickets_dir)[0]["acceptance_state"] == "initializing"
 
+    @pytest.mark.parametrize(
+        ("journal", "error"),
+        [
+            ("{", "acceptance journal is unreadable"),
+            (b"\xff", "acceptance journal is unreadable"),
+            (
+                json.dumps(
+                    {
+                        "schema": 4,
+                        "ticket": "legacy",
+                        "participants": [
+                            {
+                                "role": "outer",
+                                "sealed_sha": "a" * 40,
+                                "destination_sha": "b" * 40,
+                                "destination_ref": "refs/heads/main",
+                                "ticket_ref": "refs/heads/legacy",
+                            }
+                        ],
+                    }
+                ),
+                "acceptance journal schema must be 5",
+            ),
+        ],
+        ids=["unreadable-json", "unreadable-utf8", "legacy-schema"],
+    )
+    def test_scan_isolates_malformed_acceptance_journal(self, tmp_path, caplog, journal, error):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "done", "legacy")
+        make_ticket_in_dir(tio, "queue", "new-ticket")
+        acceptance = tmp_path / ".runtime" / "acceptance"
+        acceptance.mkdir(parents=True)
+        journal_path = acceptance / "legacy.json"
+        if isinstance(journal, bytes):
+            journal_path.write_bytes(journal)
+        else:
+            journal_path.write_text(journal, encoding="utf-8")
+
+        tickets = scan_all_tickets(tio.tickets_dir)
+
+        by_slug = {Path(ticket["file"]).stem: ticket for ticket in tickets}
+        assert set(by_slug) == {"legacy", "new-ticket"}
+        assert error in by_slug["legacy"]["acceptance_error"]
+        assert "acceptance_error" not in by_slug["new-ticket"]
+        assert classify_tickets(tickets)["executable"] == [by_slug["new-ticket"]]
+        assert any("continuing Board scan" in message for message in caplog.messages)
+        assert not any("recreate" in message for message in caplog.messages)
+
 
 class TestGenerateSlug:
     def test_normal_text(self):
