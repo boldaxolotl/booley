@@ -138,7 +138,7 @@ def cli(endpoint) -> None:
 
 def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
-    from booley.review.execution_context import validate_recording
+    from booley.runtime.execution_lease import validate_recording
 
     validate_recording(getattr(args, "work_dir", None))
     # Ticket context from env vars (set by developer or explicit review-exec)

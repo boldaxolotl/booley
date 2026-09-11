@@ -12,7 +12,7 @@ from typing import Any, Literal
 from booley.core.boundary import require_dict
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate, extract_sim_targets
-from booley.harness.job_fence import active_ticket_jobs
+from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_basis import load_basis_receipt, load_basis_record
@@ -25,9 +25,10 @@ from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.logs import load_progress
 from booley.ticket_board.persistence import atomic_replace_bytes
+from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
-from . import preparation as prep
-from .entry import (
+from . import review_preparation as prep
+from .review_records import (
     ReviewEntryError,
     ReviewInspection,
     assert_idle,
@@ -40,6 +41,20 @@ from .entry import (
     read_json,
     require_clean,
 )
+
+ReviewPrepError = prep.ReviewPrepError
+ReviewPrepOutcome = prep.ReviewPrepOutcome
+ReviewBriefingOutcome = prep.ReviewBriefingOutcome
+
+
+def active_review_jobs(log_dir: Path) -> list[JobRecord]:
+    """Return jobs that must finish before review admission or handoff."""
+    return active_ticket_jobs(log_dir)
+
+
+async def wait_for_review_jobs(log_dir: Path) -> list[JobRecord]:
+    """Wait at the Ticket Board lifecycle boundary for review-blocking jobs."""
+    return await wait_for_ticket_jobs(log_dir)
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
@@ -245,13 +260,12 @@ def _commit(tio: TicketIO, ctx: prep.ReviewPrepContext, operation: dict[str, Any
     board = tio.find_ticket(ctx.slug)
     if board is None or board["status"] not in {"blocked", "review"}:
         raise ReviewEntryError("ticket moved during review publication")
-    if board["status"] == "blocked":
-        source = tio.tickets_dir / board["file"]
-        destination = tio.tickets_dir / "board" / "review" / source.name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            raise ReviewEntryError("review destination already exists")
-        source.replace(destination)
+    if board["status"] == "blocked" and not tio._move_unaccepted_review_locked(
+        ctx.slug,
+        expected_status="blocked",
+        expected_execution_id=row["execution_id"],
+    ):
+        raise ReviewEntryError("ticket changed during review publication")
     # Generation-specific event prevents duplicate log rows on interrupted retry.
     event = f"review-entry {row['generation']}"
     transitions = ctx.log_dir / "human-logs" / "transitions.log"
@@ -424,3 +438,36 @@ async def request_review_command(
             pending = None
         if pending and pending.get("pid") == os.getpid() and pending.get("phase") == "preparing":
             operation_path(tio.logs_dir / slug).unlink(missing_ok=True)
+
+
+async def prepare_review(
+    project_root: Path, slug: str, *, force: bool = False
+) -> prep.ReviewPrepOutcome:
+    """Prepare artifacts through the Ticket Board lifecycle facade."""
+    return await prep.prepare_review(project_root, slug, force=force)
+
+
+def verify_review_handoff(project_root: Path, slug: str) -> prep.ReviewPrepOutcome:
+    """Verify the immutable package selected for an automatic handoff."""
+    return prep.verify_review_handoff(project_root, slug)
+
+
+async def prepare_review_command(
+    project_root: Path, slug: str, *, force: bool = False
+) -> prep.ReviewPrepOutcome:
+    """Run manual artifact preparation through the lifecycle facade."""
+    return await prep.prepare_review_command(project_root, slug, force=force)
+
+
+def review_briefing_command(
+    project_root: Path, slug: str, *, open_diffs: bool = True
+) -> prep.ReviewBriefingOutcome:
+    """Render a prepared package through the lifecycle facade."""
+    return prep.review_briefing_command(project_root, slug, open_diffs=open_diffs)
+
+
+def run_review_command(project_root: Path, slug: str, command: list[str]) -> int:
+    """Run a ticket-bound endpoint under the lifecycle's execution fence."""
+    from .review_execution import run_review_command as execute
+
+    return execute(project_root, slug, command)

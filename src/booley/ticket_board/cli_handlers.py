@@ -1020,7 +1020,7 @@ def _cmd_usage(tio, args):
 
 
 def _show_criteria(entry, tio, slug, logs_dir):
-    from booley.review.entry import criteria_projection
+    from booley.ticket_board.review_records import criteria_projection
 
     from .acceptance_ledger import read_acceptance
 

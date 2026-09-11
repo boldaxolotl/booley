@@ -45,6 +45,7 @@ class TestRecordRoundTrip:
             timeout_s=1290,
             argv=["python", "-m", "booley.flows.sim"],
             pid=4242,
+            lease_id="review-operation-1",
         )
         jobrec.write_record(rec, root=_jobs_env)
         got = jobrec.read_record("simulate-x-1", root=_jobs_env)
@@ -53,6 +54,7 @@ class TestRecordRoundTrip:
         assert got.pid == 4242
         assert got.status == jobrec.STATUS_RUNNING  # default
         assert got.argv == ["python", "-m", "booley.flows.sim"]
+        assert got.lease_id == "review-operation-1"
 
     def test_read_missing_returns_none(self, _jobs_env):
         assert jobrec.read_record("nope-1", root=_jobs_env) is None

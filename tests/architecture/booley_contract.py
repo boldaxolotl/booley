@@ -51,6 +51,11 @@ _D17_REASON = (
     "deterministic Flow execution consumes resolved acceptance inputs and records through "
     "composition without knowing Ticket Board persistence"
 )
+_D21_REASON = (
+    "Review renders artifacts from resolved evidence without knowing Ticket Board "
+    "lifecycle or Harness orchestration"
+)
+_D22_REASON = "Ticket Board composes Review only through its exact artifact-generation entry point"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -85,6 +90,18 @@ _D10_SIM_RULES = tuple(
 )
 
 DIRECTION_RULES = (
+    DirectionRule(
+        "D22",
+        (prefix("booley.ticket_board"),),
+        (prefix("booley.review"),),
+        _D22_REASON,
+    ),
+    DirectionRule(
+        "D21",
+        (prefix("booley.review"),),
+        (prefix("booley.ticket_board"), prefix("booley.harness")),
+        _D21_REASON,
+    ),
     DirectionRule(
         "D20",
         (prefix("booley.eda"),),
@@ -250,6 +267,13 @@ DIRECTION_RULES = (
 )
 
 COMPOSITION_PERMISSIONS = (
+    CompositionPermission(
+        "C9",
+        "D22",
+        "booley.ticket_board.review_preparation",
+        "booley.review.generation",
+        "Ticket Board supplies resolved immutable inputs to the Review artifact generator.",
+    ),
     CompositionPermission(
         "C1",
         "D4",

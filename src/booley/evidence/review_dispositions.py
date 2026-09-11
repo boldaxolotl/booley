@@ -1,4 +1,4 @@
-"""Normalize persisted review findings for deterministic user-facing reports."""
+"""Normalize persisted Reviewer findings for acceptance and reporting."""
 
 from __future__ import annotations
 

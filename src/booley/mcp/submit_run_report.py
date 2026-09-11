@@ -501,7 +501,7 @@ class SubmitRunReportMcpTool(McpTool):
 
     def _review_dispositions_section(self) -> str:
         """Render deterministic advisory findings and every accepted waiver."""
-        from booley.review.dispositions import collect_review_dispositions
+        from booley.evidence.review_dispositions import collect_review_dispositions
 
         rows = collect_review_dispositions(self.state.criteria)
         visible_dispositions = {"reported", "advisory", "deferred", "out_of_scope", "waived"}

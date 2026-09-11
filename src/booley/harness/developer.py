@@ -77,7 +77,7 @@ from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
     from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.review.preparation import ReviewPrepOutcome
+    from booley.ticket_board.review_lifecycle import ReviewPrepOutcome
 
     from .developer_guardrails import DirtyFile
 
@@ -1340,7 +1340,7 @@ async def _prepare_review_handoff(
     run_index: int,
 ) -> ReviewPrepOutcome | None:
     """Prepare review artifacts; block and return no outcome on failure."""
-    from booley.review.preparation import prepare_review
+    from booley.ticket_board.review_lifecycle import prepare_review
 
     from .colors import dim, green, yellow
 
@@ -1388,7 +1388,7 @@ def _verify_review_package(
     ctx: TicketContext, project_root: Path, run_index: int
 ) -> ReviewPrepOutcome | None:
     """Return the current review package or block a changed handoff."""
-    from booley.review.preparation import ReviewPrepError, verify_review_handoff
+    from booley.ticket_board.review_lifecycle import ReviewPrepError, verify_review_handoff
 
     from .colors import yellow
 
@@ -1865,14 +1865,14 @@ async def _drain_outstanding_ticket_jobs(
     ctx: TicketContext, budget: DeveloperBudget | None = None
 ) -> None:
     """Fence final state bookkeeping behind every detached MCP endpoint child."""
-    from .job_fence import active_ticket_jobs, wait_for_ticket_jobs
+    from booley.ticket_board.review_lifecycle import active_review_jobs, wait_for_review_jobs
 
-    active = active_ticket_jobs(ctx.logs_dir)
+    active = active_review_jobs(ctx.logs_dir)
     if not active:
         return
     names = ", ".join(rec.endpoint for rec in active)
     terminal.raw(f"  waiting for outstanding ticket jobs: {names}")
-    wait = wait_for_ticket_jobs(ctx.logs_dir)
+    wait = wait_for_review_jobs(ctx.logs_dir)
     if budget is None:
         await wait
         return
