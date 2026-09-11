@@ -137,8 +137,12 @@ wakes up for a waveform tab, so Booley patches its manifest to start on every
 window instead — but that patch runs from `postAttachCommand`, which VS Code
 runs *after* it has already started the extension host. On the first window of a
 fresh container the patch therefore lands one beat too late and takes effect on
-the next extension-host start. A rebuild puts you back in exactly that first
-window; one reload does not. `booley doctor` probes the port and says so
+the next extension-host start. When Marketplace installation is delayed, the
+attach hook leaves a bounded background watcher (15 minutes by default) that
+patches VaporView when it arrives; `BOOLEY_VAPORVIEW_WATCH_SECONDS` adjusts that
+budget. If installation finishes after the watcher expires, use the manual
+patch command above. A rebuild puts you back in exactly that first window; one
+reload does not. `booley doctor` probes the port and says so
 ("VaporView WCP server reachable ..."), so you find out before `bwave gui` does.
 
 Do **not** use `WCP: Start Server` while Booley's auto-start setting is enabled.

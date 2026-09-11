@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -168,6 +169,7 @@ class TestMain:
         # Disable the install-race wait so the absent-extension paths return at
         # once; the wait itself is exercised in TestInstallRaceWait.
         monkeypatch.setenv(iv._WAIT_ENV, "0")
+        monkeypatch.setenv(iv._WATCH_ENV, "0")
         return tmp_path
 
     def _install(self, home, manifest: dict, ver: str = "1.5.4", *, with_bundle=False):
@@ -284,6 +286,7 @@ class TestArgumentHandling:
         # any host process's) can never reach the parser.
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv(iv._WAIT_ENV, "0")
+        monkeypatch.setenv(iv._WATCH_ENV, "0")
         monkeypatch.setattr("sys.argv", ["pytest", "-x", "--tb=short"])
         assert iv.main() == 0
 
@@ -295,6 +298,7 @@ class TestInstallRaceWait:
     def home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv(iv._WAIT_ENV, "10")  # enable a 10s budget
+        monkeypatch.setenv(iv._WATCH_ENV, "0")
         return tmp_path
 
     def _install(self, home, ver: str = "1.5.4"):
@@ -338,6 +342,57 @@ class TestInstallRaceWait:
         assert iv._wait_sentinel(home).exists()
         assert "not present yet" in capsys.readouterr().out
 
+    def test_late_install_is_patched_after_attach_process_exits(self, home):
+        """F-103: installation may finish long after postAttachCommand returns."""
+        env = dict(os.environ, HOME=str(home))
+        env[iv._WAIT_ENV] = "0.01"
+        env[iv._WATCH_ENV] = "4"
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "booley.runtime.incontainer_vaporview"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "watching in background" in result.stdout
+        assert iv._wait_sentinel(home).exists()
+
+        self._install(home)
+        manifest = next(
+            (home / ".vscode-server" / "extensions").glob("lramseyer.vaporview-*/package.json")
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            if "onStartupFinished" in payload["activationEvents"]:
+                break
+            time.sleep(0.05)
+
+        assert "onStartupFinished" in payload["activationEvents"]
+        properties = payload["contributes"]["configuration"]["properties"]
+        assert properties["vaporview.wcp.enabled"]["scope"] == "machine"
+        assert properties["vaporview.wcp.port"]["scope"] == "machine"
+
+    def test_detached_watch_is_bounded(self, home, monkeypatch):
+        monkeypatch.setenv(iv._WATCH_ENV, "3")
+        state = self._fake_time()
+
+        patched = iv._watch_for_late_install(
+            home,
+            sleep=lambda dt: state.update(
+                t=state["t"] + dt,
+                sleeps=state["sleeps"] + 1,
+            ),
+            clock=lambda: state["t"],
+        )
+
+        assert patched is False
+        assert state == {"t": 3.0, "sleeps": 2}
+
     def test_sentinel_skips_the_second_wait(self, home):
         # First run gives up (never installs) and drops the sentinel.
         first = self._fake_time()
@@ -361,6 +416,7 @@ class TestInstallRaceWait:
         assert slept["n"] == 0
         assert "not present yet" in capsys.readouterr().out
 
-    def test_malformed_budget_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv(iv._WAIT_ENV, "not-a-number")
+    @pytest.mark.parametrize("value", ["not-a-number", "nan", "inf", "-inf"])
+    def test_malformed_budget_falls_back_to_default(self, monkeypatch, value):
+        monkeypatch.setenv(iv._WAIT_ENV, value)
         assert iv._wait_budget_seconds() == iv._WAIT_SECONDS_DEFAULT

@@ -52,11 +52,14 @@ VaporView update restores the vendored manifest.
 configured extensions concurrently with that attach — so on the first window of
 a fresh container the manifest can simply not be on disk yet when we look. A
 single early miss used to leave the server dark until the user opened another
-window (the "re-runs on the next attach" self-heal never triggers if they open
-the window once and stay). We now wait a bounded spell for the manifest to land
-before giving up. The wait is paid **at most once per container** — a sentinel
-records the first attempt — so a sandbox that never ships VaporView is not taxed
-on every window open. Tune or disable it with ``BOOLEY_VAPORVIEW_WAIT_SECONDS``.
+window because Reload Window does not rerun ``postAttachCommand``. We first wait
+a short bounded spell for the manifest, paid **at most once per container**.
+When that expires, a singleton detached watcher continues polling without
+holding the attach hook open and patches a later installation before the next
+reload. The watcher is bounded too, so a sandbox that never ships VaporView
+does not retain it indefinitely. Tune or disable the foreground and background
+budgets with ``BOOLEY_VAPORVIEW_WAIT_SECONDS`` and
+``BOOLEY_VAPORVIEW_WATCH_SECONDS`` respectively.
 """
 
 from __future__ import annotations
@@ -64,12 +67,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TextIO
 
-from booley.runtime import vaporview
+from booley.core.boundary import as_float
+from booley.runtime import file_lock, process_group, vaporview
 from booley.runtime.vaporview import find_manifests
 
 # Activation event that fires once per window after startup finishes, without
@@ -105,6 +111,15 @@ _VAPORVIEW_BUNDLE = Path("dist") / "extension.js"
 _WAIT_SECONDS_DEFAULT = 20.0
 _POLL_INTERVAL_SECONDS = 1.5
 _WAIT_ENV = "BOOLEY_VAPORVIEW_WAIT_SECONDS"
+
+# A late Marketplace retry can finish minutes after ``postAttachCommand`` has
+# returned. Keep a detached, bounded watcher alive after the synchronous wait
+# so the next window reload sees a patched manifest. An advisory lock prevents
+# repeated attaches or manual invocations from accumulating watcher processes.
+_WATCH_SECONDS_DEFAULT = 15 * 60.0
+_WATCH_ENV = "BOOLEY_VAPORVIEW_WATCH_SECONDS"
+_WATCH_FLAG = "--watch-for-install"
+_WATCH_LOCK = "vaporview-install-watch.lock"
 
 
 def _agent_home() -> Path:
@@ -217,19 +232,25 @@ def _patch_file(path: Path) -> bool:
     return manifest_changed or bundle_changed
 
 
+def _budget_seconds(name: str, default: float) -> float:
+    """Read a non-negative seconds budget without failing the attach hook."""
+    parsed = as_float(os.environ.get(name), default)
+    assert parsed is not None
+    return max(0.0, parsed)
+
+
 def _wait_budget_seconds() -> float:
-    """Seconds to wait for the manifest, from ``_WAIT_ENV`` or the default.
+    """Seconds to wait synchronously for the manifest.
 
     ``0`` (or any non-negative override) is honored; a malformed value falls
     back to the default rather than failing the hook.
     """
-    raw = os.environ.get(_WAIT_ENV)
-    if raw is None:
-        return _WAIT_SECONDS_DEFAULT
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return _WAIT_SECONDS_DEFAULT
+    return _budget_seconds(_WAIT_ENV, _WAIT_SECONDS_DEFAULT)
+
+
+def _watch_budget_seconds() -> float:
+    """Seconds for the detached late-install watcher to remain alive."""
+    return _budget_seconds(_WATCH_ENV, _WATCH_SECONDS_DEFAULT)
 
 
 def _wait_sentinel(home: Path) -> Path:
@@ -270,6 +291,59 @@ def _wait_for_manifests(home: Path, *, sleep, clock) -> list[Path]:
     return manifests
 
 
+def _open_watch_lock(home: Path) -> TextIO | None:
+    """Open the singleton watcher lock file, or return ``None`` on I/O failure."""
+    path = home / ".booley" / _WATCH_LOCK
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open("a+", encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _watch_for_late_install(home: Path, *, sleep, clock) -> bool:
+    """Patch VaporView if it appears within the detached watch budget."""
+    budget = _watch_budget_seconds()
+    if budget <= 0:
+        return False
+    lock = _open_watch_lock(home)
+    if lock is None:
+        return False
+    with lock:
+        try:
+            with file_lock.try_file_lock(lock) as acquired:
+                if not acquired:
+                    return False
+                deadline = clock() + budget
+                while clock() < deadline:
+                    manifests = find_manifests(home)
+                    if manifests:
+                        return bool(sum(_patch_file(path) for path in manifests))
+                    sleep(min(_POLL_INTERVAL_SECONDS, max(0.0, deadline - clock())))
+        except OSError:
+            return False
+        return False
+
+
+def _start_install_watcher(home: Path) -> bool:
+    """Start the bounded watcher independently of the attach-hook process."""
+    if _watch_budget_seconds() <= 0:
+        return False
+    env = dict(os.environ, HOME=str(home))
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "booley.runtime.incontainer_vaporview", _WATCH_FLAG],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            **process_group.new_group_kwargs(),
+        )
+    except OSError:
+        return False
+    return True
+
+
 _USAGE_DESCRIPTION = (
     "Patch the container's VaporView extension so its WCP control server "
     "auto-starts safely on window load and an unavailable desktop theme uses "
@@ -279,7 +353,9 @@ _USAGE_DESCRIPTION = (
 )
 _USAGE_EPILOG = (
     f"env: {_WAIT_ENV}=<seconds> bounds the once-per-container wait for the "
-    f"extension install to land (default {_WAIT_SECONDS_DEFAULT:.0f}, 0 disables)."
+    f"extension install to land (default {_WAIT_SECONDS_DEFAULT:.0f}, 0 disables); "
+    f"{_WATCH_ENV}=<seconds> bounds the detached late-install watcher "
+    f"(default {_WATCH_SECONDS_DEFAULT:.0f}, 0 disables)."
 )
 
 
@@ -304,17 +380,22 @@ def main(argv: Sequence[str] = (), *, sleep=time.sleep, clock=time.monotonic) ->
     import argparse
 
     try:
-        argparse.ArgumentParser(
+        parser = argparse.ArgumentParser(
             prog="python -m booley.runtime.incontainer_vaporview",
             description=_USAGE_DESCRIPTION,
             epilog=_USAGE_EPILOG,
-        ).parse_args(argv)
+        )
+        parser.add_argument(_WATCH_FLAG, action="store_true", help=argparse.SUPPRESS)
+        options = parser.parse_args(argv)
     except SystemExit as exc:
         if exc.code:  # usage error — argparse already wrote it to stderr
             print("vaporview: bad arguments; nothing patched", file=sys.stderr)
         return 0
 
     home = _agent_home()
+    if options.watch_for_install:
+        _watch_for_late_install(home, sleep=sleep, clock=clock)
+        return 0
     manifests = find_manifests(home)
     if not manifests:
         # Likely the install race: VS Code is still unpacking the extension
@@ -322,9 +403,10 @@ def main(argv: Sequence[str] = (), *, sleep=time.sleep, clock=time.monotonic) ->
         manifests = _wait_for_manifests(home, sleep=sleep, clock=clock)
     if not manifests:
         # Install still in flight past the wait (or the viewer is genuinely
-        # absent). The hook re-runs on the next attach, so this self-heals;
-        # say so and succeed.
-        print("vaporview: extension not present yet; nothing to patch")
+        # absent). Continue watching without keeping postAttachCommand alive.
+        watching = _start_install_watcher(home)
+        suffix = "; watching in background" if watching else "; nothing to patch"
+        print(f"vaporview: extension not present yet{suffix}")
         return 0
     patched = sum(_patch_file(p) for p in manifests)
     if patched:
