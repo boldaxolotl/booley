@@ -456,7 +456,7 @@ phases:
   title: Final regression/archive
   minutes: 30
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 30
 steps:
 - id: published-release
@@ -6087,10 +6087,10 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Observe elapsed time and stop new work at 7h30.
     expected: |-
-      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
+      Resource cleanup reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
     authority_ref: ../../doc/FINISH.md
     evidence: |-
-      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
+      Resource cleanup reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
     capture: evidence/opentitan-uart-clean-room-greenfield.deadline
 - id: retry-policy
   phase: cleanup

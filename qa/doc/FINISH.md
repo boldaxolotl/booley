@@ -6,8 +6,9 @@ records.
 
 ## Reconcile resources
 
-Quiesce every active, privileged, scarce, or externally visible run-owned resource.
-Prove its release without exposing secrets or changing borrowed state.
+Safely shut down and clean up every active, privileged, scarce, or externally visible
+run-owned resource. Prove its release without exposing secrets or changing borrowed
+state.
 
 An owned resource may be `retained-for-review` only when evidence proves all of these:
 
@@ -18,12 +19,12 @@ An owned resource may be `retained-for-review` only when evidence proves all of 
 - every claim that depends on it also has immutable evidence outside that mutable
   state.
 
-Quiesce unknown or ineligible state; resource type alone does not prove it inert.
-Preserve borrowed resources unchanged.
+Safely shut down and clean up unknown or ineligible state; resource type alone does
+not prove it inert. Preserve borrowed resources unchanged.
 
 Record one ledger disposition for every resource: `released`, `retained-for-review`,
 `borrowed-preserved`, or `release-failed`. Intentional retention does not prevent a
-pass. `release-failed` or missing evidence for mandatory quiescence does.
+pass. `release-failed` or missing evidence for required resource cleanup does.
 
 Scenario Checks that exercise product cleanup behavior remain authoritative: execute
 their declared deletion or preservation stimulus even when the final workspace would
@@ -32,16 +33,17 @@ otherwise be retained. Archive its evidence first when the Scenario requires it.
 ## Finalize the run
 
 Finish within the original deadline when possible. If time expires, record the
-overrun and continue mandatory quiescence without extending the run or claiming timely
-completion.
+overrun and continue required resource cleanup without extending the run or claiming
+timely completion.
 
 Append `blocked` Check Results for selected Checks without one. Report execution
-status as `completed`, `deadline reached`, or `operator error`, and quiescence status
-as `complete` or `failed`. Calculate the Scenario Run Outcome and aggregate
+status as `completed`, `deadline reached`, or `operator error`, and resource cleanup
+status as `complete` or `failed`. Calculate the Scenario Run Outcome and aggregate
 Qualification under [Qualification](QUALIFICATION.md). A product failure
-remains a failure when work is missing or quiescence fails.
+remains a failure when work is missing or resource cleanup fails.
 
 Finish is complete when every selected Check has a Check Result, each ledger resource
-has a disposition, mandatory quiescence has evidence, retained review state satisfies
-the retention predicate, and `summary.md` contains the required outcomes and statuses.
-Only then set `operator-state.json` to Protocol Stage `finish` with status `complete`.
+has a disposition, required resource cleanup has evidence, retained review state
+satisfies the retention predicate, and `summary.md` contains the required outcomes and
+statuses. Only then set `operator-state.json` to Protocol Stage `finish` with status
+`complete`.

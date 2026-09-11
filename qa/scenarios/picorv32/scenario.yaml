@@ -679,7 +679,7 @@ phases:
   title: Ticket 2, remaining allocated checks and complete final regression
   minutes: 210
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 20
 steps:
 - id: inputs.project-pin
@@ -5701,5 +5701,5 @@ steps:
     stimulus: Finalize record, Findings, recovery links and resource disposition with no secret values.
     expected: Finalize record, Findings, recovery links and resource disposition with no secret values.
     authority_ref: ../../doc/FINISH.md
-    evidence: Compact run files, immutable external evidence, and quiescence-complete recovery point.
+    evidence: Compact run files, immutable external evidence, and recovery point after safe resource cleanup.
     capture: evidence/picorv32-published-demo-continuity.evidence.finalize

@@ -9,8 +9,8 @@ Booley product revision from Scenario Run evidence. Scenario Operators follow th
 Qualification aggregates required Scenario Run Outcomes under the
 [outcome rules](#outcomes).
 
-See the [authoring guide](AUTHORING.md) for Capability mapping and Scenario
-definitions, and the [Public QA glossary](../CONTEXT.md) for canonical terms.
+See the [suite README](../README.md#scenario-and-check-structure) for Scenario and
+Check structure, and the [Public QA glossary](../CONTEXT.md) for canonical terms.
 
 ## Configured Scenarios
 
@@ -50,8 +50,8 @@ Do not narrow run scope after seeing Check Results.
    defect in scope makes the outcome `failed`, including known defects, flaky
    failures, and new defects outside a prewritten Check.
 2. Otherwise, a missing, blocked, or unavailable Check, invalid evidence, or failed
-   mandatory quiescence makes it `incomplete`. Retained review state is allowed when
-   it satisfies the protocol's retention predicate.
+   required resource cleanup makes it `incomplete`. Retained review state is allowed
+   when it satisfies the protocol's retention predicate.
 3. Otherwise, the outcome is `passed`.
 
 Failure takes precedence over incomplete conditions; list them all. Friction and
@@ -72,7 +72,7 @@ uart-ubuntu-codex-cli: passed
 picorv32-ubuntu-codex-vscode: incomplete: observer unavailable
 picorv32-windows-claude-vscode: pending (optional)
 Full qualification: incomplete
-Quiescence: complete; review state retained
+Resource cleanup: complete; review state retained
 ```
 
 In a real report, name missing Checks and link evidence. A CLI run may pass while a
