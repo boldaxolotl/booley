@@ -1,34 +1,33 @@
 # Admit a Scenario Run
 
-Read [Record](RECORD.md), then admit one production Configured Scenario.
+Read the selected production `scenario.yaml` and its Configured Scenario declaration.
+Run `python qa/validate.py`, then resolve the selected Checks and supporting Steps in
+Scenario order. Do not create a Scenario Run if either operation fails.
+
+Admission is read-only until every requirement passes. Run only non-mutating
+assessments; do not prepare the product or run environment. Successful admission may
+create only the run directory, `run.json`, and `operator-state.json`.
 
 Require a Scenario ID, Configured Scenario ID, writable artifact root outside
 disposable Project state, and the credentials and licensed EDA access declared by the
 Configured Scenario. Keep secret values out of prompts and records; obtain them
 through approved provider and EDA mechanisms.
 
-Use the artifact form declared by the Configured Scenario. Published releases and
-unreleased candidates are eligible. A candidate package, including a local wheel,
-must be an immutable artifact bound to a source commit and content hash. Reject
-undeclared substitutions, floating references, editable installs, and execution or
-imports from a source checkout.
+Use the declared artifact form. An unreleased candidate, including a local wheel,
+must be immutable and bound to a source commit and content hash. Reject undeclared
+substitutions, floating references, editable installs, and source-checkout execution
+or imports.
 
-Run only non-mutating capability assessments needed for admission. An assessment may
-establish that a declared capability is unavailable; it cannot narrow the Configured Scenario.
-Stop before product work when an input, identity, permission, or required access is
-missing. Admission is not a Check Result and does not replace a selected provenance
-or installation Check.
+A non-mutating assessment may mark a declared capability `unavailable`, but cannot
+narrow the Configured Scenario. Stop without creating a Scenario Run when an input,
+identity, permission, or required access is missing. Do not record admission as a
+Check Result or use it to satisfy a selected provenance or installation Check.
 
-On success, generate a fresh Scenario Run ID, create its directory beneath the
-artifact root, and write `run.json` before product work. Record both IDs, declared
-parameters, exact immutable Booley revision and package identity, matching
-documentation snapshot, suite commit, pinned IP inputs, native-host OS and
-architecture, provider, Runtime Attachment, agent backend, relevant Runtime Image and
-EDA tool identities, deadline, artifact root, capability assessments, and granted
-authority. A Runtime Image produced later is a Step output rather than an initial
-identity.
+After every gate passes, generate a fresh Scenario Run ID and write `run.json` and
+`operator-state.json` beneath the artifact root as specified by [Format](FORMAT.md).
+Record only pre-existing state as an initial identity; state produced later belongs
+to its producing Step.
 
-Create `run.json` and `operator-state.json` together after every gate passes, with the
-cursor at Protocol Stage `prepare`. Admission is complete only when `run.json`
-contains every required initial identity and the durable cursor names `prepare`. Then
-read [Prepare](PREPARE.md).
+Admission is complete only when `run.json` contains every required initial identity
+and the durable checkpoint names the first Step and Check attempt at Protocol Stage
+`execute`. Then read [Execute](EXECUTE.md).
