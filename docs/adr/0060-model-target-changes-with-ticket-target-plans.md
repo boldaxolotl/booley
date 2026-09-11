@@ -10,11 +10,12 @@ machine-readable `target_plan` that classifies every newly authored Target as
 `persistent`, `replacement`, or `ephemeral`. A persistent Target adds a build
 that remains independently selectable; a replacement Target supersedes one
 runnable baseline Target; and an ephemeral Target exists only to collect that
-Ticket's evidence. Ticket creation commits the approved Target definitions and
-owned test tables before enqueue, while acceptance derives removals from the
-plan: replacement baselines and ephemeral Targets disappear, and persistent
-and replacement Targets remain. Enqueue validates and commits these approved authoring
-inputs while publishing the Acceptance Basis.
+Ticket's evidence. Ticket creation commits the approved Target definitions,
+their referenced filesets, and owned test tables before enqueue. Added filesets
+may be referenced only by planned Targets. Acceptance derives removals from the
+plan: replacement baselines and ephemeral Targets disappear, and persistent and
+replacement Targets remain. Enqueue validates and commits these approved
+authoring inputs while publishing the Acceptance Basis.
 
 This replaces the unstructured `on_success.remove_targets` operation with an
 explicit transition model. The old field has a hard cutoff: any Ticket that
@@ -65,14 +66,18 @@ Omitting `target_plan` means ticket creation authors no Targets of its own; the
 Ticket may still consume an exportable planned Target from a declared
 dependency. A present plan is nonempty, requires
 `on_success.merge: true`, and must account for every newly authored Target
-exactly once. Existing Target definitions cannot be edited or deleted during
-ticket creation. Replacement baselines must remain resolvable and runnable
-enough to collect evidence, although their Criteria may fail.
+exactly once. Existing Target and fileset definitions cannot be edited or deleted
+during ticket creation. A newly authored fileset must be referenced only by
+planned or materialized provider Targets; it cannot change an unchanged baseline
+Target's inputs. Replacement baselines must remain resolvable and runnable enough
+to collect evidence, although their Criteria may fail.
 
-Target-plan approval shows complete definitions and owned test tables for
-persistent and ephemeral Targets. A replacement shows its candidate's focused
-diff against the declared baseline, including the owned test table. Inability to
-produce that focused diff unambiguously is an approval blocker; acceptance
-effects are explicit. Provider materialization, pinning, and refresh remain
-internal Acceptance Basis mechanics and are omitted from normal user-facing
-output.
+Target-plan approval shows complete definitions, referenced filesets, and owned
+test tables for persistent and ephemeral Targets. A replacement shows its
+candidate's focused diff against the declared baseline, including referenced
+filesets and the owned test table. Provider materialization, pinning, and refresh
+use that same focused surface. Acceptance removes a newly authored fileset only
+when removal of an ephemeral Target leaves it unreferenced; existing and
+still-shared filesets remain. Inability to produce that focused diff
+unambiguously is an approval blocker; acceptance effects are explicit. Provider
+mechanics remain internal and are omitted from normal user-facing output.

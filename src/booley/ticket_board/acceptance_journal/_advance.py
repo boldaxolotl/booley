@@ -28,6 +28,7 @@ from ..acceptance_basis import (
 )
 from ..git_ops import worktree_is_clean
 from ..target_finalization import (
+    TargetFinalizationBaseline,
     TargetFinalizationError,
     apply_target_removals,
     plan_target_removals,
@@ -884,13 +885,30 @@ def _add_finalization_worktrees(
 
 
 def _planned_finalization_paths(
-    temporary: Path, basis: AcceptanceBasis, journal: AcceptanceJournal
+    temporary: Path,
+    project_checkout: Path | None,
+    basis: AcceptanceBasis,
+    journal: AcceptanceJournal,
 ) -> list[Path]:
     try:
+        baselines = [
+            TargetFinalizationBaseline(
+                temporary,
+                basis.participant("outer").destination_sha,
+            )
+        ]
+        if project_checkout is not None:
+            baselines.append(
+                TargetFinalizationBaseline(
+                    project_checkout,
+                    basis.participant("project").destination_sha,
+                )
+            )
         plan = plan_target_removals(
             temporary,
             list(journal.removal_targets),
             basis.bindings,
+            baselines=baselines,
         )
         return list(apply_target_removals(temporary, plan))
     except (TargetFinalizationError, OSError, ValueError) as exc:
@@ -993,7 +1011,7 @@ def _compute_finalized_journal(
         "project" in transaction.participants,
         journal,
     )
-    changed = _planned_finalization_paths(temporary, transaction.basis, journal)
+    changed = _planned_finalization_paths(temporary, project_checkout, transaction.basis, journal)
     finalized = _commit_finalized_candidates(
         temporary, project_checkout, changed, transaction.slug
     )

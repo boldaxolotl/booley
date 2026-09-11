@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from booley.core.models import TargetPlan
 from booley.ticket_board import (
@@ -81,6 +82,37 @@ def test_new_provider_core_copies_only_exported_target(tmp_path: Path) -> None:
     assert "private:" not in text
 
 
+def test_new_provider_core_copies_only_referenced_filesets(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    core = source / "toy.core"
+    core.parent.mkdir(parents=True)
+    core.write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "filesets:\n"
+        "  rtl: {files: [toy.sv]}\n"
+        "  private: {files: [private.sv]}\n"
+        "targets:\n"
+        "  exported:\n"
+        "    filesets: [rtl]\n"
+        "  private:\n"
+        "    filesets: [private]\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(
+        source,
+        destination,
+        Path("toy.core"),
+        "acme:lib:toy:1.0#exported",
+    )
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"rtl": {"files": ["toy.sv"]}}
+    assert set(document["targets"]) == {"exported"}
+
+
 def test_new_provider_core_rejects_non_target_build_content(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
@@ -89,20 +121,49 @@ def test_new_provider_core_rejects_non_target_build_content(tmp_path: Path) -> N
     core.write_text(
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
-        "filesets: {rtl: {files: [toy.sv]}}\n"
+        "generators: {make: {command: make}}\n"
         "targets:\n"
-        "  exported:\n"
-        "    filesets: [rtl]\n",
+        "  exported: {}\n",
         encoding="utf-8",
     )
 
     with pytest.raises(PlannedDependencyError, match="outside Target definitions"):
-        _merge_provider_target(
-            source,
-            destination,
-            Path("toy.core"),
-            "acme:lib:toy:1.0#exported",
+        _merge_provider_target(source, destination, Path("toy.core"), "exported")
+
+
+def test_provider_target_merge_inserts_referenced_fileset_only(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "toy.core").parent.mkdir(parents=True)
+    (source / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  tb: {files: [tb.sv]}\n  unused: {files: [unused.sv]}\n"
+        'targets:\n  future:\n    filesets_append: ["tool_verilator ? (tb)"]\n',
+        encoding="utf-8",
+    )
+    _core(destination / "toy.core", "  current: {}\n")
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+    assert set(document["targets"]) == {"current", "future"}
+
+
+def test_provider_target_merge_rejects_referenced_fileset_conflict(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    for root, filename in ((source, "approved.sv"), (destination, "concurrent.sv")):
+        root.mkdir()
+        (root / "toy.core").write_text(
+            "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+            f"  tb: {{files: [{filename}]}}\n"
+            "targets:\n  future: {filesets: [tb]}\n",
+            encoding="utf-8",
         )
+
+    with pytest.raises(PlannedDependencyError, match=r"filesets\.tb differs"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
 
 
 def test_inline_targets_mapping_blocks_narrow_provider_edit(tmp_path: Path) -> None:
@@ -201,6 +262,23 @@ def test_surface_digest_includes_shared_core_controls(tmp_path: Path) -> None:
     core.write_text(core.read_text(encoding="utf-8").replace("one.sv", "two.sv"), encoding="utf-8")
 
     assert target_surface_sha256(tmp_path, "future") != first
+
+
+def test_surface_digest_excludes_unreferenced_filesets(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  rtl: {files: [one.sv]}\n  unrelated: {files: [before.sv]}\n"
+        "targets:\n  future: {filesets: [rtl]}\n",
+        encoding="utf-8",
+    )
+    first = target_surface_sha256(tmp_path, "future")
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("before.sv", "after.sv"),
+        encoding="utf-8",
+    )
+
+    assert target_surface_sha256(tmp_path, "future") == first
 
 
 def test_public_materialization_rejects_missing_provider_dependency(

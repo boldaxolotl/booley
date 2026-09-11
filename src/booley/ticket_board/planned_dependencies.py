@@ -120,9 +120,25 @@ def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
     if not isinstance(targets, dict) or handle.name not in targets:
         raise PlannedDependencyError(f"provider Target {target!r} has no declaration")
     tests_key, tests = _owned_tests(checkout, handle.identity, catalog)
-    controls = {key: value for key, value in document.items() if key != "targets"}
+    target_body = targets[handle.name]
+    filesets = document.get("filesets")
+    selected_filesets = {
+        name: filesets[name]
+        for name in fusesoc_registry.possible_target_fileset_names(target_body)
+        if isinstance(filesets, dict) and name in filesets
+    }
+    controls = {
+        key: value for key, value in document.items() if key not in {"targets", "filesets"}
+    }
     digest = hashlib.sha256(
-        canonical_json({"controls": controls, "target": targets[handle.name], "tests": tests})
+        canonical_json(
+            {
+                "controls": controls,
+                "filesets": selected_filesets,
+                "target": target_body,
+                "tests": tests,
+            }
+        )
     ).hexdigest()
     try:
         core_path = handle.core_file.resolve().relative_to(checkout.resolve())

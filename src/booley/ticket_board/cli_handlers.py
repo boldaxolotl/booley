@@ -195,6 +195,7 @@ def _cmd_validate_ticket(tio, args):
     fields, body = parse_frontmatter(text)
     project_root = detect_project_root()
     validation_root = project_root
+    basis_workspace: Path | None = None
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
     if (project_root / ".git").exists() and fields.get("acceptance_basis") is None:
         try:
@@ -205,6 +206,7 @@ def _cmd_validate_ticket(tio, args):
             print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
             return 1
         validation_root = workspace.outer
+        basis_workspace = workspace.outer
         from .acceptance_targets import acceptance_control_paths
 
         try:
@@ -239,6 +241,22 @@ def _cmd_validate_ticket(tio, args):
     if errors:
         print(json.dumps({"errors": errors}, indent=2))
         return 1
+    if basis_workspace is not None and fields.get("target_plan") is not None:
+        try:
+            from booley.ticket_board.workspace_ops import (
+                AcceptanceBasisOperationError,
+                validate_acceptance_basis_inputs,
+            )
+
+            validate_acceptance_basis_inputs(
+                project_root,
+                path,
+                path.stem,
+                workspace=basis_workspace,
+            )
+        except (AcceptanceBasisOperationError, OSError, ValueError) as exc:
+            print(json.dumps({"errors": [str(exc)]}, indent=2))
+            return 1
     print(json.dumps({"errors": [], "warnings": warnings, "valid": True}))
     return 0
 

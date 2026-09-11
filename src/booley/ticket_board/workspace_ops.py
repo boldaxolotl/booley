@@ -1051,6 +1051,17 @@ def _prepare_basis(
     )
 
 
+def validate_acceptance_basis_inputs(
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    *,
+    workspace: Path | None = None,
+) -> None:
+    """Run enqueue's semantic Acceptance Basis preflight without publishing it."""
+    _prepare_basis(project_root, ticket_path, slug, workspace=workspace)
+
+
 def _require_basis_validation(
     fields: dict[str, object],
     body: str,

@@ -1319,7 +1319,7 @@ def _possible_expression_values(value: str) -> list[str]:
     return values
 
 
-def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
+def possible_target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
     """Every fileset a Target may select, including conditional entries."""
     return [
         name
@@ -1327,6 +1327,11 @@ def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
         if isinstance(expression, str)
         for name in _possible_expression_values(expression)
     ]
+
+
+def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
+    """Compatibility wrapper for internal callers."""
+    return possible_target_fileset_names(target_def)
 
 
 # Characters that mark a fileset path as non-literal (a glob or a CAPI2

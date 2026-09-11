@@ -68,6 +68,34 @@ def test_reapply_targets_keeps_current_destination_and_approved_candidate(
     assert "provider_ephemeral" not in targets
 
 
+def test_reapply_targets_recovers_only_candidate_referenced_filesets(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    (old / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  candidate_inputs: {files: [candidate.sv]}\n"
+        "  stale_inputs: {files: [stale.sv]}\n"
+        "targets:\n  consumer: {filesets: [candidate_inputs]}\n"
+        "  stale: {filesets: [stale_inputs]}\n",
+        encoding="utf-8",
+    )
+    (new / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  current_inputs: {files: [current.sv]}\n"
+        "targets:\n  current: {filesets: [current_inputs]}\n",
+        encoding="utf-8",
+    )
+    plan = TargetPlan.from_value([{"target": "consumer", "role": "persistent"}])
+
+    _reapply_targets(old, new, plan)
+
+    document = yaml.safe_load((new / "toy.core").read_text(encoding="utf-8"))
+    assert set(document["targets"]) == {"current", "consumer"}
+    assert set(document["filesets"]) == {"current_inputs", "candidate_inputs"}
+
+
 def test_reapply_test_tables_rejects_current_destination_conflict(tmp_path: Path) -> None:
     old = tmp_path / "old/.booley_project"
     new = tmp_path / "new/.booley_project"

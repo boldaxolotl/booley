@@ -18,12 +18,14 @@ import yaml
 
 from booley.config.project_config import TEST_LISTS_TABLE
 from booley.core.models import TargetPlan, TargetPlanEntry, TargetPlanError, TargetPlanRole
+from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 from .acceptance_targets import canonical_acceptance_bindings, criterion_targets
 from .target_surface_edit import (
     TargetSurfaceEditError,
+    fileset_definition_spans,
     only_authorized_insertions,
     target_definition_spans,
     toml_table_spans,
@@ -42,6 +44,7 @@ class TargetPlanAnalysis:
     plan: TargetPlan | None
     removal_targets: tuple[str, ...]
     authored_targets: tuple[str, ...]
+    authored_filesets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,17 @@ class _TargetDefinition:
 
 
 @dataclass(frozen=True)
+class _FilesetDefinition:
+    """One core-local fileset and the Targets that may select it."""
+
+    key: str
+    path: str
+    name: str
+    body: Any
+    referenced_by: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _SurfaceDelta:
     added: tuple[_TargetDefinition, ...]
     modified: tuple[_TargetDefinition, ...]
@@ -59,6 +73,9 @@ class _SurfaceDelta:
     added_test_tables: tuple[str, ...]
     modified_test_tables: tuple[str, ...]
     deleted_test_tables: tuple[str, ...]
+    added_filesets: tuple[_FilesetDefinition, ...] = ()
+    modified_filesets: tuple[_FilesetDefinition, ...] = ()
+    deleted_filesets: tuple[_FilesetDefinition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,43 @@ def _core_targets(content: bytes | None, *, path: str) -> dict[str, _TargetDefin
         canonical = f"{vlnv}#{name}"
         result[canonical] = _TargetDefinition(canonical, name, body)
     return result
+
+
+def _core_filesets(content: bytes | None, *, path: str) -> dict[str, Any]:
+    document = _core_document(content, path=path)
+    filesets = document.get("filesets", {}) if document else {}
+    if not isinstance(filesets, Mapping):
+        raise TargetPlanValidationError(f".core {path} has no mapping-valued filesets block")
+    if any(not isinstance(name, str) for name in filesets):
+        raise TargetPlanValidationError(f".core {path} contains a non-string fileset name")
+    return dict(filesets)
+
+
+def _fileset_references(content: bytes | None, *, path: str) -> dict[str, tuple[str, ...]]:
+    document = _core_document(content, path=path)
+    if not document:
+        return {}
+    vlnv = document.get("name")
+    targets = document.get("targets", {})
+    if not isinstance(vlnv, str) or not isinstance(targets, Mapping):
+        return {}
+    references: dict[str, set[str]] = {}
+    for target_name, body in targets.items():
+        if not isinstance(target_name, str) or not isinstance(body, Mapping):
+            continue
+        canonical = f"{vlnv}#{target_name}"
+        for fileset in fusesoc_registry.possible_target_fileset_names(body):
+            references.setdefault(fileset, set()).add(canonical)
+    return {name: tuple(sorted(targets)) for name, targets in references.items()}
+
+
+def _fileset_definitions(content: bytes | None, *, path: str) -> dict[str, _FilesetDefinition]:
+    filesets = _core_filesets(content, path=path)
+    references = _fileset_references(content, path=path)
+    return {
+        name: _FilesetDefinition(f"{path}#{name}", path, name, body, references.get(name, ()))
+        for name, body in filesets.items()
+    }
 
 
 def _table_mapping(content: bytes | None, *, path: str) -> dict[str, Any]:
@@ -142,6 +196,24 @@ def _surface_delta(files: tuple[TargetSurfaceFile, ...]) -> _SurfaceDelta:
         tuple(sorted(item for delta in deltas for item in delta.added_test_tables)),
         tuple(sorted(item for delta in deltas for item in delta.modified_test_tables)),
         tuple(sorted(item for delta in deltas for item in delta.deleted_test_tables)),
+        tuple(
+            sorted(
+                (item for delta in deltas for item in delta.added_filesets),
+                key=lambda item: item.key,
+            )
+        ),
+        tuple(
+            sorted(
+                (item for delta in deltas for item in delta.modified_filesets),
+                key=lambda item: item.key,
+            )
+        ),
+        tuple(
+            sorted(
+                (item for delta in deltas for item in delta.deleted_filesets),
+                key=lambda item: item.key,
+            )
+        ),
     )
 
 
@@ -152,6 +224,8 @@ def _core_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
         after_doc = dict(_core_document(surface.current, path=surface.path))
         before_doc.pop("targets", None)
         after_doc.pop("targets", None)
+        before_doc.pop("filesets", None)
+        after_doc.pop("filesets", None)
         if before_doc != after_doc:
             raise TargetPlanValidationError(
                 f"Ticket creation cannot modify .core content outside targets: {surface.path}"
@@ -159,8 +233,25 @@ def _core_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
     before = _core_targets(surface.baseline, path=surface.path)
     after = _core_targets(surface.current, path=surface.path)
     added, modified, deleted = _changed_rows(before, after)
+    before_fileset_bodies = _core_filesets(surface.baseline, path=surface.path)
+    after_fileset_bodies = _core_filesets(surface.current, path=surface.path)
+    fileset_added, fileset_modified, fileset_deleted = _changed_rows(
+        before_fileset_bodies, after_fileset_bodies
+    )
+    if fileset_modified or fileset_deleted:
+        changed = ", ".join(sorted((*fileset_modified, *fileset_deleted)))
+        raise TargetPlanValidationError(
+            f"Ticket creation cannot modify or delete existing filesets in "
+            f"{surface.path}: {changed}"
+        )
+    before_filesets = _fileset_definitions(surface.baseline, path=surface.path)
+    after_filesets = _fileset_definitions(surface.current, path=surface.path)
     if not modified and not deleted:
-        _validate_core_source_boundary(surface, tuple(after[key].name for key in added))
+        _validate_core_source_boundary(
+            surface,
+            tuple(after[key].name for key in added),
+            tuple(after_filesets[key].name for key in fileset_added),
+        )
     return _SurfaceDelta(
         tuple(after[key] for key in added),
         tuple(after[key] for key in modified),
@@ -168,6 +259,9 @@ def _core_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
         (),
         (),
         (),
+        tuple(after_filesets[key] for key in fileset_added),
+        tuple(after_filesets[key] for key in fileset_modified),
+        tuple(before_filesets[key] for key in fileset_deleted),
     )
 
 
@@ -190,14 +284,19 @@ def _tests_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
 
 
 def _validate_core_source_boundary(
-    surface: TargetSurfaceFile, added_targets: tuple[str, ...]
+    surface: TargetSurfaceFile,
+    added_targets: tuple[str, ...],
+    added_filesets: tuple[str, ...] = (),
 ) -> None:
     if surface.baseline is None or surface.current is None:
         return
     try:
         baseline = surface.baseline.decode()
         current = surface.current.decode()
-        spans = target_definition_spans(current, Path(surface.path), added_targets)
+        spans = (
+            *target_definition_spans(current, Path(surface.path), added_targets),
+            *fileset_definition_spans(current, Path(surface.path), added_filesets),
+        )
     except (UnicodeDecodeError, TargetSurfaceEditError) as exc:
         raise TargetPlanValidationError(str(exc)) from exc
     if not only_authorized_insertions(baseline, current, spans):
@@ -409,6 +508,31 @@ def _validate_plan_bindings(
         )
 
 
+def _validate_fileset_coverage(
+    delta: _SurfaceDelta,
+    planned_targets: set[str],
+    provider_targets: frozenset[str],
+) -> tuple[str, ...]:
+    authorized_targets = planned_targets | set(provider_targets)
+    authored: list[str] = []
+    for fileset in delta.added_filesets:
+        references = set(fileset.referenced_by)
+        if not references:
+            raise TargetPlanValidationError(
+                f"added fileset {fileset.name!r} in {fileset.path} is not referenced "
+                "by a planned Target"
+            )
+        existing = sorted(references - authorized_targets)
+        if existing:
+            raise TargetPlanValidationError(
+                f"added fileset {fileset.name!r} in {fileset.path} changes an existing "
+                f"Target's inputs: {', '.join(existing)}"
+            )
+        if references & planned_targets:
+            authored.append(fileset.key)
+    return tuple(sorted(authored))
+
+
 def analyze_target_plan(
     fields: Mapping[str, Any],
     project_root: Path,
@@ -431,6 +555,7 @@ def analyze_target_plan(
         raise TargetPlanValidationError(str(exc)) from exc
     canonical = _canonical_plan(fields, catalog)
     added, planned = _validate_surface_coverage(delta, canonical, provider_targets)
+    authored_filesets = _validate_fileset_coverage(delta, planned, provider_targets)
     invalid_baselines = (
         sorted(
             entry.replaces
@@ -454,4 +579,9 @@ def analyze_target_plan(
         provider_targets,
         exported_provider_targets,
     )
-    return TargetPlanAnalysis(canonical, _derived_removals(canonical), tuple(sorted(added)))
+    return TargetPlanAnalysis(
+        canonical,
+        _derived_removals(canonical),
+        tuple(sorted(added)),
+        authored_filesets,
+    )

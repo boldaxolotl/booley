@@ -9,6 +9,7 @@ authored.
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -20,6 +21,7 @@ import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
 from booley.config.project_config import TEST_LISTS_TABLE, normalize_tests_toml
+from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, UnknownTargetError
@@ -45,11 +47,28 @@ class PlannedTargetRemoval:
     tests_key: str = ""
 
 
+@dataclass(frozen=True, order=True)
+class PlannedFilesetRemoval:
+    """One newly-authored fileset orphaned by a planned Target removal."""
+
+    core_path: str
+    name: str
+
+
+@dataclass(frozen=True)
+class TargetFinalizationBaseline:
+    """Immutable pre-authoring revision for one acceptance participant."""
+
+    checkout: Path
+    revision: str
+
+
 @dataclass(frozen=True)
 class TargetRemovalPlan:
     """A deterministic, basis-validated set of acceptance-time removals."""
 
     targets: tuple[PlannedTargetRemoval, ...]
+    filesets: tuple[PlannedFilesetRemoval, ...] = ()
 
     @property
     def canonical_targets(self) -> tuple[str, ...]:
@@ -118,6 +137,8 @@ def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
     bindings: Iterable[AcceptanceTargetBinding],
+    *,
+    baselines: Iterable[TargetFinalizationBaseline] = (),
 ) -> TargetRemovalPlan:
     """Resolve selectors and prove every edit is criterion-bound and unambiguous."""
     root = Path(project_root).resolve()
@@ -159,7 +180,8 @@ def plan_target_removals(
                 _tests_key(root, handle, catalog),
             )
         )
-    plan = TargetRemovalPlan(tuple(sorted(removals)))
+    fileset_removals = _plan_orphaned_filesets(root, removals, tuple(baselines))
+    plan = TargetRemovalPlan(tuple(sorted(removals)), tuple(sorted(fileset_removals)))
     _validate_plan_spans(root, plan)
     return plan
 
@@ -169,6 +191,120 @@ def _mapping_value(node: MappingNode, key: str) -> MappingNode | None:
         if isinstance(key_node, ScalarNode) and key_node.value == key:
             return value_node if isinstance(value_node, MappingNode) else None
     return None
+
+
+def _read_core_mapping(text: str, path: Path) -> Mapping[str, Any]:
+    try:
+        value = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise TargetFinalizationError(f"cannot parse .core {path}: {exc}") from exc
+    if not isinstance(value, Mapping):
+        raise TargetFinalizationError(f".core {path} is not a YAML mapping")
+    return value
+
+
+def _baseline_core(
+    core_path: Path, baselines: tuple[TargetFinalizationBaseline, ...]
+) -> Mapping[str, Any] | None:
+    selected = next(
+        (
+            baseline
+            for baseline in sorted(
+                baselines,
+                key=lambda item: len(item.checkout.resolve().parts),
+                reverse=True,
+            )
+            if core_path.is_relative_to(baseline.checkout.resolve())
+        ),
+        None,
+    )
+    if selected is None:
+        return None
+    checkout = selected.checkout.resolve()
+    relative = core_path.relative_to(checkout).as_posix()
+    commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{selected.revision}^{{commit}}"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if commit.returncode:
+        raise TargetFinalizationError(
+            f"cannot inspect baseline revision {selected.revision!r} in {checkout}"
+        )
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{selected.revision}:{relative}"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if exists.returncode:
+        return {}
+    shown = subprocess.run(
+        ["git", "show", f"{selected.revision}:{relative}"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if shown.returncode:
+        raise TargetFinalizationError(
+            f"cannot read baseline .core {relative} at {selected.revision}"
+        )
+    return _read_core_mapping(shown.stdout, core_path)
+
+
+def _target_fileset_references(targets: Mapping[str, Any]) -> set[str]:
+    return {
+        name
+        for body in targets.values()
+        if isinstance(body, Mapping)
+        for name in fusesoc_registry.possible_target_fileset_names(body)
+    }
+
+
+def _plan_orphaned_filesets(
+    root: Path,
+    removals: Iterable[PlannedTargetRemoval],
+    baselines: tuple[TargetFinalizationBaseline, ...],
+) -> list[PlannedFilesetRemoval]:
+    if not baselines:
+        return []
+    by_core: dict[str, set[str]] = defaultdict(set)
+    for removal in removals:
+        by_core[removal.core_path].add(removal.name)
+    planned: list[PlannedFilesetRemoval] = []
+    for relative, removed_names in by_core.items():
+        core_path = root / relative
+        current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
+        baseline = _baseline_core(core_path.resolve(), baselines)
+        if baseline is None:
+            continue
+        current_filesets = current.get("filesets")
+        baseline_filesets = baseline.get("filesets")
+        current_names = set(current_filesets) if isinstance(current_filesets, Mapping) else set()
+        baseline_names = (
+            set(baseline_filesets) if isinstance(baseline_filesets, Mapping) else set()
+        )
+        targets = current.get("targets")
+        if not isinstance(targets, Mapping):
+            continue
+        removed_targets = {name: body for name, body in targets.items() if name in removed_names}
+        retained_targets = {
+            name: body for name, body in targets.items() if name not in removed_names
+        }
+        removed_references = _target_fileset_references(removed_targets)
+        retained_references = _target_fileset_references(retained_targets)
+        for name in sorted(
+            (current_names - baseline_names) & removed_references - retained_references
+        ):
+            planned.append(PlannedFilesetRemoval(relative, name))
+    return planned
 
 
 def _line_start(text: str, index: int) -> int:
@@ -186,23 +322,25 @@ def _node_block_end(text: str, start: int, end: int) -> int:
     return end_line if end_line > start else _line_end(text, end)
 
 
-def _core_replacements(text: str, names: set[str], path: Path) -> list[tuple[int, int, str]]:
+def _core_replacements(
+    text: str, names: set[str], path: Path, *, section: str = "targets"
+) -> list[tuple[int, int, str]]:
     try:
         document = yaml.compose(text)
     except yaml.YAMLError as exc:
         raise TargetFinalizationError(f"cannot parse .core {path}: {exc}") from exc
     if not isinstance(document, MappingNode):
         raise TargetFinalizationError(f".core {path} is not a YAML mapping")
-    targets = _mapping_value(document, "targets")
+    targets = _mapping_value(document, section)
     if targets is None:
-        raise TargetFinalizationError(f".core {path} has no mapping-valued targets block")
+        raise TargetFinalizationError(f".core {path} has no mapping-valued {section} block")
     entries = {
         key.value: (key, value) for key, value in targets.value if isinstance(key, ScalarNode)
     }
     missing = sorted(names - entries.keys())
     if missing:
         raise TargetFinalizationError(
-            f".core {path} no longer declares Target(s): {', '.join(missing)}"
+            f".core {path} no longer declares {section} entries: {', '.join(missing)}"
         )
     if names == set(entries):
         first = min(_line_start(text, entries[name][0].start_mark.index) for name in names)
@@ -304,14 +442,20 @@ def _apply_replacements(text: str, replacements: Iterable[tuple[int, int, str]])
 
 def _validate_plan_spans(root: Path, plan: TargetRemovalPlan) -> None:
     by_core: dict[str, set[str]] = defaultdict(set)
+    filesets_by_core: dict[str, set[str]] = defaultdict(set)
     tests_keys: set[str] = set()
     for removal in plan.targets:
         by_core[removal.core_path].add(removal.name)
         if removal.tests_key:
             tests_keys.add(removal.tests_key)
+    for removal in plan.filesets:
+        filesets_by_core[removal.core_path].add(removal.name)
     for relative, names in by_core.items():
         path = root / relative
-        _core_replacements(path.read_text(encoding="utf-8"), names, path)
+        text = path.read_text(encoding="utf-8")
+        _core_replacements(text, names, path)
+        if filesets_by_core[relative]:
+            _core_replacements(text, filesets_by_core[relative], path, section="filesets")
     if tests_keys:
         tests_path = resolve_checkout_project_dir(root) / "tests.toml"
         _tests_replacements(tests_path.read_text(encoding="utf-8"), tests_keys)
@@ -360,17 +504,25 @@ def apply_target_removals(project_root: Path | str, plan: TargetRemovalPlan) -> 
     """Apply a proven plan and return changed paths relative to the checkout."""
     root = Path(project_root).resolve()
     by_core: dict[str, set[str]] = defaultdict(set)
+    filesets_by_core: dict[str, set[str]] = defaultdict(set)
     tests_keys: set[str] = set()
     for removal in plan.targets:
         by_core[removal.core_path].add(removal.name)
         if removal.tests_key:
             tests_keys.add(removal.tests_key)
+    for removal in plan.filesets:
+        filesets_by_core[removal.core_path].add(removal.name)
     changed: set[Path] = set()
     for relative, names in by_core.items():
         path = root / relative
         text = path.read_text(encoding="utf-8")
+        replacements = _core_replacements(text, names, path)
+        if filesets_by_core[relative]:
+            replacements.extend(
+                _core_replacements(text, filesets_by_core[relative], path, section="filesets")
+            )
         path.write_text(
-            _apply_replacements(text, _core_replacements(text, names, path)),
+            _apply_replacements(text, replacements),
             encoding="utf-8",
         )
         changed.add(Path(relative))

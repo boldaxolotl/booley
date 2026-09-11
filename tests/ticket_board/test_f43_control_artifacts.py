@@ -227,6 +227,42 @@ def test_enqueue_records_tests_toml_update_in_acceptance_basis(
     assert _git(root, "rev-parse", outer_participant.ticket_ref) == outer_participant.authoring_sha
 
 
+def test_validate_and_enqueue_accept_planned_target_with_new_fileset(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, tio = _project(tmp_path, monkeypatch)
+    ticket = _ticket(tio, merge=True, planned=True)
+    outer = root / ".booley_project" / "worktrees" / "change-target"
+    core = outer / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            "targets:\n",
+            "  lint_inputs:\n"
+            "    files: [rtl/toy.sv]\n"
+            "    file_type: systemVerilogSource\n"
+            "targets:\n",
+        )
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets_append: [lint_inputs]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
+    before = _git(outer, "rev-parse", "HEAD")
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
+    capsys.readouterr()
+
+    assert main(["validate-ticket", str(ticket), "--check-git"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"] is True
+    assert _git(outer, "rev-parse", "HEAD") == before
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert "acceptance_basis" not in fields
+
+    assert tio.enqueue_ticket("change-target") is True
+
+
 def test_validate_ticket_does_not_reopen_published_authoring_workspace(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

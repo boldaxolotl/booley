@@ -282,6 +282,27 @@ class DirectTicketOps:
         errors = [e for e in results if not e.startswith("[warning] ")]
         if errors:
             return {"errors": errors}
+        if (
+            fields.get("target_plan") is not None
+            and fields.get("acceptance_basis") is None
+            and (project_root / ".git").exists()
+        ):
+            from booley.ticket_board.workspace_ops import (
+                AcceptanceBasisOperationError,
+                ensure_ticket_workspace,
+                validate_acceptance_basis_inputs,
+            )
+
+            try:
+                workspace = ensure_ticket_workspace(project_root, p, p.stem)
+                validate_acceptance_basis_inputs(
+                    project_root,
+                    p,
+                    p.stem,
+                    workspace=workspace.outer,
+                )
+            except (AcceptanceBasisOperationError, OSError, RuntimeError, ValueError) as exc:
+                return {"errors": [str(exc)]}
         return {"errors": [], "valid": True}
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
