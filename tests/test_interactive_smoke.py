@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -424,9 +425,10 @@ class TestInitInteractive:
     Host MCP registration (ADR 0012) was removed."""
 
     @pytest.fixture(autouse=True)
-    def _pin_runtime_image(self, monkeypatch):
-        """Unit tests pin deterministically without requiring a local image."""
+    def _isolate_runtime_issuance(self, monkeypatch):
+        """Exercise init's issuance boundary without host Docker or a CLI install."""
         from booley.harness import init_cmd
+        from booley.runtime import devcontainer
         from booley.runtime import session_issuance as runtime_spec
 
         def pin_image(spec, *, expected_image_id=None):
@@ -434,13 +436,37 @@ class TestInitInteractive:
             spec["image"] = "sha256:" + "a" * 64
             return spec["image"]
 
-        monkeypatch.setattr(runtime_spec, "pin_image", pin_image)
-        monkeypatch.setattr(runtime_spec, "seal", lambda _project, _spec: None)
-        monkeypatch.setattr(
-            runtime_spec,
-            "_issue_document",
-            lambda _project, _spec, _path: None,
-        )
+        def prepare(project, build_spec, *, expected_image_id=None):
+            project = project.resolve()
+            inputs = runtime_spec.SessionSpecInputs(
+                project_data_source=project / ".booley_project",
+                trusted_eda_mounts=(),
+                fixed_container_environment=(),
+                installation_name=None,
+                license_profile_name=None,
+            )
+            spec = build_spec(inputs)
+            pin_image(spec, expected_image_id=expected_image_id)
+            return runtime_spec.PreparedSessionSpec(spec, "test-spec-digest", inputs)
+
+        def issue(
+            project,
+            build_spec,
+            *,
+            expected_image_id=None,
+            force_dependencies=False,
+        ):
+            del force_dependencies
+            prepared = prepare(
+                project,
+                build_spec,
+                expected_image_id=expected_image_id,
+            )
+            devcontainer.write_devcontainer(project, prepared.spec)
+            return SimpleNamespace(license_profile=None)
+
+        monkeypatch.setattr(runtime_spec, "preview", prepare)
+        monkeypatch.setattr(runtime_spec, "issue", issue)
         monkeypatch.setattr(
             init_cmd,
             "_reconcile_issued_headless_runtime",
