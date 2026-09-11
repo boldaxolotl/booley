@@ -126,8 +126,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - **Booley will not design hardware for you.** You design the architecture and write the specs; Booley handles the grunt work. Force multiplier, not replacement.
 - **You need prior digital design experience.** Even the most advanced LLM is useless without electronic engineering fundamentals; Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.
 - **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
-- **Testbenches are simple and direct.** Direct SystemVerilog and cocotb testbenches are supported; UVM is not.
-- **Only tested at the IP level.** Complex IPs, like a RISC-V core or crypto accelerators, but never chip- or SoC-level integration. See [Ports](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md#ports) for what has actually been through it.
+- **UVM is not supported.**
 - **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every ticket and every session builds on it, and development speeds up significantly.
 - **Designed by a human, written by agents.** Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party implementation code was written by Claude and Codex, but it was not vibe-coding: I define the architecture and specifications, evaluate design tradeoffs, review implementation plans and code, direct revisions, and make the final engineering decisions. Changes also undergo separate agent and human reviews, including QA passes specifically intended to find bugs.
 
