@@ -39,6 +39,13 @@ We disable the remote bundle's startup and theme-change lookup calls, leaving
 VS Code CSS variables already provided by the UI. A desktop theme is never
 queried, copied, or installed in the container.
 
+VaporView 1.5.4 has native, collapsible signal groups, but its WCP server
+flattens them when reading viewer state and exposes no command that can create
+them. We add two narrowly scoped WCP methods to the shipped bundle:
+``set_signal_layout`` applies VaporView's saved-row hierarchy and
+``get_signal_layout`` reads it back. ``bwave gui`` uses the pair to create and
+verify groups, and to restore the prior presentation if a later update fails.
+
 Idempotent and defensive: a no-op if the extension is absent (install may still
 be in flight), or already patched, and it never raises out of :func:`main` — a
 patch failure must not fail the attach hook. Because the edits change the
@@ -107,6 +114,40 @@ _THEME_LOOKUP_CALL_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\.getTokenColorsFor
 _THEME_LOOKUP_CALL_COUNT = 2
 _THEME_LOOKUP_METHOD = "getTokenColorsForTheme"
 _VAPORVIEW_BUNDLE = Path("dist") / "extension.js"
+
+# Exact anchors from the production-minified VaporView 1.5.4 bundle. An
+# unfamiliar future bundle is reported as incomplete and left untouched.
+_LAYOUT_CAPABILITY = "set_signal_layout"
+_WCP_SWITCH_ANCHOR = (
+    'case"get_capabilities":t=await this.handleGetCapabilities();break;case"open_document":'
+)
+_WCP_SWITCH_PATCH = (
+    'case"get_capabilities":t=await this.handleGetCapabilities();break;'
+    'case"set_signal_layout":oe(i,["items"]),'
+    "t=await this.handleSetSignalLayout(i);break;"
+    'case"get_signal_layout":t=await this.handleGetSignalLayout(i);break;'
+    'case"open_document":'
+)
+_WCP_HANDLER_ANCHOR = (
+    "async handleGetCapabilities(){return{capabilities:await this.getCapabilitiesList()}}"
+    "async handleOpenDocument(e)"
+)
+_WCP_HANDLER_PATCH = (
+    "async handleGetCapabilities(){return{capabilities:await this.getCapabilitiesList()}}"
+    "async handleSetSignalLayout(e){let t=this.getDocumentFromParams(e);"
+    'if(!t)throw new Error("No active document");if(!Array.isArray(e.items))'
+    'throw new Error("items must be an array");return await t.applySettings('
+    "{displayedSignals:e.items,markerTime:e.marker_time,"
+    "altMarkerTime:e.alt_marker_time,displayTimeUnit:e.time_unit,"
+    "zoomRatio:e.zoom_ratio,scrollLeft:e.scroll_left},5,!1),{success:!0}}"
+    "async handleGetSignalLayout(e){let t=this.getDocumentFromParams(e);"
+    'if(!t)throw new Error("No active document");return{items:'
+    "t.webviewContext.displayedSignals||[]}}async handleOpenDocument(e)"
+)
+_WCP_CAPABILITIES_ANCHOR = '"add_variables","get_capabilities","open_document"'
+_WCP_CAPABILITIES_PATCH = (
+    '"add_variables","get_capabilities","set_signal_layout","get_signal_layout","open_document"'
+)
 
 # Install-race wait: how long to wait for VaporView's manifest to land before
 # concluding it is absent, how often to look, and the env knob that overrides
@@ -268,29 +309,95 @@ def _atomic_write_text(path: Path, content: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _prepare_theme_bundle(extension_dir: Path) -> tuple[Path, str | None, str | None]:
-    """Return the bundle, an optional replacement, and an incomplete-state detail."""
+def _prepare_theme_source(source: str) -> tuple[str, bool, str | None]:
+    """Prepare the theme fix without publishing a partial bundle."""
+    updated, replacements = _THEME_LOOKUP_CALL_RE.subn("void 0", source)
+    if replacements == _THEME_LOOKUP_CALL_COUNT:
+        return updated, True, None
+    if replacements == 0 and _THEME_LOOKUP_METHOD in source:
+        return source, False, None
+    return (
+        source,
+        False,
+        (f"bundle has {replacements} of 2 expected theme lookup calls and is not fully extracted"),
+    )
+
+
+def _group_layout_patch_is_complete(source: str) -> bool:
+    """Whether all injected group protocol surfaces are present."""
+    return all(
+        marker in source
+        for marker in (
+            'case"set_signal_layout"',
+            'case"get_signal_layout"',
+            "async handleSetSignalLayout",
+            "async handleGetSignalLayout",
+            '"set_signal_layout","get_signal_layout"',
+        )
+    )
+
+
+def _prepare_group_layout_source(source: str) -> tuple[str, bool, str | None]:
+    """Prepare the grouped-layout WCP extension against the pinned bundle."""
+    if _LAYOUT_CAPABILITY in source:
+        if _group_layout_patch_is_complete(source):
+            return source, False, None
+        return source, False, "bundle contains an incomplete grouped-layout patch"
+    replacements = (
+        (_WCP_SWITCH_ANCHOR, _WCP_SWITCH_PATCH),
+        (_WCP_HANDLER_ANCHOR, _WCP_HANDLER_PATCH),
+        (_WCP_CAPABILITIES_ANCHOR, _WCP_CAPABILITIES_PATCH),
+    )
+    if any(source.count(anchor) != 1 for anchor, _patch in replacements):
+        return source, False, "bundle grouped-layout anchors do not match VaporView 1.5.4"
+    updated = source
+    for anchor, patch in replacements:
+        updated = updated.replace(anchor, patch, 1)
+    return updated, True, None
+
+
+def _prepare_bundle(extension_dir: Path) -> tuple[Path, str | None, str | None]:
+    """Return one complete bundle replacement or an incomplete-state detail."""
     bundle = extension_dir / _VAPORVIEW_BUNDLE
     try:
         source = bundle.read_text(encoding="utf-8")
     except OSError as exc:
         return bundle, None, f"bundle is not readable yet ({exc})"
-    updated, replacements = _THEME_LOOKUP_CALL_RE.subn("void 0", source)
-    if replacements == _THEME_LOOKUP_CALL_COUNT:
-        return bundle, updated, None
-    if replacements == 0 and _THEME_LOOKUP_METHOD in source:
-        return bundle, None, None
-    return (
-        bundle,
-        None,
-        (f"bundle has {replacements} of 2 expected theme lookup calls and is not fully extracted"),
-    )
+    updated, theme_changed, problem = _prepare_theme_source(source)
+    if problem is not None:
+        return bundle, None, problem
+    updated, group_changed, problem = _prepare_group_layout_source(updated)
+    if problem is not None:
+        return bundle, None, problem
+    return bundle, updated if theme_changed or group_changed else None, None
 
 
 def _disable_remote_theme_lookup(extension_dir: Path) -> bool:
     """Keep VaporView from resolving a desktop theme inside the container."""
-    bundle, updated, problem = _prepare_theme_bundle(extension_dir)
-    if updated is None or problem is not None:
+    bundle = extension_dir / _VAPORVIEW_BUNDLE
+    try:
+        source = bundle.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    updated, changed, problem = _prepare_theme_source(source)
+    if not changed or problem is not None:
+        return False
+    try:
+        _atomic_write_text(bundle, updated)
+    except OSError:
+        return False
+    return True
+
+
+def _enable_grouped_layout_wcp(extension_dir: Path) -> bool:
+    """Expose VaporView's native saved-row hierarchy over WCP."""
+    bundle = extension_dir / _VAPORVIEW_BUNDLE
+    try:
+        source = bundle.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    updated, changed, problem = _prepare_group_layout_source(source)
+    if not changed or problem is not None:
         return False
     try:
         _atomic_write_text(bundle, updated)
@@ -312,6 +419,7 @@ def _installation_is_patched(path: Path) -> bool:
         and not patch_manifest(manifest)
         and _THEME_LOOKUP_CALL_RE.search(bundle) is None
         and _THEME_LOOKUP_METHOD in bundle
+        and _group_layout_patch_is_complete(bundle)
     )
 
 
@@ -335,7 +443,7 @@ def _patch_file(path: Path) -> _PatchResult:
         return _PatchResult(False, detail=problem)
 
     manifest_changed = patch_manifest(manifest)
-    bundle, updated_bundle, problem = _prepare_theme_bundle(path.parent)
+    bundle, updated_bundle, problem = _prepare_bundle(path.parent)
     if problem is not None:
         return _PatchResult(False, detail=problem)
 
@@ -549,8 +657,9 @@ def _start_install_watcher(home: Path) -> bool:
 
 _USAGE_DESCRIPTION = (
     "Patch the container's VaporView extension so its WCP control server "
-    "auto-starts safely on window load and an unavailable desktop theme uses "
-    "the fallback palette quietly. Takes no arguments; runs from the "
+    "auto-starts safely on window load, grouped layouts can be controlled, "
+    "and an unavailable desktop theme uses the fallback palette quietly. "
+    "Takes no arguments; runs from the "
     "devcontainer postAttachCommand. Idempotent, and leaves a singleton repair "
     "watcher when the extension is not installed yet."
 )

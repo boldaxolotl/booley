@@ -35,6 +35,11 @@ pytest                      # full suite; scope to a path/-k for a fast subset
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
 
+`docs/user/TROUBLESHOOTING.md` is the single authored troubleshooting source.
+After editing it, refresh the installed-runtime copy with
+`python -m booley.dev_support.reference_docs`; use `--check` to verify it
+without writing.
+
 ### Development environment troubleshooting
 
 Debian and Ubuntu split `venv` out of the Python package. If `python3 -m venv

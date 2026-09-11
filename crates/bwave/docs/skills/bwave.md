@@ -67,12 +67,23 @@ found:
 
 ```bash
 bwave find @dut "tb.dut.fifo.overflow" rising --first
-bwave gui  @dut --signals 'tb.dut.fifo.*' --time 1180c:1260c
+bwave gui @dut \
+  --group 'FIFO handshake=tb.dut.fifo.*' \
+  --group 'Control=tb.dut.ctrl.*' \
+  --time 1180c:1260c
 ```
+
+**Group multi-part views by default.** Use repeatable
+`--group 'NAME=GLOB'` and choose short names for the signals' roles in the
+current investigation (`Request`, `Arbitration`, `Backpressure`, `Response`),
+not merely their hierarchy prefixes. Repeat the same name to merge more globs
+into one group. Use `--signals` only for a tiny one-purpose view or for rows
+that intentionally belong at the top level.
 
 It requires VaporView's WCP control server in the user's VS Code window and
 hard-errors when that is off — surface the setup hint rather than assuming it
-worked. Flag semantics (clock row, markers, `--append`, `--max-signals`):
+worked. Flag semantics (native groups, clock row, markers, `--append`,
+`--max-signals`):
 `bwave docs show commands/gui`.
 
 ## Common errors

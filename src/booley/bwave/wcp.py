@@ -20,6 +20,11 @@ conversion happens here.
 
 Split out of ``cli.py`` like ``sessions.py`` (principle 8): the CLI owns the
 CLI surface, this module owns the wire protocol.
+
+Booley's in-container compatibility patch adds ``set_signal_layout`` and
+``get_signal_layout`` to VaporView 1.5.4. They carry the viewer's own recursive
+saved-row representation so named groups can be applied and read back without
+inventing a second layout schema.
 """
 
 from __future__ import annotations
@@ -29,7 +34,17 @@ import json
 import os
 import socket
 import time
+from dataclasses import dataclass
 from typing import Any
+
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_finite_number,
+    require_int,
+    require_list,
+    require_str,
+)
 
 WCP_HOST = "127.0.0.1"
 # Must match the `vaporview.wcp.port` pinned in the generated devcontainer
@@ -70,6 +85,62 @@ class WcpMethodError(WcpError):
     def __init__(self, method: str, message: str):
         super().__init__(f"{method}: {message}")
         self.method = method
+
+
+@dataclass(frozen=True)
+class ViewerState:
+    """Presentation state needed to restore a viewer after a failed update."""
+
+    marker_time: int | float | None
+    alt_marker_time: int | float | None
+    time_unit: str | None
+    zoom_ratio: int | float | None
+    scroll_left: int | float | None
+
+    def as_layout_params(self) -> dict[str, int | float | str | None]:
+        """Return VaporView's WCP field names for an atomic layout restore."""
+        return {
+            "marker_time": self.marker_time,
+            "alt_marker_time": self.alt_marker_time,
+            "time_unit": self.time_unit,
+            "zoom_ratio": self.zoom_ratio,
+            "scroll_left": self.scroll_left,
+        }
+
+
+def _optional_number(data: dict, key: str, *, method: str) -> int | float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    try:
+        require_finite_number(value, field=f"{method}.{key}")
+    except BoundaryError as exc:
+        raise WcpProtocolError(str(exc)) from exc
+    return value
+
+
+def _require_layout_items(value: Any, *, field: str) -> list[dict]:
+    """Validate VaporView's recursive saved-row container shape."""
+    try:
+        raw_items = require_list(value, field=field)
+        items = [
+            require_dict(item, field=f"{field}[{index}]") for index, item in enumerate(raw_items)
+        ]
+        for index, item in enumerate(items):
+            data_type = require_str(item, "dataType")
+            if data_type == "signal-group":
+                require_str(item, "groupName")
+                collapse_state = require_int(
+                    item.get("collapseState"), field=f"{field}[{index}].collapseState"
+                )
+                if collapse_state not in (0, 1, 2):
+                    raise BoundaryError(f"{field}[{index}].collapseState must be 0, 1, or 2")
+                _require_layout_items(item.get("children"), field=f"{field}[{index}].children")
+            elif data_type == "netlist-variable":
+                require_str(item, "name")
+        return items
+    except BoundaryError as exc:
+        raise WcpProtocolError(str(exc)) from exc
 
 
 def wcp_port() -> int:
@@ -269,6 +340,50 @@ class WcpClient:
         if lsb is not None:
             params["lsb"] = lsb
         self.request("add_signal", self._with_uri(params, uri))
+
+    def set_signal_layout(
+        self,
+        items: list[dict],
+        uri: str | None = None,
+        *,
+        restore_state: ViewerState | None = None,
+    ) -> None:
+        """Replace rows, optionally restoring the rest of the presentation state."""
+        params: dict[str, Any] = {"items": items}
+        if restore_state is not None:
+            params.update(restore_state.as_layout_params())
+        self.request("set_signal_layout", self._with_uri(params, uri))
+
+    def get_signal_layout(self, uri: str | None = None) -> list[dict]:
+        """Return the viewer's native saved-row hierarchy, including groups."""
+        result = self.request("get_signal_layout", self._with_uri({}, uri))
+        try:
+            response = require_dict(result, field="get_signal_layout response")
+        except BoundaryError as exc:
+            raise WcpProtocolError(str(exc)) from exc
+        return _require_layout_items(
+            response.get("items"), field="get_signal_layout response.items"
+        )
+
+    def get_viewer_state(self, uri: str | None = None) -> ViewerState:
+        """Return presentation fields required to roll back a scoped update."""
+        result = self.request("get_viewer_state", self._with_uri({}, uri))
+        try:
+            response = require_dict(result, field="get_viewer_state response")
+        except BoundaryError as exc:
+            raise WcpProtocolError(str(exc)) from exc
+        time_unit = response.get("time_unit")
+        if time_unit is not None and not isinstance(time_unit, str):
+            raise WcpProtocolError("get_viewer_state.time_unit must be a string or null")
+        return ViewerState(
+            marker_time=_optional_number(response, "marker_time", method="get_viewer_state"),
+            alt_marker_time=_optional_number(
+                response, "alt_marker_time", method="get_viewer_state"
+            ),
+            time_unit=time_unit,
+            zoom_ratio=_optional_number(response, "zoom_ratio", method="get_viewer_state"),
+            scroll_left=_optional_number(response, "scroll_left", method="get_viewer_state"),
+        )
 
     def set_viewport(self, start_tick: int, end_tick: int, uri: str | None = None) -> None:
         """Show exactly [start_tick, end_tick] (native file timescale units)."""

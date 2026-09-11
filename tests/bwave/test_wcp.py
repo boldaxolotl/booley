@@ -33,6 +33,9 @@ _GREETING_RESULT = {
         "add_signal",
         "get_item_list",
         "get_item_info",
+        "get_viewer_state",
+        "set_signal_layout",
+        "get_signal_layout",
     ],
 }
 
@@ -235,6 +238,16 @@ def test_verb_param_shapes():
                     "documents": ["file:///t.fst"],
                     "last_active_document": None,
                 },
+                "get_signal_layout": {
+                    "items": [
+                        {
+                            "dataType": "signal-group",
+                            "groupName": "FIFO",
+                            "collapseState": 2,
+                            "children": [],
+                        }
+                    ]
+                },
             }
         ) as srv,
         WcpClient(srv.port) as client,
@@ -245,6 +258,18 @@ def test_verb_param_shapes():
         assert client.get_item_list(uri=uri) == [3, 7]
         client.remove_items([3, 7], uri=uri)
         client.add_signal("tb.dut.fifo.full", uri=uri)
+        client.set_signal_layout(
+            [
+                {
+                    "dataType": "signal-group",
+                    "groupName": "FIFO",
+                    "collapseState": 2,
+                    "children": [],
+                }
+            ],
+            uri=uri,
+        )
+        assert client.get_signal_layout(uri=uri)[0]["groupName"] == "FIFO"
         client.set_viewport(100, 2000, uri=uri)
         client.set_marker(1050, uri=uri)
 
@@ -253,6 +278,20 @@ def test_verb_param_shapes():
     assert srv.method_calls("get_item_list") == [{"uri": uri}]
     assert srv.method_calls("remove_items") == [{"ids": [3, 7], "uri": uri}]
     assert srv.method_calls("add_signal") == [{"instance_path": "tb.dut.fifo.full", "uri": uri}]
+    assert srv.method_calls("set_signal_layout") == [
+        {
+            "items": [
+                {
+                    "dataType": "signal-group",
+                    "groupName": "FIFO",
+                    "collapseState": 2,
+                    "children": [],
+                }
+            ],
+            "uri": uri,
+        }
+    ]
+    assert srv.method_calls("get_signal_layout") == [{"uri": uri}]
     assert srv.method_calls("set_viewport_range") == [{"start": 100, "end": 2000, "uri": uri}]
     assert srv.method_calls("set_marker") == [{"time": 1050, "uri": uri, "marker_type": 0}]
 
@@ -265,6 +304,52 @@ def test_add_signal_carries_the_bit_range_as_msb_lsb():
     assert srv.method_calls("add_signal") == [
         {"instance_path": "tb.dut.state", "uri": "file:///t.fst", "msb": 3, "lsb": 0}
     ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"items": "not-a-list"},
+        {"items": [{"dataType": "netlist-variable", "name": "tb.clk"}, "junk"]},
+    ],
+)
+def test_get_signal_layout_rejects_malformed_protocol_data(response):
+    with (
+        FakeWcpServer(responses={"get_signal_layout": response}) as srv,
+        WcpClient(srv.port) as client,
+        pytest.raises(WcpProtocolError, match="get_signal_layout"),
+    ):
+        client.get_signal_layout(uri="file:///t.fst")
+
+
+def test_viewer_state_round_trips_as_layout_restore_params():
+    state_response = {
+        "marker_time": 10,
+        "alt_marker_time": 20,
+        "time_unit": "ns",
+        "zoom_ratio": 1.5,
+        "scroll_left": 7,
+    }
+    with (
+        FakeWcpServer(responses={"get_viewer_state": state_response}) as srv,
+        WcpClient(srv.port) as client,
+    ):
+        state = client.get_viewer_state(uri="file:///t.fst")
+        client.set_signal_layout([], uri="file:///t.fst", restore_state=state)
+
+    assert srv.method_calls("get_viewer_state") == [{"uri": "file:///t.fst"}]
+    assert srv.method_calls("set_signal_layout") == [
+        {"items": [], "uri": "file:///t.fst", **state_response}
+    ]
+
+
+def test_get_viewer_state_rejects_non_numeric_marker():
+    with (
+        FakeWcpServer(responses={"get_viewer_state": {"marker_time": True}}) as srv,
+        WcpClient(srv.port) as client,
+        pytest.raises(WcpProtocolError, match="marker_time"),
+    ):
+        client.get_viewer_state(uri="file:///t.fst")
 
 
 def test_set_marker_addresses_both_of_vaporviews_markers():
