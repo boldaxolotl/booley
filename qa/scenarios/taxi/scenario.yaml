@@ -199,16 +199,16 @@ check_sets:
   - inventory.WAVEFORM-QUERY.docs-list
   - inventory.WAVEFORM-QUERY.docs-search
   - inventory.WAVEFORM-QUERY.docs-show
-  - inventory.WAVEFORM-QUERY.json-diff-rejected
-  - inventory.WAVEFORM-QUERY.json-distance-rejected
+  - inventory.WAVEFORM-QUERY.json-diff-text-fallback
+  - inventory.WAVEFORM-QUERY.json-distance-text-fallback
   - inventory.WAVEFORM-QUERY.json-find-supported
   - inventory.WAVEFORM-QUERY.json-list-supported
-  - inventory.WAVEFORM-QUERY.json-sample-rejected
-  - inventory.WAVEFORM-QUERY.json-signal-rejected
+  - inventory.WAVEFORM-QUERY.json-sample-text-fallback
+  - inventory.WAVEFORM-QUERY.json-signal-text-fallback
   - inventory.WAVEFORM-QUERY.json-stats-supported
-  - inventory.WAVEFORM-QUERY.json-stuck-rejected
+  - inventory.WAVEFORM-QUERY.json-stuck-text-fallback
   - inventory.WAVEFORM-QUERY.json-value-supported
-  - inventory.WAVEFORM-QUERY.json-wave-rejected
+  - inventory.WAVEFORM-QUERY.json-wave-text-fallback
   - inventory.WAVEFORM-QUERY.query-ambiguous
   - inventory.WAVEFORM-QUERY.query-limit
   - inventory.WAVEFORM-QUERY.query-pattern-miss
@@ -618,7 +618,7 @@ phases:
   title: Complete final regression
   minutes: 30
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 15
 steps:
 - id: inputs.pin
@@ -3871,11 +3871,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-empty
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-fresh
   phase: interactive
   action: |-
@@ -3894,11 +3889,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-fresh
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-legacy
   phase: interactive
   action: |-
@@ -3917,11 +3907,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-legacy
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-native
   phase: interactive
   action: |-
@@ -3940,11 +3925,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-native
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-raw-vcd
   phase: interactive
   action: |-
@@ -3963,11 +3943,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-raw-vcd
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-recovery
   phase: interactive
   action: |-
@@ -3986,11 +3961,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-recovery
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-truncated
   phase: interactive
   action: |-
@@ -4009,11 +3979,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-ARTIFACT.trace-truncated
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-REGISTRY.alias-replace
   phase: interactive
   action: |-
@@ -4039,10 +4004,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-REGISTRY.marker-wrapper-diff
   phase: interactive
   action: |-
@@ -4055,7 +4016,7 @@ steps:
       Resolve two persisted marker names through `diff`.
     expected: |-
       The reported endpoints and delta are exact.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/sessions.py
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
       Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-REGISTRY.marker-wrapper-diff
@@ -4068,10 +4029,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-REGISTRY.marker-wrapper-value
   phase: interactive
   action: |-
@@ -4084,7 +4041,7 @@ steps:
       Resolve a persisted marker name through `value --at`.
     expected: |-
       The reported value matches the known cycle value.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/sessions.py
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
       Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-REGISTRY.marker-wrapper-value
@@ -4097,10 +4054,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-REGISTRY.marker-wrapper-wave
   phase: interactive
   action: |-
@@ -4113,7 +4066,7 @@ steps:
       Resolve named endpoints through `wave`.
     expected: |-
       The rendered interval and annotations match the oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/sessions.py
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
       Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.TRACE-REGISTRY.marker-wrapper-wave
@@ -4126,10 +4079,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-REGISTRY.trace-same-path
   phase: interactive
   action: |-
@@ -4155,10 +4104,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.docs-list
   phase: interactive
   action: |-
@@ -4173,7 +4118,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.docs-list
   requires:
   - inputs.pin
@@ -4184,10 +4129,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.docs-search
   phase: interactive
   action: |-
@@ -4202,7 +4143,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.docs-search
   requires:
   - inputs.pin
@@ -4213,10 +4154,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.docs-show
   phase: interactive
   action: |-
@@ -4231,7 +4168,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.docs-show
   requires:
   - inputs.pin
@@ -4242,26 +4179,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-diff-rejected
+- id: inventory.WAVEFORM-QUERY.json-diff-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `diff` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-diff-rejected
+  - id: inventory.WAVEFORM-QUERY.json-diff-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `diff` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-diff-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-diff-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4271,26 +4204,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-distance-rejected
+- id: inventory.WAVEFORM-QUERY.json-distance-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `distance` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-distance-rejected
+  - id: inventory.WAVEFORM-QUERY.json-distance-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `distance` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-distance-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-distance-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4300,10 +4229,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.json-find-supported
   phase: interactive
   action: |-
@@ -4316,9 +4241,9 @@ steps:
       Run B-Wave `find` with JSON output on the deterministic known trace.
     expected: |-
       The output parses as the documented JSON envelope and matches the exact oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-find-supported
   requires:
   - inputs.pin
@@ -4329,10 +4254,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.json-list-supported
   phase: interactive
   action: |-
@@ -4345,9 +4266,9 @@ steps:
       Run B-Wave `list` with JSON output on the deterministic known trace.
     expected: |-
       The output parses as the documented JSON envelope and matches the exact oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-list-supported
   requires:
   - inputs.pin
@@ -4358,26 +4279,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-sample-rejected
+- id: inventory.WAVEFORM-QUERY.json-sample-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `sample` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-sample-rejected
+  - id: inventory.WAVEFORM-QUERY.json-sample-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `sample` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-sample-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-sample-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4387,26 +4304,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-signal-rejected
+- id: inventory.WAVEFORM-QUERY.json-signal-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `signal` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-signal-rejected
+  - id: inventory.WAVEFORM-QUERY.json-signal-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `signal` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-signal-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-signal-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4416,10 +4329,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.json-stats-supported
   phase: interactive
   action: |-
@@ -4432,9 +4341,9 @@ steps:
       Run B-Wave `stats` with JSON output on the deterministic known trace.
     expected: |-
       The output parses as the documented JSON envelope and matches the exact oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-stats-supported
   requires:
   - inputs.pin
@@ -4445,26 +4354,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-stuck-rejected
+- id: inventory.WAVEFORM-QUERY.json-stuck-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `stuck` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-stuck-rejected
+  - id: inventory.WAVEFORM-QUERY.json-stuck-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `stuck` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-stuck-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-stuck-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4474,10 +4379,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.json-value-supported
   phase: interactive
   action: |-
@@ -4490,9 +4391,9 @@ steps:
       Run B-Wave `value` with JSON output on the deterministic known trace.
     expected: |-
       The output parses as the documented JSON envelope and matches the exact oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-value-supported
   requires:
   - inputs.pin
@@ -4503,26 +4404,22 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
-- id: inventory.WAVEFORM-QUERY.json-wave-rejected
+- id: inventory.WAVEFORM-QUERY.json-wave-text-fallback
   phase: interactive
   action: |-
     Run B-Wave `wave` with JSON output on the deterministic known trace.
   checks:
-  - id: inventory.WAVEFORM-QUERY.json-wave-rejected
+  - id: inventory.WAVEFORM-QUERY.json-wave-text-fallback
     capabilities:
     - WAVEFORM-QUERY
     stimulus: |-
       Run B-Wave `wave` with JSON output on the deterministic known trace.
     expected: |-
-      The command returns the documented unsupported-output rejection.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+      The command succeeds with documented text output rather than a JSON envelope.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
-    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-wave-rejected
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+    capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.json-wave-text-fallback
   requires:
   - inputs.pin
   assets:
@@ -4532,10 +4429,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.query-ambiguous
   phase: interactive
   action: |-
@@ -4550,7 +4443,7 @@ steps:
       Documented results.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.query-ambiguous
   requires:
   - inputs.pin
@@ -4561,10 +4454,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.query-limit
   phase: interactive
   action: |-
@@ -4579,7 +4468,7 @@ steps:
       Documented results.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.query-limit
   requires:
   - inputs.pin
@@ -4590,10 +4479,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.query-pattern-miss
   phase: interactive
   action: |-
@@ -4608,7 +4493,7 @@ steps:
       Documented results.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.query-pattern-miss
   requires:
   - inputs.pin
@@ -4619,10 +4504,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.schema
   phase: interactive
   action: |-
@@ -4637,7 +4518,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.schema
   requires:
   - inputs.pin
@@ -4648,10 +4529,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.skill
   phase: interactive
   action: |-
@@ -4666,7 +4543,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.skill
   requires:
   - inputs.pin
@@ -4677,10 +4554,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-QUERY.version
   phase: interactive
   action: |-
@@ -4695,7 +4568,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.version
   requires:
   - inputs.pin
@@ -4706,10 +4579,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.async-bare-time
   phase: interactive
   action: |-
@@ -4724,7 +4593,7 @@ steps:
       Documented errors.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.async-bare-time
   requires:
   - inputs.pin
@@ -4735,10 +4604,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.bad-literal
   phase: interactive
   action: |-
@@ -4753,7 +4618,7 @@ steps:
       Documented errors.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.bad-literal
   requires:
   - inputs.pin
@@ -4764,10 +4629,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.literal-slice
   phase: interactive
   action: |-
@@ -4782,7 +4643,7 @@ steps:
       Expected value.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.literal-slice
   requires:
   - inputs.pin
@@ -4793,10 +4654,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-build-rejected
   phase: interactive
   action: |-
@@ -4809,9 +4666,9 @@ steps:
       Pass native `--marker` to B-Wave `build`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-build-rejected
   requires:
   - inputs.pin
@@ -4822,10 +4679,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-diff-rejected
   phase: interactive
   action: |-
@@ -4838,9 +4691,9 @@ steps:
       Pass native `--marker` to B-Wave `diff`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-diff-rejected
   requires:
   - inputs.pin
@@ -4851,10 +4704,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-distance-rejected
   phase: interactive
   action: |-
@@ -4867,9 +4716,9 @@ steps:
       Pass native `--marker` to B-Wave `distance`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-distance-rejected
   requires:
   - inputs.pin
@@ -4880,10 +4729,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-docs-rejected
   phase: interactive
   action: |-
@@ -4896,9 +4741,9 @@ steps:
       Pass native `--marker` to B-Wave `docs`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-docs-rejected
   requires:
   - inputs.pin
@@ -4909,10 +4754,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-find-rejected
   phase: interactive
   action: |-
@@ -4925,9 +4766,9 @@ steps:
       Pass native `--marker` to B-Wave `find`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-find-rejected
   requires:
   - inputs.pin
@@ -4938,10 +4779,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-list-rejected
   phase: interactive
   action: |-
@@ -4954,9 +4791,9 @@ steps:
       Pass native `--marker` to B-Wave `list`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-list-rejected
   requires:
   - inputs.pin
@@ -4967,10 +4804,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-sample-rejected
   phase: interactive
   action: |-
@@ -4983,9 +4816,9 @@ steps:
       Pass native `--marker` to B-Wave `sample`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-sample-rejected
   requires:
   - inputs.pin
@@ -4996,10 +4829,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-schema-rejected
   phase: interactive
   action: |-
@@ -5012,9 +4841,9 @@ steps:
       Pass native `--marker` to B-Wave `schema`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-schema-rejected
   requires:
   - inputs.pin
@@ -5025,10 +4854,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-signal-rejected
   phase: interactive
   action: |-
@@ -5041,9 +4866,9 @@ steps:
       Pass native `--marker` to B-Wave `signal`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-signal-rejected
   requires:
   - inputs.pin
@@ -5054,10 +4879,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-skill-rejected
   phase: interactive
   action: |-
@@ -5070,9 +4891,9 @@ steps:
       Pass native `--marker` to B-Wave `skill`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-skill-rejected
   requires:
   - inputs.pin
@@ -5083,10 +4904,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-stats-rejected
   phase: interactive
   action: |-
@@ -5099,9 +4916,9 @@ steps:
       Pass native `--marker` to B-Wave `stats`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-stats-rejected
   requires:
   - inputs.pin
@@ -5112,10 +4929,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-stuck-rejected
   phase: interactive
   action: |-
@@ -5128,9 +4941,9 @@ steps:
       Pass native `--marker` to B-Wave `stuck`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-stuck-rejected
   requires:
   - inputs.pin
@@ -5141,10 +4954,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-value-rejected
   phase: interactive
   action: |-
@@ -5157,9 +4966,9 @@ steps:
       Pass native `--marker` to B-Wave `value`.
     expected: |-
       Argument parsing rejects the option with exit code 2.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-value-rejected
   requires:
   - inputs.pin
@@ -5170,10 +4979,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-async-bare
   phase: interactive
   action: |-
@@ -5186,9 +4991,9 @@ steps:
       Run `wave` with a bare asynchronous marker time.
     expected: |-
       Argument parsing rejects the value.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-async-bare
   requires:
   - inputs.pin
@@ -5199,10 +5004,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-async-column
   phase: interactive
   action: |-
@@ -5215,9 +5016,9 @@ steps:
       Run `wave` with a marker at a tick that has no signal transition.
     expected: |-
       The marker column is still present.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-async-column
   requires:
   - inputs.pin
@@ -5228,10 +5029,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-negative
   phase: interactive
   action: |-
@@ -5244,9 +5041,9 @@ steps:
       Run `wave` with a negative marker time.
     expected: |-
       Argument parsing rejects the value.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-negative
   requires:
   - inputs.pin
@@ -5257,10 +5054,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-outside
   phase: interactive
   action: |-
@@ -5273,9 +5066,9 @@ steps:
       Run `wave` with an out-of-window marker.
     expected: |-
       The marker is omitted.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-outside
   requires:
   - inputs.pin
@@ -5286,10 +5079,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-render
   phase: interactive
   action: |-
@@ -5302,9 +5091,9 @@ steps:
       Run `wave` with a known typed, in-window marker time.
     expected: |-
       The label appears at the correct column.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-render
   requires:
   - inputs.pin
@@ -5315,10 +5104,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-repeat
   phase: interactive
   action: |-
@@ -5331,9 +5116,9 @@ steps:
       Run `wave` with the same marker name repeated.
     expected: |-
       The last occurrence wins.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-repeat
   requires:
   - inputs.pin
@@ -5344,10 +5129,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.marker-wave-shared-time
   phase: interactive
   action: |-
@@ -5360,9 +5141,9 @@ steps:
       Run `wave` with two marker names at the same tick.
     expected: |-
       The column shows a comma-separated label.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.marker-wave-shared-time
   requires:
   - inputs.pin
@@ -5373,10 +5154,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.query-input-recovery
   phase: interactive
   action: |-
@@ -5391,7 +5168,7 @@ steps:
       The expected event is returned.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.query-input-recovery
   requires:
   - inputs.pin
@@ -5402,10 +5179,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.reset-include
   phase: interactive
   action: |-
@@ -5420,7 +5193,7 @@ steps:
       Correct sample set.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.reset-include
   requires:
   - inputs.pin
@@ -5431,10 +5204,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.reset-skip
   phase: interactive
   action: |-
@@ -5449,7 +5218,7 @@ steps:
       Correct sample set.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.reset-skip
   requires:
   - inputs.pin
@@ -5460,10 +5229,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.time-units
   phase: interactive
   action: |-
@@ -5478,7 +5243,7 @@ steps:
       Same known event.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.time-units
   requires:
   - inputs.pin
@@ -5489,10 +5254,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.unknown-signal
   phase: interactive
   action: |-
@@ -5507,7 +5268,7 @@ steps:
       Documented errors.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.unknown-signal
   requires:
   - inputs.pin
@@ -5518,10 +5279,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-build-rejected
   phase: interactive
   action: |-
@@ -5534,9 +5291,9 @@ steps:
       Pass `--virtual` to B-Wave `build`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-build-rejected
   requires:
   - inputs.pin
@@ -5547,10 +5304,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-diff-rejected
   phase: interactive
   action: |-
@@ -5563,9 +5316,9 @@ steps:
       Pass `--virtual` to B-Wave `diff`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-diff-rejected
   requires:
   - inputs.pin
@@ -5576,10 +5329,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-distance-malformed
   phase: interactive
   action: |-
@@ -5592,9 +5341,9 @@ steps:
       Pass a malformed virtual definition to B-Wave `distance`.
     expected: |-
       The command exits 2 with a definition diagnostic.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-distance-malformed
   requires:
   - inputs.pin
@@ -5605,10 +5354,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-distance-semantic
   phase: interactive
   action: |-
@@ -5621,9 +5366,9 @@ steps:
       Pass a composite virtual definition to B-Wave `distance` and consume it as that command's observable input.
     expected: |-
       The exact value or time matches the independent ground-truth oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-distance-semantic
   requires:
   - inputs.pin
@@ -5634,10 +5379,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-find-malformed
   phase: interactive
   action: |-
@@ -5650,9 +5391,9 @@ steps:
       Pass a malformed virtual definition to B-Wave `find`.
     expected: |-
       The command exits 2 with a definition diagnostic.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-find-malformed
   requires:
   - inputs.pin
@@ -5663,10 +5404,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-find-semantic
   phase: interactive
   action: |-
@@ -5679,9 +5416,9 @@ steps:
       Pass a composite virtual definition to B-Wave `find` and consume it as that command's observable input.
     expected: |-
       The exact value or time matches the independent ground-truth oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-find-semantic
   requires:
   - inputs.pin
@@ -5692,10 +5429,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-list-rejected
   phase: interactive
   action: |-
@@ -5708,9 +5441,9 @@ steps:
       Pass `--virtual` to B-Wave `list`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-list-rejected
   requires:
   - inputs.pin
@@ -5721,10 +5454,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-sample-malformed
   phase: interactive
   action: |-
@@ -5737,9 +5466,9 @@ steps:
       Pass a malformed virtual definition to B-Wave `sample`.
     expected: |-
       The command exits 2 with a definition diagnostic.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-sample-malformed
   requires:
   - inputs.pin
@@ -5750,10 +5479,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-sample-semantic
   phase: interactive
   action: |-
@@ -5766,9 +5491,9 @@ steps:
       Pass a composite virtual definition to B-Wave `sample` and consume it as that command's observable input.
     expected: |-
       The exact value or time matches the independent ground-truth oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-sample-semantic
   requires:
   - inputs.pin
@@ -5779,10 +5504,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-signal-rejected
   phase: interactive
   action: |-
@@ -5795,9 +5516,9 @@ steps:
       Pass `--virtual` to B-Wave `signal`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-signal-rejected
   requires:
   - inputs.pin
@@ -5808,10 +5529,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-stats-rejected
   phase: interactive
   action: |-
@@ -5824,9 +5541,9 @@ steps:
       Pass `--virtual` to B-Wave `stats`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-stats-rejected
   requires:
   - inputs.pin
@@ -5837,10 +5554,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-stuck-rejected
   phase: interactive
   action: |-
@@ -5853,9 +5566,9 @@ steps:
       Pass `--virtual` to B-Wave `stuck`.
     expected: |-
       Argument parsing rejects the option with exit code 2; it is not silently ignored.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-stuck-rejected
   requires:
   - inputs.pin
@@ -5866,10 +5579,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-value-malformed
   phase: interactive
   action: |-
@@ -5882,9 +5591,9 @@ steps:
       Pass a malformed virtual definition to B-Wave `value`.
     expected: |-
       The command exits 2 with a definition diagnostic.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-value-malformed
   requires:
   - inputs.pin
@@ -5895,10 +5604,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-value-semantic
   phase: interactive
   action: |-
@@ -5911,9 +5616,9 @@ steps:
       Pass a composite virtual definition to B-Wave `value` and consume it as that command's observable input.
     expected: |-
       The exact value or time matches the independent ground-truth oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-value-semantic
   requires:
   - inputs.pin
@@ -5924,10 +5629,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-wave-malformed
   phase: interactive
   action: |-
@@ -5940,9 +5641,9 @@ steps:
       Pass a malformed virtual definition to B-Wave `wave`.
     expected: |-
       The command exits 2 with a definition diagnostic.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-wave-malformed
   requires:
   - inputs.pin
@@ -5953,10 +5654,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.virtual-wave-semantic
   phase: interactive
   action: |-
@@ -5969,9 +5666,9 @@ steps:
       Pass a composite virtual definition to B-Wave `wave` and consume it as that command's observable input.
     expected: |-
       The exact value or time matches the independent ground-truth oracle.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.virtual-wave-semantic
   requires:
   - inputs.pin
@@ -5982,10 +5679,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-TIME-MODEL.width-mismatch
   phase: interactive
   action: |-
@@ -6000,7 +5693,7 @@ steps:
       Documented errors.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
     evidence: |-
-      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-TIME-MODEL.width-mismatch
   requires:
   - inputs.pin
@@ -6011,10 +5704,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.INTERACTIVE-MODE.client-session
   phase: interactive
   action: |-
@@ -6065,7 +5754,7 @@ steps:
       Installed coherent content or equivalent translated query.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
     evidence: |-
-      Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-QUERY.legacy-translation
   requires:
   - inputs.pin
@@ -6076,10 +5765,6 @@ steps:
   - path: fixtures/known-trace-events.json
     audience: scenario-operator
     sha256: 8062e79a916703cf0dd446b2c2780b0b6f0d5abe0a86a8dffd1763766bec09e4
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-append
   phase: interactive
   action: |-
@@ -6098,11 +5783,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-append
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-bare-fallback
   phase: interactive
   action: |-
@@ -6121,11 +5801,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-bare-fallback
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-cap
   phase: interactive
   action: |-
@@ -6144,11 +5819,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-cap
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-dropped
   phase: interactive
   action: |-
@@ -6167,11 +5837,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-dropped
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-no-clock
   phase: interactive
   action: |-
@@ -6190,11 +5855,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-no-clock
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-no-wcp
   phase: interactive
   action: |-
@@ -6213,11 +5873,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-no-wcp
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-recovery
   phase: interactive
   action: |-
@@ -6236,11 +5891,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-recovery
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.WAVEFORM-VIEWER.gui-scoped
   phase: interactive
   action: |-
@@ -6259,11 +5909,6 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-scoped
   requires:
   - inputs.pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: submodules.fixture
   phase: submodules
   action: |-
@@ -10001,13 +9646,13 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.remotes
 - id: cleanup.verdict
   phase: cleanup
-  action: Failed mandatory quiescence prevents pass; eligible review retention does not.
+  action: Failed required resource cleanup prevents pass; eligible review retention does not.
   checks:
   - id: cleanup.verdict
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Failed mandatory quiescence prevents pass; eligible review retention does not.
-    expected: Failed mandatory quiescence prevents pass; eligible review retention does not.
+    stimulus: Failed required resource cleanup prevents pass; eligible review retention does not.
+    expected: Failed required resource cleanup prevents pass; eligible review retention does not.
     authority_ref: ../../doc/FINISH.md
     evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict

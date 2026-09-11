@@ -28,7 +28,8 @@ Bind identities created by a Step to that Step and its evidence.
 Before creating an owned resource, add its planned identity, ownership, and intended
 disposition to `cleanup-ledger.json`. When its identity is unknowable in advance,
 record it immediately after acquisition and before dependent work. Keep the ledger
-sufficient for another operator to quiesce the run without touching unrelated state.
+sufficient for another operator to safely shut down and clean up the run-owned
+resources without touching unrelated state.
 
 Retain internal QA records unredacted except for secrets and in the form Consolidate
 Findings accepts. Do not submit reports externally during a run. Keep immutable

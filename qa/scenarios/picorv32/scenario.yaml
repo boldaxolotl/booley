@@ -679,7 +679,7 @@ phases:
   title: Ticket 2, remaining allocated checks and complete final regression
   minutes: 210
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 20
 steps:
 - id: inputs.project-pin
@@ -2905,11 +2905,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-fifo
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-fresh
   phase: interactive
   action: |-
@@ -2928,11 +2923,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-fresh
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-vcd-convert
   phase: interactive
   action: |-
@@ -2951,11 +2941,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-vcd-convert
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
   phase: interactive
   action: |-
@@ -5701,5 +5686,5 @@ steps:
     stimulus: Finalize record, Findings, recovery links and resource disposition with no secret values.
     expected: Finalize record, Findings, recovery links and resource disposition with no secret values.
     authority_ref: ../../doc/FINISH.md
-    evidence: Compact run files, immutable external evidence, and quiescence-complete recovery point.
+    evidence: Compact run files, immutable external evidence, and recovery point after safe resource cleanup.
     capture: evidence/picorv32-published-demo-continuity.evidence.finalize

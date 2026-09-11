@@ -12,7 +12,7 @@ Use `format_version: 1` for structured Scenario Run files that declare a format.
 | `findings.jsonl` | Original Findings and appended status updates, stable source IDs, kind, classification, original text, Check Result links, evidence, and reproduction data as appropriate |
 | `cleanup-ledger.json` | Mutable resource ledger: exact identity, ownership, active-authority and scarcity classification, intended and actual disposition, evidence, and retention details when applicable |
 | `evidence/` | Immutable artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
-| `summary.md` | Scenario Run Outcome and, when applicable, Qualification; tested identities, execution and quiescence status, missing and failed Checks, Findings, deviations, and retained review locations |
+| `summary.md` | Scenario Run Outcome and, when applicable, Qualification; tested identities, execution and resource cleanup status, missing and failed Checks, Findings, deviations, and retained review locations |
 
 The containing directory supplies the Scenario Run ID to Check Result and Finding records;
 external references use the Scenario Run ID plus the record ID. Common Booley product
@@ -30,4 +30,5 @@ retained entry also records the fields and evidence required by the
 The structured records are the source of truth; `summary.md` is their view. Keep
 original observations and explicit correction links visible. Findings must be usable
 directly by Consolidate Findings without a separate Booley Feedback export. See the
-[authoring guide](AUTHORING.md) for the Scenario definition contract.
+[suite README](../README.md#scenario-and-check-structure) for Scenario and Check
+structure.

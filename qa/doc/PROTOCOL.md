@@ -6,7 +6,8 @@ Stages:
 1. [Admit](ADMIT.md) validates and freezes the run without preparing its environment.
 2. [Execute](EXECUTE.md) performs selected Checks and supporting Steps in Scenario
    order, including setup.
-3. [Finish](FINISH.md) finalizes outcomes and quiesces resources.
+3. [Finish](FINISH.md) finalizes outcomes and safely shuts down and cleans up
+   run-owned resources.
 
 Read [Record](RECORD.md) with every stage that writes evidence, changes state, or owns
 resources. Read only the current stage's procedure. Advance only when its completion
