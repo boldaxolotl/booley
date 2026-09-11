@@ -881,7 +881,7 @@ def _target_depend_keys(core_doc: Mapping[str, Any], target: str) -> set[str]:
         return set()
     keys = _depend_keys(target_def.get("depend"))
     filesets = core_doc.get("filesets") or {}
-    for fs_name in _possible_fileset_names(target_def):
+    for fs_name in possible_target_fileset_names(target_def):
         fileset = filesets.get(fs_name) if isinstance(filesets, Mapping) else None
         if isinstance(fileset, Mapping):
             keys |= _depend_keys(fileset.get("depend"))
@@ -1319,7 +1319,7 @@ def _possible_expression_values(value: str) -> list[str]:
     return values
 
 
-def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
+def possible_target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
     """Every fileset a Target may select, including conditional entries."""
     return [
         name
@@ -1327,6 +1327,22 @@ def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
         if isinstance(expression, str)
         for name in _possible_expression_values(expression)
     ]
+
+
+def target_fileset_definitions(
+    core_doc: Mapping[str, Any], target_def: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Return every possibly selected local fileset, rejecting unresolved names."""
+    raw_filesets = core_doc.get("filesets", {})
+    if raw_filesets is None:
+        raw_filesets = {}
+    if not isinstance(raw_filesets, Mapping):
+        raise FuseSocError("core filesets must be a mapping")
+    names = tuple(dict.fromkeys(possible_target_fileset_names(target_def)))
+    missing = sorted(set(names) - set(raw_filesets))
+    if missing:
+        raise FuseSocError("Target references undefined fileset(s): " + ", ".join(missing))
+    return {name: raw_filesets[name] for name in names}
 
 
 # Characters that mark a fileset path as non-literal (a glob or a CAPI2
@@ -1392,7 +1408,7 @@ def _target_referenced_files(project_root: Path | str, target: str) -> tuple[str
         ref.core_file,
         root,
         doc.get("filesets"),
-        _possible_fileset_names(target_def),
+        possible_target_fileset_names(target_def),
     )
 
     closure = _selectable_core_closure_for_refs(root, [ref])
@@ -1416,7 +1432,7 @@ def _possible_dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
     targets = doc.get("targets")
     default_def = targets.get("default") if isinstance(targets, Mapping) else None
     if isinstance(default_def, Mapping):
-        return _possible_fileset_names(default_def)
+        return possible_target_fileset_names(default_def)
     return []
 
 

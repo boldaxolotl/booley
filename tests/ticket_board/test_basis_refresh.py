@@ -30,9 +30,20 @@ from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 def _write_core(path: Path, targets: dict) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    filesets = {
+        name: {}
+        for target in targets.values()
+        for name in target.get("filesets", [])
+        if isinstance(name, str)
+    }
     (path / "toy.core").write_text(
         yaml.safe_dump(
-            {"CAPI=2": None, "name": "acme:lib:toy:1.0", "targets": targets},
+            {
+                "CAPI=2": None,
+                "name": "acme:lib:toy:1.0",
+                "filesets": filesets,
+                "targets": targets,
+            },
             sort_keys=False,
         ),
         encoding="utf-8",
@@ -66,6 +77,34 @@ def test_reapply_targets_keeps_current_destination_and_approved_candidate(
     targets = yaml.safe_load((new / "toy.core").read_text(encoding="utf-8"))["targets"]
     assert set(targets) == {"accepted_provider", "concurrent", "consumer"}
     assert "provider_ephemeral" not in targets
+
+
+def test_reapply_targets_recovers_only_candidate_referenced_filesets(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    (old / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  candidate_inputs: {files: [candidate.sv]}\n"
+        "  stale_inputs: {files: [stale.sv]}\n"
+        "targets:\n  consumer: {filesets: [candidate_inputs]}\n"
+        "  stale: {filesets: [stale_inputs]}\n",
+        encoding="utf-8",
+    )
+    (new / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  current_inputs: {files: [current.sv]}\n"
+        "targets:\n  current: {filesets: [current_inputs]}\n",
+        encoding="utf-8",
+    )
+    plan = TargetPlan.from_value([{"target": "consumer", "role": "persistent"}])
+
+    _reapply_targets(old, new, plan)
+
+    document = yaml.safe_load((new / "toy.core").read_text(encoding="utf-8"))
+    assert set(document["targets"]) == {"current", "consumer"}
+    assert set(document["filesets"]) == {"current_inputs", "candidate_inputs"}
 
 
 def test_reapply_test_tables_rejects_current_destination_conflict(tmp_path: Path) -> None:

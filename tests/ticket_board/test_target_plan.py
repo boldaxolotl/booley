@@ -66,6 +66,14 @@ def _replacement_fields() -> dict:
     }
 
 
+def _persistent_fields(target: str = "lint_new") -> dict:
+    return {
+        "target_plan": [{"target": target, "role": "persistent"}],
+        "criteria": {"mandatory": {"lint_clean": [target]}},
+        "on_success": {"merge": True},
+    }
+
+
 def _add_candidate(repository: Path) -> None:
     (repository / "toy.core").write_text(
         _core(
@@ -247,19 +255,101 @@ def test_existing_core_content_outside_targets_cannot_change(repository: Path) -
         text.replace("files: [toy.sv]", "files: [other.sv]"), encoding="utf-8"
     )
 
-    with pytest.raises(TargetPlanValidationError, match="outside targets"):
+    with pytest.raises(TargetPlanValidationError, match="modify or delete existing filesets"):
         _analyze({}, repository, ((repository, ("toy.core",)),))
 
 
-def test_new_core_cannot_smuggle_top_level_build_content(repository: Path) -> None:
+def test_planned_target_can_author_dedicated_fileset(repository: Path) -> None:
+    path = repository / "toy.core"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace(
+            "targets:\n",
+            "  tb_new:\n    files: [tb/new.py]\n    file_type: user\n    tags: [tb]\ntargets:\n",
+        )
+        + "  lint_new:\n"
+        + "    flow: lint\n"
+        + "    filesets_append: [tb_new]\n",
+        encoding="utf-8",
+    )
+
+    analysis = _analyze(_persistent_fields(), repository, ((repository, ("toy.core",)),))
+
+    assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
+    assert analysis.authored_filesets == ("toy.core#tb_new",)
+
+
+def test_new_core_can_author_planned_target_fileset(repository: Path) -> None:
     path = repository / "new.core"
     path.write_text(
-        _core("  lint_new:\n    flow: lint\n    filesets: [rtl]\n"),
+        "CAPI=2:\n"
+        "name: acme:lib:new:1.0\n"
+        "filesets:\n"
+        "  tb_new: {files: [tb/new.py], file_type: user, tags: [tb]}\n"
+        "targets:\n"
+        "  lint_new: {flow: lint, filesets: [tb_new]}\n",
+        encoding="utf-8",
+    )
+
+    analysis = _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+    assert analysis.authored_filesets == ("new.core#tb_new",)
+
+
+def test_added_fileset_cannot_resolve_dangling_baseline_reference(repository: Path) -> None:
+    path = repository / "toy.core"
+    baseline = path.read_text(encoding="utf-8").replace(
+        "    filesets: [rtl]\n",
+        '    filesets: [rtl, "tool_verilator ? (tb_new)"]\n',
+    )
+    path.write_text(baseline, encoding="utf-8")
+    _git(repository, "add", "toy.core")
+    _git(repository, "commit", "-qm", "conditional baseline")
+    path.write_text(
+        baseline.replace("targets:\n", "  tb_new: {files: [tb/new.py]}\ntargets:\n")
+        + "  lint_new: {flow: lint, filesets: [tb_new]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="undefined fileset"):
+        _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
+
+
+def test_unreferenced_added_fileset_is_rejected(repository: Path) -> None:
+    _add_candidate(repository)
+    path = repository / "toy.core"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "targets:\n", "  unused: {files: [tb/new.py]}\ntargets:\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="not referenced"):
+        _analyze(_replacement_fields(), repository, ((repository, (path.name,)),))
+
+
+def test_existing_fileset_cannot_be_modified(repository: Path) -> None:
+    _add_candidate(repository)
+    path = repository / "toy.core"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("files: [toy.sv]", "files: [other.sv]"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TargetPlanValidationError, match="modify or delete existing filesets"):
+        _analyze(_replacement_fields(), repository, ((repository, (path.name,)),))
+
+
+def test_new_core_rejects_unowned_top_level_build_content(repository: Path) -> None:
+    path = repository / "new.core"
+    path.write_text(
+        "CAPI=2:\nname: acme:lib:new:1.0\ngenerators: {}\ntargets:\n  lint_new: {flow: lint}\n",
         encoding="utf-8",
     )
 
     with pytest.raises(TargetPlanValidationError, match="outside Target definitions"):
-        _analyze({}, repository, ((repository, (path.name,)),))
+        _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from booley.core.models import TargetPlan
 from booley.ticket_board import (
@@ -30,10 +31,10 @@ from booley.ticket_board.planned_dependencies import (
 )
 
 
-def _core(path: Path, targets: str) -> None:
+def _core(path: Path, targets: str, *, filesets: str = "  rtl: {}\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n{targets}",
+        f"CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n{filesets}targets:\n{targets}",
         encoding="utf-8",
     )
 
@@ -50,6 +51,8 @@ def test_provider_target_merge_preserves_existing_surface(tmp_path: Path) -> Non
     assert text == (
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
+        "filesets:\n"
+        "  rtl: {}\n"
         "targets:\n"
         "  current:\n"
         "    filesets: [rtl]\n"
@@ -81,6 +84,37 @@ def test_new_provider_core_copies_only_exported_target(tmp_path: Path) -> None:
     assert "private:" not in text
 
 
+def test_new_provider_core_copies_only_referenced_filesets(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    core = source / "toy.core"
+    core.parent.mkdir(parents=True)
+    core.write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "filesets:\n"
+        "  rtl: {files: [toy.sv]}\n"
+        "  private: {files: [private.sv]}\n"
+        "targets:\n"
+        "  exported:\n"
+        "    filesets: [rtl]\n"
+        "  private:\n"
+        "    filesets: [private]\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(
+        source,
+        destination,
+        Path("toy.core"),
+        "acme:lib:toy:1.0#exported",
+    )
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"rtl": {"files": ["toy.sv"]}}
+    assert set(document["targets"]) == {"exported"}
+
+
 def test_new_provider_core_rejects_non_target_build_content(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
@@ -89,20 +123,142 @@ def test_new_provider_core_rejects_non_target_build_content(tmp_path: Path) -> N
     core.write_text(
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
-        "filesets: {rtl: {files: [toy.sv]}}\n"
+        "generators: {make: {command: make}}\n"
         "targets:\n"
-        "  exported:\n"
-        "    filesets: [rtl]\n",
+        "  exported: {}\n",
         encoding="utf-8",
     )
 
     with pytest.raises(PlannedDependencyError, match="outside Target definitions"):
-        _merge_provider_target(
-            source,
-            destination,
-            Path("toy.core"),
-            "acme:lib:toy:1.0#exported",
+        _merge_provider_target(source, destination, Path("toy.core"), "exported")
+
+
+def test_provider_target_merge_inserts_referenced_fileset_only(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "toy.core").parent.mkdir(parents=True)
+    (source / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  tb: {files: [tb.sv]}\n  unused: {files: [unused.sv]}\n"
+        'targets:\n  future:\n    filesets_append: ["tool_verilator ? (tb)"]\n',
+        encoding="utf-8",
+    )
+    _core(destination / "toy.core", "  current: {}\n")
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"rtl": {}, "tb": {"files": ["tb.sv"]}}
+    assert set(document["targets"]) == {"current", "future"}
+
+
+def test_provider_target_merge_creates_missing_filesets_section(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(
+        source / "toy.core",
+        "  future: {filesets: [tb]}\n",
+        filesets="  tb: {files: [tb.sv]}\n",
+    )
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  current: {}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+    assert set(document["targets"]) == {"current", "future"}
+
+
+def test_provider_target_merge_populates_empty_filesets_section(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(
+        source / "toy.core",
+        "  future: {filesets: [tb]}\n",
+        filesets="  tb: {files: [tb.sv]}\n",
+    )
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets: {}\ntargets:\n  current: {}\n",
+        encoding="utf-8",
+    )
+
+    assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+    document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
+    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+
+
+def test_provider_target_merge_rejects_inline_destination_filesets(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    _core(source / "toy.core", "  future: {filesets: [tb]}\n", filesets="  tb: {}\n")
+    destination.mkdir()
+    (destination / "toy.core").write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets: {rtl: {}}\n"
+        "targets:\n  current: {filesets: [rtl]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlannedDependencyError, match="inline filesets mapping"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+
+@pytest.mark.parametrize(
+    ("filesets", "target", "message"),
+    [
+        (None, {"filesets": ["missing"]}, "undefined fileset"),
+        ({}, "invalid", "Target definition is not a mapping"),
+        (None, {"filesets": []}, None),
+        ([], {"filesets": []}, "filesets must be a mapping"),
+    ],
+)
+def test_provider_target_merge_validates_source_filesets(
+    tmp_path: Path, filesets: object, target: object, message: str | None
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    document = {
+        "CAPI=2": None,
+        "name": "acme:lib:toy:1.0",
+        "filesets": filesets,
+        "targets": {"future": target},
+    }
+    (source / "toy.core").write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    if message is None:
+        assert _merge_provider_target(source, destination, Path("toy.core"), "future")
+        return
+    with pytest.raises(PlannedDependencyError, match=message):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
+
+
+def test_fileset_spans_reject_missing_filesets_section() -> None:
+    text = "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  future: {}\n"
+
+    with pytest.raises(target_surface_edit.TargetSurfaceEditError, match="filesets block"):
+        target_surface_edit.fileset_definition_spans(text, Path("toy.core"), ("tb",))
+
+
+def test_provider_target_merge_rejects_referenced_fileset_conflict(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    for root, filename in ((source, "approved.sv"), (destination, "concurrent.sv")):
+        root.mkdir()
+        (root / "toy.core").write_text(
+            "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+            f"  tb: {{files: [{filename}]}}\n"
+            "targets:\n  future: {filesets: [tb]}\n",
+            encoding="utf-8",
         )
+
+    with pytest.raises(PlannedDependencyError, match=r"filesets\.tb differs"):
+        _merge_provider_target(source, destination, Path("toy.core"), "future")
 
 
 def test_inline_targets_mapping_blocks_narrow_provider_edit(tmp_path: Path) -> None:
@@ -201,6 +357,34 @@ def test_surface_digest_includes_shared_core_controls(tmp_path: Path) -> None:
     core.write_text(core.read_text(encoding="utf-8").replace("one.sv", "two.sv"), encoding="utf-8")
 
     assert target_surface_sha256(tmp_path, "future") != first
+
+
+def test_surface_digest_excludes_unreferenced_filesets(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n"
+        "  rtl: {files: [one.sv]}\n  unrelated: {files: [before.sv]}\n"
+        "targets:\n  future: {filesets: [rtl]}\n",
+        encoding="utf-8",
+    )
+    first = target_surface_sha256(tmp_path, "future")
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("before.sv", "after.sv"),
+        encoding="utf-8",
+    )
+
+    assert target_surface_sha256(tmp_path, "future") == first
+
+
+def test_surface_digest_rejects_undefined_referenced_fileset(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  future: {filesets: [missing]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlannedDependencyError, match="undefined fileset"):
+        target_surface_sha256(tmp_path, "future")
 
 
 def test_public_materialization_rejects_missing_provider_dependency(
@@ -544,8 +728,16 @@ def test_provider_materialization_uses_published_basis_surface(
     published = tmp_path / "published"
     mutable = tmp_path / "mutable-ticket-ref"
     workspace = tmp_path / "workspace"
-    _core(published / "toy.core", "  future:\n    filesets: [published]\n")
-    _core(mutable / "toy.core", "  future:\n    filesets: [unpublished]\n")
+    _core(
+        published / "toy.core",
+        "  future:\n    filesets: [published]\n",
+        filesets="  published: {}\n",
+    )
+    _core(
+        mutable / "toy.core",
+        "  future:\n    filesets: [unpublished]\n",
+        filesets="  unpublished: {}\n",
+    )
     provider = _Provider(
         "provider",
         {},
@@ -794,7 +986,11 @@ def test_materialized_provider_surface_cannot_be_authored_over(tmp_path: Path) -
     materialization = ProviderMaterialization(
         surface_digests=(("acme:lib:toy:1.0#future", expected),)
     )
-    _core(core, "  future:\n    filesets: [different]\n")
+    _core(
+        core,
+        "  future:\n    filesets: [different]\n",
+        filesets="  different: {}\n",
+    )
 
     with pytest.raises(PlannedDependencyError, match="changed after composition"):
         validate_materialized_surfaces(tmp_path, materialization)

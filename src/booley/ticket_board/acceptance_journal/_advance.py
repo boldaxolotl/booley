@@ -30,6 +30,7 @@ from ..git_ops import worktree_is_clean
 from ..target_finalization import (
     TargetFinalizationError,
     apply_target_removals,
+    plan_orphaned_fileset_removals,
     plan_target_removals,
 )
 from ..workspace_ops import AcceptanceBasisOperationError, pin_basis_refs
@@ -883,14 +884,50 @@ def _add_finalization_worktrees(
     return project_checkout
 
 
+def _baseline_core_snapshots(
+    temporary: Path,
+    project_checkout: Path | None,
+    basis: AcceptanceBasis,
+    core_paths: tuple[str, ...],
+) -> dict[str, bytes | None]:
+    snapshots: dict[str, bytes | None] = {}
+    outer = basis.participant("outer")
+    project = basis.participant("project") if project_checkout is not None else None
+    for relative in core_paths:
+        path = temporary / relative
+        checkout = temporary
+        revision = outer.destination_sha
+        git_path = Path(relative)
+        if project_checkout is not None and path.is_relative_to(project_checkout):
+            checkout = project_checkout
+            revision = project.destination_sha if project is not None else ""
+            git_path = path.relative_to(project_checkout)
+        spec = f"{revision}:{git_path.as_posix()}"
+        exists = _git(checkout, "cat-file", "-e", spec)
+        if exists.returncode:
+            snapshots[relative] = None
+            continue
+        snapshots[relative] = _require_git(checkout, "show", spec).encode()
+    return snapshots
+
+
 def _planned_finalization_paths(
-    temporary: Path, basis: AcceptanceBasis, journal: AcceptanceJournal
+    temporary: Path,
+    project_checkout: Path | None,
+    basis: AcceptanceBasis,
+    journal: AcceptanceJournal,
 ) -> list[Path]:
     try:
         plan = plan_target_removals(
             temporary,
             list(journal.removal_targets),
             basis.bindings,
+        )
+        core_paths = tuple(sorted({item.core_path for item in plan.targets}))
+        plan = plan_orphaned_fileset_removals(
+            temporary,
+            plan,
+            _baseline_core_snapshots(temporary, project_checkout, basis, core_paths),
         )
         return list(apply_target_removals(temporary, plan))
     except (TargetFinalizationError, OSError, ValueError) as exc:
@@ -993,7 +1030,7 @@ def _compute_finalized_journal(
         "project" in transaction.participants,
         journal,
     )
-    changed = _planned_finalization_paths(temporary, transaction.basis, journal)
+    changed = _planned_finalization_paths(temporary, project_checkout, transaction.basis, journal)
     finalized = _commit_finalized_candidates(
         temporary, project_checkout, changed, transaction.slug
     )

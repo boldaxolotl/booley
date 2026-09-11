@@ -343,9 +343,12 @@ the candidate determines the expanded Criterion name.
 - Decide the Target Plan during Ticket creation. `persistent` retains the new Target;
   `replacement` retains its candidate and removes its runnable baseline; `ephemeral`
   removes its candidate. Every selector resolves uniquely and is bound by Criteria.
-  Acceptance removes only the derived Target definitions and unambiguously owned
-  `tests.toml` tables; shared filesets, sources, parameters, constraints, generators,
-  and hooks remain.
+  A planned Target may add a dedicated fileset, but it cannot edit an existing
+  fileset or attach the new fileset to an unchanged Target. Acceptance removes
+  only the derived Target definitions, unambiguously owned `tests.toml` tables,
+  and newly authored filesets orphaned by ephemeral Target removal. Existing and
+  still-shared filesets, sources, parameters, constraints, generators, and hooks
+  remain.
 
 ## §E. Ticket Creation Guidance
 

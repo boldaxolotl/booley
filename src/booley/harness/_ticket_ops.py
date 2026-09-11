@@ -24,7 +24,11 @@ from booley.ticket_board.analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
-from booley.ticket_board.cli_handlers import _cmd_update_board
+from booley.ticket_board.cli_handlers import (
+    TicketValidationError,
+    _cmd_update_board,
+    _validate_ticket_input,
+)
 from booley.ticket_board.constants import STEP_ORDER, VALID_TYPES
 from booley.ticket_board.evidence import op_collect_evidence
 from booley.ticket_board.execution import (
@@ -51,8 +55,6 @@ from booley.ticket_board.paths import existing_human_log_file
 from booley.ticket_board.reporting import format_timing_report
 from booley.ticket_board.validation import (
     format_validate_logs_report,
-    owned_draft_dirty_paths,
-    validate_ticket_fields,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
 
@@ -267,19 +269,21 @@ class DirectTicketOps:
             .get("testbench", {})
             .get("preflight_checks", project_preflight)
         )
-        results = validate_ticket_fields(
-            fields,
-            body,
-            check_files=project_preflight,
-            check_git=check_git,
-            project_root=str(project_root),
-            check_tb_files=check_tb,
-            allowed_dirty_paths=owned_draft_dirty_paths(p, tio.tickets_dir),
-        )
-        for w in results:
-            if w.startswith("[warning] "):
-                logger.warning(w)
-        errors = [e for e in results if not e.startswith("[warning] ")]
+        try:
+            errors, warnings = _validate_ticket_input(
+                tio,
+                p,
+                fields,
+                body,
+                project_root,
+                check_git=check_git,
+                check_files=project_preflight,
+                check_tb_files=check_tb,
+            )
+        except TicketValidationError as exc:
+            return {"errors": [str(exc)]}
+        for warning in warnings:
+            logger.warning(warning)
         if errors:
             return {"errors": errors}
         return {"errors": [], "valid": True}
