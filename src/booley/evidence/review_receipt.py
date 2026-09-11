@@ -203,8 +203,10 @@ def review_receipt_drift(
         changed.append("scope")
     category = contract.get("category")
     category = category if isinstance(category, str) else ""
-    if category == "tb" and tb_policy_digest is not None and (
-        contract.get("tb_policy_digest") != tb_policy_digest
+    if (
+        category == "tb"
+        and tb_policy_digest is not None
+        and (contract.get("tb_policy_digest") != tb_policy_digest)
     ):
         changed.append("tb_policy")
     return changed

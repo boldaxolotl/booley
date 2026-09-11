@@ -55,9 +55,7 @@ _D19_REASON = (
     "Review renders artifacts from resolved evidence without knowing Ticket Board "
     "lifecycle or Harness orchestration"
 )
-_D20_REASON = (
-    "Ticket Board composes Review only through its exact artifact-generation entry point"
-)
+_D20_REASON = "Ticket Board composes Review only through its exact artifact-generation entry point"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(

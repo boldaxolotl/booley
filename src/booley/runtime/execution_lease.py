@@ -27,9 +27,7 @@ def current_lease_id() -> str | None:
     return os.environ.get("BOOLEY_EXECUTION_LEASE_ID") or None
 
 
-def load_execution_lease(
-    path: Path, *, expected_id: str, expected_phase: str
-) -> ExecutionLease:
+def load_execution_lease(path: Path, *, expected_id: str, expected_phase: str) -> ExecutionLease:
     """Load and validate a generic durable lease record."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
