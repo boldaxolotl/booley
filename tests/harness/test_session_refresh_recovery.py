@@ -73,6 +73,7 @@ def _write_restore_journal(
     content = (_FIXTURES / fixture).read_text(encoding="utf-8")
     replacements = {
         "${PROJECT_ROOT}": str(project),
+        "${PROJECT_DATA_SOURCE}": str(project / ".booley_project"),
         "${PROJECT_ID}": identity,
         "${KEEPER_IMAGE}": runtime_spec.keeper_image(project),
         "${SESSION_NAME}": sr.session_container_name(project),

@@ -27,7 +27,7 @@
     "relay_image_id": null,
     "validator_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "file_sha256": "b7463783ec9c2d069f832ddc160d1ac008ce8ff2dd4d2426c942ac0590cb36b2",
-    "project_data_source": "${PROJECT_ROOT}/.booley_project"
+    "project_data_source": "${PROJECT_DATA_SOURCE}"
   },
   "prior_runtime": {
     "name": "${SESSION_NAME}",

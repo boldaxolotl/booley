@@ -188,6 +188,7 @@ def test_shared_recovery_completes_invalidation_and_refresh_journals(
     ],
 )
 def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     invalidate_before: bool,
     cleanup_after: bool,
@@ -195,7 +196,9 @@ def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
 ) -> None:
     from booley.runtime import lifecycle_lock
 
+    project_identity = str((tmp_path / "stored-project").resolve())
     events = []
+    identities = []
 
     @contextmanager
     def locked(_operation: str):
@@ -209,26 +212,34 @@ def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
         "shared_recovery_blocks_command",
         lambda **_kwargs: events.append("recover-old") or False,
     )
-    monkeypatch.setattr(
-        issuance_invalidation,
-        "prepare",
-        lambda *_args, **_kwargs: events.append("prepare") or object(),
-    )
-    monkeypatch.setattr(
-        session_issuance,
-        "invalidate_project",
-        lambda _identity: events.append("stamp"),
-    )
-    monkeypatch.setattr(
-        issuance_invalidation,
-        "recover_project_locked",
-        lambda *_args, **_kwargs: events.append("recover") or True,
-    )
+
+    def prepare(identity: str, **_kwargs):
+        identities.append(identity)
+        events.append("prepare")
+        return object()
+
+    def invalidate(identity: str) -> None:
+        identities.append(identity)
+        events.append("stamp")
+
+    def recover(identity: str, **_kwargs) -> bool:
+        identities.append(identity)
+        events.append("recover")
+        return True
+
+    monkeypatch.setattr(issuance_invalidation, "prepare", prepare)
+    monkeypatch.setattr(session_issuance, "invalidate_project", invalidate)
+    monkeypatch.setattr(issuance_invalidation, "recover_project_locked", recover)
+
+    @contextmanager
+    def mutation(identity: str):
+        identities.append(identity)
+        yield lambda: events.append("mutation") or "result"
 
     result = issuance_invalidation.coordinate_mutation(
         operation="grant change",
-        resolve_project_identity=lambda: events.append("resolve") or "/stored/project",
-        mutation=lambda _identity: nullcontext(lambda: events.append("mutation") or "result"),
+        resolve_project_identity=lambda: events.append("resolve") or project_identity,
+        mutation=mutation,
         cleanup_resources=lambda _identity: (),
         invalidate_before_mutation=invalidate_before,
         cleanup_after_mutation=cleanup_after,
@@ -236,6 +247,7 @@ def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
 
     assert result == "result"
     assert events == [*expected, "lock-exit"]
+    assert identities and set(identities) == {project_identity}
 
 
 def _assert_runtime_start_is_blocked(
