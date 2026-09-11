@@ -22,7 +22,7 @@ Both reports were generated with:
 python3 tests/architecture/report.py --source-root src/booley --top 30
 ```
 
-| Measurement | Before (`b26efcc8`) | After |
+| Measurement | Before (`b26efcc8`) | After (`acfa2af0`) |
 | --- | ---: | ---: |
 | Parsed Python modules | 483 | 487 |
 | Located dependency facts | 2,371 | 2,392 |
