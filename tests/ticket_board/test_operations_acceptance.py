@@ -126,7 +126,7 @@ def test_handoff_jobs_clear_reports_active_jobs(
 ) -> None:
     tio = _handoff_tio(tmp_path, monkeypatch)
     job = SimpleNamespace(endpoint="sim", run_id="run-1")
-    monkeypatch.setattr("booley.harness.job_fence.active_ticket_jobs", lambda _path: [job])
+    monkeypatch.setattr("booley.ticket_board.ticket_jobs.active_ticket_jobs", lambda _path: [job])
     assert operations.op_handoff(tio, "ticket") is False
     assert "sim (run-1)" in capsys.readouterr().err
 

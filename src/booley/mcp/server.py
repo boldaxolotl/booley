@@ -2678,6 +2678,7 @@ class _JobManager:
             started_at=utc_now_rfc3339(),
             timeout_s=timeout,
             argv=cmd,
+            lease_id=os.environ.get("BOOLEY_EXECUTION_LEASE_ID") or None,
         )
         jobrec.write_record(rec, root=self._jobs_root)
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold

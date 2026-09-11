@@ -333,10 +333,19 @@ def _mark_review_receipt_stale(
 
 
 def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], now: str) -> bool:
-    from booley.review.receipt import ReviewTicketError, review_receipt_drift
+    from booley.evidence.review_receipt import ReviewTicketError, review_receipt_drift
 
     try:
-        changed = review_receipt_drift(entry.detail or {}, work_dir)
+        from .review_policy import review_policy_digest
+
+        detail = entry.detail or {}
+        contract = detail.get("contract") if isinstance(detail, dict) else None
+        category = contract.get("category", "") if isinstance(contract, dict) else ""
+        changed = review_receipt_drift(
+            detail,
+            work_dir,
+            tb_policy_digest=review_policy_digest(work_dir, category),
+        )
     except ReviewTicketError as exc:
         return _mark_review_receipt_stale(
             entry,
@@ -650,7 +659,7 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
 def _run_report_gate_error(state) -> str | None:
     """Return why final report evidence is insufficient, or ``None``."""
     from booley.config.project_config import is_run_report_enabled
-    from booley.review.dispositions import review_report_required
+    from booley.evidence.review_dispositions import review_report_required
 
     unmet_optional = sorted(
         key

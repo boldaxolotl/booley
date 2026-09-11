@@ -86,6 +86,17 @@ Booley Flows and Specialists it used and why, remaining uncertainties, and
 required justifications.
 _Avoid_: Execution Rationale, skipped-Flow audit, mandatory route log
 
+**Review Inspection**:
+An immutable, Ticket Board-selected view of one Ticket execution, including its
+Acceptance Basis, Criteria state, participant heads, and accepted or unaccepted
+disposition. Review artifact generation renders this selection but does not own it.
+_Avoid_: review session, mutable report state
+
+**Requested Review**:
+An explicit unaccepted transition from blocked to review that preserves unmet
+Criteria so a Human can inspect or run further Ticket-bound verification.
+_Avoid_: manual acceptance, forced handoff
+
 ### Acceptance and completion
 
 **Criteria Satisfaction Record**:

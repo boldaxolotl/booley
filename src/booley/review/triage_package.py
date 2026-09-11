@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -574,18 +573,6 @@ def _materialize_diffs(ctx: TriageContext, changes: list[dict[str, Any]]) -> lis
     return rows
 
 
-def _usage_summary(ctx: TriageContext) -> str:
-    result = subprocess.run(
-        [sys.executable, "-m", "booley.ticket_board", "usage", "--slug", ctx.slug, "--summary"],
-        cwd=ctx.project_root,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "unavailable"
-
-
 def _scope(ctx: TriageContext) -> dict[str, Any]:
     path = ctx.log_dir / ".runtime" / "scope_deviations.json"
     value = _read_json(path, {})
@@ -668,8 +655,10 @@ def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
         raise TriagePackageError(f"Invalid saved file justifications: {exc}") from exc
 
 
-def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
-    """Collect and materialize exhaustive mechanical review facts once."""
+def build_review_facts(
+    ctx: TriageContext, *, run_economics: str = "unavailable"
+) -> dict[str, Any]:
+    """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
     inspection = getattr(ctx, "inspection", None)
     state = inspection["state"] if inspection else _read_json(state_path, {})
@@ -696,7 +685,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
                 "worktree": str(project.worktree),
             }
         )
-    from booley.review.dispositions import collect_review_dispositions
+    from booley.evidence.review_dispositions import collect_review_dispositions
 
     return {
         "version": TRIAGE_PACKAGE_VERSION,
@@ -734,7 +723,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         "commits": _commits(ctx),
         "changed_files": changes,
         "developer_report_path": str(ctx.log_dir / "REPORT.md"),
-        "run_economics": _usage_summary(ctx),
+        "run_economics": run_economics,
         "health": _health(ctx, state, scope),
     }
 

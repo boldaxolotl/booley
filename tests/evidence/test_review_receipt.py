@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.review.receipt import (
+from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewContextError,
     ReviewInvocation,
@@ -107,6 +107,33 @@ def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> No
     assert review_receipt_drift(detail, tmp_path) == []
     (logs / "answered_questions.md").write_text("Use synchronous reset.\n", encoding="utf-8")
     assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+
+
+def test_ticket_linked_spec_is_resolved_without_ticket_board_dependency(
+    tmp_path: Path, monkeypatch
+) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    spec = tmp_path / "spec.md"
+    spec.write_text("Latency is three cycles.\n", encoding="utf-8")
+    (logs / "ticket.md").write_text(
+        "---\nspec: spec.md\n---\nImplement the design.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="spec",
+            scope=(),
+            mode="done",
+        )
+    )
+
+    assert contract["spec_source"] == str(spec.resolve())
+    assert contract["spec_digest"]
 
 
 def test_explicit_spec_is_tracked_in_standalone_mode(tmp_path: Path, monkeypatch) -> None:

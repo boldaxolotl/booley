@@ -96,9 +96,7 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     tmp_path: Path, monkeypatch
 ):
     ctx = _context(tmp_path)
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "tokens=10 cost=$0.01")
-
-    facts = tp.build_review_facts(ctx)
+    facts = tp.build_review_facts(ctx, run_economics="tokens=10 cost=$0.01")
 
     assert [row["subject"] for row in facts["commits"]] == ["rename implementation"]
     assert [row["criterion"] for row in facts["criteria"]] == [
@@ -136,9 +134,7 @@ def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, mo
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "tokens=10 cost=$0.01")
-
-    facts = tp.build_review_facts(ctx)
+    facts = tp.build_review_facts(ctx, run_economics="tokens=10 cost=$0.01")
 
     waiver = facts["review_dispositions"][0]
     assert waiver["disposition"] == "waived"
@@ -181,8 +177,6 @@ def test_cycle_comparison_is_prominent_and_discloses_workload_drift(
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
@@ -217,8 +211,6 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
         {"worktree": project, "base_sha": base, "head_sha": head},
     )()
     ctx = replace(ctx, project_repository=project_repository)
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
 
     assert facts["commits"][-1]["repository"] == "project"
@@ -246,8 +238,6 @@ def test_review_facts_classify_symlink_binary_and_submodule_content(tmp_path: Pa
     _git(ctx.worktree, "add", "rtl/link.sv", "rtl/blob.bin")
     _git(ctx.worktree, "commit", "-qm", "add special content")
     ctx = replace(ctx, head_sha=_git(ctx.worktree, "rev-parse", "HEAD"))
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     changes = {row["path"]: row for row in tp.build_review_facts(ctx)["changed_files"]}
 
     assert changes["rtl/link.sv"]["content_kind"] == "symlink"
@@ -288,8 +278,6 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
@@ -337,8 +325,6 @@ def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeyp
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
@@ -384,8 +370,6 @@ def test_review_facts_and_briefing_reveal_fpga_recipe_changes(tmp_path: Path, mo
         },
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
     package = {**facts, "assessment": _assessment(), "html_path": None}
     rendered = tp.render_review_briefing(package, [])
@@ -403,8 +387,6 @@ def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["criteria"]["sim_pass"].update({"params": {"from_state": "fail"}, "ever_failed": False})
     state_path.write_text(json.dumps(state), encoding="utf-8")
-    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
-
     facts = tp.build_review_facts(ctx)
 
     assert facts["health"]["unverified_transitions"] == ["sim_pass"]
@@ -594,7 +576,6 @@ def test_review_shows_developer_justifications_in_scope_and_file_sections(tmp_pa
         "detail": {"file_justifications": {"rtl/new.sv": reason}},
     }
     state_path.write_text(json.dumps(state))
-    monkeypatch.setattr(tp, "_usage_summary", lambda _: "unavailable")
     facts = tp.build_review_facts(ctx)
     facts["assessment"] = {
         "scope_deviations": [

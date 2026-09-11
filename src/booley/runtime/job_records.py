@@ -75,6 +75,9 @@ class JobRecord:
     pid: int | None = None
     status: str = STATUS_RUNNING
     exit_code: int | None = None
+    # Optional durable parent operation. Detached work keeps the same lease so
+    # its later evidence cannot escape the review execution that admitted it.
+    lease_id: str | None = None
     # When the child was first observed actually RUNNING (holding its slot),
     # stamped by the supervising server. ``started_at`` is submit time; with
     # queued admission (ADR 0028) the two can differ by the whole queue wait,

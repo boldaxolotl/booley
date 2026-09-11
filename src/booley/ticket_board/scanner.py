@@ -125,7 +125,7 @@ def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None
 
     criteria_data = state_data
     if entry.get("status") in {"review", "done"}:
-        from booley.review.entry import criteria_projection
+        from booley.ticket_board.review_records import criteria_projection
 
         criteria_data = criteria_projection(logs_dir / slug)
     cr = _load_criteria_summary(criteria_data)

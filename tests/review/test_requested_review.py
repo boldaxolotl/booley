@@ -26,11 +26,11 @@ import json
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.review import preparation as prep
-from booley.review.entry import read_entry
-from booley.review.requests import request_review_command
+from booley.ticket_board import review_preparation as prep
 from booley.ticket_board.io import TicketFileSpec
 from booley.ticket_board.logs import save_progress
+from booley.ticket_board.review_lifecycle import request_review_command
+from booley.ticket_board.review_records import read_entry
 from tests.ticket_board.test_acceptance_basis import _basis_project
 
 
@@ -200,8 +200,8 @@ def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
 
 
 def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
-    from booley.review import requests
-    from booley.review.entry import ReviewEntryError
+    from booley.ticket_board import review_lifecycle as requests
+    from booley.ticket_board.review_records import ReviewEntryError
 
     root, tio, _ = blocked
     original = prep._prepare_resolved_review
@@ -211,7 +211,7 @@ def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
         operation = requests.read_json(requests.operation_path(tio.logs_dir / "demo"))
         operation["pid"] = 999999
         requests._write(requests.operation_path(tio.logs_dir / "demo"), operation)
-        monkeypatch.setattr("booley.review.entry.is_pid_alive", lambda pid: True)
+        monkeypatch.setattr("booley.ticket_board.review_records.is_pid_alive", lambda pid: True)
         with pytest.raises(ReviewEntryError, match="active review"):
             tio.move_ticket_file("demo", "queue")
         operation["pid"] = __import__("os").getpid()
@@ -225,7 +225,7 @@ def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
 
 @pytest.mark.parametrize("boundary", ["entry", "board"])
 def test_publication_recovers_without_duplicate_transition(blocked, monkeypatch, boundary):
-    from booley.review import requests
+    from booley.ticket_board import review_lifecycle as requests
 
     root, tio, _ = blocked
     original = requests._write
@@ -315,7 +315,7 @@ def test_scoped_endpoint_records_real_evidence_then_requires_run_report(
 ):
     import sys
 
-    from booley.review.interactive import run_review_command
+    from booley.ticket_board.review_execution import run_review_command
 
     root, tio, worktree = blocked
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
@@ -393,7 +393,7 @@ def test_refresh_selects_new_heads_while_regenerate_does_not(blocked):
 
 
 def test_interrupted_publication_can_be_resumed_by_new_process(blocked, monkeypatch):
-    from booley.review import requests
+    from booley.ticket_board import review_lifecycle as requests
 
     root, tio, _ = blocked
     original = requests._commit
@@ -418,7 +418,7 @@ def test_second_request_is_idempotent(blocked):
 
 
 def test_stale_interrupted_request_can_be_retried_without_reset(blocked, monkeypatch):
-    from booley.review import requests
+    from booley.ticket_board import review_lifecycle as requests
     from tests.ticket_board.test_acceptance_basis import _git
 
     root, _tio, worktree = blocked
@@ -450,8 +450,10 @@ def test_stale_interrupted_request_can_be_retried_without_reset(blocked, monkeyp
 def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch):
     import os
 
-    from booley.review import execution_context, interactive, requests
-    from booley.review.entry import ReviewEntryError
+    from booley.runtime import execution_lease as execution_context
+    from booley.runtime.execution_lease import ExecutionLeaseError
+    from booley.ticket_board import review_execution as interactive
+    from booley.ticket_board import review_lifecycle as requests
 
     root, tio, worktree = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -469,15 +471,15 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
         if key.startswith("BOOLEY_") or key == "TICKETS_DIR":
             monkeypatch.setenv(key, value)
     execution_context.validate_recording(worktree)
-    with pytest.raises(ReviewEntryError, match="work directory"):
+    with pytest.raises(ExecutionLeaseError, match="work directory"):
         execution_context.validate_recording(root)
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(root / "foreign-state.json"))
-    with pytest.raises(ReviewEntryError, match="state path"):
+    with pytest.raises(ExecutionLeaseError, match="state path"):
         execution_context.validate_recording(worktree)
 
 
 def test_live_job_blocks_request_without_mutation(blocked, monkeypatch):
-    from booley.review import requests
+    from booley.ticket_board import review_lifecycle as requests
 
     root, tio, _ = blocked
     monkeypatch.setattr(requests, "active_ticket_jobs", lambda _: [object()])
@@ -532,7 +534,7 @@ def _run_standalone_fixture(endpoint, worktree):
 
 def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     log_dir = tio.logs_dir / "demo"
-    from booley.review import requests
+    from booley.ticket_board import review_lifecycle as requests
 
     freeze = requests.freeze_acceptance
 
@@ -588,7 +590,12 @@ def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
 
 @pytest.mark.parametrize("field", ["state", "heads", "basis_id", "basis_receipt", "execution_id"])
 def test_review_entry_rejects_missing_required_fields(blocked, field):
-    from booley.review.entry import ReviewEntryError, criteria_projection, digest, entry_path
+    from booley.ticket_board.review_records import (
+        ReviewEntryError,
+        criteria_projection,
+        digest,
+        entry_path,
+    )
 
     root, tio, _ = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -602,7 +609,7 @@ def test_review_entry_rejects_missing_required_fields(blocked, field):
 
 @pytest.mark.parametrize("bad", ["true", 1, None, {}])
 def test_review_entry_rejects_invalid_criterion_flags(blocked, bad):
-    from booley.review.entry import ReviewEntryError, digest, entry_path
+    from booley.ticket_board.review_records import ReviewEntryError, digest, entry_path
 
     root, tio, _ = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -615,8 +622,8 @@ def test_review_entry_rejects_invalid_criterion_flags(blocked, bad):
 
 
 def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
-    from booley.review import requests
-    from booley.review.entry import package_dir
+    from booley.ticket_board import review_lifecycle as requests
+    from booley.ticket_board.review_records import package_dir
 
     log_dir = tio.logs_dir / "demo"
     frozen = (log_dir / "acceptance" / "accepted.json").read_bytes()
@@ -658,7 +665,12 @@ def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
     ],
 )
 def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, value):
-    from booley.review.entry import ReviewEntryError, criteria_projection, digest, entry_path
+    from booley.ticket_board.review_records import (
+        ReviewEntryError,
+        criteria_projection,
+        digest,
+        entry_path,
+    )
 
     root, tio, _ = blocked
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
@@ -674,7 +686,11 @@ def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, va
 
 
 def test_invalid_json_and_checksum_fail_before_reading_criteria(tmp_path):
-    from booley.review.entry import ReviewEntryError, criteria_projection, entry_path
+    from booley.ticket_board.review_records import (
+        ReviewEntryError,
+        criteria_projection,
+        entry_path,
+    )
 
     path = entry_path(tmp_path)
     path.parent.mkdir()
@@ -701,8 +717,8 @@ def test_unaccepted_package_rejects_invalid_schema_or_approval(blocked, damage):
 
 
 def test_interrupted_publication_blocks_completion(blocked, capsys):
-    from booley.review.entry import operation_path
     from booley.ticket_board.operations import _completion_acceptance_valid
+    from booley.ticket_board.review_records import operation_path
 
     _, tio, _ = blocked
     path = operation_path(tio.logs_dir / "demo")

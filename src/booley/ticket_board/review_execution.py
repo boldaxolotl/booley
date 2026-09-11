@@ -9,19 +9,19 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.state import DevelopmentState
-from booley.harness.job_fence import active_ticket_jobs
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.ticket_jobs import active_ticket_jobs
 
-from .entry import ReviewEntryError, assert_idle, operation_path, read_entry
-from .requests import _quiescent, _write
+from .review_lifecycle import _quiescent, _write
+from .review_records import ReviewEntryError, assert_idle, operation_path, read_entry
 
 
 def _environment(
     tio: TicketIO, slug: str, operation: dict[str, Any]
 ) -> tuple[Path, dict[str, str]]:
-    from .preparation import _resolve_context
+    from .review_preparation import _resolve_context
 
     ctx = _resolve_context(
         tio._project_root,
@@ -59,6 +59,11 @@ def _environment(
             "BOOLEY_PROJECT_DIR": str(resolve_checkout_project_dir(ctx.worktree)),
             "BOOLEY_PAIRED_PROJECT_REPOSITORY": "1" if ctx.project_repository else "",
             "BOOLEY_REVIEW_OPERATION": operation["token"],
+            "BOOLEY_EXECUTION_LEASE_ID": operation["token"],
+            "BOOLEY_EXECUTION_LEASE_FILE": str(operation_path(ctx.log_dir)),
+            "BOOLEY_EXECUTION_LEASE_PHASE": "interactive",
+            "BOOLEY_EXECUTION_LEASE_STATE_FILE": str(state_path),
+            "BOOLEY_EXECUTION_LEASE_WORK_DIR": str(ctx.worktree),
         }
     )
     return ctx.worktree, env

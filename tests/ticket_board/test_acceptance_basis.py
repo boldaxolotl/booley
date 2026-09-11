@@ -1798,13 +1798,13 @@ def test_return_to_draft_rejects_jobs_and_acceptance_publication(
 ) -> None:
     _root, _blocked, tio = _blocked_ticket(tmp_path)
     monkeypatch.setattr(
-        "booley.harness.job_fence.active_ticket_jobs",
+        "booley.ticket_board.ticket_jobs.active_ticket_jobs",
         lambda _path: [SimpleNamespace(endpoint="sim", run_id="job-1")],
     )
     with pytest.raises(RuntimeError, match="active endpoint Jobs"):
         tio.return_to_draft("blocked-again")
 
-    monkeypatch.setattr("booley.harness.job_fence.active_ticket_jobs", lambda _path: [])
+    monkeypatch.setattr("booley.ticket_board.ticket_jobs.active_ticket_jobs", lambda _path: [])
     monkeypatch.setattr(
         "booley.ticket_board.io.acceptance_state",
         lambda _tickets, _slug: JournalState.PREPARED,

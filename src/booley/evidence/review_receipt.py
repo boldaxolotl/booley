@@ -1,4 +1,4 @@
-"""Persist and evaluate the source-scoped Reviewer contract."""
+"""Persist and evaluate the dependency-neutral Reviewer evidence contract."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import as_dict, as_str_list
-from booley.targets.flow_names import config_section
+import yaml
 
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
@@ -38,6 +37,7 @@ class ReviewInvocation:
     mode: str
     spec_path: Path | None = None
     steering: str = ""
+    tb_policy_digest: str = ""
 
 
 def _digest(value: Any) -> str:
@@ -68,9 +68,15 @@ def _decisions_path(work_dir: Path, ticket: Path | None) -> Path | None:
 
 
 def _linked_spec_path(ticket: Path, work_dir: Path) -> Path | None:
-    from booley.ticket_board.frontmatter import parse_frontmatter
-
-    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8", errors="replace"))
+    text = ticket.read_text(encoding="utf-8", errors="replace")
+    fields: Mapping[str, Any] = {}
+    if text.startswith("---\n"):
+        _opening, separator, remainder = text.partition("\n")
+        frontmatter, closing, _body = remainder.partition("\n---\n")
+        if separator and closing:
+            parsed = yaml.safe_load(frontmatter)
+            if isinstance(parsed, Mapping):
+                fields = parsed
     value = fields.get("spec")
     if not isinstance(value, str) or not value.strip():
         return None
@@ -95,25 +101,6 @@ def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
     return hashes
 
 
-def _tb_policy_digest(work_dir: Path, category: str) -> str:
-    if category != "tb":
-        return _digest({})
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-    except ImportError:
-        cfg = None
-    flows = as_dict((cfg or {}).get("flows"), default={}) or {}
-    sim = config_section(flows, "sim")
-    policy = {
-        "pass_sentinels": as_str_list(sim.get("pass_sentinels")),
-        "fail_sentinels": as_str_list(sim.get("fail_sentinels")),
-        "trace_files": as_str_list(sim.get("trace_files")),
-    }
-    return _digest(policy)
-
-
 def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
     ticket = _ticket_path(invocation.work_dir)
@@ -135,7 +122,7 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "spec_digest": _document_digest(spec),
         "decisions_source": str(decisions.resolve()) if decisions else "",
         "decisions_digest": _document_digest(decisions),
-        "tb_policy_digest": _tb_policy_digest(invocation.work_dir, invocation.category),
+        "tb_policy_digest": invocation.tb_policy_digest,
         "steering_digest": _digest(invocation.steering),
     }
 
@@ -185,7 +172,12 @@ def _persisted_document_changed(contract: Mapping[str, Any], name: str) -> bool:
     return contract.get(f"{name}_digest") != _document_digest(path)
 
 
-def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]:
+def review_receipt_drift(
+    detail: Mapping[str, Any],
+    work_dir: Path,
+    *,
+    tb_policy_digest: str | None = None,
+) -> list[str]:
     """Return changed dimensions for a persisted source-scoped receipt."""
     if detail.get("review_detail_version") != REVIEW_DETAIL_VERSION:
         # Pre-v4 receipts continue through the legacy source-fingerprint path
@@ -211,6 +203,8 @@ def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]
         changed.append("scope")
     category = contract.get("category")
     category = category if isinstance(category, str) else ""
-    if contract.get("tb_policy_digest") != _tb_policy_digest(work_dir, category):
+    if category == "tb" and tb_policy_digest is not None and (
+        contract.get("tb_policy_digest") != tb_policy_digest
+    ):
         changed.append("tb_policy")
     return changed

@@ -26,6 +26,12 @@ from booley.agent_workspace.isolation import (
 )
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
+from booley.evidence.review_receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewInvocation,
+    build_review_contract_detail,
+    review_invocation_changed,
+)
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -33,15 +39,10 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
-from booley.review.receipt import (
-    REVIEW_DETAIL_VERSION,
-    ReviewInvocation,
-    build_review_contract_detail,
-    review_invocation_changed,
-)
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
 from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
+from booley.ticket_board.review_policy import review_policy_digest
 
 from .review_contract import ReviewContractError, ReviewScopeContract, resolve_review_scope
 from .specialist import Specialist
@@ -1205,6 +1206,9 @@ class ReviewerSpecialist(Specialist):
                 mode="clean" if self._is_clean_mode() else "done",
                 spec_path=Path(spec_arg) if spec_arg else None,
                 steering=self.steering_text(),
+                tb_policy_digest=review_policy_digest(
+                    Path(self.args.work_dir), self.args.category
+                ),
             )
         )
 

@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -21,7 +22,22 @@ from typing import Any
 from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
-from booley.harness.job_fence import wait_for_ticket_jobs
+from booley.review.generation import (
+    ExplanationError,
+    ReviewEvidenceError,
+    ReviewEvidencePackage,
+    ReviewPackage,
+    StructuredExplanation,
+    TriagePackageError,
+    build_review_evidence,
+    build_review_facts,
+    load_triage_package,
+    open_package_diffs,
+    render_explanation_html,
+    render_review_briefing,
+    validate_assessment,
+    write_triage_package,
+)
 from booley.runtime.agent import call_agent
 from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
@@ -39,33 +55,34 @@ from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
+from booley.ticket_board.review_records import ReviewInspection
+from booley.ticket_board.ticket_jobs import wait_for_ticket_jobs
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     project_repository_expected,
-)
-
-from .artifact import ReviewPackage
-from .entry import ReviewInspection
-from .evidence import ReviewEvidenceError, ReviewEvidencePackage, build_review_evidence
-from .explanation import (
-    ExplanationError,
-    StructuredExplanation,
-    render_explanation_html,
-)
-from .triage_package import (
-    TriagePackageError,
-    build_review_facts,
-    load_triage_package,
-    open_package_diffs,
-    render_review_briefing,
-    validate_assessment,
-    write_triage_package,
 )
 
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = "explain-diff-prompt.md"
 _PROMPT_VERSION = 4
+
+
+def _usage_summary(ctx: ReviewPrepContext) -> str:
+    """Resolve current-run economics before entering Review generation."""
+    result = subprocess.run(
+        [sys.executable, "-m", "booley.ticket_board", "usage", "--slug", ctx.slug, "--summary"],
+        cwd=ctx.project_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unavailable"
+
+
+def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
+    return build_review_facts(ctx, run_economics=_usage_summary(ctx))
 
 
 class ReviewPrepError(RuntimeError):
@@ -314,7 +331,7 @@ def _resolve_context(
     outer = basis.participant("outer")
     feature_branch = outer.ticket_ref.removeprefix("refs/heads/")
     log_dir = tio.logs_dir / slug
-    from .entry import package_dir, read_entry
+    from .review_records import package_dir, read_entry
 
     inspection = None if inspect_unaccepted else read_entry(log_dir)
     snapshot_status = str(entry.get("status"))
@@ -476,7 +493,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     """
     digest = hashlib.sha256()
     if ctx.inspection is not None:
-        from .entry import require_clean
+        from .review_records import require_clean
 
         require_clean(ctx)
         semantic = {
@@ -1156,7 +1173,7 @@ def _prepare_report_disabled_package(
     started: float,
 ) -> ReviewPrepOutcome:
     """Persist the same typed package without making the optional model call."""
-    facts = build_review_facts(ctx)
+    facts = _build_review_facts(ctx)
     _write_json(ctx.runtime_dir / "facts.json", facts)
     briefing_path = write_triage_package(
         ctx,
@@ -1271,7 +1288,7 @@ async def _prepare_model_review(
     result, call_recorded = None, False
     try:
         evidence = _collect_git_evidence(ctx)
-        facts = build_review_facts(ctx)
+        facts = _build_review_facts(ctx)
         _write_json(ctx.runtime_dir / "facts.json", facts)
         package = _build_evidence_package(ctx, source_sha, evidence)
         source_sha = _source_fingerprint(ctx)
@@ -1344,7 +1361,7 @@ async def _prepare_resolved_review(
 
 
 def _requested_review_slug(project_root: Path, slug: str) -> str | None:
-    from .entry import assert_idle, operation_path, read_entry, read_json
+    from .review_records import assert_idle, operation_path, read_entry, read_json
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     board = tio.find_ticket(slug)
@@ -1364,7 +1381,7 @@ async def prepare_review(
     """Prepare one Ticket's review package; failures are returned, never raised."""
     started = time.monotonic()
     try:
-        from .requests import request_review_command
+        from .review_lifecycle import request_review_command
 
         canonical = _requested_review_slug(project_root, slug)
         if canonical is not None:
@@ -1410,7 +1427,7 @@ async def prepare_review_command(
 ) -> ReviewPrepOutcome:
     """Prepare a review package for a review or blocked ticket."""
     try:
-        from .requests import request_review_command
+        from .review_lifecycle import request_review_command
 
         canonical = _requested_review_slug(project_root, slug)
         if canonical is not None:
@@ -1442,7 +1459,7 @@ def review_briefing_command(
             allow_report_disabled=True,
         )
         if not ctx.triage_report_enabled and ctx.inspection is None:
-            facts = build_review_facts(ctx)
+            facts = _build_review_facts(ctx)
             package_value = {
                 **facts,
                 "assessment": _report_disabled_assessment(facts),

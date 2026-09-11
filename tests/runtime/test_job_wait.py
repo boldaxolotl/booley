@@ -1,4 +1,4 @@
-"""Tests for the detached ticket-job finalization fence."""
+"""Tests for generic detached-job waiting."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import job_fence
 from booley.runtime import job_records as jobrec
+from booley.runtime import job_wait
 
 
 def _record() -> jobrec.JobRecord:
@@ -23,9 +23,9 @@ def _record() -> jobrec.JobRecord:
 @pytest.mark.asyncio
 async def test_waits_until_job_is_terminal(tmp_path: Path, monkeypatch):
     states = iter([[_record()], []])
-    monkeypatch.setattr(job_fence, "active_ticket_jobs", lambda _log_dir: next(states))
+    monkeypatch.setattr(job_wait, "active_jobs", lambda _root: next(states))
 
-    waited = await job_fence.wait_for_ticket_jobs(
+    waited = await job_wait.wait_for_jobs(
         tmp_path,
         poll_interval=0,
         max_wait_seconds=1,
@@ -36,7 +36,7 @@ async def test_waits_until_job_is_terminal(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_timeout_names_jobs_that_are_still_active(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(job_fence, "active_ticket_jobs", lambda _log_dir: [_record()])
+    monkeypatch.setattr(job_wait, "active_jobs", lambda _root: [_record()])
 
-    with pytest.raises(job_fence.TicketJobFenceTimeoutError, match="mutation_tester-x-1"):
-        await job_fence.wait_for_ticket_jobs(tmp_path, max_wait_seconds=0)
+    with pytest.raises(job_wait.JobWaitTimeoutError, match="mutation_tester-x-1"):
+        await job_wait.wait_for_jobs(tmp_path, max_wait_seconds=0)

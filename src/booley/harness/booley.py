@@ -1200,7 +1200,7 @@ def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
 def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: str) -> int:
     import asyncio
 
-    from booley.review.requests import request_review_command
+    from booley.ticket_board.review_lifecycle import request_review_command
 
     outcome = asyncio.run(
         request_review_command(
@@ -1219,7 +1219,7 @@ def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: 
 
 
 def _cmd_review_exec(args: argparse.Namespace, project_root: Path) -> int:
-    from booley.review.interactive import run_review_command
+    from booley.ticket_board.review_lifecycle import run_review_command
 
     try:
         return run_review_command(project_root, args.slug, args.endpoint_command)
@@ -1232,7 +1232,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     """Generate or refresh the agent-prepared HTML explanation."""
     import asyncio
 
-    from booley.review.preparation import prepare_review_command
+    from booley.ticket_board.review_lifecycle import prepare_review_command
 
     outcome = asyncio.run(
         prepare_review_command(project_root, args.slug, force=getattr(args, "force", False))
@@ -1251,7 +1251,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
 
 def _cmd_board_review_briefing(args: argparse.Namespace, project_root: Path) -> int:
     """Print and open an already prepared review package without agent work."""
-    from booley.review.preparation import review_briefing_command
+    from booley.ticket_board.review_lifecycle import review_briefing_command
 
     outcome = review_briefing_command(
         project_root,

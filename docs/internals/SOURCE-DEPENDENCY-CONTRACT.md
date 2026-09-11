@@ -18,17 +18,17 @@ The package layout maps to the canonical concepts indexed by the
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria`, Criteria modules within `booley.ticket_board` | Define and evaluate acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
-| Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, and per-clock timing values shared by Criteria and evidence-producing Flows. |
+| Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
-| Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, and execution records. |
+| Ticket Board | `booley.ticket_board` | Persist tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Answer structured waveform questions and control human viewing. |
 
 Supporting mechanism packages keep their names. `booley.audit` owns typed
 environment and configuration analysis; `booley.config` owns configuration;
-`booley.eda` owns trusted EDA registrations and Grants; `booley.review` owns review
-evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
+`booley.eda` owns trusted EDA registrations and Grants; `booley.review` renders
+review artifacts from resolved immutable evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
 dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.data`,
 and `booley.feedback` own their named mechanisms. These descriptions create no new
 domain concepts.
@@ -123,6 +123,24 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
 | D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 | D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
+| D19 | Prefix `booley.review` | Prefixes `booley.ticket_board`, `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Ticket Board lifecycle or Harness orchestration. |
+| D20 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
+
+## Ticket review lifecycle boundary
+
+`ticket_board.review_lifecycle` is the deep public facade for automatic handoff,
+requested review, refresh, regeneration, finalization, briefing, and review-bound
+endpoint execution. Ticket Board owns admission, captured inspection identity,
+job/operation fencing, publication, and interrupted-publication recovery.
+
+`review.generation` is the sole reverse composition seam. It accepts the resolved
+context and immutable participant heads selected by Ticket Board and returns review
+packages and render outcomes. It does not inspect Board state or perform lifecycle
+transitions. Generic detached-job waiting and execution-lease identity live in
+Runtime; `ticket_board.ticket_jobs` adapts generic job discovery to a Ticket,
+while Ticket Board issues the generic execution lease consumed by Flow publication.
+Reviewer receipts and dispositions live in `booley.evidence`
+because both Specialists and acceptance policy consume them.
 
 ## Criterion evidence ownership
 
@@ -170,6 +188,7 @@ named rule and gives no source module a blanket exemption.
 | C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
+| C9 | D20 | `booley.ticket_board.review_preparation -> booley.review.generation` | Ticket Board supplies resolved immutable inputs to the Review artifact generator. |
 
 ## Exact legacy waivers
 

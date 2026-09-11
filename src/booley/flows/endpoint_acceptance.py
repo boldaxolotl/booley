@@ -60,7 +60,7 @@ def set_criterion(
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
     """Append normalized strict-Ticket outcomes before mutable state is saved."""
-    from booley.review.execution_context import validate_recording
+    from booley.runtime.execution_lease import validate_recording
 
     validate_recording(getattr(endpoint.args, "work_dir", None))
     if not changes or not endpoint.state.strict_criteria:
@@ -120,7 +120,7 @@ def _stamp_source_fingerprint(
         return stamped
     source_detail = freshness.to_detail()
     if is_review and stamped.get("review_detail_version") == 4:
-        from booley.review.receipt import finalize_review_detail
+        from booley.evidence.review_receipt import finalize_review_detail
 
         return finalize_review_detail(stamped, source_detail)
     stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = source_detail
