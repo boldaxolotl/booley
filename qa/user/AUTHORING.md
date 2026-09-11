@@ -2,10 +2,10 @@
 
 This guide owns the Scenario definition contract. Read
 [Protocol](../agents/PROTOCOL.md) for execution,
-[Qualification](QUALIFICATION.md) for scope and verdicts, and the [run record
-format](../agents/FORMAT.md) for the files produced during a Scenario Run. The
-[PicoRV32 production Scenario](../scenarios/picorv32/scenario.yaml) shows the
-authoring contract in concrete use.
+[Qualification](QUALIFICATION.md) for scope and verdicts, and the
+[run record format](../agents/FORMAT.md) for the files produced during a Scenario
+Run. The [PicoRV32 production Scenario](../scenarios/picorv32/scenario.yaml) shows
+the authoring contract in concrete use.
 
 ## Scenario definition contract
 
@@ -32,6 +32,13 @@ contract source, evidence requirement, and capture point. Keep expectation autho
 distinct from documentation used only for navigation. A Scenario Run records which
 documentation it actually consulted.
 
+[`coverage.yaml`](../coverage.yaml) owns the supported Capability inventory and its
+public contract sources. Scenario files own Checks, named check sets, and Configured
+Scenario assignments. Checks reference Capabilities directly; derive the reverse
+index from those references. Do not repeat Check assignments in the inventory or use
+generic dimension expansion. Do not author separate Coverage Obligations, Cells,
+Allocations, or Verification Chains.
+
 Inputs are named records with `id`, `kind`, `value`, `source`, and `verification`.
 `git` and `sha256` inputs use full literal lowercase hashes. A `pre-run` input fixes an
 identity before execution; it does not permit changing a pinned IP, workload, or
@@ -51,9 +58,13 @@ detection's successful outcome: it cannot depend directly or transitively on tha
 outcome. Product cleanup Checks remain independently reachable. Finalization must
 leave enough reserve to quiesce active resources and record retained review state.
 
-Check sets are flat and disjoint. A Configured Scenario may select several sets; the
-validator resolves them into one ordered Check list and derives supporting Steps. Each
-Configured Scenario declares whether it is required, binds `host_os`,
+Check sets are flat and disjoint. Each Check belongs to exactly one named set, and
+each set is selected by at least one Configured Scenario. A Configured Scenario may
+select several sets; the validator resolves them into one ordered Check list and
+derives the prerequisite Checks and Steps. Perform that supporting work in the same
+Scenario Run; unlisted setup and earlier-run artifacts cannot replace it. No scheduler
+or automatic prerequisite expansion is required. Each Configured Scenario declares
+whether it is required, binds `host_os`,
 `cpu_architecture`, `native_host`, `agent_provider`, `interactive_mode_client`, and
 `ticket_mode_backend`, and lists its pre-run requirements, check sets, and justified
 exclusions. `run.json` records the actual execution values and observed identities.
@@ -82,12 +93,13 @@ and build-matched execution establish the authority's meaning and currency.
    level, supply prerequisites, authority, timeout, recovery, and cleanup. Preserve
    the full fault/restoration sequence for seeded faults. Link known defects to issues
    and retain their failures. Preserve original evidence in finding updates.
-3. Reference capabilities and assign each Check to explicit Configured Scenarios. Runtime
-   Attachment and Waveform Viewer claims require corresponding evidence. Record
-   missing capabilities as gaps; a
-   mapping or availability assessment does not prove product coverage. Before publishing,
-   confirm every retained required behavior has a Check, Configured Scenario assignment, and
-   evidence contract. Keep unresolved gaps visible.
+3. Reference Capabilities and assign each Check to explicit Configured Scenarios.
+   Every supported Capability needs a Check; name every gap and never drop a
+   Capability to obtain a pass. Runtime Attachment and Waveform Viewer claims require
+   corresponding evidence. A mapping or availability assessment does not prove
+   product coverage. Before publishing, confirm every retained required behavior has
+   a Check, Configured Scenario assignment, and evidence contract. Keep unresolved
+   gaps visible.
 4. Review oracle quality, permitted sub-agent freedom, pre-run authority, feasible
    budgets, continuation, product cleanup, and final quiescence. Review literal payloads, public expectation
    authority, prerequisite and supporting work, native-host exclusions, and the

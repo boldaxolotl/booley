@@ -41,7 +41,8 @@ only; it does not execute a Scenario Run.
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
-| [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
+| [`user/QUALIFICATION.md`](user/QUALIFICATION.md) | Qualification scope, outcomes, and evidence currency |
+| [`user/AUTHORING.md`](user/AUTHORING.md) | Scenario definition, Capability Coverage, and authoring rules |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
