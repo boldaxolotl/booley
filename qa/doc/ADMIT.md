@@ -13,6 +13,12 @@ disposable Project state, and the credentials and licensed EDA access declared b
 Configured Scenario. Keep secret values out of prompts and records; obtain them
 through approved provider and EDA mechanisms.
 
+Every Configured Scenario authorizes `booley bootstrap` during admission and
+`booley init` during execution. Gate on the permission, capacity, and external inputs
+needed to run them, not on the prior existence of managed images or toolchains they
+create. Admission may reconcile Host Bootstrap as described below, but must leave
+Project Initialization and its evidence to the selected execution Step.
+
 Use the declared artifact form. An unreleased candidate, including a local wheel,
 must be immutable and bound to a source commit and content hash. Reject undeclared
 substitutions, floating references, editable installs, and source-checkout execution

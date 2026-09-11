@@ -3,6 +3,11 @@
 Execute the selected Checks and supporting Steps in Scenario order. The Scenario's
 `prepare` phase runs here.
 
+Project Initialization, including `booley init`, is ordinary authorized Scenario
+work for every Configured Scenario. It may build or reconcile its declared managed
+images and toolchains; preserve their pre-state, command evidence, and resulting
+identities with the producing Step.
+
 Use documentation and packaged skills matching the tested build, CLI or MCP help,
 and ordinary Project inspection. Consult source only to verify or classify behavior
 after preserving the original observation.

@@ -30,6 +30,9 @@ exclusions.
   `picorv32-ubuntu-codex-cli-paid-license` profile.
 - Native CLI runs exercise core behavior. GUI runs also exercise the supported VS
   Code Runtime Attachment and Waveform Viewer integration.
+- Every Configured Scenario permits admission-time Host Bootstrap and execution-time
+  Project Initialization. Run-created managed images and toolchains are evidence from
+  those lifecycle operations, not resources that must pre-exist admission.
 - Keep each Scenario's EDA tool, Runtime Image, Stealth Mode, and Linux
   provisioned-Vivado assignments. Windows has no provisioned-Vivado requirement;
   Linux unavailability does not remove the Linux requirement.

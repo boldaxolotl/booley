@@ -324,7 +324,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   - >-
     Pre-approved Project Setup policy: enable sim, lint, synth and fpga;
@@ -354,7 +354,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -378,7 +378,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -444,7 +444,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -511,7 +511,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -532,7 +532,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -554,7 +554,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-gui
@@ -619,7 +619,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
+  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled paid-license relay authority
   check_sets:
   - picorv32-core
@@ -750,13 +750,13 @@ steps:
   - inputs.project-pin
 - id: project.separate-repository
   phase: prepare
-  action: Create a separate clean `.booley_project` repository and initialize the prepared Project.
+  action: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
   checks:
   - id: project.separate-repository
     capabilities:
     - DOCUMENTATION-USABILITY
-    stimulus: Create a separate clean `.booley_project` repository and initialize the prepared Project.
-    expected: Create a separate clean `.booley_project` repository and initialize the prepared Project.
+    stimulus: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
+    expected: Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Repository topology, clean status, initialization output; frozen prepared recovery point.
     capture: evidence/picorv32-published-demo-continuity.project.separate-repository

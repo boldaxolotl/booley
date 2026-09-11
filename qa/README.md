@@ -32,6 +32,11 @@ install it in an operator-only host environment, and reconcile `booley bootstrap
 before the Scenario Run is frozen. Scenario Checks still exercise their own declared
 installation and Host Bootstrap behavior.
 
+Every Configured Scenario permits admission-time `booley bootstrap` and
+execution-time `booley init`. A managed image or toolchain that either command owns
+does not have to exist before admission when the host can create it; record its fresh
+identity in the stage that produces it.
+
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
 is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
