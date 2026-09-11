@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
@@ -121,7 +122,8 @@ _COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
 _COVERAGE_EVIDENCE_TOOL_DESCRIPTION = (
     "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
     "Coverage Analyst. Start with view='overview'; use view='points' for filtered exact "
-    "Coverage Points and view='source' for verified excerpts associated with point_ids."
+    "Coverage Points and view='source' for verified excerpts associated with previously "
+    "returned point_refs."
 )
 _REPORT_MCP_TOOL_NAME = "booley_report"
 _REPORT_MCP_TOOL_DESCRIPTION = (
@@ -2192,9 +2194,9 @@ def _coverage_evidence_tool_def() -> dict[str, Any] | None:
                     "type": "string",
                     "enum": ["eligible", "waived", "unscored"],
                 },
-                "point_ids": {
+                "point_refs": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {"type": "string", "pattern": COVERAGE_POINT_REFERENCE_PATTERN},
                     "minItems": 1,
                     "maxItems": 10,
                 },

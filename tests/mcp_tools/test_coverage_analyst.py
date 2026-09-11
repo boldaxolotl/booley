@@ -165,6 +165,121 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
 
     assert report["analysis_scope"]["points_retrieved"] == 1
     assert report["analysis_scope"]["point_ids"] == [_valid_document()["points"][0]["id"]]
+    assert "point_references" not in report["analysis_scope"]
+
+
+def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+
+    path = persist_campaign(tmp_path)
+    canonical_id = _valid_document()["points"][0]["id"]
+
+    def referencing_model(params):
+        assert (
+            "point_refs" in params.output_format["properties"]["hypotheses"]["items"]["properties"]
+        )
+        for key, value in params.nested_mcp_env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+        result = coverage_evidence.query_active_coverage_evidence(
+            {"view": "points", "disposition": "eligible", "limit": 1}
+        )
+        point_ref = result["points"][0]["point_ref"]
+        return AgentResult(
+            structured={
+                "hypotheses": [{"point_refs": [point_ref], "explanation": "Observed gap"}],
+                "recommendations": [{"point_refs": [point_ref], "action": "Exercise the gap"}],
+                "waiver_candidates": [],
+            }
+        )
+
+    report = (
+        CoverageAnalystSpecialist(model=referencing_model)
+        .execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+        .outcome.detail
+    )
+
+    assert report["hypotheses"][0]["point_ids"] == [canonical_id]
+    assert report["recommendations"][0]["point_ids"] == [canonical_id]
+    assert "point_references" not in report["analysis_scope"]
+
+
+def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
+    path = persist_campaign(tmp_path)
+
+    def invalid_model(_params):
+        return AgentResult(
+            structured={
+                "hypotheses": [{"point_refs": ["point:404"], "explanation": "Unsupported"}],
+                "recommendations": [],
+                "waiver_candidates": [
+                    {
+                        "point_ref": "point:405",
+                        "reason": "excluded",
+                        "evidence": "Unsupported",
+                        "proof_reference": "",
+                    }
+                ],
+            }
+        )
+
+    result = CoverageAnalystSpecialist(model=invalid_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "/hypotheses/0/point_refs/0: unknown_point_ref" in result.outcome.report_text
+    assert "/waiver_candidates/0/point_ref: unknown_point_ref" in result.outcome.report_text
+
+
+def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+
+    path = persist_campaign(tmp_path)
+    canonical_id = _valid_document()["points"][0]["id"]
+
+    def legacy_model(params):
+        for key, value in params.nested_mcp_env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+        coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
+        return AgentResult(
+            structured={
+                "hypotheses": [
+                    {"point_ids": [canonical_id], "explanation": "Legacy exact reference"}
+                ],
+                "recommendations": [],
+                "waiver_candidates": [],
+            }
+        )
+
+    result = CoverageAnalystSpecialist(model=legacy_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 0
+    assert result.outcome.detail["hypotheses"][0]["point_ids"] == [canonical_id]
+
+
+def test_undelivered_legacy_exact_model_id_is_rejected(tmp_path):
+    path = persist_campaign(tmp_path)
+    canonical_id = _valid_document()["points"][0]["id"]
+
+    def unsupported_legacy_model(_params):
+        return AgentResult(
+            structured={
+                "hypotheses": [{"point_ids": [canonical_id], "explanation": "Not retrieved"}],
+                "recommendations": [],
+                "waiver_candidates": [],
+            }
+        )
+
+    result = CoverageAnalystSpecialist(model=unsupported_legacy_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "/hypotheses/0/point_ids/0: cp1_not_delivered" in result.outcome.report_text
 
 
 def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state(tmp_path):
@@ -299,18 +414,24 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
     assert "SECRET" not in model.calls[0].prompt
 
 
-def test_verified_candidate_is_ready_only_for_human_review(tmp_path):
+def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+
     path = source_project(tmp_path)
     point = _valid_document()["points"][0]
 
     def model(params):
+        for key, value in params.nested_mcp_env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+        result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
         return AgentResult(
             structured={
                 "hypotheses": [],
                 "recommendations": [],
                 "waiver_candidates": [
                     {
-                        "point_id": point["id"],
+                        "point_ref": result["points"][0]["point_ref"],
                         "reason": "excluded",
                         "evidence": "Project scope excludes this hardware",
                         "proof_reference": "",
@@ -416,6 +537,32 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
     assert result.exit_code == 2
     assert "One Coverage Point exceeds the response limit" in result.outcome.report_text
     assert "Narrow the analysis instruction" in result.outcome.report_text
+
+
+def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+
+    path = persist_campaign(tmp_path)
+
+    def corrupting_model(params):
+        for key, value in params.nested_mcp_env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+        coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
+        audit_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_AUDIT"])
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        audit["point_ids"] = [7]
+        audit_path.write_text(json.dumps(audit), encoding="utf-8")
+        return AgentResult(
+            structured={"hypotheses": [], "recommendations": [], "waiver_candidates": []}
+        )
+
+    result = CoverageAnalystSpecialist(model=corrupting_model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "point_ids must contain canonical Coverage Point IDs" in result.outcome.report_text
 
 
 def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):

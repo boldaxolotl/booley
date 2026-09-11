@@ -820,11 +820,16 @@ Native availability sidecars do not alter normalized measurement truth.
 
 The model prompt contains only a compact Campaign reference. One isolated read-only
 `coverage_evidence` tool exposes `overview`, filtered and cursor-paged `points`, and
-verified `source` excerpts for exact point IDs. Point records include their complete
-eligible, unscored, or waived disposition and Approved Waiver provenance. Responses
-are bounded individually and cumulatively; the host first deep-validates the complete
-V3 manifest/point-store pair, so paging never weakens Campaign integrity. No other MCP
-tool is visible to this model.
+verified `source` excerpts. Model-facing point records use deterministic short
+`point_ref` values instead of the Campaign's long opaque IDs. A `point_ref` becomes
+usable only after its exact point was successfully delivered within the response and
+cumulative byte budgets; later `points` or `source` queries may pass delivered values
+as `point_refs`. The host privately resolves them back to exact Campaign IDs before
+publishing an advisory report. Point records include their complete eligible,
+unscored, or waived disposition and Approved Waiver provenance. The host first
+deep-validates the complete V3 manifest/point-store pair, so paging and reference
+resolution never weaken Campaign integrity. No other MCP tool is visible to this
+model.
 
 Stored evaluation maps directly to closure recommendations:
 `pass` → `coverage_ready`, `fail` → `coverage_not_ready`,

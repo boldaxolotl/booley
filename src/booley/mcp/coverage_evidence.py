@@ -15,8 +15,10 @@ from booley.flows.sim.coverage_analysis_input import (
 from booley.flows.sim.coverage_campaign import freeze_coverage_mapping
 from booley.flows.sim.coverage_evidence import CoverageEvidenceError, CoverageEvidenceSession
 
-_ACTIVE_SESSION: tuple[tuple[str, str, str], CoverageEvidenceSession] | None = None
-_TERMINAL_ERROR: tuple[tuple[str, str, str], str] | None = None
+_SessionKey = tuple[str, str, str, str]
+
+_ACTIVE_SESSION: tuple[_SessionKey, CoverageEvidenceSession] | None = None
+_TERMINAL_ERROR: tuple[_SessionKey, str] | None = None
 
 
 def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, object]:
@@ -28,8 +30,8 @@ def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, obj
     source_snapshot = os.environ.get("BOOLEY_COVERAGE_SOURCE_SNAPSHOT", "")
     if not campaign_path or not project_root:
         raise CoverageEvidenceError("No active Coverage Campaign is bound to this tool")
-    key = (campaign_path, project_root, source_snapshot)
     audit_path = os.environ.get("BOOLEY_COVERAGE_AUDIT", "")
+    key = (campaign_path, project_root, source_snapshot, audit_path)
     if _TERMINAL_ERROR is not None and _TERMINAL_ERROR[0] == key:
         _write_terminal_audit(key, audit_path, _TERMINAL_ERROR[1])
         raise CoverageEvidenceError(f"Evidence session already failed: {_TERMINAL_ERROR[1]}")
@@ -47,7 +49,7 @@ def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, obj
     return result
 
 
-def _write_terminal_audit(key: tuple[str, str, str], audit_path: str, error: str) -> None:
+def _write_terminal_audit(key: _SessionKey, audit_path: str, error: str) -> None:
     if not audit_path:
         return
     scope = (
