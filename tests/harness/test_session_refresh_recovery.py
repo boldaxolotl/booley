@@ -13,11 +13,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from booley.eda.provisioning import runtime_spec
-from booley.eda.provisioning.runtime_spec import Issuance
 from booley.harness import bootstrap_cli, init_cmd
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
+from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 
 

@@ -7,13 +7,28 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from .provisioning import authority
 
 _Record = dict[str, object]
 _Records = list[_Record]
 _Result = _Record | _Records
+
+
+class GrantMutator(Protocol):
+    """Outer-composition interface for coordinated grant mutations."""
+
+    def add(
+        self,
+        project: Path,
+        kind: str,
+        *,
+        installation: str | None,
+        license_profile: str | None,
+    ) -> authority.ProjectGrant: ...
+
+    def revoke(self, project: Path, kind: str) -> authority.ProjectGrant: ...
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -81,10 +96,15 @@ def _add_json_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="emit stable JSON")
 
 
-def run(args: argparse.Namespace, _project_root: Path) -> int:
+def run(
+    args: argparse.Namespace,
+    _project_root: Path,
+    *,
+    grant_mutator: GrantMutator | None = None,
+) -> int:
     """Execute one authority operation with human output or explicit JSON."""
     try:
-        value = _dispatch(args)
+        value = _dispatch(args, grant_mutator=grant_mutator)
     except authority.AuthorityError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -101,7 +121,7 @@ def run(args: argparse.Namespace, _project_root: Path) -> int:
     return 0
 
 
-def _dispatch(args: argparse.Namespace) -> _Result:
+def _dispatch(args: argparse.Namespace, *, grant_mutator: GrantMutator | None = None) -> _Result:
     group = args.eda_group
     action = args.eda_action
     if group == "installation":
@@ -109,7 +129,7 @@ def _dispatch(args: argparse.Namespace) -> _Result:
     if group == "license":
         return _license_action(args, action)
     if group == "grant":
-        return _grant_action(args, action)
+        return _grant_action(args, action, grant_mutator=grant_mutator)
     raise authority.AuthorityError(f"unknown EDA authority group: {group}")
 
 
@@ -150,9 +170,18 @@ def _license_action(args: argparse.Namespace, action: str) -> _Result:
     return [asdict(item) for _, item in sorted(state.licenses.items())]
 
 
-def _grant_action(args: argparse.Namespace, action: str) -> _Result:
+def _grant_action(
+    args: argparse.Namespace,
+    action: str,
+    *,
+    grant_mutator: GrantMutator | None,
+) -> _Result:
     if action == "add":
-        grant = authority.add_grant(
+        if grant_mutator is None:
+            raise authority.AuthorityError(
+                "EDA grant mutation requires host lifecycle coordination"
+            )
+        grant = grant_mutator.add(
             args.project,
             args.kind,
             installation=args.installation,
@@ -160,7 +189,11 @@ def _grant_action(args: argparse.Namespace, action: str) -> _Result:
         )
         return asdict(grant)
     if action == "revoke":
-        grant = authority.revoke_grant(args.project, args.kind)
+        if grant_mutator is None:
+            raise authority.AuthorityError(
+                "EDA grant mutation requires host lifecycle coordination"
+            )
+        grant = grant_mutator.revoke(args.project, args.kind)
         result = asdict(grant)
         result["residual_resources"] = []
         return result

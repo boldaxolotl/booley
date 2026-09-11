@@ -20,6 +20,11 @@ def test_production_source_dependencies_obey_approved_contract() -> None:
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
 
 
+def test_eda_runtime_spec_compatibility_module_is_deleted() -> None:
+    """Prevent callers from drifting back to the former EDA-owned issuance path."""
+    assert not (_SOURCE_ROOT / "eda" / "provisioning" / "runtime_spec.py").exists()
+
+
 _LOW_LEVEL_TARGET_MECHANICS = frozenset(
     {
         "available_targets",
@@ -228,6 +233,41 @@ def test_config_runtime_rule_catches_all_static_import_locations(tmp_path, state
     assert "D18" in report
     assert "booley.config.seed" in report
     assert "booley.runtime.agent_backend" in report
+
+
+@pytest.mark.parametrize(
+    "statement,target,rule",
+    [
+        ("import booley.flows.execution\n", "booley.flows.execution", "D19"),
+        (
+            "def helper():\n    from booley.runtime import session_issuance\n",
+            "booley.runtime.session_issuance",
+            "D20",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n    from booley.runtime import issuance_invalidation\n",
+            "booley.runtime.issuance_invalidation",
+            "D20",
+        ),
+    ],
+)
+def test_eda_separation_rules_catch_all_static_import_locations(tmp_path, statement, target, rule):
+    root = tmp_path / "booley"
+    for package in (root, root / "eda", root / "flows", root / "runtime"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "flows" / "execution.py").write_text("def run(): pass\n")
+    (root / "runtime" / "session_issuance.py").write_text("value = 1\n")
+    (root / "runtime" / "issuance_invalidation.py").write_text("value = 1\n")
+    (root / "eda" / "policy.py").write_text(statement)
+
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+
+    assert rule in report
+    assert "booley.eda.policy" in report
+    assert target in report
 
 
 @pytest.mark.parametrize(

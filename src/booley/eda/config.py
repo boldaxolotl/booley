@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.config.flow_enablement import retired_config_error
 from booley.core.config_paths import resolve_toml
-from booley.runtime.project_dir import resolve_project_dir
+from booley.core.project_dir import resolve_project_dir
 
 SUPPORTED_EDA_KINDS = frozenset({"vivado"})
 PROVISIONING_IMAGE = "image"
@@ -102,48 +103,6 @@ def _parse_kind(kind: str, section: Any) -> EdaConfig:
     if provisioning not in {PROVISIONING_IMAGE, PROVISIONING_HOST}:
         raise EdaConfigError(f"booley.toml [eda.{kind}].provisioning must be 'image' or 'host'")
     return EdaConfig(kind=kind, provisioning=provisioning)
-
-
-def retired_config_error(raw: dict[str, Any]) -> str | None:
-    """Return the first hard-migration error for a removed authority surface."""
-    flows = raw.get("flows", {})
-    if isinstance(flows, dict):
-        for retired in ("elab", "elaborate"):
-            if retired in flows:
-                return (
-                    f"booley.toml [flows.{retired}] is retired; use "
-                    "`booley flow sim --mode elab-only` and move "
-                    "standalone_frontend to [flows.sim].standalone_frontend"
-                )
-        for key in ("venue", "backend", "host_setup_commands"):
-            if key in flows:
-                return _retired_flow_key_error("flows", key, flows[key])
-        for name, section in flows.items():
-            if not isinstance(section, dict):
-                continue
-            for key in ("venue", "backend", "host_setup_commands"):
-                if key in section:
-                    return _retired_flow_key_error(f"flows.{name}", key, section[key])
-    sandbox = raw.get("sandbox", {})
-    if isinstance(sandbox, dict) and "passthrough_env" in sandbox:
-        return "booley.toml [sandbox].passthrough_env is retired; use a host License Profile"
-    return None
-
-
-def _retired_flow_key_error(section: str, key: str, value: object) -> str:
-    """Describe the hard migration for one retired Flow execution key."""
-    if key == "backend" and str(value).strip() == "none" and section != "flows":
-        flow_name = section.removeprefix("flows.")
-        return (
-            f'booley.toml [{section}].backend = "none" is retired; write instead:\n'
-            f"  [flows.{flow_name}]\n  enabled = false"
-        )
-    if key == "backend":
-        return (
-            f"booley.toml [{section}].backend is retired; all Flows run inside "
-            "the Session Runtime; delete the key"
-        )
-    return f"booley.toml [{section}].{key} is retired; delete the key"
 
 
 def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:

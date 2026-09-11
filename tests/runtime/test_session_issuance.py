@@ -12,10 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.eda.provisioning import authority, runtime_spec
+from booley.eda.provisioning import authority
+from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.runtime import devcontainer as dc
-from booley.runtime import session_runtime
+from booley.runtime import session_issuance as runtime_spec
+from booley.runtime import session_runtime, session_spec
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -59,6 +61,137 @@ def test_pin_image_rejects_reconciled_id_that_changed(
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="no longer resolves"):
         runtime_spec.pin_image({"image": "booley-sandbox"}, expected_image_id=expected)
+
+
+def test_preview_exposes_only_detached_inputs_and_does_not_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: list[runtime_spec.SessionSpecInputs] = []
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
+    monkeypatch.setattr(
+        runtime_spec.eda_requirements,
+        "build_requirements",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            trusted_mounts=(("/host/tool", "/opt/tool"),),
+            container_environment=(("EDA_LICENSE", "server"),),
+            installation_name="vivado",
+            license_profile_name="floating",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "authorized_project_data_source",
+        lambda _project: project,
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "pin_image",
+        lambda spec, **_kwargs: spec.update(image="sha256:pinned") or spec["image"],
+    )
+    monkeypatch.setattr(runtime_spec, "seal", lambda _project, _spec: "digest")
+
+    def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
+        captured.append(inputs)
+        return {"image": "booley-sandbox"}
+
+    prepared = runtime_spec.preview(project, build)
+
+    assert prepared.digest == "digest"
+    assert prepared.spec["image"] == "sha256:pinned"
+    assert captured == [prepared.inputs]
+    assert prepared.inputs.project_data_source == project
+    assert prepared.inputs.trusted_eda_mounts == (("/host/tool", "/opt/tool"),)
+    assert not (project / ".devcontainer" / "devcontainer.json").exists()
+
+
+def test_prepared_issue_restores_previous_spec_when_issuance_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    path = project / ".devcontainer" / "devcontainer.json"
+    path.parent.mkdir()
+    path.write_text("previous\n", encoding="utf-8")
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec={"image": "sha256:pinned"},
+        digest="digest",
+        inputs=runtime_spec.SessionSpecInputs(project, (), (), None, None),
+    )
+    previous_issuance = runtime_spec.Issuance(
+        version=runtime_spec.STAMP_VERSION,
+        project_root=str(project),
+        spec_sha256="a" * 64,
+        image="sha256:old",
+        image_id="sha256:old",
+        keeper_image=runtime_spec.keeper_image(project),
+        policy_revision=0,
+        installation=None,
+        license_profile=None,
+        wrapper_sha256=None,
+        relay_image_id=None,
+        validator_sha256="b" * 64,
+        file_sha256="c" * 64,
+        project_data_source=str(project),
+    )
+    stamp = runtime_spec.stamp_path(project)
+    runtime_spec._write_stamp(stamp, previous_issuance)
+    keeper_restores = []
+    monkeypatch.setattr(
+        "booley.runtime.interactive_docker.tag_image",
+        lambda source, target: keeper_restores.append((source, target)),
+    )
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:old")
+
+    def write_devcontainer(_project: Path, _spec: dict) -> Path:
+        path.write_text("prospective\n", encoding="utf-8")
+        return path
+
+    def fail_after_stamp_write(*_args) -> None:
+        stamp.write_text("replacement", encoding="utf-8")
+        raise runtime_spec.RuntimeSpecError("failed")
+
+    monkeypatch.setattr(dc, "write_devcontainer", write_devcontainer)
+    monkeypatch.setattr(runtime_spec, "_issue_document", fail_after_stamp_write)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="failed"):
+        runtime_spec.issue(project, prepared)
+
+    assert path.read_text(encoding="utf-8") == "previous\n"
+    assert runtime_spec._load_stamp(stamp) == previous_issuance
+    assert keeper_restores == [(previous_issuance.image_id, previous_issuance.keeper_image)]
+
+
+def test_prepared_issue_restores_spec_when_writer_partially_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    path = project / ".devcontainer" / "devcontainer.json"
+    path.parent.mkdir()
+    path.write_text("previous\n", encoding="utf-8")
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec={"image": "sha256:pinned"},
+        digest="digest",
+        inputs=runtime_spec.SessionSpecInputs(project, (), (), None, None),
+    )
+
+    def partial_write(_project: Path, _spec: dict) -> Path:
+        path.write_text("partial", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(dc, "write_devcontainer", partial_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        runtime_spec.issue(project, prepared)
+
+    assert path.read_text(encoding="utf-8") == "previous\n"
 
 
 def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
@@ -140,6 +273,23 @@ def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
     )
 
     assert runtime_spec.load_issued_snapshot(project) == stamp
+
+
+def test_legacy_eda_stamp_recovers_and_next_issue_migrates_to_runtime(issued) -> None:
+    project, spec, path, stamp = issued
+    current = runtime_spec.stamp_path(project)
+    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
+    legacy.parent.mkdir(parents=True, mode=0o700)
+    legacy.parent.chmod(0o700)
+    current.replace(legacy)
+
+    assert runtime_spec.load_issued_snapshot(project) == stamp
+    snapshot = session_spec.capture_session_spec(project)
+    assert snapshot.stamp_path == current
+    assert snapshot.stamp_content == legacy.read_bytes()
+    assert runtime_spec.issue(project, spec, path) == stamp
+    assert current.is_file()
+    assert not legacy.exists()
 
 
 def test_recovery_snapshot_rejects_different_project_identity(issued, monkeypatch) -> None:
@@ -270,11 +420,11 @@ def test_host_eda_issuance_still_requires_authority(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        runtime_spec,
+        eda_requirements,
         "load_eda_config",
         lambda _project: {"vivado": SimpleNamespace(provisioning="host")},
     )
-    monkeypatch.setattr(runtime_spec, "_host_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
 
     @contextmanager
@@ -300,7 +450,7 @@ def test_requested_license_requires_issued_profile_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profile = SimpleNamespace(name="site")
-    monkeypatch.setattr(runtime_spec, "_optional_license", lambda _project: profile)
+    monkeypatch.setattr(eda_requirements, "_optional_license", lambda _project: profile)
 
     assert runtime_spec.requested_license(tmp_path, expected_name="site") is profile
     with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the issued runtime"):
@@ -316,7 +466,12 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
-    monkeypatch.setattr(runtime_spec, "_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
+    monkeypatch.setattr(
+        eda_requirements,
+        "load_eda_config",
+        lambda _project: {"vivado": SimpleNamespace(provisioning="image")},
+    )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
 
     @contextmanager
@@ -409,7 +564,12 @@ def test_missing_vivado_bind_names_source_and_target(
         POLICY_REVISION,
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(runtime_spec, "_host_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
+    monkeypatch.setattr(
+        eda_requirements,
+        "load_eda_config",
+        lambda _project: {"vivado": SimpleNamespace(provisioning="host")},
+    )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_validate_image_contract", lambda _image: None)
 
@@ -776,8 +936,16 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
                 project.resolve(),
                 spec,
                 runtime_spec._spec_digest(spec),
-                None,
-                profile,
+                eda_requirements.SessionEdaRequirements(
+                    installation=None,
+                    license_profile=profile,
+                    installation_mount=None,
+                    private_network=resources_for_session(str(project.resolve())).private_network,
+                    license_environment="2100@booley-license-xilinx",
+                    policy_revision=POLICY_REVISION,
+                    wrapper_sha256=None,
+                    relay_image_id=None,
+                ),
                 file_sha256=None,
             )
         )
@@ -1269,7 +1437,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
 
     monkeypatch.setattr(authority, "resolve_for_issuance", resolved)
     first = "sha256:" + "a" * 64
-    monkeypatch.setattr(runtime_spec, "_relay_image_id", lambda _profile: first)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: first)
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
@@ -1281,7 +1449,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     path = dc.write_devcontainer(project, spec)
     stamp = runtime_spec.issue(project, spec, path)
     assert stamp.relay_image_id == first
-    monkeypatch.setattr(runtime_spec, "_relay_image_id", lambda _profile: "sha256:" + "b" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "b" * 64)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="relay image has drifted"):
         runtime_spec.validate(project, spec, path)
 
@@ -1379,22 +1547,26 @@ def test_extracted_image_contract_rejects_fake_library(tmp_path: Path) -> None:
     (tmp_path / "libudev.so.1").write_bytes(b"not-elf")
     (tmp_path / "libpixman-1.so.0").write_bytes(b"\x7fELFfixture")
     (tmp_path / "locale-archive").write_bytes(b"archive:en_US.utf8")
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="invalid libudev"):
-        runtime_spec._validate_extracted_image_contract(tmp_path)
+    with pytest.raises(eda_requirements.SessionRequirementsError, match="invalid libudev"):
+        eda_requirements.validate_image_observations(tmp_path)
 
 
 def test_extracted_image_contract_rejects_wrong_wrapper(tmp_path: Path) -> None:
     (tmp_path / "vivado-wrapper").write_bytes(b"wrong")
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="wrong Vivado wrapper digest"):
-        runtime_spec._validate_extracted_image_contract(tmp_path)
+    with pytest.raises(
+        eda_requirements.SessionRequirementsError,
+        match="wrong Vivado wrapper digest",
+    ):
+        eda_requirements.validate_image_observations(tmp_path)
 
 
 def test_extracted_image_contract_rejects_unreadable_library(tmp_path: Path) -> None:
     (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
     with pytest.raises(
-        runtime_spec.RuntimeSpecError, match="cannot inspect Runtime Image library"
+        eda_requirements.SessionRequirementsError,
+        match="cannot inspect Runtime Image library",
     ):
-        runtime_spec._validate_extracted_image_contract(tmp_path)
+        eda_requirements.validate_image_observations(tmp_path)
 
 
 def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
@@ -1402,5 +1574,8 @@ def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
     (tmp_path / "libudev.so.1").write_bytes(b"\x7fELFfixture")
     (tmp_path / "libpixman-1.so.0").write_bytes(b"\x7fELFfixture")
     (tmp_path / "locale-archive").write_bytes(b"archive:C.UTF-8")
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="lacks the required en_US"):
-        runtime_spec._validate_extracted_image_contract(tmp_path)
+    with pytest.raises(
+        eda_requirements.SessionRequirementsError,
+        match="lacks the required en_US",
+    ):
+        eda_requirements.validate_image_observations(tmp_path)

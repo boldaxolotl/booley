@@ -19,8 +19,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from booley.eda.provisioning import runtime_spec
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime import session_spec
 
@@ -221,7 +221,7 @@ def _vscode_labels(
     *,
     spec_digest: str = "current-spec",
 ) -> dict[str, str]:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     labels.update(
@@ -256,7 +256,7 @@ def _stub_prepare(
     issuance: SimpleNamespace,
     docker_stdout: object,
 ) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     _write_spec(workspace, _spec())
     monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
@@ -284,7 +284,7 @@ def _record_successful_removals(monkeypatch: pytest.MonkeyPatch, removed: list[l
 class TestPrepareMigration:
     @pytest.fixture(autouse=True)
     def _authenticated_issuance(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: _test_issuance(workspace))
 
@@ -367,7 +367,7 @@ class TestPrepareMigration:
     def test_running_vscode_container_from_old_issuance_is_never_removed(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -416,7 +416,7 @@ class TestPrepareMigration:
     def test_headless_session_container_is_never_reconciled_for_vscode(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -458,7 +458,7 @@ class TestPrepareMigration:
     def test_inventory_is_scoped_to_the_current_project(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -558,7 +558,7 @@ class TestPrepareMigration:
     def test_missing_generated_bind_names_source_and_reseed_action(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         source = "/host/skills/renamed-skill"
@@ -602,10 +602,10 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
+            "booley.runtime.session_issuance.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", validate)
+        monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
 
         with pytest.raises(sr.SessionError, match="cannot safely migrate"):
             sr.prepare(workspace)
@@ -647,14 +647,12 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("current", json.dumps(current))]
         )
         monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
+            "booley.runtime.session_issuance.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
+        monkeypatch.setattr("booley.runtime.session_issuance.validate", lambda *_args: issuance)
         monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.validate", lambda *_args: issuance
-        )
-        monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.requested_license", lambda _path, **_kwargs: None
+            "booley.runtime.session_issuance.requested_license", lambda _path, **_kwargs: None
         )
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
@@ -668,10 +666,10 @@ class TestPrepareMigration:
         validate = Mock()
         monkeypatch.setattr(sr, "_docker_stdout", lambda _args: None)
         monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
+            "booley.runtime.session_issuance.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", validate)
+        monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
 
         with pytest.raises(sr.SessionError, match="cannot inventory"):
             sr.prepare(workspace)
@@ -706,7 +704,7 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
-            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
+            "booley.runtime.session_issuance.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
 
@@ -716,7 +714,7 @@ class TestPrepareMigration:
     def test_authenticated_legacy_vscode_container_is_stopped_validated_then_removed(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = _test_issuance(workspace)
@@ -767,7 +765,7 @@ class TestPrepareMigration:
     def test_post_stop_validation_failure_names_recovery_command(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda.provisioning import runtime_spec
+        from booley.runtime import session_issuance as runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = _test_issuance(workspace)
@@ -1021,12 +1019,12 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         patch.object(sr.idk, "image_exists", return_value=True),
         lifecycle_reconcile,
         patch(
-            "booley.eda.provisioning.runtime_spec.validate",
+            "booley.runtime.session_issuance.validate",
             return_value=issuance,
         ),
-        patch("booley.eda.provisioning.runtime_spec.authenticate", return_value=issuance),
+        patch("booley.runtime.session_issuance.authenticate", return_value=issuance),
         patch(
-            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
+            "booley.runtime.session_issuance.authorized_project_data_source",
             return_value=workspace / ".booley_project",
         ),
         patch.object(sr, "_strict_running_interactive_states", return_value=[]),
@@ -2271,7 +2269,7 @@ class TestLicensedRelayLifecycle:
 
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -2292,7 +2290,7 @@ class TestLicensedRelayLifecycle:
         workspace, run = wired
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -2328,7 +2326,7 @@ class TestLicensedRelayLifecycle:
         run.return_value = subprocess.CompletedProcess([], 1, "", "create failed")
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -2345,7 +2343,7 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr.idk, "container_exists", return_value=False),
@@ -2368,7 +2366,7 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr.idk, "container_exists", return_value=True),
@@ -2385,7 +2383,7 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
@@ -2399,7 +2397,7 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.requested_license",
+                "booley.runtime.session_issuance.requested_license",
                 return_value=self._profile(),
             ),
             patch.object(sr, "_relay_resources", return_value=relay),
@@ -2435,7 +2433,7 @@ class TestPreflight:
         _write_spec(workspace, _spec())
         with (
             patch(
-                "booley.eda.provisioning.runtime_spec.validate",
+                "booley.runtime.session_issuance.validate",
                 return_value=SimpleNamespace(license_profile=None),
             ),
             patch.object(sr.idk, "network_exists", return_value=True),
@@ -2453,7 +2451,7 @@ class TestPreflight:
             vendor_port=2101,
         )
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=profile),
+            patch("booley.runtime.session_issuance.requested_license", return_value=profile),
             patch.object(
                 sr.idk, "image_exists", side_effect=lambda image: image != "booley-flexnet-relay:1"
             ),
@@ -3398,8 +3396,8 @@ class TestSessionRefresh:
             init_cmd.refresh_runtime_image(tmp_path)
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
-        from booley.eda.provisioning import runtime_spec
         from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
 
         spec_path = dc.devcontainer_path(tmp_path)
         spec_path.parent.mkdir(parents=True)
@@ -3428,8 +3426,8 @@ class TestSessionRefresh:
         assert calls == [["docker", "tag", old_id, runtime_spec.keeper_image(tmp_path)]]
 
     def test_keeper_failure_still_restores_spec_and_stamp(self, tmp_path: Path, monkeypatch):
-        from booley.eda.provisioning import runtime_spec
         from booley.harness import init_cmd
+        from booley.runtime import session_issuance as runtime_spec
 
         spec_path = dc.devcontainer_path(tmp_path)
         spec_path.parent.mkdir(parents=True)

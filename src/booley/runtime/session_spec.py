@@ -10,8 +10,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.eda.provisioning import runtime_spec
 from booley.runtime import devcontainer
+from booley.runtime import session_issuance as runtime_spec
 
 
 @dataclass(frozen=True)
@@ -31,8 +31,9 @@ def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
     """Capture the spec, issuance stamp, and prior immutable image identity."""
     spec_path = devcontainer.devcontainer_path(project_root)
     stamp_path = runtime_spec.stamp_path(project_root)
+    stamp_read_path = runtime_spec.recovery_stamp_path(project_root)
     spec_content = spec_path.read_bytes() if spec_path.is_file() else None
-    stamp_content = stamp_path.read_bytes() if stamp_path.is_file() else None
+    stamp_content = stamp_read_path.read_bytes() if stamp_read_path.is_file() else None
     image_id = None
     if spec_content is not None:
         try:
@@ -47,7 +48,7 @@ def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
         stat.S_IMODE(spec_path.stat().st_mode) if spec_content is not None else 0o644,
         stamp_path,
         stamp_content,
-        stat.S_IMODE(stamp_path.stat().st_mode) if stamp_content is not None else 0o600,
+        stat.S_IMODE(stamp_read_path.stat().st_mode) if stamp_content is not None else 0o600,
         image_id,
     )
 

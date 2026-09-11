@@ -47,6 +47,18 @@ def test_loaded_project_backend_is_not_silently_ignored(tmp_path):
         flow_enabled("sim", root)
 
 
+def test_linked_worktree_without_local_config_uses_main_project_config(tmp_path):
+    main = tmp_path / "main"
+    worktree = tmp_path / "worktree"
+    git_dir = main / ".git" / "worktrees" / "feature"
+    git_dir.mkdir(parents=True)
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    _project(main, "[flows.fpga]\nenabled = false\n")
+
+    assert flow_enabled("fpga", worktree) is False
+
+
 @pytest.mark.parametrize("retired", ["elab", "elaborate"])
 @pytest.mark.parametrize("requested", ["sim", "lint"])
 def test_every_flow_rejects_retired_elaboration_tables(retired, requested):

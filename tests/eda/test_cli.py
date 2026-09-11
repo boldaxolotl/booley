@@ -19,13 +19,30 @@ def _parse(*argv: str) -> argparse.Namespace:
     return parser.parse_args(("eda", *argv))
 
 
+class _DirectGrantMutator:
+    def add(self, project, kind, *, installation, license_profile):
+        return authority._add_grant(
+            project,
+            kind,
+            installation=installation,
+            license_profile=license_profile,
+        )
+
+    def revoke(self, project, kind):
+        return authority._revoke_grant(project, kind)
+
+
+def _run(args: argparse.Namespace, project: Path) -> int:
+    return cli.run(args, project, grant_mutator=_DirectGrantMutator())
+
+
 def test_grant_add_prints_informative_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     grant = authority.ProjectGrant(str(project), "vivado", "vivado_2025_2", None)
-    monkeypatch.setattr(authority, "add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
 
     args = _parse(
         "grant",
@@ -36,7 +53,7 @@ def test_grant_add_prints_informative_success(
         "vivado_2025_2",
         str(project),
     )
-    assert cli.run(args, project) == 0
+    assert _run(args, project) == 0
 
     output = capsys.readouterr().out
     assert "Granted vivado EDA access" in output
@@ -49,10 +66,10 @@ def test_grant_add_json_preserves_record_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     grant = authority.ProjectGrant(str(tmp_path), "vivado", "vivado_2025_2", None)
-    monkeypatch.setattr(authority, "add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
 
     args = _parse("grant", "add", str(tmp_path), "--kind", "vivado", "--json")
-    assert cli.run(args, tmp_path) == 0
+    assert _run(args, tmp_path) == 0
 
     assert json.loads(capsys.readouterr().out) == {
         "installation": "vivado_2025_2",
@@ -104,9 +121,9 @@ def test_human_renderers_cover_each_authority_operation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = argparse.Namespace(eda_group=group, eda_action=action, json=False)
-    monkeypatch.setattr(cli, "_dispatch", lambda _args: value)
+    monkeypatch.setattr(cli, "_dispatch", lambda _args, **_kwargs: value)
 
-    assert cli.run(args, Path("/project")) == 0
+    assert _run(args, Path("/project")) == 0
 
     assert expected in capsys.readouterr().out
 
@@ -115,10 +132,10 @@ def test_grant_human_output_describes_both_authority_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     grant = authority.ProjectGrant(str(tmp_path), "vivado", "vivado_2025_2", "site")
-    monkeypatch.setattr(authority, "add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
 
     assert (
-        cli.run(
+        _run(
             _parse(
                 "grant",
                 "add",
@@ -146,12 +163,12 @@ def test_revoke_does_not_repeat_authority_cleanup(
     calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(
         authority,
-        "revoke_grant",
+        "_revoke_grant",
         lambda project, kind: (calls.append((project, kind)), grant)[1],
     )
 
     args = _parse("grant", "revoke", str(tmp_path), "--kind", "vivado")
-    assert cli.run(args, tmp_path) == 0
+    assert _run(args, tmp_path) == 0
 
     assert calls == [(tmp_path, "vivado")]
     assert "Revoked vivado EDA access" in capsys.readouterr().out
@@ -172,7 +189,7 @@ def test_legacy_grant_list_is_hidden_and_warns(
         lambda: authority.AuthorityState({}, {}, (grant,)),
     )
 
-    assert cli.run(_parse("grant", "list"), Path("/project")) == 0
+    assert _run(_parse("grant", "list"), Path("/project")) == 0
 
     streams = capsys.readouterr()
     assert json.loads(streams.out) == [
