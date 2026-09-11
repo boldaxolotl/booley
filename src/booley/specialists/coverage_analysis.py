@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_analysis_input import (
@@ -14,11 +14,11 @@ from booley.flows.sim.coverage_analysis_input import (
 )
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
-    DurableTargetIdentity,
+    CoveragePoint,
     FrozenJson,
-    decode_coverage_campaign,
     decode_coverage_point_id,
     encode_coverage_campaign,
+    encode_coverage_point,
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
@@ -61,8 +61,12 @@ class _AnalysisEnvelope:
 
 
 def _analysis_envelope(
-    observed: dict[str, object], summary: CoverageCampaignSummary | None
-) -> _AnalysisEnvelope:
+    campaign: CoverageCampaign, summary: CoverageCampaignSummary | None
+) -> tuple[_AnalysisEnvelope, dict[str, object]]:
+    target: dict[str, object] = {
+        "identity": campaign.target.identity,
+        "selector": campaign.target.selector,
+    }
     storage_schema = "booley.coverage-campaign/v1"
     point_store = None
     manifest = None
@@ -72,24 +76,28 @@ def _analysis_envelope(
         point_store = manifest.get("point_store")
     reference = {
         "campaign_reference": {
-            "campaign_id": observed["campaign_id"],
-            "target": observed["target"],
-            "point_count": len(cast(list[object], observed["points"])),
+            "campaign_id": campaign.campaign_id,
+            "target": target,
+            "point_count": len(campaign.points),
             "storage_schema": storage_schema,
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
     if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V3:
-        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed)
+        observed = encode_coverage_campaign(campaign)
+        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed), target
     assert manifest is not None
     assert summary.point_store is not None
-    return _AnalysisEnvelope(
-        "booley.coverage-analysis/v2",
-        reference,
-        {
-            "campaign_manifest": manifest,
-            "point_store_sha256": summary.point_store.sha256,
-        },
+    return (
+        _AnalysisEnvelope(
+            "booley.coverage-analysis/v2",
+            reference,
+            {
+                "campaign_manifest": manifest,
+                "point_store_sha256": summary.point_store.sha256,
+            },
+        ),
+        target,
     )
 
 
@@ -107,9 +115,7 @@ class CoverageAnalyzer:
         *,
         summary: CoverageCampaignSummary | None = None,
     ) -> CoverageAnalysisReport:
-        observed = encode_coverage_campaign(campaign)
-        decode_coverage_campaign(observed, DurableTargetIdentity(campaign.target.identity))
-        envelope = _analysis_envelope(observed, summary)
+        envelope, target = _analysis_envelope(campaign, summary)
         eligibility, limitations = _eligibility(campaign)
         sources = verified_source_snapshot(campaign, sources)
         if sources is None:
@@ -119,14 +125,15 @@ class CoverageAnalyzer:
         response, analysis_scope = _model_response(
             self._model(_analysis_prompt(envelope, sources, instruction)), campaign
         )
-        response = _validate_response(response, campaign)
+        points = {point.id: point for point in campaign.points}
+        response = _validate_response(response, points)
         response["waiver_candidates"] = _screen_candidates(
-            response["waiver_candidates"], campaign, sources
+            response["waiver_candidates"], campaign, points, sources
         )
         report = {
             "$schema": envelope.schema,
             "campaign_id": campaign.campaign_id,
-            "target": observed["target"],
+            "target": target,
             "eligibility": eligibility,
             "source_access": "report_only" if sources is None else "verified",
             "limitations": limitations,
@@ -398,14 +405,14 @@ def _eligibility(campaign: CoverageCampaign) -> tuple[str, list[str]]:
     return ("eligible_with_limits" if limitations else "eligible"), limitations
 
 
-def _validate_response(value: object, campaign: CoverageCampaign) -> dict[str, object]:
+def _validate_response(value: object, points: Mapping[str, CoveragePoint]) -> dict[str, object]:
     try:
         response = require_dict(value)
         if set(response) != {"hypotheses", "recommendations", "waiver_candidates"}:
             raise CoverageAnalysisError(
                 "Model must return only hypotheses, recommendations and waiver_candidates"
             )
-        points = {point.id for point in campaign.points}
+        known_points = set(points)
         issues: list[_ReferenceIssue] = []
         for category, text_key in (("hypotheses", "explanation"), ("recommendations", "action")):
             for item_index, item in enumerate(require_list(response[category])):
@@ -418,7 +425,7 @@ def _validate_response(value: object, campaign: CoverageCampaign) -> dict[str, o
                     references,
                     f"/{category}/{item_index}/point_ids",
                     {},
-                    points,
+                    known_points,
                     None,
                     issues,
                 )
@@ -430,12 +437,11 @@ def _validate_response(value: object, campaign: CoverageCampaign) -> dict[str, o
 
 
 def _screen_candidates(
-    value: object, campaign: CoverageCampaign, sources: CoverageSourceClosure | None
+    value: object,
+    campaign: CoverageCampaign,
+    points: Mapping[str, CoveragePoint],
+    sources: CoverageSourceClosure | None,
 ) -> list[dict[str, object]]:
-    points = {
-        point["id"]: point
-        for point in cast(list[dict[str, Any]], encode_coverage_campaign(campaign)["points"])
-    }
     rtl = {
         record["path"]: record["sha256"]
         for record in cast(tuple[Mapping[str, str], ...], campaign.source_closure["rtl"])
@@ -460,10 +466,8 @@ def _screen_candidates(
             {
                 **item,
                 "target_identity": campaign.target.identity,
-                "point_identity": point["identity"] if point else None,
-                "source_fingerprint": rtl.get(point["identity"]["location"]["source"])
-                if point
-                else None,
+                "point_identity": encode_coverage_point(point)["identity"] if point else None,
+                "source_fingerprint": rtl.get(_point_source(point)) if point else None,
                 "screening": screening,
                 "screening_reason": detail,
                 "approval": "not_approved",
@@ -473,9 +477,9 @@ def _screen_candidates(
 
 
 def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
-    if point is None or point["identity"]["location"]["source"] not in rtl:
+    if point is None or _point_source(point) not in rtl:
         return "forbidden", "Candidate must identify an exact RTL Coverage Point"
-    if point["disposition"]["kind"] != "eligible" or item["reason"] not in {
+    if point.disposition["kind"] != "eligible" or item["reason"] not in {
         "excluded",
         "unreachable",
     }:
@@ -486,7 +490,7 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
             "Verified sources and supporting evidence are required for human review",
         )
     if item["reason"] == "unreachable" and (
-        not item["proof_reference"].strip() or point["hits_by_run"]
+        not item["proof_reference"].strip() or point.hits_by_run
     ):
         return (
             "investigate",
@@ -496,3 +500,7 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         "ready_for_human_review",
         "Advisory only; a human must verify evidence and author any approval",
     )
+
+
+def _point_source(point: CoveragePoint) -> str:
+    return str(point.identity.location["source"])

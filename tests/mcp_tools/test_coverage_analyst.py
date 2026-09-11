@@ -143,6 +143,23 @@ def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tm
     assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
 
 
+def test_persisted_v3_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
+    from booley.specialists import coverage_analysis
+
+    path = persist_campaign(tmp_path)
+
+    def reject_full_encode(campaign):
+        raise AssertionError("persisted V3 analysis must reuse validated summary evidence")
+
+    monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
+
+    result = CoverageAnalystSpecialist(model=Model()).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 0
+
+
 def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
     from booley.mcp import coverage_evidence
 

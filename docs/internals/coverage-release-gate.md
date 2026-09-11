@@ -41,6 +41,43 @@ V3 intentionally adds source-file rollups to the manifest, so manifest size now 
 with the number of distinct source paths rather than the number of Coverage Points. A
 16 MiB publication and read ceiling bounds that growth.
 
+## Validated query characterization, 11 SEP 2026
+
+Issue #489 was measured on Linux 7.0 x86-64 with Python 3.14.4 and an Intel i7-14650HX.
+The before source was `fa19f0d1`; the after source used the rebased issue branch. The standalone
+`tests.performance.coverage_query_profile` controller created deterministic Campaigns with four
+metrics, covered and uncovered incidence, eligible points, and full Approved Waiver provenance.
+It then ran each measured sample in a fresh process. Each row is the median of three samples; time
+is diagnostic and is not a CI threshold.
+
+```console
+PYTHONPATH=<revision>/src:<after-worktree> python3 -m \
+  tests.performance.coverage_query_profile --points <2000|10000|40000> --samples 3
+```
+
+| Points | Phase | Before | After |
+| ---: | --- | ---: | ---: |
+| 2,000 | process peak RSS | 67,196 KiB | 56,208 KiB |
+| 10,000 | process peak RSS | 192,288 KiB | 148,936 KiB |
+| 40,000 | process peak RSS | 666,008 KiB | 492,880 KiB |
+| 2,000 | session peak traced bytes | 3,492,490 | 222,250 |
+| 10,000 | session peak traced bytes | 17,418,524 | 1,005,548 |
+| 40,000 | session peak traced bytes | 70,010,236 | 4,312,876 |
+| 2,000 | exact-ID seconds | 0.001542 | 0.000214 |
+| 10,000 | exact-ID seconds | 0.008042 | 0.000222 |
+| 40,000 | exact-ID seconds | 0.033669 | 0.000233 |
+| 2,000 | second filtered page seconds | 0.034614 | 0.033025 |
+| 10,000 | second filtered page seconds | 0.047191 | 0.033049 |
+| 40,000 | second filtered page seconds | 0.094964 | 0.033123 |
+
+At 40,000 points the validated session's peak traced allocation fell 93.8%, construction fell from
+0.656 to 0.131 seconds, and exact-ID retrieval no longer grew with Campaign size. Repeated filtered
+pages reuse one bounded match set: after its first scan, the second page stayed near 0.033 seconds
+across all three sizes instead of growing to 0.095 seconds. Consuming loader-owned point dictionaries
+only after all validation succeeds also lowered the 40,000-point deep-load traced peak from
+274,217,099 to 195,528,847 bytes. Full loading and the first filtered scan remain linear; the result
+does not establish constant-memory analysis.
+
 The hosted `bwave-smoke` job runs both native pytest suites and checks their
 JUnit report with `--min-tests 18 --max-skips 0`. Missing native prerequisites
 cannot silently pass the release gate. The compiler acceptance runner independently
