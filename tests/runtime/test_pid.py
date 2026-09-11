@@ -149,6 +149,34 @@ def test_process_identity_owns_protocol_serialization() -> None:
         )
         is None
     )
+    assert runtime_pid.ProcessIdentity.from_payload(
+        {"pid": 123, "pid_namespace": "windows", "start_ticks": 100}
+    ) == runtime_pid.ProcessIdentity(
+        123,
+        "windows",
+        100,
+        identity_kind="windows-creation-time",
+    )
+    assert runtime_pid.ProcessIdentity.from_payload(
+        {"pid": 123, "pid_namespace": "ps:darwin", "start_ticks": 100}
+    ) == runtime_pid.ProcessIdentity(
+        123,
+        "ps:darwin",
+        100,
+        identity_kind="posix-ps-start",
+    )
+    for kind in ("windows-creation-time", "posix-ps-start"):
+        assert (
+            runtime_pid.ProcessIdentity.from_payload(
+                {
+                    "pid": 123,
+                    "identity_kind": kind,
+                    "identity_scope": "pid:[10]",
+                    "start_token": 100,
+                }
+            )
+            is None
+        )
 
 
 def test_windows_observation_rejects_terminated_matching_identity(monkeypatch) -> None:
@@ -160,6 +188,27 @@ def test_windows_observation_rejects_terminated_matching_identity(monkeypatch) -
     monkeypatch.setattr(runtime_pid, "_windows_pid_alive", lambda _pid: False)
 
     assert runtime_pid.observe_process(identity).state is runtime_pid.DEAD
+
+
+def test_windows_observation_handles_unavailable_and_reused_identity(monkeypatch) -> None:
+    identity = runtime_pid.ProcessIdentity(
+        123, "windows", 100, identity_kind="windows-creation-time"
+    )
+    monkeypatch.setattr(runtime_pid.sys, "platform", "linux")
+    assert runtime_pid.observe_process(identity).state is runtime_pid.UNKNOWN
+
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
+    monkeypatch.setattr(runtime_pid, "_windows_process_identity", lambda _pid: None)
+    monkeypatch.setattr(runtime_pid, "_windows_pid_alive", lambda _pid: False)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.DEAD
+    monkeypatch.setattr(runtime_pid, "_windows_pid_alive", lambda _pid: True)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.UNKNOWN
+
+    reused = runtime_pid.ProcessIdentity(
+        123, "windows", 101, identity_kind="windows-creation-time"
+    )
+    monkeypatch.setattr(runtime_pid, "_windows_process_identity", lambda _pid: reused)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.REUSED
 
 
 def test_portable_posix_identity_uses_stable_process_start(monkeypatch) -> None:
@@ -174,3 +223,28 @@ def test_portable_posix_identity_uses_stable_process_start(monkeypatch) -> None:
     assert identity.identity_scope == "ps:darwin"
     assert identity.identity_kind == "posix-ps-start"
     assert runtime_pid.observe_process(identity).state is runtime_pid.RUNNING
+
+
+def test_portable_identity_capture_rejects_failed_process_queries(monkeypatch) -> None:
+    def unavailable(*_args, **_kwargs):
+        raise OSError("ps unavailable")
+
+    monkeypatch.setattr(runtime_pid.subprocess, "run", unavailable)
+    assert runtime_pid._portable_process_identity(123) is None
+
+    failed = type("Completed", (), {"returncode": 1, "stdout": ""})()
+    monkeypatch.setattr(runtime_pid.subprocess, "run", lambda *args, **kwargs: failed)
+    assert runtime_pid._portable_process_identity(123) is None
+
+
+def test_portable_observation_distinguishes_unknown_dead_and_reused(monkeypatch) -> None:
+    identity = runtime_pid.ProcessIdentity(123, "ps:darwin", 100, identity_kind="posix-ps-start")
+    monkeypatch.setattr(runtime_pid, "_portable_process_identity", lambda _pid: None)
+    monkeypatch.setattr(runtime_pid, "is_pid_alive", lambda _pid: True)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.UNKNOWN
+    monkeypatch.setattr(runtime_pid, "is_pid_alive", lambda _pid: False)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.DEAD
+
+    reused = runtime_pid.ProcessIdentity(123, "ps:darwin", 101, identity_kind="posix-ps-start")
+    monkeypatch.setattr(runtime_pid, "_portable_process_identity", lambda _pid: reused)
+    assert runtime_pid.observe_process(identity).state is runtime_pid.REUSED

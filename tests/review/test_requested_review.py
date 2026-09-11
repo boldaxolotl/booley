@@ -875,3 +875,52 @@ def test_interrupted_publication_blocks_completion(blocked, capsys):
     path.write_text(json.dumps({"phase": "publishing", "pid": 99999999}))
     assert _completion_acceptance_valid(tio, "demo") is None
     assert "publication was interrupted" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_review_lifecycle_facade_delegates_public_operations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from booley.ticket_board import review_execution, review_lifecycle
+
+    outcome = SimpleNamespace(status="ready")
+    jobs = [SimpleNamespace(run_id="job-1")]
+
+    async def prepare(project_root: Path, slug: str, *, force: bool = False):
+        assert (project_root, slug, force) == (tmp_path, "demo", True)
+        return outcome
+
+    async def wait(_log_dir: Path):
+        return jobs
+
+    monkeypatch.setattr(review_lifecycle, "active_ticket_jobs", lambda _log_dir: jobs)
+    monkeypatch.setattr(review_lifecycle, "wait_for_ticket_jobs", wait)
+    monkeypatch.setattr(review_lifecycle.prep, "prepare_review", prepare)
+    monkeypatch.setattr(review_lifecycle.prep, "prepare_review_command", prepare)
+    monkeypatch.setattr(
+        review_lifecycle.prep,
+        "verify_review_handoff",
+        lambda project_root, slug: (project_root, slug),
+    )
+    monkeypatch.setattr(
+        review_lifecycle.prep,
+        "review_briefing_command",
+        lambda project_root, slug, *, open_diffs: (project_root, slug, open_diffs),
+    )
+    monkeypatch.setattr(
+        review_execution,
+        "run_review_command",
+        lambda project_root, slug, command: len(command),
+    )
+
+    assert review_lifecycle.active_review_jobs(tmp_path) == jobs
+    assert await review_lifecycle.wait_for_review_jobs(tmp_path) == jobs
+    assert await review_lifecycle.prepare_review(tmp_path, "demo", force=True) is outcome
+    assert await review_lifecycle.prepare_review_command(tmp_path, "demo", force=True) is outcome
+    assert review_lifecycle.verify_review_handoff(tmp_path, "demo") == (tmp_path, "demo")
+    assert review_lifecycle.review_briefing_command(tmp_path, "demo", open_diffs=False) == (
+        tmp_path,
+        "demo",
+        False,
+    )
+    assert review_lifecycle.run_review_command(tmp_path, "demo", ["echo", "ok"]) == 2

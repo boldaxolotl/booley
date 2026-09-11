@@ -156,6 +156,33 @@ def test_malformed_ticket_frontmatter_raises_review_context_error(
         )
 
 
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("---\nspec: spec.md\n", "frontmatter"),
+        ("---\nspec: [spec.md]\n---\n", "spec must be a string"),
+    ],
+)
+def test_ticket_frontmatter_boundary_errors_are_designed(
+    tmp_path: Path, monkeypatch, contents: str, message: str
+) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "ticket.md").write_text(contents, encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    with pytest.raises(ReviewContextError, match=message):
+        build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=tmp_path,
+                category="rtl",
+                focus="spec",
+                scope=(),
+                mode="done",
+            )
+        )
+
+
 def test_unreadable_ticket_frontmatter_raises_review_context_error(
     tmp_path: Path, monkeypatch
 ) -> None:

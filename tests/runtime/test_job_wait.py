@@ -48,6 +48,21 @@ async def test_timeout_names_jobs_that_are_still_active(tmp_path: Path, monkeypa
         "{not json",
         '{"run_id":"job","endpoint":"sim","started_at":"bad","timeout_s":60}',
         '{"run_id":"job","endpoint":"sim","started_at":"2999-01-01T00:00:00Z","timeout_s":60}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z","timeout_s":0}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"argv":[1]}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"status":"unknown"}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"pid":0}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"exit_code":"bad"}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"run_started_at":"bad"}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"run_started_at":"2999-01-01T00:00:00Z"}',
+        '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
+        '"timeout_s":60,"run_started_at":"2000-01-01T00:00:00Z"}',
         '{"run_id":"job","endpoint":"sim","started_at":"2026-08-10T08:00:00Z",'
         '"timeout_s":"unbounded"}',
     ],
@@ -57,3 +72,10 @@ def test_active_jobs_fails_closed_on_malformed_records(tmp_path: Path, contents:
 
     with pytest.raises(jobrec.JobRecordError, match="repair or removal"):
         job_wait.active_jobs(tmp_path)
+
+
+def test_strict_records_returns_valid_records(tmp_path: Path) -> None:
+    record = _record()
+    jobrec.write_record(record, tmp_path)
+
+    assert jobrec.strict_records(tmp_path) == [record]
