@@ -1,0 +1,35 @@
+{
+  "schema": "qa.coverage-approval-inputs/v1",
+  "approved_by": "Human Maintainer (approved QA fixture)",
+  "approved_at": "2026-09-11T12:00:00Z",
+  "approval_ref": "qa:coverage-fixture-approval/v1",
+  "excluded": {
+    "target": "booley:qa:coverage:1#sim_properties4",
+    "source": "rtl/properties4.sv",
+    "selector": {
+      "metric": "cover_property",
+      "source_lines": [
+        4,
+        5
+      ]
+    },
+    "reason": "excluded",
+    "justification": "The reserved decoder values 2 and 3 are excluded only in this waiver-validation fixture; no exclusion applies to the gap-closure Ticket."
+  },
+  "unreachable": {
+    "target": "booley:qa:coverage:1#sim_waiver",
+    "source": "rtl/waiver_counter.sv",
+    "selector": {
+      "metric": "toggle",
+      "subjects": [
+        "value[0]:0->1",
+        "value[0]:1->0"
+      ]
+    },
+    "reason": "unreachable",
+    "justification": "The counter starts at zero and adds two on every edge, so bit zero remains zero in all reachable states. The native bit-zero transitions are unreachable.",
+    "proof_claim": "value[0] is invariantly 0 from the declared initial state under arbitrary clock progression",
+    "proof_script": "proof/parity.ys",
+    "proof_reference": "proof/parity.log"
+  }
+}

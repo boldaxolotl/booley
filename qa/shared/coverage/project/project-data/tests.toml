@@ -1,0 +1,69 @@
+[sim_generated]
+tests = ["gap", "full", "fail"]
+select = "+test={name}"
+skip = ["full", "fail"]
+
+[sim_hdl]
+tests = ["gap", "full", "fail"]
+select = "+test={name}"
+skip = ["full", "fail"]
+
+[sim_custom]
+tests = ["gap", "full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-stale", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
+select = "+test={name}"
+skip = ["full", "fail", "missing-start", "missing-write", "duplicate-start", "duplicate-write", "out-of-order", "failed-hook", "native-missing", "native-stale", "native-malformed", "native-incompatible", "native-fsm", "native-covergroup", "native-unknown", "native-generated", "native-foreign"]
+
+[sim_toggle]
+tests = ["zero", "quarter", "half", "upper", "rise", "full", "repeat", "reset"]
+select = "+test={name}"
+
+[sim_cocotb]
+tests = ["gap", "full"]
+
+[sim_icarus]
+tests = ["gap", "full", "fail"]
+select = "+test={name}"
+skip = ["full", "fail"]
+
+[sim_properties3]
+tests = ["half", "full"]
+select = "+test={name}"
+
+[sim_properties4]
+tests = ["half", "full"]
+select = "+test={name}"
+
+[sim_properties16]
+tests = ["half", "full"]
+select = "+test={name}"
+
+[sim_pass]
+tests = ["gap"]
+select = "+test={name}"
+
+[sim_miss]
+tests = ["gap"]
+select = "+test={name}"
+
+[sim_collector_error]
+tests = ["native-missing"]
+select = "+test={name}"
+
+[sim_waiver]
+tests = ["run"]
+select = "+test={name}"
+
+[sim_scale]
+tests = ["run"]
+select = "+test={name}"
+
+[sim_multi]
+tests = ["run"]
+select = "+test={name}"
+
+[sim_staged]
+tests = ["half", "upper"]
+select = "+test={name}"
+
+[sim_cocotb_staged]
+tests = ["gap", "full"]

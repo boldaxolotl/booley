@@ -1,0 +1,359 @@
+CAPI=2:
+name: booley:qa:coverage:1
+filesets:
+  rtl:
+    files:
+    - rtl/constants.svh:
+        is_include_file: true
+    - rtl/coverage_dut.sv
+    file_type: systemVerilogSource
+  generated_tb:
+    files:
+    - tb/coverage_tb.sv
+    file_type: systemVerilogSource
+  tb:
+    files:
+    - tb/coverage_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+  custom:
+    files:
+    - tb/coverage_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  toggle:
+    files:
+    - rtl/toggle.sv
+    file_type: systemVerilogSource
+  toggle_main:
+    files:
+    - tb/toggle_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  cocotb:
+    files:
+    - tb/cocotb_cases.py:
+        file_type: user
+        copyto: cocotb_cases.py
+    tags:
+    - tb
+  properties3:
+    files:
+    - rtl/properties3.sv
+    file_type: systemVerilogSource
+  properties3_main:
+    files:
+    - tb/properties3_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  properties4:
+    files:
+    - rtl/properties4.sv
+    file_type: systemVerilogSource
+  properties4_main:
+    files:
+    - tb/properties4_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  properties16:
+    files:
+    - rtl/properties16.sv
+    file_type: systemVerilogSource
+  properties16_main:
+    files:
+    - tb/properties16_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  waiver:
+    files:
+    - rtl/waiver_counter.sv
+    file_type: systemVerilogSource
+  waiver_tb:
+    files:
+    - tb/waiver_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+  scale_tb:
+    files:
+    - tb/scale_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+  multi_tb:
+    files:
+    - tb/multi_tb.sv
+    file_type: systemVerilogSource
+    tags:
+    - tb
+  staged_main:
+    files:
+    - tb/staged_main.cpp
+    file_type: cppSource
+    tags:
+    - tb
+  cocotb_staged:
+    files:
+    - tb/cocotb_staged.py:
+        file_type: user
+        copyto: cocotb_staged.py
+    tags:
+    - tb
+targets:
+  sim_generated:
+    flow: sim
+    filesets:
+    - rtl
+    - generated_tb
+    toplevel: coverage_tb
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - --main
+      - --exe
+      - -Wno-fatal
+  sim_hdl:
+    flow: sim
+    filesets:
+    - rtl
+    - tb
+    toplevel: coverage_tb
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - --main
+      - --exe
+      - -Wno-fatal
+  sim_custom:
+    flow: sim
+    filesets:
+    - rtl
+    - custom
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_toggle:
+    flow: sim
+    filesets:
+    - toggle
+    - toggle_main
+    toplevel: toggle
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_cocotb:
+    flow: sim
+    filesets:
+    - rtl
+    - cocotb
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      cocotb_module: cocotb_cases
+      timescale: 1ns/1ps
+  sim_icarus:
+    default_tool: icarus
+    filesets:
+    - rtl
+    - tb
+    toplevel: coverage_tb
+  sim_properties3:
+    flow: sim
+    filesets:
+    - properties3
+    - properties3_main
+    toplevel: properties3
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_properties4:
+    flow: sim
+    filesets:
+    - properties4
+    - properties4_main
+    toplevel: properties4
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_properties16:
+    flow: sim
+    filesets:
+    - properties16
+    - properties16_main
+    toplevel: properties16
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_pass:
+    flow: sim
+    filesets:
+    - rtl
+    - custom
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_miss:
+    flow: sim
+    filesets:
+    - rtl
+    - custom
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_collector_error:
+    flow: sim
+    filesets:
+    - rtl
+    - custom
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_waiver:
+    flow: sim
+    filesets:
+    - waiver
+    - waiver_tb
+    toplevel: waiver_tb
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - --main
+      - --exe
+      - -Wno-fatal
+  sim_scale:
+    flow: sim
+    filesets:
+    - rtl
+    - scale_tb
+    toplevel: scale_tb
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - --main
+      - --exe
+      - -Wno-fatal
+  sim_multi:
+    flow: sim
+    filesets:
+    - rtl
+    - waiver
+    - multi_tb
+    toplevel: multi_tb
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - --main
+      - --exe
+      - -Wno-fatal
+  sim_staged:
+    flow: sim
+    filesets:
+    - toggle
+    - staged_main
+    toplevel: toggle
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      booley:
+        coverage:
+          reset_included: false
+          custom_main_hooks:
+          - start_hook
+          - write_hook
+  sim_cocotb_staged:
+    flow: sim
+    filesets:
+    - rtl
+    - cocotb_staged
+    toplevel: coverage_dut
+    flow_options:
+      tool: verilator
+      verilator_options:
+      - --timing
+      - -Wno-fatal
+      cocotb_module: cocotb_staged
+      timescale: 1ns/1ps

@@ -1,0 +1,155 @@
+{
+  "policy.metric-line": {
+    "targets": [
+      "sim_custom"
+    ],
+    "tests": [
+      "gap"
+    ],
+    "metrics": {
+      "line": {
+        "min_pct": 70
+      }
+    },
+    "expected": {
+      "covered": 5,
+      "eligible": 7,
+      "evaluation": "pass"
+    }
+  },
+  "policy.metric-branch": {
+    "targets": [
+      "sim_custom"
+    ],
+    "tests": [
+      "gap"
+    ],
+    "metrics": {
+      "branch": {
+        "min_pct": 50
+      }
+    },
+    "expected": {
+      "covered": 2,
+      "eligible": 4,
+      "evaluation": "pass"
+    }
+  },
+  "policy.metric-expression": {
+    "targets": [
+      "sim_custom"
+    ],
+    "tests": [
+      "gap"
+    ],
+    "metrics": {
+      "expression": {
+        "min_pct": 66
+      }
+    },
+    "expected": {
+      "covered": 2,
+      "eligible": 3,
+      "evaluation": "pass"
+    }
+  },
+  "policy.metric-toggle": {
+    "targets": [
+      "sim_toggle"
+    ],
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "toggle": {
+        "min_pct": 50
+      }
+    },
+    "expected": {
+      "covered": 4,
+      "eligible": 8,
+      "evaluation": "pass"
+    }
+  },
+  "policy.metric-cover-property": {
+    "targets": [
+      "sim_properties3"
+    ],
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66
+      }
+    },
+    "expected": {
+      "covered": 2,
+      "eligible": 3,
+      "evaluation": "pass"
+    }
+  },
+  "policy.and": {
+    "targets": [
+      "sim_custom"
+    ],
+    "tests": [
+      "gap"
+    ],
+    "metrics": {
+      "line": {
+        "min_pct": 70
+      },
+      "branch": {
+        "min_pct": 51
+      }
+    },
+    "expected": {
+      "line": [
+        5,
+        7
+      ],
+      "branch": [
+        2,
+        4
+      ],
+      "evaluation": "fail"
+    }
+  },
+  "policy.rounding": {
+    "targets": [
+      "sim_properties3"
+    ],
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66.67
+      }
+    },
+    "expected": {
+      "covered": 2,
+      "eligible": 3,
+      "evaluation": "fail"
+    }
+  },
+  "policy.boundary": {
+    "targets": [
+      "sim_properties3"
+    ],
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66
+      }
+    },
+    "expected": {
+      "covered": 2,
+      "eligible": 3,
+      "evaluation": "pass"
+    }
+  }
+}

@@ -1,0 +1,627 @@
+{
+  "zero": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "zero": []
+    },
+    "fraction": [
+      0,
+      8
+    ],
+    "sequences": {
+      "zero": [
+        0
+      ]
+    }
+  },
+  "quarter": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "quarter": [
+        "bit0:0->1",
+        "bit0:1->0"
+      ]
+    },
+    "fraction": [
+      2,
+      8
+    ],
+    "sequences": {
+      "quarter": [
+        0,
+        1,
+        0
+      ]
+    }
+  },
+  "half": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ]
+    }
+  },
+  "upper": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "upper": [
+        "bit2:0->1",
+        "bit2:1->0",
+        "bit3:0->1",
+        "bit3:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "upper": [
+        0,
+        12,
+        0
+      ]
+    }
+  },
+  "rise": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "rise": [
+        "bit0:0->1",
+        "bit1:0->1",
+        "bit2:0->1",
+        "bit3:0->1"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "rise": [
+        0,
+        15
+      ]
+    }
+  },
+  "full": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "full": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0",
+        "bit2:0->1",
+        "bit2:1->0",
+        "bit3:0->1",
+        "bit3:1->0"
+      ]
+    },
+    "fraction": [
+      8,
+      8
+    ],
+    "sequences": {
+      "full": [
+        0,
+        15,
+        0
+      ]
+    }
+  },
+  "repeat": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "repeat": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "repeat": [
+        0,
+        3,
+        0,
+        3,
+        0,
+        3,
+        0
+      ]
+    }
+  },
+  "reset": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "reset": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "reset": [
+        0,
+        3,
+        0
+      ]
+    }
+  },
+  "union": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ],
+      "upper": [
+        "bit2:0->1",
+        "bit2:1->0",
+        "bit3:0->1",
+        "bit3:1->0"
+      ]
+    },
+    "fraction": [
+      8,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ],
+      "upper": [
+        0,
+        12,
+        0
+      ]
+    }
+  },
+  "overlap": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ],
+      "repeat": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ],
+      "repeat": [
+        0,
+        3,
+        0,
+        3,
+        0,
+        3,
+        0
+      ]
+    }
+  },
+  "threshold-equal": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ]
+    },
+    "min_pct": 50
+  },
+  "threshold-above": {
+    "metric": "toggle",
+    "target": "sim_toggle",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ]
+    },
+    "fraction": [
+      4,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ]
+    },
+    "min_pct": 50.01
+  },
+  "properties3-half": {
+    "metric": "cover_property",
+    "target": "sim_properties3",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4"
+    ],
+    "tests": {
+      "half": [
+        "line:2",
+        "line:3"
+      ]
+    },
+    "fraction": [
+      2,
+      3
+    ]
+  },
+  "properties3-full": {
+    "metric": "cover_property",
+    "target": "sim_properties3",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4"
+    ],
+    "tests": {
+      "full": [
+        "line:2",
+        "line:3",
+        "line:4"
+      ]
+    },
+    "fraction": [
+      3,
+      3
+    ]
+  },
+  "properties4-half": {
+    "metric": "cover_property",
+    "target": "sim_properties4",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4",
+      "line:5"
+    ],
+    "tests": {
+      "half": [
+        "line:2",
+        "line:3"
+      ]
+    },
+    "fraction": [
+      2,
+      4
+    ]
+  },
+  "properties4-full": {
+    "metric": "cover_property",
+    "target": "sim_properties4",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4",
+      "line:5"
+    ],
+    "tests": {
+      "full": [
+        "line:2",
+        "line:3",
+        "line:4",
+        "line:5"
+      ]
+    },
+    "fraction": [
+      4,
+      4
+    ]
+  },
+  "properties16-half": {
+    "metric": "cover_property",
+    "target": "sim_properties16",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4",
+      "line:5",
+      "line:6",
+      "line:7",
+      "line:8",
+      "line:9",
+      "line:10",
+      "line:11",
+      "line:12",
+      "line:13",
+      "line:14",
+      "line:15",
+      "line:16",
+      "line:17"
+    ],
+    "tests": {
+      "half": [
+        "line:2",
+        "line:3"
+      ]
+    },
+    "fraction": [
+      2,
+      16
+    ]
+  },
+  "properties16-full": {
+    "metric": "cover_property",
+    "target": "sim_properties16",
+    "population": [
+      "line:2",
+      "line:3",
+      "line:4",
+      "line:5",
+      "line:6",
+      "line:7",
+      "line:8",
+      "line:9",
+      "line:10",
+      "line:11",
+      "line:12",
+      "line:13",
+      "line:14",
+      "line:15",
+      "line:16",
+      "line:17"
+    ],
+    "tests": {
+      "full": [
+        "line:2",
+        "line:3",
+        "line:4",
+        "line:5",
+        "line:6",
+        "line:7",
+        "line:8",
+        "line:9",
+        "line:10",
+        "line:11",
+        "line:12",
+        "line:13",
+        "line:14",
+        "line:15",
+        "line:16",
+        "line:17"
+      ]
+    },
+    "fraction": [
+      16,
+      16
+    ]
+  },
+  "staged-union": {
+    "metric": "toggle",
+    "target": "sim_staged",
+    "population": [
+      "bit0:0->1",
+      "bit0:1->0",
+      "bit1:0->1",
+      "bit1:1->0",
+      "bit2:0->1",
+      "bit2:1->0",
+      "bit3:0->1",
+      "bit3:1->0"
+    ],
+    "tests": {
+      "half": [
+        "bit0:0->1",
+        "bit0:1->0",
+        "bit1:0->1",
+        "bit1:1->0"
+      ],
+      "upper": [
+        "bit2:0->1",
+        "bit2:1->0",
+        "bit3:0->1",
+        "bit3:1->0"
+      ]
+    },
+    "fraction": [
+      8,
+      8
+    ],
+    "sequences": {
+      "half": [
+        0,
+        3,
+        0
+      ],
+      "upper": [
+        0,
+        12,
+        0
+      ]
+    }
+  }
+}
