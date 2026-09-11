@@ -86,6 +86,21 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D20",
+        (prefix("booley.eda"),),
+        (
+            exact("booley.runtime.session_issuance"),
+            exact("booley.runtime.issuance_invalidation"),
+        ),
+        "EDA supplies provisioning facts without knowing Runtime issuance or invalidation",
+    ),
+    DirectionRule(
+        "D19",
+        (prefix("booley.eda"),),
+        (prefix("booley.flows"),),
+        "EDA provisioning consumes declarative enablement without depending on Flow execution",
+    ),
+    DirectionRule(
         "D18",
         (prefix("booley.config"),),
         (prefix("booley.runtime"),),

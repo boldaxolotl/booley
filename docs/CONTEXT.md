@@ -44,6 +44,10 @@ _Avoid_: Session Container, Docker Session, MCP sandbox, per-ticket sandbox
 The reusable immutable filesystem and installed-program artifact from which **Session Runtimes** are created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Runtime Image's identity.
 _Avoid_: Session Image, sandbox tag, container, Dockerfile
 
+**Session Runtime Issuance**:
+The host-owned act of sealing and vouching for one exact Session Runtime specification, including its immutable image, trusted mounts, network policy, and granted provisioning inputs. It is distinct from **EDA Provisioning**, which decides where EDA installation files originate.
+_Avoid_: EDA runtime spec, provisioning issuance
+
 **Ticket Mode**:
 The ticket-driven execution mode: a `booley run` invocation, issued from inside a Session Runtime, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Session Runtime, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Session Runtime of its own.
 _Avoid_: batch mode, automated mode, host mode

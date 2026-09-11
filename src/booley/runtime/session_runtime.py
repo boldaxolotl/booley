@@ -37,7 +37,7 @@ from booley.runtime.platform_paths import docker_mount_path, host_path_from_dock
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
-    from booley.eda.provisioning.runtime_spec import Issuance
+    from booley.runtime.session_issuance import Issuance
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class SessionError(RuntimeError):
 
 def _requested_issued_license(workspace: Path, issuance: Issuance) -> LicenseProfile | None:
     """Resolve exactly the licence named by a validated runtime issuance."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     return runtime_spec.requested_license(
         workspace,
@@ -518,7 +518,7 @@ def _validate_refresh_egress(parked: ParkedSession, state: dict[str, Any]) -> bo
 
 
 def _refresh_candidate_matches(state: dict[str, Any], issuance: Issuance) -> bool:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     labels = _refresh_container_labels(state)
     expected = set(runtime_spec.labels(issuance))
@@ -527,7 +527,7 @@ def _refresh_candidate_matches(state: dict[str, Any], issuance: Issuance) -> boo
 
 
 def _refresh_project_id(issuance: Issuance) -> str:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     values = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     return values["booley.project-id"]
@@ -663,7 +663,7 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
     project_id = _refresh_project_id(issuance)
     _assert_refresh_container_owned(name, state, project_id)
     labels = _refresh_container_labels(state)
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     expected_labels = set(runtime_spec.labels(issuance))
     actual_labels = {f"{key}={value}" for key, value in labels.items()}
@@ -845,7 +845,7 @@ class _UpRequest:
 
 
 def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequest:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     spec = _load_spec(workspace)
     try:
@@ -1004,12 +1004,19 @@ def _up_unlocked(
 
 
 def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
+    from booley.eda.provisioning.licensing.flexnet_docker import (
+        cleanup_project_resources_for_identity,
+    )
+    from booley.runtime import issuance_invalidation
     from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
 
+    invalidated = issuance_invalidation.recover_all_locked(
+        cleanup_resources=cleanup_project_resources_for_identity,
+    )
     recovered = recover_project_locked(workspace)
-    if recovered.outcome is not RecoveryOutcome.NONE:
+    if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
-        raise SessionError(f"recovered an interrupted Session refresh; {retry}")
+        raise SessionError(f"recovered interrupted Session Runtime host state; {retry}")
 
 
 def up(
@@ -1036,11 +1043,12 @@ def up(
 
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import issuance_invalidation
+    from booley.runtime import session_issuance as runtime_spec
     from booley.runtime.session_refresh import has_pending_refresh
 
-    if has_pending_refresh(workspace):
-        raise SessionError("Session refresh recovery is pending; run a lifecycle command")
+    if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
+        raise SessionError("Session Runtime recovery is pending; run a lifecycle command")
 
     spec = _load_spec(workspace)
     issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
@@ -1054,8 +1062,8 @@ def _prepare_unlocked(workspace: Path) -> str:
     private network named in the sealed spec must therefore already exist, and
     the relay must be healthy before Docker consumes the spec.
     """
-    from booley.eda.provisioning import runtime_spec
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
+    from booley.runtime import session_issuance as runtime_spec
 
     spec = _load_spec(workspace)
     issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
@@ -1108,7 +1116,7 @@ def _authenticate_quiesce_validate(
     workspace: Path, spec: dict[str, Any]
 ) -> tuple[Issuance, _LegacyVscodeContainer | None]:
     """Authenticate issuance, quiesce one legacy runtime, then fully validate."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     quiesced: _LegacyVscodeContainer | None = None
     try:
@@ -1188,7 +1196,7 @@ def _quiesce_legacy_vscode_container(
     workspace: Path, pending_project_data: Path, issuance: Issuance
 ) -> _LegacyVscodeContainer | None:
     """Stop one authenticated legacy VS Code container before full validation."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     candidates: list[_LegacyVscodeContainer] = []
@@ -1342,7 +1350,7 @@ def issued_runtime_drift_fix(
     drifted: list[str],
 ) -> str:
     """Return safe, state-specific remediation for drifted runtime resources."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     rebuild = "run `booley session down`, then `booley session up --rebuild`"
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
@@ -1399,7 +1407,7 @@ def _stopped_vscode_reconcile_candidates(
     remove_unavailable_current: bool,
 ) -> list[str]:
     """Validate VS Code runtime state and return safe stopped cleanup targets."""
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     project_id = expected["booley.project-id"]
@@ -1509,7 +1517,7 @@ def _relay_matches_issuance(
             f"license relay {relay.relay_container!r} is not owned by this Project; "
             "it was not modified"
         )
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     expected = set(runtime_spec.labels(issuance))
     actual = {f"{key}={value}" for key, value in labels.items()}
@@ -1621,7 +1629,7 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-close
     """
     import json
 
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     expected = set(runtime_spec.labels(issuance))
     output = _docker_stdout(["docker", "inspect", name, "--format", "{{json .Config.Labels}}"])
@@ -2172,10 +2180,11 @@ def down(workspace: Path, *, remove: bool = True) -> bool:
 
 
 def status(workspace: Path) -> str:
-    """Return the Session Runtime state, including pending refresh recovery."""
+    """Return the Session Runtime state, including pending host recovery."""
+    from booley.runtime import issuance_invalidation
     from booley.runtime.session_refresh import has_pending_refresh
 
-    if has_pending_refresh(workspace):
+    if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
         return "recovery-pending"
     name = session_container_name(workspace)
     if not idk.container_exists(name):

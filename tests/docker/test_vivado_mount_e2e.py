@@ -19,10 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from booley.eda.provisioning import authority, runtime_spec
+from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime
 
 _IMAGE = "booley-sandbox"
@@ -76,7 +77,7 @@ def _exec(
 
 def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
     authority.register_installation("vivado_2025_2", "vivado", vivado_root)
-    authority.add_grant(workspace, "vivado", installation="vivado_2025_2")
+    authority._add_grant(workspace, "vivado", installation="vivado_2025_2")
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         image=_IMAGE,
@@ -377,7 +378,7 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
 
     _assert_headless_lifecycle(docker, workspace)
 
-    authority.revoke_grant(workspace, "vivado")
+    authority._revoke_grant(workspace, "vivado")
     with pytest.raises(session_runtime.SessionError, match="host-issued spec stamp"):
         session_runtime.up(workspace)
     if devcontainer_command is not None:

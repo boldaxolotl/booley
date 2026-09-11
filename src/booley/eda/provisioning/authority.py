@@ -7,7 +7,7 @@ import ipaddress
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -202,15 +202,35 @@ def remove_license(name: str) -> None:
         del state.licenses[name]
 
 
-def add_grant(
-    project_root: Path,
+def _add_grant_for_identity(
+    project_root: str,
     kind: str,
     *,
     installation: str | None = None,
     license_profile: str | None = None,
 ) -> ProjectGrant:
     """Authorize an exact canonical Project root for installation/license use."""
-    project = _canonical_project(project_root)
+    with _prepare_add_grant(
+        project_root,
+        kind,
+        installation=installation,
+        license_profile=license_profile,
+    ) as commit:
+        return commit()
+
+
+@contextlib.contextmanager
+def _prepare_add_grant(
+    project_root: str,
+    kind: str,
+    *,
+    installation: str | None = None,
+    license_profile: str | None = None,
+) -> Iterator[Callable[[], ProjectGrant]]:
+    """Validate under the EDA's lock, then expose one non-failing commit step."""
+    project = Path(project_root)
+    if not project.is_absolute() or str(project.resolve()) != project_root:
+        raise AuthorityError("grant mutation requires a canonical Project identity")
     _validate_new_grant_project(project)
     if kind != VIVADO_KIND:
         raise AuthorityError(f"unsupported EDA grant kind: {kind!r}")
@@ -224,16 +244,45 @@ def add_grant(
             _revalidate_installation(state.installations[installation], project)
         if any(_grant_key(item) == _grant_key(grant) for item in state.grants):
             raise AuthorityError(f"a {kind} grant already exists for {project}")
-        state.grants = (*state.grants, grant)
-    invalidate_project_specs(str(project))
-    return grant
+
+        def commit() -> ProjectGrant:
+            state.grants = (*state.grants, grant)
+            return grant
+
+        yield commit
 
 
-def revoke_grant(project_root: Path, kind: str) -> ProjectGrant:
-    """Remove authority first and invalidate every affected runtime spec."""
+def _add_grant(
+    project_root: Path,
+    kind: str,
+    *,
+    installation: str | None = None,
+    license_profile: str | None = None,
+) -> ProjectGrant:
+    """Private test/setup entry point; production mutation uses the coordinator."""
+    return _add_grant_for_identity(
+        grant_project_identity(project_root),
+        kind,
+        installation=installation,
+        license_profile=license_profile,
+    )
+
+
+def _revoke_grant_for_identity(project_root: str, kind: str) -> ProjectGrant:
+    """Remove one exact Project grant from EDA authority."""
+    with _prepare_revoke_grant(project_root, kind) as commit:
+        return commit()
+
+
+@contextlib.contextmanager
+def _prepare_revoke_grant(
+    project_root: str,
+    kind: str,
+) -> Iterator[Callable[[], ProjectGrant]]:
+    """Validate revocation under EDA's lock, then expose its commit step."""
     removed: ProjectGrant | None = None
     with _locked_state() as state:
-        project = _revoke_project_identity(project_root, kind, state)
+        project = project_root
         kept = []
         for grant in state.grants:
             if _grant_key(grant) == (project, kind):
@@ -242,22 +291,32 @@ def revoke_grant(project_root: Path, kind: str) -> ProjectGrant:
                 kept.append(grant)
         if removed is None:
             raise AuthorityError(f"no {kind} grant exists for {project}")
-        state.grants = tuple(kept)
-    invalidate_project_specs(removed.project_root)
-    _cleanup_revoked_runtime(removed.project_root)
-    return removed
+
+        def commit() -> ProjectGrant:
+            state.grants = tuple(kept)
+            return removed
+
+        yield commit
 
 
-def _cleanup_revoked_runtime(project_root: str) -> None:
-    """Remove every exact Project runtime before its relay/network topology."""
-    from .licensing.flexnet_docker import cleanup_project_resources_for_identity
+def _revoke_grant(project_root: Path, kind: str) -> ProjectGrant:
+    """Private test/setup entry point; production mutation uses the coordinator."""
+    return _revoke_grant_for_identity(
+        revoke_project_identity(project_root, kind),
+        kind,
+    )
 
-    residual = cleanup_project_resources_for_identity(project_root)
-    if residual:
-        raise AuthorityError(
-            "EDA authority is revoked, but Session Runtime cleanup left residual objects: "
-            + ", ".join(residual)
-        )
+
+def revoke_project_identity(project_root: Path, kind: str) -> str:
+    """Resolve the stored canonical identity used by a grant revocation."""
+    return _revoke_project_identity(project_root, kind, load_state())
+
+
+def grant_project_identity(project_root: Path) -> str:
+    """Resolve the canonical identity used by a new exact Project grant."""
+    project = _canonical_project(project_root)
+    _validate_new_grant_project(project)
+    return str(project)
 
 
 def resolve_grant(project_root: Path, kind: str) -> ProjectGrant:
@@ -339,14 +398,6 @@ def resolve_for_issuance(
             state.licenses[grant.license_profile] if grant.license_profile is not None else None
         )
         yield installation, profile
-
-
-def invalidate_project_specs(project_root: str) -> None:
-    """Remove host-issued spec stamps for one canonical Project identity."""
-    from .runtime_spec import stamp_path_for_identity
-
-    with contextlib.suppress(FileNotFoundError):
-        stamp_path_for_identity(project_root).unlink()
 
 
 def _revalidate_installation(record: Installation, project_root: Path) -> None:
