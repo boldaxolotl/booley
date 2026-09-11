@@ -485,8 +485,9 @@ capabilities:
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/sessions.py
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
+  - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
   contract: |-
-    `alias-register`: register file/sim directory → alias and _last resolve expected absolute path. `alias-restart`: restart context → same mappings queryable. `alias-replace`: replace alias → new path returned. `marker-create`, `marker-list`, `marker-delete`: manipulate named marker → exact persisted state. `trace-same-path`: regenerate trace in place → new mtime/data recognized. `alias-missing`: missing path → error. `alias-stale`: older trace → warning.
+    `alias-register`: register file/sim directory → alias and _last resolve expected absolute path. `alias-restart`: restart context → same mappings queryable. `alias-replace`: replace alias → new path returned. `marker-create`, `marker-list`, `marker-delete`: manipulate named marker → exact persisted state. `marker-wrapper-value`: persisted marker name supplied to `value --at` → known cycle value. `marker-wrapper-diff`: two persisted names supplied to `diff` → exact endpoints and delta. `marker-wrapper-wave`: persisted names supplied as wave endpoints → expected interval and annotations. `trace-same-path`: regenerate trace in place → new mtime/data recognized. `alias-missing`: missing path → error. `alias-stale`: older trace → warning.
     Registry snapshots, paths/registration times/mtimes and queried values; identity is replaceable path, not immutable content-addressing.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
@@ -494,10 +495,11 @@ capabilities:
   title: Waveform queries
   sources:
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/overview.md
+  - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/json-envelope.md
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
   contract: |-
     `query-list`, `query-signal`, `query-wave`, `query-value`, `query-find`, `query-sample`, `query-diff`, `query-distance`, `query-stats`, `query-stuck`: each command on deterministic known trace → exact hierarchy/value/time/statistic oracle. `query-pattern-miss`, `query-ambiguous`, `query-limit`: absent pattern, colliding name, bounded output → documented results. `version`, `legacy-translation`, `schema`, `docs-list`, `docs-search`, `docs-show`, `skill`: each public/meta route → installed coherent content or equivalent translated query.
-    Ground-truth event table fixed independently from B-Wave outputs, each output and schema-supported envelope. JSON and virtual matrices below are mandatory additional per-command checks.
+    Ground-truth event table fixed independently from B-Wave outputs. Per-command JSON checks require a documented, schema-backed envelope and exact result for `list`, `value`, `find`, and `stats`; `signal`, `wave`, `sample`, `diff`, `distance`, and `stuck` must produce their documented text fallback rather than a JSON envelope. Retain each output, exit status, and build-matched command page.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: WAVEFORM-TIME-MODEL
@@ -506,9 +508,10 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/sync-vs-async.md
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/time-tokens.md
   - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/virtual-signals.md
+  - https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/reference/markers.md
   contract: |-
     `sync-event`, `async-event`: same known edge → post-edge cycle and raw transition correctly related. `clock-override`: ambiguous clocks with explicit choice → correct sampling. `reset-include`, `reset-skip`: each mode → correct sample set. `time-units`: equivalent physical/cycle/tick tokens → same known event. `literal-slice`: valid Verilog literal/bit slice → expected value. `async-bare-time`, `bad-literal`, `unknown-signal`, `width-mismatch`: independent invalid inputs → documented errors.
-    Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event; virtual semantics matrix below applies.
+    Oracle table, clock/reset metadata, exact inputs/output. `query-input-recovery`: corrected inputs → expected event. Per-command virtual checks require exact semantic results for `wave`, `find`, `sample`, `distance`, and `value`, malformed-definition diagnostics on those commands, and argument rejection on unsupported commands. Marker checks require exact `wave` rendering behavior and argument rejection on every unsupported native command.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: WAVEFORM-VIEWER
