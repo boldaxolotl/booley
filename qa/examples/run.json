@@ -16,9 +16,9 @@
   "booley_product_revision": "EXAMPLE_ONLY",
   "package_identity": "EXAMPLE_ONLY",
   "ip_commit": "EXAMPLE_ONLY",
-  "image_identity": "EXAMPLE_ONLY",
+  "runtime_image_identity": "EXAMPLE_ONLY",
   "deadline": "2026-09-08T20:00:00Z",
-  "authority": ["disposable fault injection", "restore and clean owned resources"],
+  "authority": ["disposable fault injection", "quiesce resources and retain eligible review state"],
   "capabilities": {
     "qualified_visual_observer": {
       "available": false,

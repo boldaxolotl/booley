@@ -618,7 +618,7 @@ phases:
   title: Complete final regression
   minutes: 30
 - id: cleanup
-  title: Cleanup
+  title: Finish and quiesce
   minutes: 15
 steps:
 - id: inputs.pin
@@ -9818,14 +9818,14 @@ steps:
   - ticket2.merge
 - id: archive.before-delete
   phase: cleanup
-  action: Archive outside disposable clone before deleting Project state.
+  action: Archive immutable evidence outside retained mutable Project state.
   checks:
   - id: archive.before-delete
     capabilities:
     - DOCUMENTATION-USABILITY
-    stimulus: Archive outside disposable clone before deleting Project state.
-    expected: Archive outside disposable clone before deleting Project state.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
+    stimulus: Archive immutable evidence outside retained mutable Project state.
+    expected: Archive immutable evidence outside retained mutable Project state.
+    authority_ref: ../../agents/FINISH.md
     evidence: Archive path and existence/identity; evidence-archive recovery point.
     capture: evidence/taxi-10g-mac-port-evolution.archive.before-delete
 - id: archive.git-bundle
@@ -9857,123 +9857,123 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.archive.evidence
 - id: cleanup.session-runtimes
   phase: cleanup
-  action: Reconcile/remove every run-owned Session-Runtimes after evidence archive.
+  action: Release every run-owned Session Runtime after evidence archive.
   checks:
   - id: cleanup.session-runtimes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned Session-Runtimes after evidence archive.
-    expected: Reconcile/remove every run-owned Session-Runtimes after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Release every run-owned Session Runtime after evidence archive.
+    expected: Release every run-owned Session Runtime after evidence archive.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.session-runtimes
 - id: cleanup.processes
   phase: cleanup
-  action: Reconcile/remove every run-owned processes after evidence archive.
+  action: Release every run-owned process after evidence archive.
   checks:
   - id: cleanup.processes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned processes after evidence archive.
-    expected: Reconcile/remove every run-owned processes after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Release every run-owned process after evidence archive.
+    expected: Release every run-owned process after evidence archive.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.processes
 - id: cleanup.worktrees
   phase: cleanup
-  action: Reconcile/remove every run-owned worktrees after evidence archive.
+  action: Retain run-owned worktrees for review when eligible; otherwise release them.
   checks:
   - id: cleanup.worktrees
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned worktrees after evidence archive.
-    expected: Reconcile/remove every run-owned worktrees after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain run-owned worktrees for review when eligible; otherwise release them.
+    expected: Retain run-owned worktrees for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.worktrees
 - id: cleanup.local-branches
   phase: cleanup
-  action: Reconcile/remove every run-owned local-branches after evidence archive.
+  action: Retain run-owned local branches for review when eligible; otherwise release them.
   checks:
   - id: cleanup.local-branches
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned local-branches after evidence archive.
-    expected: Reconcile/remove every run-owned local-branches after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain run-owned local branches for review when eligible; otherwise release them.
+    expected: Retain run-owned local branches for review when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.local-branches
 - id: cleanup.project-inventory-entries
   phase: cleanup
-  action: Reconcile/remove every run-owned Project-Inventory-entries after evidence archive.
+  action: Release every run-owned Project inventory entry after evidence archive.
   checks:
   - id: cleanup.project-inventory-entries
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned Project-Inventory-entries after evidence archive.
-    expected: Reconcile/remove every run-owned Project-Inventory-entries after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Release every run-owned Project inventory entry after evidence archive.
+    expected: Release every run-owned Project inventory entry after evidence archive.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-inventory-entries
 - id: cleanup.project-derived-images
   phase: cleanup
-  action: Reconcile/remove every run-owned Project-derived-images after evidence archive.
+  action: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
   checks:
   - id: cleanup.project-derived-images
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned Project-derived-images after evidence archive.
-    expected: Reconcile/remove every run-owned Project-derived-images after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
+    expected: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-derived-images
 - id: cleanup.volumes
   phase: cleanup
-  action: Reconcile/remove every run-owned volumes after evidence archive.
+  action: Retain run-owned volumes when eligible; otherwise release them.
   checks:
   - id: cleanup.volumes
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned volumes after evidence archive.
-    expected: Reconcile/remove every run-owned volumes after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain run-owned volumes when eligible; otherwise release them.
+    expected: Retain run-owned volumes when eligible; otherwise release them.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.volumes
 - id: cleanup.mounts
   phase: cleanup
-  action: Reconcile/remove every run-owned mounts after evidence archive.
+  action: Unmount every run-owned mount after evidence archive.
   checks:
   - id: cleanup.mounts
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned mounts after evidence archive.
-    expected: Reconcile/remove every run-owned mounts after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Unmount every run-owned mount after evidence archive.
+    expected: Unmount every run-owned mount after evidence archive.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.mounts
 - id: cleanup.inner-project-repository
   phase: cleanup
-  action: Reconcile/remove every run-owned inner-Project-repository after evidence archive.
+  action: Retain the run-owned inner Project repository when eligible; otherwise release it.
   checks:
   - id: cleanup.inner-project-repository
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned inner-Project-repository after evidence archive.
-    expected: Reconcile/remove every run-owned inner-Project-repository after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain the run-owned inner Project repository when eligible; otherwise release it.
+    expected: Retain the run-owned inner Project repository when eligible; otherwise release it.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.inner-project-repository
 - id: cleanup.disposable-clone
   phase: cleanup
-  action: Reconcile/remove every run-owned disposable-clone after evidence archive.
+  action: Retain the run-owned clone for review when eligible; otherwise release it.
   checks:
   - id: cleanup.disposable-clone
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Reconcile/remove every run-owned disposable-clone after evidence archive.
-    expected: Reconcile/remove every run-owned disposable-clone after evidence archive.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Owned identity, release action and absence/state proof.
+    stimulus: Retain the run-owned clone for review when eligible; otherwise release it.
+    expected: Retain the run-owned clone for review when eligible; otherwise release it.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.disposable-clone
 - id: cleanup.preserve-host
   phase: cleanup
@@ -10001,25 +10001,25 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.remotes
 - id: cleanup.verdict
   phase: cleanup
-  action: Incomplete mandatory cleanup prevents pass, separately visible from product failure.
+  action: Failed mandatory quiescence prevents pass; eligible review retention does not.
   checks:
   - id: cleanup.verdict
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Incomplete mandatory cleanup prevents pass, separately visible from product failure.
-    expected: Incomplete mandatory cleanup prevents pass, separately visible from product failure.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
+    stimulus: Failed mandatory quiescence prevents pass; eligible review retention does not.
+    expected: Failed mandatory quiescence prevents pass; eligible review retention does not.
+    authority_ref: ../../agents/FINISH.md
     evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict
 - id: physical.archive-cleanup
   phase: cleanup
-  action: Preserve physical reports/timing artifacts before deleting run-owned Target/SDC/Project.
+  action: Preserve physical evidence and retain eligible Target, SDC, and Project state for review.
   checks:
   - id: physical.archive-cleanup
     capabilities:
     - SYNTHESIS-FLOW
-    stimulus: Preserve physical reports/timing artifacts before deleting run-owned Target/SDC/Project.
-    expected: Preserve physical reports/timing artifacts before deleting run-owned Target/SDC/Project.
-    authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/taxi.md
-    evidence: Archive manifest and configuration/resource cleanup proof.
+    stimulus: Preserve physical evidence and retain eligible Target, SDC, and Project state for review.
+    expected: Preserve physical evidence and retain eligible Target, SDC, and Project state for review.
+    authority_ref: ../../agents/FINISH.md
+    evidence: Archive manifest and configuration/resource release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.physical.archive-cleanup
