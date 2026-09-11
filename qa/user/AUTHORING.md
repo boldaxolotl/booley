@@ -4,7 +4,8 @@ This guide owns the Scenario definition contract. Read
 [Protocol](../agents/PROTOCOL.md) for execution,
 [Qualification](QUALIFICATION.md) for scope and verdicts, and the [run record
 format](../agents/FORMAT.md) for the files produced during a Scenario Run. The
-[worked example](../examples/README.md) shows how they fit together.
+[PicoRV32 production Scenario](../scenarios/picorv32/scenario.yaml) shows the
+authoring contract in concrete use.
 
 ## Scenario definition contract
 

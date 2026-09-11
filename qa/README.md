@@ -42,7 +42,6 @@ only; it does not execute a Scenario Run.
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
 | [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
-| [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, Check Results, and summary; they are not execution evidence and grant no coverage credit |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
