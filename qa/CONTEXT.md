@@ -61,7 +61,7 @@ One execution of a Configured Scenario with exact product, suite, input, tool, a
 _Avoid_: QA Run, Job, Ticket run, test invocation
 
 **Protocol Stage**:
-One resumable part of Scenario Run operation: admit, prepare, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work.
+One part of Scenario Run operation: admit, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work within execution.
 _Avoid_: phase, Step, pipeline stage
 
 **Quiescence**:

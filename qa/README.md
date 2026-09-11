@@ -64,11 +64,11 @@ records the historical decisions behind the production files.
 ## QA workflow
 
 The Scenario Operator follows [Admit](agents/ADMIT.md),
-[Prepare](agents/PREPARE.md), [Execute](agents/EXECUTE.md), and
-[Finish](agents/FINISH.md) in order, using [Record](agents/RECORD.md) whenever a
-stage writes evidence or changes state. The run files provide the durable cursor for
-context compaction. Finalization releases active or privileged resources and may leave
-eligible inert workspaces for Human Maintainer review.
+[Execute](agents/EXECUTE.md), and [Finish](agents/FINISH.md) in order, using
+[Record](agents/RECORD.md) whenever a stage writes evidence or changes state. The run
+files provide the durable checkpoint for context compaction. Finalization releases
+active or privileged resources and may leave eligible inert workspaces for Human
+Maintainer review.
 
 GUI Configured Scenarios require the supported VS Code client, WCP, and a qualified screenshot
 observer. If that infrastructure is missing, the affected checks are unavailable and
