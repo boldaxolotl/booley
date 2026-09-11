@@ -467,7 +467,7 @@ def _screen_candidates(
                 **item,
                 "target_identity": campaign.target.identity,
                 "point_identity": encode_coverage_point(point)["identity"] if point else None,
-                "source_fingerprint": rtl.get(_point_source(point)) if point else None,
+                "source_fingerprint": rtl.get(point.identity.source) if point else None,
                 "screening": screening,
                 "screening_reason": detail,
                 "approval": "not_approved",
@@ -477,7 +477,7 @@ def _screen_candidates(
 
 
 def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
-    if point is None or _point_source(point) not in rtl:
+    if point is None or point.identity.source not in rtl:
         return "forbidden", "Candidate must identify an exact RTL Coverage Point"
     if point.disposition["kind"] != "eligible" or item["reason"] not in {
         "excluded",
@@ -500,7 +500,3 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         "ready_for_human_review",
         "Advisory only; a human must verify evidence and author any approval",
     )
-
-
-def _point_source(point: CoveragePoint) -> str:
-    return str(point.identity.location["source"])

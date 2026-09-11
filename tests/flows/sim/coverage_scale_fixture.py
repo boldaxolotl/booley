@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 from booley.flows.sim.coverage_campaign import (
+    CoverageCampaign,
     CoverageCapability,
     CoveragePoint,
     CoveragePointIdentity,
@@ -16,7 +17,7 @@ from booley.flows.sim.coverage_campaign import (
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
-def scale_campaign(point_count: int):
+def scale_campaign(point_count: int) -> CoverageCampaign:
     """Build a stable mixed Campaign whose point population has realistic query dimensions."""
     document = _valid_document()
     target = DurableTargetIdentity(document["target"]["identity"])

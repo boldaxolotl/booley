@@ -253,6 +253,20 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
     assert encode_calls == len(first["points"]) + len(second["points"])
 
 
+def test_points_covered_false_filter_is_not_treated_as_unfiltered():
+    campaign = _campaign_with_waiver()
+    point = campaign.points[0]
+    covered = replace(point, id=f"{point.id}-covered", hits_by_run={"run:reset": 1})
+    uncovered = replace(point, id=f"{point.id}-uncovered", hits_by_run={})
+    campaign = replace(campaign, points=(covered, uncovered))
+    session = CoverageEvidenceSession(campaign, None)
+
+    result = session.query({"view": "points", "covered": False})
+
+    assert result["matched_points"] == 1
+    assert session.analysis_scope()["point_ids"] == [uncovered.id]
+
+
 def test_source_view_is_limited_to_exact_campaign_point_ids():
     document = _valid_document()
     campaign = decode_coverage_campaign(

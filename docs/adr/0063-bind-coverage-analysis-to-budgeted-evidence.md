@@ -30,7 +30,8 @@ retain the manifest and point-store digest instead of duplicating every point; t
 compatibility seam produces `booley.coverage-analysis/v1`. After complete validation, the session
 indexes exact IDs, derives overview counts once, caches one filtered match set for consecutive
 pagination, and encodes only returned pages. The cache is bounded by the V3 point ceiling and dies
-with the isolated session. The model has no general filesystem or execution tools. An exhausted
+with the isolated session. These V1/V2 analysis-report contracts and their query semantics remain
+compatible. The model has no general filesystem or execution tools. An exhausted
 evidence or model-context budget fails with an actionable diagnostic, while the audit makes partial
 analysis explicit rather than implying every point was inspected. Full Campaign loading remains a
 linear cost and no constant-memory claim is made.

@@ -176,6 +176,11 @@ class CoveragePointIdentity:
     subject: Mapping[str, FrozenJson]
     collector: Mapping[str, FrozenJson]
 
+    @property
+    def source(self) -> str:
+        """Return the validated source path named by this identity."""
+        return str(self.location["source"])
+
 
 @dataclass(frozen=True)
 class CoveragePoint:

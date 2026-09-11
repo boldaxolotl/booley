@@ -315,7 +315,7 @@ class CoverageEvidenceSession:
             )
             return tuple(point for point in candidates if _matches(point, request))
         key = _filter_key(request)
-        if not any(key):
+        if all(value is None for value in key):
             return self._points
         if key != self._cached_filter:
             self._cached_points = tuple(
@@ -360,7 +360,7 @@ class CoverageEvidenceSession:
         if point is None:
             raise CoverageEvidenceError(f"Unknown Coverage Point: {point_id}")
         location = cast(Mapping[str, Any], point.identity.location)
-        source_path = str(location["source"])
+        source_path = point.identity.source
         source = self._sources.files.get(source_path) if self._sources is not None else None
         if not isinstance(source, Mapping) or not isinstance(source.get("text"), str):
             raise CoverageEvidenceError(
@@ -470,14 +470,10 @@ def _disposition(point: CoveragePoint) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], point.disposition)
 
 
-def _source(point: CoveragePoint) -> str:
-    return str(point.identity.location["source"])
-
-
 def _matches(point: CoveragePoint, request: Mapping[str, object]) -> bool:
     checks = (
         request.get("metric") is None or point.identity.metric == request["metric"],
-        request.get("source") is None or _source(point) == request["source"],
+        request.get("source") is None or point.identity.source == request["source"],
         request.get("covered") is None or _covered(point) is request["covered"],
         request.get("disposition") is None
         or _disposition(point)["kind"] == request["disposition"],
@@ -500,7 +496,7 @@ def _overview_counts(
         dispositions[disposition] += 1
         if not _covered(point) and disposition == "eligible":
             metrics[point.identity.metric] += 1
-            sources[_source(point)] += 1
+            sources[point.identity.source] += 1
     return dispositions, metrics, sources
 
 
