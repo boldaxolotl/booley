@@ -15,7 +15,7 @@ that neighborhood.
 bwave find @dut "tb.dut.fifo.overflow" rising --first
 
 # 2. Show that neighborhood as a named, collapsible section
-bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*' --time 1180c:1260c
+bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*%h@green' --time 1180c:1260c
 
 # 3. Follow-ups: add another logical section, point at the moment
 bwave gui @dut --group 'Control=tb.dut.ctrl.*' --append --cursor 1200c
@@ -45,7 +45,7 @@ during the query can bound the view:
 bwave gui @dut --time overflow_start:overflow_end
 ```
 
-## Native groups: `--group NAME=GLOB`
+## Native groups: `--group NAME=GLOB[%RADIX][@COLOR]`
 
 For a view with more than one logical role, use repeatable
 `--group 'NAME=GLOB'`. Give each group a short semantic name from the current
@@ -69,16 +69,38 @@ is never duplicated merely to satisfy overlapping selectors.
 In replace mode the requested groups become the new view. With `--append`, a
 same-name group is extended and a new name creates another group. Existing
 collapse state and signal formatting are preserved. `gui` reads the hierarchy
-back from VaporView before reporting success; missing grouped-layout support or
-a mismatched hierarchy is an error, never a silently flattened view.
+back from VaporView before reporting success. Replace mode stages additions,
+commits one exact ordered tree, and restores the previous tree if the commit or
+readback fails. Missing grouped-layout support or any mismatch in membership,
+placement, order, radix, or color is an error, never a silently altered view.
 
 ## Top-level rows: `--signals`
 
-Repeatable, and takes the same globs as `-s` (but no `%RADIX`). Combined
+Repeatable, and takes the same globs as `-s`, plus the presentation suffixes
+described below. Combined
 `--signals` and `--group` expansion is capped at 64 signals (`--max-signals`)
 and **errors** past the cap — narrow the glob, don't raise the cap. Use this for
 the few signals that intentionally belong at the top level; prefer named groups
 for a multi-section view.
+
+## Radix and color suffixes
+
+Both `--signals` and the glob side of `--group` accept
+`GLOB[%RADIX][@COLOR]`. Radixes are `%b` (binary), `%h` (hexadecimal), and `%d`
+(unsigned decimal). Colors are `@red`, `@blue`, and `@green`; when both are
+present the radix comes first:
+
+```bash
+bwave gui @dut \
+  --signals 'tb.clk%b@red' \
+  --group 'State=tb.dut.state%h@blue' \
+  --group 'Datapath=tb.dut.result%h@green'
+```
+
+An explicit suffix updates an already displayed row under `--append`; omitted
+properties preserve its current presentation. The CLI applies these properties
+through VaporView's recursive layout and reads them back before reporting
+success.
 
 The signal list `gui` prints is read back from the viewer, so it is what the
 human actually sees. A signal missing from the viewer's netlist is dropped and
@@ -92,7 +114,7 @@ A scoped `gui` drives the VaporView viewer in the user's VS Code window over its
 WCP control server, and **hard-errors if that server is off** — surface the setup
 hint to the human; it never silently degrades.
 
-Groups require Booley's VaporView compatibility patch. If the CLI reports that
+Groups and explicit radix/color require Booley's VaporView compatibility patch. If the CLI reports that
 `set_signal_layout` or `get_signal_layout` is missing, run
 `python -m booley.runtime.incontainer_vaporview`, reload the VS Code window, and
 retry.

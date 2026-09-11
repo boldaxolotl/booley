@@ -819,6 +819,13 @@ class TestMcpExposureFiltering:
         assert "`bwave build`" in by_name["bwave"]["description"]
         assert 'extra_args=["skill"]' in by_name["bwave"]["description"]
         assert 'extra_args=["--help"]' in by_name["bwave"]["description"]
+        guidance = by_name["bwave"]["description"]
+        assert "different module instances in different groups" in guidance
+        assert "AHB, FSM state/outputs, and datapath" in guidance
+        assert "%b/%h/%d" in guidance
+        assert "red for clocks/resets" in guidance
+        assert "blue for registers" in guidance
+        assert "green for other signals" in guidance
 
     def test_explicit_allowlist_overrides_interactive_defaults(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)

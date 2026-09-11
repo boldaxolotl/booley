@@ -990,9 +990,15 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
             "`bwave` in the CLI help. To show the human a waveform (only "
             "for seeing — reading values needs no viewer), first locate the "
             "signals and time window with query commands, then call "
-            '["gui", "@ALIAS", "--signals", "tb.dut.fifo.*", "--time", '
+            '["gui", "@ALIAS", "--group", "FIFO=tb.dut.fifo.*%h@green", "--time", '
             '"1200c:1400c"] — this drives the VaporView viewer in the '
-            "user's VS Code window. A new view gets the trace's clock as "
+            "user's VS Code window. For every user-facing view, split signals "
+            "into logical groups, with different module instances in different groups; "
+            "within one module split by category when useful, such as AHB, FSM "
+            "state/outputs, and datapath. Choose an appropriate %b/%h/%d radix "
+            "for each selector. Use red for clocks/resets, blue for registers, "
+            "and green for other signals via @red/@blue/@green suffixes. Group "
+            "names and signal paths remain the non-color meaning. A new view gets the trace's clock as "
             "row 1 automatically (--no-clock opts out); --time brackets the "
             "range with the viewer's START/END markers so the human reads "
             "the span off the screen; --cursor moves START; --append adds "
