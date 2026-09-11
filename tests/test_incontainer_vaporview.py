@@ -44,6 +44,20 @@ _VANILLA_BUNDLE = (
     "onThemeChange(s){s.getTokenColorsForTheme()}}"
 )
 
+_VANILLA_WCP_BUNDLE = "".join(
+    (
+        "prefix",
+        iv._WCP_SWITCH_ANCHOR,
+        "middle",
+        iv._WCP_HANDLER_ANCHOR,
+        "more",
+        iv._WCP_CAPABILITIES_ANCHOR,
+        "suffix",
+    )
+)
+
+_COMPLETE_VANILLA_BUNDLE = _VANILLA_BUNDLE + _VANILLA_WCP_BUNDLE
+
 
 class TestPatchManifest:
     def test_adds_startup_event_and_relaxes_scope(self):
@@ -163,6 +177,113 @@ class TestThemeFallback:
         assert iv._disable_remote_theme_lookup(extension) is False
         assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
 
+    def test_missing_bundle_is_a_clean_noop(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+
+        assert iv._disable_remote_theme_lookup(extension) is False
+
+    def test_atomic_write_failure_is_a_clean_noop(self, tmp_path, monkeypatch):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+
+        def fail_write(_path, _content):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(iv, "_atomic_write_text", fail_write)
+
+        assert iv._disable_remote_theme_lookup(extension) is False
+
+
+class TestGroupedLayoutWcp:
+    def test_adds_set_get_handlers_and_capabilities(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is True
+
+        patched = bundle.read_text(encoding="utf-8")
+        assert 'case"set_signal_layout"' in patched
+        assert 'case"get_signal_layout"' in patched
+        assert "async handleSetSignalLayout" in patched
+        assert "async handleGetSignalLayout" in patched
+        assert '"set_signal_layout","get_signal_layout"' in patched
+        assert "markerTime:e.marker_time" in patched
+        assert "zoomRatio:e.zoom_ratio" in patched
+
+    def test_patch_is_idempotent(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is True
+        once = bundle.read_text(encoding="utf-8")
+        assert iv._enable_grouped_layout_wcp(extension) is False
+        assert bundle.read_text(encoding="utf-8") == once
+
+    def test_unknown_bundle_shape_is_untouched(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-2.0.0"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("new upstream implementation", encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is False
+        assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
+
+    def test_missing_bundle_is_a_clean_noop(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+
+        assert iv._enable_grouped_layout_wcp(extension) is False
+
+    def test_incomplete_existing_patch_is_reported(self):
+        source = f"prefix {iv._LAYOUT_CAPABILITY} suffix"
+
+        updated, changed, problem = iv._prepare_group_layout_source(source)
+
+        assert updated == source
+        assert not changed
+        assert problem == "bundle contains an incomplete grouped-layout patch"
+
+    def test_production_patch_reports_unknown_bundle_as_incomplete(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-2.0.0"
+        extension.mkdir()
+        manifest = extension / "package.json"
+        manifest.write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir()
+        bundle.write_text(_VANILLA_BUNDLE + "new upstream WCP implementation", encoding="utf-8")
+
+        result = iv._patch_file(manifest)
+
+        assert not result.complete
+        assert not result.changed
+        assert result.detail == "bundle grouped-layout anchors do not match VaporView 1.5.4"
+        assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
+
+    def test_production_patch_reports_partial_theme_bundle_as_incomplete(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        extension.mkdir()
+        manifest = extension / "package.json"
+        manifest.write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir()
+        bundle.write_text(
+            "prefix this.getTokenColorsForTheme() suffix" + _VANILLA_WCP_BUNDLE,
+            encoding="utf-8",
+        )
+
+        result = iv._patch_file(manifest)
+
+        assert not result.complete
+        assert not result.changed
+        assert result.detail == (
+            "bundle has 1 of 2 expected theme lookup calls and is not fully extracted"
+        )
+
 
 class TestMain:
     @pytest.fixture
@@ -182,7 +303,7 @@ class TestMain:
         if with_bundle:
             bundle = d / "dist" / "extension.js"
             bundle.parent.mkdir()
-            bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+            bundle.write_text(_COMPLETE_VANILLA_BUNDLE, encoding="utf-8")
         return p
 
     def test_patches_installed_manifest(self, home, capsys):
@@ -309,7 +430,7 @@ class TestInstallRaceWait:
         (d / "package.json").write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
         bundle = d / "dist" / "extension.js"
         bundle.parent.mkdir()
-        bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+        bundle.write_text(_COMPLETE_VANILLA_BUNDLE, encoding="utf-8")
 
     @staticmethod
     def _fake_time():
@@ -365,7 +486,7 @@ class TestInstallRaceWait:
                 )
                 bundle = staging / "dist" / "extension.js"
                 bundle.parent.mkdir()
-                bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+                bundle.write_text(_COMPLETE_VANILLA_BUNDLE, encoding="utf-8")
             elif state["sleeps"] == 2:
                 # VS Code publishes a completed extraction with an atomic rename.
                 # The watcher must have patched staging before this activation point.
@@ -405,7 +526,7 @@ class TestInstallRaceWait:
                 assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
                 bundle = extension / "dist" / "extension.js"
                 bundle.parent.mkdir()
-                bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+                bundle.write_text(_COMPLETE_VANILLA_BUNDLE, encoding="utf-8")
 
         assert iv._watch_for_late_install(
             home,

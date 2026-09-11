@@ -6,8 +6,11 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from booley.dev_support import reference_docs
 from booley.runtime import paths
 
 
@@ -43,11 +46,73 @@ class TestTroubleshootingPath:
         assert result.is_file()
 
     def test_packaged_guide_matches_public_document(self):
-        public = Path(__file__).resolve().parent.parent / "docs" / "user" / "TROUBLESHOOTING.md"
-        assert paths.troubleshooting_path().read_bytes() == public.read_bytes()
+        assert reference_docs.troubleshooting_mirror_is_current(), (
+            "run: python -m booley.dev_support.reference_docs"
+        )
 
     def test_faq_path_remains_a_compatibility_alias(self):
         assert paths.faq_path() == paths.troubleshooting_path()
+
+    def test_reference_doc_command_regenerates_the_packaged_copy(self, tmp_path, monkeypatch):
+        source = tmp_path / "source.md"
+        packaged = tmp_path / "packaged.md"
+        source.write_text("canonical\n", encoding="utf-8")
+        packaged.write_text("stale\n", encoding="utf-8")
+        monkeypatch.setattr(reference_docs, "_SOURCE", source)
+        monkeypatch.setattr(reference_docs, "_PACKAGED", packaged)
+
+        assert reference_docs.sync_troubleshooting_mirror() is True
+        assert packaged.read_bytes() == source.read_bytes()
+        assert reference_docs.sync_troubleshooting_mirror() is False
+
+    def test_reference_doc_command_checks_current_and_stale_mirrors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        source = tmp_path / "source.md"
+        packaged = tmp_path / "packaged.md"
+        source.write_text("canonical\n", encoding="utf-8")
+        packaged.write_text("canonical\n", encoding="utf-8")
+        monkeypatch.setattr(reference_docs, "_SOURCE", source)
+        monkeypatch.setattr(reference_docs, "_PACKAGED", packaged)
+
+        assert reference_docs.main(["--check"]) == 0
+        packaged.write_text("stale\n", encoding="utf-8")
+        assert reference_docs.main(["--check"]) == 1
+        assert "packaged TROUBLESHOOTING.md is stale" in capsys.readouterr().out
+
+    def test_reference_doc_command_reports_sync_status(self, tmp_path, monkeypatch, capsys):
+        source = tmp_path / "source.md"
+        packaged = tmp_path / "packaged.md"
+        source.write_text("canonical\n", encoding="utf-8")
+        packaged.write_text("stale\n", encoding="utf-8")
+        monkeypatch.setattr(reference_docs, "_SOURCE", source)
+        monkeypatch.setattr(reference_docs, "_PACKAGED", packaged)
+
+        assert reference_docs.main([]) == 0
+        assert "updated packaged TROUBLESHOOTING.md" in capsys.readouterr().out
+        assert reference_docs.main([]) == 0
+        assert "packaged guide is current" in capsys.readouterr().out
+
+    def test_missing_reference_document_is_not_current(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(reference_docs, "_SOURCE", tmp_path / "missing.md")
+        monkeypatch.setattr(reference_docs, "_PACKAGED", tmp_path / "also-missing.md")
+
+        assert reference_docs.troubleshooting_mirror_is_current() is False
+
+    def test_atomic_write_failure_removes_temporary_file(self, tmp_path, monkeypatch):
+        packaged = tmp_path / "packaged.md"
+        packaged.write_text("original\n", encoding="utf-8")
+
+        def fail_replace(_source, _target):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+
+        with pytest.raises(OSError, match="simulated replace failure"):
+            reference_docs._atomic_write(packaged, b"replacement\n")
+
+        assert packaged.read_text(encoding="utf-8") == "original\n"
+        assert list(tmp_path.iterdir()) == [packaged]
 
 
 class TestChangelogPath:

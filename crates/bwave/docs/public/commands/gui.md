@@ -14,11 +14,11 @@ that neighborhood.
 # 1. Locate the event
 bwave find @dut "tb.dut.fifo.overflow" rising --first
 
-# 2. Show that neighborhood: these signals, this time window
-bwave gui @dut --signals 'tb.dut.fifo.*' --time 1180c:1260c
+# 2. Show that neighborhood as a named, collapsible section
+bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*' --time 1180c:1260c
 
-# 3. Follow-ups: add signals to the same view, point at the moment
-bwave gui @dut --signals 'tb.dut.ctrl.state' --append --cursor 1200c
+# 3. Follow-ups: add another logical section, point at the moment
+bwave gui @dut --group 'Control=tb.dut.ctrl.*' --append --cursor 1200c
 ```
 
 ## The clock row
@@ -45,11 +45,40 @@ during the query can bound the view:
 bwave gui @dut --time overflow_start:overflow_end
 ```
 
-## `--signals`
+## Native groups: `--group NAME=GLOB`
 
-Repeatable, and takes the same globs as `-s` (but no `%RADIX`). Expansion is
-capped at 64 signals (`--max-signals`) and **errors** past the cap — narrow the
-glob, don't raise the cap.
+For a view with more than one logical role, use repeatable
+`--group 'NAME=GLOB'`. Give each group a short semantic name from the current
+debugging question—`Request path`, `Arbitration`, `Backpressure`, `Response`
+rather than merely repeating a module prefix. VaporView displays each as a
+native named row whose signals can be collapsed.
+
+Repeat a name to add more than one pattern to that group:
+
+```bash
+bwave gui @dut \
+  --group 'Request path=tb.dut.req_*' \
+  --group 'Request path=tb.dut.inflight*' \
+  --group 'Response=tb.dut.resp_*'
+```
+
+If patterns overlap, the first named group owns the signal. A named group also
+takes ownership over the same row requested through `--signals`, so one signal
+is never duplicated merely to satisfy overlapping selectors.
+
+In replace mode the requested groups become the new view. With `--append`, a
+same-name group is extended and a new name creates another group. Existing
+collapse state and signal formatting are preserved. `gui` reads the hierarchy
+back from VaporView before reporting success; missing grouped-layout support or
+a mismatched hierarchy is an error, never a silently flattened view.
+
+## Top-level rows: `--signals`
+
+Repeatable, and takes the same globs as `-s` (but no `%RADIX`). Combined
+`--signals` and `--group` expansion is capped at 64 signals (`--max-signals`)
+and **errors** past the cap — narrow the glob, don't raise the cap. Use this for
+the few signals that intentionally belong at the top level; prefer named groups
+for a multi-section view.
 
 The signal list `gui` prints is read back from the viewer, so it is what the
 human actually sees. A signal missing from the viewer's netlist is dropped and
@@ -62,6 +91,11 @@ screen instead of claiming the full view. The trace itself is fine;
 A scoped `gui` drives the VaporView viewer in the user's VS Code window over its
 WCP control server, and **hard-errors if that server is off** — surface the setup
 hint to the human; it never silently degrades.
+
+Groups require Booley's VaporView compatibility patch. If the CLI reports that
+`set_signal_layout` or `get_signal_layout` is missing, run
+`python -m booley.runtime.incontainer_vaporview`, reload the VS Code window, and
+retry.
 
 A bare `bwave gui [@alias]` just opens the trace, falling back to the editor CLI
 if the control server is unreachable.

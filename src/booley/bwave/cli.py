@@ -787,6 +787,13 @@ class _OpenSignal(NamedTuple):
     fallback: str | None  # alternate path, tried only if the primary is dropped
 
 
+class _OpenGroup(NamedTuple):
+    """One requested native VaporView group and its resolved signals."""
+
+    name: str
+    signals: list[_OpenSignal]
+
+
 def _split_bit_range(name: str, width: int | None) -> _OpenSignal:
     """Split a bwave signal name into the viewer's (instance_path, msb, lsb)."""
     match = _BIT_RANGE_RE.search(name)
@@ -828,13 +835,13 @@ def _clock_of(data: dict) -> _OpenSignal | None:
 
 
 def _resolve_signal_globs(
-    trace: str, globs: list[str], cap: int
+    trace: str, globs: list[str], cap: int, *, option: str = "--signals"
 ) -> tuple[list[_OpenSignal], dict]:
-    """Expand --signals globs to viewer-addressable signals; also return the envelope."""
+    """Expand viewer globs to addressable signals; also return the list envelope."""
     for glob in globs:
         if "%" in glob:
             _exit_usage(
-                f"ERROR: --signals takes plain globs, no %RADIX suffix (got '{glob}').\n"
+                f"ERROR: {option} takes plain globs, no %RADIX suffix (got '{glob}').\n"
                 "Display formats are set in the viewer, not at open time."
             )
     data = _list_query(trace, globs)
@@ -855,16 +862,83 @@ def _resolve_signal_globs(
         # Same wording class (and exit code) as the Rust total-miss error —
         # NO_MATCH_MARKER keeps the two surfaces greppable the same way.
         pat = ", ".join(f"'{g}'" for g in globs)
-        _exit_usage(f"ERROR: {NO_MATCH_MARKER} --signals {pat} in {trace}")
+        _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}")
     if len(signals) > cap:
         head = "\n".join(f"  {s.bwave_name}" for s in signals[:5])
         _exit_usage(
-            f"ERROR: --signals matches {len(signals)} signals (cap {cap}); first matches:\n"
+            f"ERROR: {option} matches {len(signals)} signals (cap {cap}); first matches:\n"
             f"{head}\n"
             "Narrow the glob, or raise the cap with --max-signals if you really "
             "want them all."
         )
     return signals, data
+
+
+def _parse_group_spec(spec: str) -> tuple[str, str]:
+    """Parse one ``NAME=GLOB`` group argument at the CLI boundary."""
+    name, separator, glob = spec.partition("=")
+    name = name.strip()
+    glob = glob.strip()
+    if not separator or not name or not glob:
+        _exit_usage(f"ERROR: --group takes NAME=GLOB with both parts non-empty (got {spec!r})")
+    if len(name) > 80 or any(ord(char) < 32 or char in "<>&" for char in name):
+        _exit_usage(
+            "ERROR: --group NAME must be at most 80 characters and cannot contain "
+            f"control characters or <, >, &: {name!r}"
+        )
+    return name, glob
+
+
+def _resolve_signal_groups(
+    trace: str, specs: list[str], cap: int
+) -> tuple[list[_OpenGroup], dict | None]:
+    """Resolve repeatable named groups, merging repeated names in input order."""
+    by_name: dict[str, list[_OpenSignal]] = {}
+    listing: dict | None = None
+    seen: set[str] = set()
+    for spec in specs:
+        name, glob = _parse_group_spec(spec)
+        matches, current_listing = _resolve_signal_globs(
+            trace, [glob], cap, option=f"--group {name!r}"
+        )
+        if listing is None:
+            listing = current_listing
+        group = by_name.setdefault(name, [])
+        for signal in matches:
+            if signal.bwave_name in seen:
+                continue
+            seen.add(signal.bwave_name)
+            group.append(signal)
+    if len(seen) > cap:
+        head = "\n".join(
+            f"  {signal.bwave_name}" for group in by_name.values() for signal in group
+        )
+        _exit_usage(
+            f"ERROR: --group matches {len(seen)} unique signals (cap {cap}); "
+            f"first matches:\n{head[:1000]}\n"
+            "Narrow the globs, or raise the cap with --max-signals if you really "
+            "want them all."
+        )
+    return [_OpenGroup(name, signals) for name, signals in by_name.items()], listing
+
+
+def _merge_gui_signals(
+    flat: list[_OpenSignal], groups: list[_OpenGroup], cap: int
+) -> tuple[list[_OpenSignal], list[_OpenGroup]]:
+    """Deduplicate one view, giving an explicit named group ownership."""
+    grouped_names = {signal.bwave_name for group in groups for signal in group.signals}
+    ordered = [signal for signal in flat if signal.bwave_name not in grouped_names]
+    ordered.extend(signal for group in groups for signal in group.signals)
+    unique = list(dict.fromkeys(ordered))
+    if len(unique) > cap:
+        head = "\n".join(f"  {signal.bwave_name}" for signal in unique[:5])
+        _exit_usage(
+            f"ERROR: gui selection matches {len(unique)} signals (cap {cap}); "
+            f"first matches:\n{head}\n"
+            "Narrow the globs, or raise the cap with --max-signals if you really "
+            "want them all."
+        )
+    return unique, groups
 
 
 class _TickResolver:
@@ -979,18 +1053,31 @@ def _wait_until_displayed(client: bwave_wcp.WcpClient, uri: str, expected: set[s
     return shown
 
 
-def _new_append_signals(
-    client: bwave_wcp.WcpClient, uri: str, signals: list[_OpenSignal]
-) -> list[_OpenSignal]:
-    """Drop signals already displayed so VaporView does not duplicate rows."""
+def _partition_append_signals(
+    client: bwave_wcp.WcpClient,
+    uri: str,
+    signals: list[_OpenSignal],
+    *,
+    layout: list[dict] | None,
+) -> tuple[list[_OpenSignal], list[_OpenSignal]]:
+    """Split an append request into rows to add and rows already displayed."""
+    if layout is not None:
+        existing = [signal for signal in signals if _layout_has_signal(layout, signal)]
+        existing_set = set(existing)
+        return [signal for signal in signals if signal not in existing_set], existing
     if not signals or "get_item_info" not in client.capabilities:
-        return signals
+        return signals, []
     shown = _displayed_paths(client, uri)
-    return [
-        sig
-        for sig in signals
-        if sig.instance_path not in shown and (sig.fallback is None or sig.fallback not in shown)
-    ]
+
+    def already_displayed(signal: _OpenSignal) -> bool:
+        return signal.instance_path in shown or (
+            signal.fallback is not None and signal.fallback in shown
+        )
+
+    return (
+        [signal for signal in signals if not already_displayed(signal)],
+        [signal for signal in signals if already_displayed(signal)],
+    )
 
 
 def _add_signals(
@@ -1023,6 +1110,181 @@ def _add_signals(
         return sig.instance_path in shown or (sig.fallback is not None and sig.fallback in shown)
 
     return [s for s in signals if landed(s)], [s for s in signals if not landed(s)]
+
+
+_GROUP_LAYOUT_CAPABILITIES = {
+    "set_signal_layout",
+    "get_signal_layout",
+    "get_viewer_state",
+}
+
+
+def _saved_item_matches(item: dict, signal: _OpenSignal) -> bool:
+    """Whether one native saved row represents *signal*."""
+    if item.get("dataType") != "netlist-variable":
+        return False
+    name = item.get("name")
+    if signal.fallback is not None and name == signal.fallback:
+        return True
+    if name != signal.instance_path:
+        return False
+    if signal.msb is None:
+        return True
+    return item.get("msb") == signal.msb and item.get("lsb") == signal.lsb
+
+
+def _layout_has_signal(items: list[dict], signal: _OpenSignal) -> bool:
+    """Whether a recursive native layout contains the exact signal or slice."""
+    for item in items:
+        if _saved_item_matches(item, signal):
+            return True
+        children = item.get("children")
+        if (
+            item.get("dataType") == "signal-group"
+            and isinstance(children, list)
+            and _layout_has_signal(children, signal)
+        ):
+            return True
+    return False
+
+
+def _pop_saved_signal(items: list[dict], signal: _OpenSignal) -> dict | None:
+    """Remove and return *signal* from a recursive native layout."""
+    for index, item in enumerate(items):
+        if _saved_item_matches(item, signal):
+            return items.pop(index)
+        children = item.get("children")
+        if item.get("dataType") == "signal-group" and isinstance(children, list):
+            found = _pop_saved_signal(children, signal)
+            if found is not None:
+                if not children:
+                    items.pop(index)
+                return found
+    return None
+
+
+def _top_level_group(items: list[dict], name: str) -> dict | None:
+    """Find the named top-level group used by append/merge semantics."""
+    return next(
+        (
+            item
+            for item in items
+            if item.get("dataType") == "signal-group" and item.get("groupName") == name
+        ),
+        None,
+    )
+
+
+def _saved_item_structure(item: dict) -> tuple:
+    """Project one saved row onto hierarchy, order, identity, and collapse state."""
+    data_type = item.get("dataType")
+    if data_type == "signal-group":
+        children = item.get("children")
+        if not isinstance(children, list):
+            raise bwave_wcp.WcpProtocolError("signal group has malformed children")
+        return (
+            data_type,
+            item.get("groupName"),
+            item.get("collapseState"),
+            tuple(_saved_item_structure(child) for child in children),
+        )
+    if data_type == "netlist-variable":
+        return (data_type, item.get("name"), item.get("msb"), item.get("lsb"))
+    if data_type == "custom-variable":
+        sources = item.get("source")
+        source_structure = ()
+        if isinstance(sources, list):
+            source_structure = tuple(
+                (source.get("name"), source.get("msb"), source.get("lsb"))
+                for source in sources
+                if isinstance(source, dict)
+            )
+        return (data_type, item.get("name"), source_structure)
+    if data_type == "signal-separator":
+        return (data_type, item.get("label"))
+    return (data_type, item.get("name"), item.get("groupName"), item.get("label"))
+
+
+def _layout_structure(items: list[dict]) -> tuple:
+    """Return the exact ordered semantic hierarchy, excluding presentation fields."""
+    return tuple(_saved_item_structure(item) for item in items)
+
+
+def _build_grouped_layout(
+    current: list[dict], groups: list[_OpenGroup], accepted: list[_OpenSignal]
+) -> tuple[list[dict], list[_OpenGroup]]:
+    """Move accepted rows into native groups while preserving their formatting."""
+    accepted_names = {signal.bwave_name for signal in accepted}
+    applied: list[_OpenGroup] = []
+    for group in groups:
+        members = [s for s in group.signals if s.bwave_name in accepted_names]
+        existing = _top_level_group(current, group.name)
+        existing_children = existing.get("children") if existing is not None else None
+        if existing is not None and not isinstance(existing_children, list):
+            raise bwave_wcp.WcpProtocolError(f"signal group {group.name!r} has malformed children")
+        children: list[dict] = []
+        for signal in members:
+            if existing_children is not None and any(
+                _saved_item_matches(item, signal) for item in existing_children
+            ):
+                continue
+            item = _pop_saved_signal(current, signal)
+            if item is None:
+                raise bwave_wcp.WcpProtocolError(
+                    f"get_signal_layout omitted displayed signal {signal.bwave_name}"
+                )
+            children.append(item)
+        if not members:
+            continue
+        if existing is None:
+            current.append(
+                {
+                    "dataType": "signal-group",
+                    "groupName": group.name,
+                    "collapseState": 2,
+                    "children": children,
+                }
+            )
+        else:
+            assert isinstance(existing_children, list)
+            existing_children.extend(children)
+        applied.append(_OpenGroup(group.name, members))
+    return current, applied
+
+
+def _apply_signal_groups(
+    client: bwave_wcp.WcpClient,
+    uri: str,
+    groups: list[_OpenGroup],
+    accepted: list[_OpenSignal],
+) -> list[_OpenGroup]:
+    """Apply native groups and read them back before reporting success."""
+    layout, applied = _build_grouped_layout(client.get_signal_layout(uri=uri), groups, accepted)
+    if not applied:
+        return []
+    client.set_signal_layout(layout, uri=uri)
+    expected = _layout_structure(layout)
+    deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+    while time.monotonic() < deadline:
+        if _layout_structure(client.get_signal_layout(uri=uri)) == expected:
+            return applied
+        time.sleep(_VIEW_POLL_INTERVAL)
+    raise bwave_wcp.WcpProtocolError("viewer did not apply the requested signal-group hierarchy")
+
+
+def _clear_view(client: bwave_wcp.WcpClient, uri: str) -> None:
+    """Remove every row, including groups/separators that have no netlist id."""
+    if set(client.capabilities) >= _GROUP_LAYOUT_CAPABILITIES:
+        client.set_signal_layout([], uri=uri)
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while time.monotonic() < deadline:
+            if not client.get_signal_layout(uri=uri):
+                return
+            time.sleep(_VIEW_POLL_INTERVAL)
+        raise bwave_wcp.WcpProtocolError("viewer did not clear its signal layout")
+    displayed = client.get_item_list(uri=uri)
+    if displayed:
+        client.remove_items(displayed, uri=uri)
 
 
 def _gui_bare(trace_abs: str) -> None:
@@ -1065,33 +1327,79 @@ def _gui_via_editor_cli(trace_abs: str) -> None:
         )
 
 
-def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
-    """Scoped/append view: drive the running viewer over WCP (ADR 0035)."""
-    if args.append and not (args.signals or args.time or args.cursor):
-        sys.exit("ERROR: --append needs something to add or move: --signals/--time/--cursor")
+class _GuiPlan(NamedTuple):
+    signals: list[_OpenSignal]
+    groups: list[_OpenGroup]
+    viewport: tuple[int, int] | None
+    markers: list[tuple[int, int, str]]
 
-    # Resolve everything BEFORE touching the viewer, so bad globs/tokens
-    # fail without side effects (no half-updated view).
+
+class _ViewerSnapshot(NamedTuple):
+    """Recoverable presentation state captured before a scoped mutation."""
+
+    layout: list[dict]
+    state: bwave_wcp.ViewerState
+
+
+def _capture_viewer_snapshot(client: bwave_wcp.WcpClient, uri: str) -> _ViewerSnapshot | None:
+    """Capture state when the peer supports lossless layout restoration."""
+    if not set(client.capabilities) >= _GROUP_LAYOUT_CAPABILITIES:
+        return None
+    return _ViewerSnapshot(
+        layout=client.get_signal_layout(uri=uri),
+        state=client.get_viewer_state(uri=uri),
+    )
+
+
+def _restore_viewer_snapshot(
+    client: bwave_wcp.WcpClient, uri: str, snapshot: _ViewerSnapshot
+) -> None:
+    """Restore and verify the view after a failed multi-step update."""
+    client.set_signal_layout(snapshot.layout, uri=uri, restore_state=snapshot.state)
+    expected = _layout_structure(snapshot.layout)
+    deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+    while time.monotonic() < deadline:
+        if _layout_structure(client.get_signal_layout(uri=uri)) == expected:
+            return
+        time.sleep(_VIEW_POLL_INTERVAL)
+    raise bwave_wcp.WcpProtocolError("viewer rollback did not restore the original hierarchy")
+
+
+def _resolve_gui_selection(
+    trace_abs: str, args: argparse.Namespace
+) -> tuple[list[_OpenSignal], list[_OpenGroup]]:
+    """Resolve flat/grouped globs and the implicit top-level clock."""
     cap = args.max_signals if args.max_signals is not None else _GUI_SIGNAL_CAP
-    signals: list[_OpenSignal] = []
+    if cap <= 0:
+        _exit_usage("ERROR: --max-signals must be greater than zero")
+    flat_signals: list[_OpenSignal] = []
+    listing: dict | None = None
     if args.signals:
-        signals, listing = _resolve_signal_globs(trace_abs, args.signals, cap)
-        # A waveform without its clock is unreadable — you cannot tell a cycle
-        # from a glitch. A new view gets it as row 1; --append is adding to a
-        # view that already has one. The clock rides on the listing we just
-        # fetched, so this costs no extra query.
-        clock = _clock_of(listing) if not args.append and not args.no_clock else None
-        if clock is not None and all(s.bwave_name != clock.bwave_name for s in signals):
-            signals = [clock, *signals]
+        flat_signals, listing = _resolve_signal_globs(trace_abs, args.signals, cap)
+    groups, group_listing = _resolve_signal_groups(trace_abs, args.groups, cap)
+    listing = listing if listing is not None else group_listing
+    signals, groups = _merge_gui_signals(flat_signals, groups, cap)
+    clock = _clock_of(listing) if listing and not args.append and not args.no_clock else None
+    if clock is None:
+        return signals, groups
+    groups = [
+        _OpenGroup(
+            group.name,
+            [signal for signal in group.signals if signal.bwave_name != clock.bwave_name],
+        )
+        for group in groups
+    ]
+    signals = [signal for signal in signals if signal.bwave_name != clock.bwave_name]
+    return [clock, *signals], [group for group in groups if group.signals]
+
+
+def _build_gui_plan(trace_abs: str, alias: str, args: argparse.Namespace) -> _GuiPlan:
+    """Resolve the side-effect-free signal, viewport, and marker plan."""
+    signals, groups = _resolve_gui_selection(trace_abs, args)
     resolver = _TickResolver(trace_abs, alias)
     viewport = resolver.range_to_ticks(args.time) if args.time else None
     cursor_tick = resolver.to_tick(args.cursor) if args.cursor else None
-
-    # VaporView has exactly two markers, and reports their delta in the status
-    # bar. A requested range therefore gets bracketed: main=START, alt=END —
-    # so the span you asked about is measured on screen, not eyeballed.
-    # --cursor moves the main marker off START; END stays put.
-    markers: list[tuple[int, int, str]] = []  # (tick, marker_type, label)
+    markers: list[tuple[int, int, str]] = []
     if viewport is not None:
         markers.append(
             (cursor_tick if cursor_tick is not None else viewport[0], _MARKER_MAIN, "START")
@@ -1099,6 +1407,113 @@ def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
         markers.append((viewport[1], _MARKER_ALT, "END"))
     elif cursor_tick is not None:
         markers.append((cursor_tick, _MARKER_MAIN, "cursor"))
+    return _GuiPlan(signals, groups, viewport, markers)
+
+
+def _require_group_layout(client: bwave_wcp.WcpClient, groups: list[_OpenGroup]) -> None:
+    """Fail before viewer mutation when native group control is unavailable."""
+    missing = _GROUP_LAYOUT_CAPABILITIES - set(client.capabilities)
+    if not groups or not missing:
+        return
+    sys.exit(
+        "ERROR: this VaporView install cannot create verified signal groups "
+        f"(missing WCP capabilities: {', '.join(sorted(missing))}).\n"
+        "  Run: python -m booley.runtime.incontainer_vaporview\n"
+        '  Then run "Developer: Reload Window" and retry.'
+    )
+
+
+def _apply_gui_plan(
+    client: bwave_wcp.WcpClient,
+    uri: str,
+    plan: _GuiPlan,
+    *,
+    append: bool,
+) -> tuple[bool, list[_OpenSignal], list[_OpenSignal], list[_OpenGroup]]:
+    """Apply one validated view plan and return the viewer-confirmed result."""
+    _require_group_layout(client, plan.groups)
+    freshly_opened = _wcp_ensure_open(client, uri)
+    snapshot = _capture_viewer_snapshot(client, uri)
+    try:
+        signals, existing = (
+            _partition_append_signals(
+                client,
+                uri,
+                plan.signals,
+                layout=snapshot.layout if snapshot is not None else None,
+            )
+            if append
+            else (plan.signals, [])
+        )
+        if not append:
+            _clear_view(client, uri)
+        newly_accepted, dropped = _add_signals(client, uri, signals)
+        accepted_set = set(existing) | set(newly_accepted)
+        accepted = [signal for signal in plan.signals if signal in accepted_set]
+        applied_groups = _apply_signal_groups(client, uri, plan.groups, accepted)
+        if plan.viewport is not None:
+            client.set_viewport(*plan.viewport, uri=uri)
+        for tick, marker_type, _label in plan.markers:
+            client.set_marker(tick, uri=uri, marker_type=marker_type)
+    except bwave_wcp.WcpError as exc:
+        if snapshot is not None:
+            try:
+                _restore_viewer_snapshot(client, uri, snapshot)
+            except bwave_wcp.WcpError as rollback_exc:
+                raise bwave_wcp.WcpProtocolError(
+                    f"viewer update failed ({exc}); rollback also failed ({rollback_exc})"
+                ) from exc
+        raise
+    return freshly_opened, accepted, dropped, applied_groups
+
+
+def _gui_result_lines(
+    trace_abs: str,
+    freshly_opened: bool,
+    accepted: list[_OpenSignal],
+    groups: list[_OpenGroup],
+    plan: _GuiPlan,
+) -> list[str]:
+    """Render the viewer-confirmed hierarchy and time annotations."""
+    action = "opened, scoped to" if freshly_opened else "scoped to"
+    lines = [f"Waveform Viewer {action} {trace_abs}:"]
+    grouped_names = {signal.bwave_name for group in groups for signal in group.signals}
+    lines.extend(
+        f"  {signal.bwave_name}" for signal in accepted if signal.bwave_name not in grouped_names
+    )
+    for group in groups:
+        lines.append(f"  {group.name}:")
+        lines.extend(f"    {signal.bwave_name}" for signal in group.signals)
+    if plan.viewport is not None:
+        lines.append(f"  viewport: {plan.viewport[0]}..{plan.viewport[1]} ticks")
+    lines.extend(f"  {label} marker: {tick} ticks" for tick, _kind, label in plan.markers)
+    return lines
+
+
+def _warn_dropped(signals: list[_OpenSignal]) -> None:
+    """Report signals absent from the viewer's netlist after an attempted add."""
+    if not signals:
+        return
+    names = "\n".join(f"  {signal.bwave_name}" for signal in signals)
+    print(
+        f"WARNING: the Waveform Viewer did not display {len(signals)} requested "
+        f"signal(s):\n{names}\n"
+        "  They are absent from its netlist under that path. The trace itself is "
+        "fine — query them with `bwave signal`/`find`/`value`.",
+        file=sys.stderr,
+    )
+
+
+def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
+    """Scoped/append view: drive the running viewer over WCP (ADR 0035)."""
+    if args.append and not (args.signals or args.groups or args.time or args.cursor):
+        sys.exit(
+            "ERROR: --append needs something to add or move: --signals/--group/--time/--cursor"
+        )
+
+    # Resolve every input before touching the viewer: invalid input cannot
+    # leave a half-updated view.
+    plan = _build_gui_plan(trace_abs, alias, args)
 
     try:
         client = bwave_wcp.try_connect()
@@ -1108,53 +1523,22 @@ def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
         sys.exit(_scoped_setup_hint())
 
     uri = Path(trace_abs).as_uri()
-    lines = [f"Waveform Viewer scoped to {trace_abs}:"]
-    dropped: list[_OpenSignal] = []
     try:
         with client:
-            freshly_opened = _wcp_ensure_open(client, uri)
-            if args.append:
-                signals = _new_append_signals(client, uri, signals)
-            else:
-                # Replace semantics: a scoped view shows EXACTLY the request.
-                # This also clears the signals VaporView auto-populates on a
-                # fresh open_document (its openFile default loads up to 64).
-                displayed = client.get_item_list(uri=uri)
-                if displayed:
-                    client.remove_items(displayed, uri=uri)
-            accepted, dropped = _add_signals(client, uri, signals)
-            # Report what the VIEWER took, not what we asked for: add_signal
-            # acks a miss as success, and echoing the request is what let
-            # every vector signal vanish silently.
-            lines.extend(f"  {sig.bwave_name}" for sig in accepted)
-            if viewport is not None:
-                client.set_viewport(viewport[0], viewport[1], uri=uri)
-                lines.append(f"  viewport: {viewport[0]}..{viewport[1]} ticks")
-            for tick, marker_type, label in markers:
-                client.set_marker(tick, uri=uri, marker_type=marker_type)
-                lines.append(f"  {label} marker: {tick} ticks")
+            result = _apply_gui_plan(client, uri, plan, append=args.append)
     except bwave_wcp.WcpError as exc:
         sys.exit(f"ERROR: Waveform Viewer control failed: {exc}")
-    if freshly_opened:
-        lines[0] = f"Waveform Viewer opened, scoped to {trace_abs}:"
     # Full hierarchical paths on their own lines: VaporView linkifies them in
     # the integrated terminal, so each line is click-to-reveal for the user.
-    print("\n".join(lines))
-    if dropped:
-        names = "\n".join(f"  {sig.bwave_name}" for sig in dropped)
-        print(
-            f"WARNING: the Waveform Viewer did not display {len(dropped)} requested "
-            f"signal(s):\n{names}\n"
-            "  They are absent from its netlist under that path. The trace itself is "
-            "fine — query them with `bwave signal`/`find`/`value`.",
-            file=sys.stderr,
-        )
+    freshly_opened, accepted, dropped, groups = result
+    print("\n".join(_gui_result_lines(trace_abs, freshly_opened, accepted, groups, plan)))
+    _warn_dropped(dropped)
 
 
 def cmd_gui(args: argparse.Namespace) -> None:
     """Show the resolved trace in the Waveform Viewer (scoped when asked)."""
     trace_abs, alias = _resolve_gui_target(args.target)
-    scoped = bool(args.signals or args.time or args.cursor or args.append)
+    scoped = bool(args.signals or args.groups or args.time or args.cursor or args.append)
     if scoped:
         _gui_scoped(trace_abs, alias, args)
     else:
@@ -1498,6 +1882,16 @@ Quick start:
         help="Show only signals matching GLOB (repeatable; same globs as query -s, no %%RADIX)",
     )
     p_gui.add_argument(
+        "-g",
+        "--group",
+        dest="groups",
+        action="append",
+        default=[],
+        metavar="NAME=GLOB",
+        help="Show GLOB inside a native named/collapsible signal group (repeatable; "
+        "repeat NAME to add more patterns to that group)",
+    )
+    p_gui.add_argument(
         "-t",
         "--time",
         metavar="START:END",
@@ -1523,7 +1917,7 @@ Quick start:
         "--max-signals",
         type=int,
         metavar="N",
-        help=f"Cap on --signals glob expansion (default {_GUI_SIGNAL_CAP})",
+        help=f"Cap on combined --signals/--group expansion (default {_GUI_SIGNAL_CAP})",
     )
 
     p_query = sub.add_parser(
@@ -1590,7 +1984,7 @@ registered trace. A sim directory is accepted like `register` (finds
 .fst, falls back to .vcd). The trace opens in the attached VS Code
 window via the VaporView extension (lramseyer.vaporview).
 
-Scoped views (ADR 0035): --signals / --time / --cursor / --append drive
+Scoped views (ADR 0035): --signals / --group / --time / --cursor / --append drive
 the RUNNING viewer over its WCP control server (127.0.0.1, port from
 the devcontainer's vaporview.wcp.port; override: BOOLEY_WCP_PORT).
 A scoped view replaces what is on screen with the requested signals;
@@ -1618,6 +2012,12 @@ What `gui` does for you, so the view is readable on arrival:
   rather than claiming the full view; the trace itself is still fine and
   still queryable.
 
+  Native groups. Prefer repeatable --group 'NAME=GLOB' for a view with
+  more than one logical section. Groups are named viewer rows that the
+  human can collapse; repeating a NAME adds more patterns to that group.
+  gui reads the resulting hierarchy back before reporting success. Use
+  --signals only for rows that intentionally belong at the top level.
+
 Pick signals like you would draw them on a whiteboard: the strobe that
 starts the thing, the state it walks, the counter that proves it, the
 strobe that ends it. A view with 40 rows in it is not a view.
@@ -1633,8 +2033,9 @@ Examples:
   bwave gui                      # latest session trace, whole view
   bwave gui @dut                 # registered alias
   bwave gui util/sim/work/cfg    # sim directory, like register
-  bwave gui @dut -s 'tb.dut.fifo.*' -t 1200c:1400c   # clock + fifo, bracketed
-  bwave gui @dut -s 'tb.dut.irq' --append            # add a signal
+  bwave gui @dut --group 'FIFO=tb.dut.fifo.*' -t 1200c:1400c
+  bwave gui @dut --group 'Control=tb.dut.ctrl.*' --append
+  bwave gui @dut -s 'tb.dut.irq' --append            # intentional top-level row
   bwave gui @dut -t error_start:dma_done --cursor error_start
 """
 

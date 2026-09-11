@@ -107,10 +107,11 @@ discovery model.
 
 ## `bwave gui` fails on a scoped view
 
-A scoped view (`--signals` / `--time` / `--cursor` / `--append`) drives a
-*running* VaporView over its WCP (Waveform Control Protocol) control server —
-the channel `bwave` uses to drive an already-open viewer — which the generated
-devcontainer spec enables and pins to port 54322 (override: `BOOLEY_WCP_PORT`).
+A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
+drives a *running* VaporView over its WCP (Waveform Control Protocol) control
+server — the channel `bwave` uses to drive an already-open viewer — which the
+generated devcontainer spec enables and pins to port 54322 (override:
+`BOOLEY_WCP_PORT`).
 If nothing is listening there, the scoped view fails with a setup hint,
 deliberately, rather than silently opening the whole trace and letting you read
 the wrong picture. A bare `bwave gui` needs no WCP server: it falls back to
@@ -129,6 +130,12 @@ extension automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
 `lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
 `code` command may install locally instead of into the attached container.
+
+The same repair applies when `--group` reports missing `set_signal_layout`,
+`get_signal_layout`, or `get_viewer_state` capabilities. Stock VaporView 1.5.4
+has native groups but does not expose them over WCP; Booley's compatibility
+patch adds the grouped layout write/readback pair used to create, verify, and
+roll back a failed multi-step update.
 
 When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
 not a rebuild. VaporView only
