@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 from booley.core.boundary import (
@@ -23,6 +25,7 @@ from .coverage_campaign import (
     CoverageCampaign,
     CoverageFinding,
     CoverageRollup,
+    decode_coverage_point_id,
     encode_coverage_point,
 )
 
@@ -31,10 +34,138 @@ DEFAULT_TOTAL_BUDGET_BYTES = 384 * 1024
 MAX_POINT_LIMIT = 100
 MAX_SOURCE_POINTS = 10
 MAX_CONTEXT_LINES = 20
+COVERAGE_POINT_REFERENCE_PATTERN = r"^point:[1-9][0-9]*$"
+
+
+@dataclass(frozen=True)
+class CoverageEvidenceAudit:
+    """Validated result of one model-facing evidence session."""
+
+    analysis_scope: Mapping[str, object]
+    point_references: Mapping[str, str]
+    terminal_error: str | None
+    budget_exhausted: bool
 
 
 class CoverageEvidenceError(ValueError):
     """A query cannot be answered safely from the active Campaign."""
+
+
+def is_coverage_point_reference(value: object) -> bool:
+    """Return whether a value is one canonical model-facing point handle."""
+    return (
+        isinstance(value, str)
+        and re.fullmatch(COVERAGE_POINT_REFERENCE_PATTERN, value) is not None
+    )
+
+
+def decode_coverage_evidence_audit(value: object) -> CoverageEvidenceAudit:
+    """Validate a persisted evidence audit before it authorizes model references."""
+    document = require_dict(value, field="coverage evidence audit")
+    fields = {
+        "total_points",
+        "points_retrieved",
+        "point_ids",
+        "point_references",
+        "evidence_bytes_delivered",
+        "evidence_budget_bytes",
+        "budget_exhausted",
+        "queries",
+    }
+    unknown = set(document) - fields - {"terminal_error"}
+    if unknown:
+        raise BoundaryError(f"coverage evidence audit has unknown fields: {sorted(unknown)}")
+    terminal_error = _audit_terminal_error(document)
+    budget_exhausted = require_bool(document, "budget_exhausted")
+    if not (set(document) & (fields - {"budget_exhausted"})):
+        return CoverageEvidenceAudit({}, {}, terminal_error, budget_exhausted)
+    if not fields <= set(document):
+        missing = sorted(fields - set(document))
+        raise BoundaryError(f"coverage evidence audit is missing fields: {missing}")
+    return _decode_complete_audit(document, terminal_error, budget_exhausted)
+
+
+def _audit_terminal_error(document: Mapping[str, object]) -> str | None:
+    if "terminal_error" not in document:
+        return None
+    return require_str(document, "terminal_error")
+
+
+def _decode_complete_audit(
+    document: Mapping[str, object], terminal_error: str | None, budget_exhausted: bool
+) -> CoverageEvidenceAudit:
+    total_points = _audit_count(document.get("total_points"), "total_points")
+    points_retrieved = _audit_count(document.get("points_retrieved"), "points_retrieved")
+    point_ids = _audit_point_ids(document.get("point_ids"), "point_ids")
+    references = _audit_references(document.get("point_references"), set(point_ids))
+    queries, queried_ids = _audit_queries(document.get("queries"))
+    delivered_bytes = _audit_count(
+        document.get("evidence_bytes_delivered"), "evidence_bytes_delivered"
+    )
+    budget_bytes = _audit_count(document.get("evidence_budget_bytes"), "evidence_budget_bytes")
+    if points_retrieved != len(set(point_ids)) or set(point_ids) != queried_ids:
+        raise BoundaryError("coverage evidence audit point counts disagree with its queries")
+    if points_retrieved > total_points or delivered_bytes > budget_bytes or budget_bytes == 0:
+        raise BoundaryError("coverage evidence audit counts are inconsistent")
+    scope = {
+        "total_points": total_points,
+        "points_retrieved": points_retrieved,
+        "point_ids": point_ids,
+        "evidence_bytes_delivered": delivered_bytes,
+        "evidence_budget_bytes": budget_bytes,
+        "budget_exhausted": budget_exhausted,
+        "queries": queries,
+    }
+    return CoverageEvidenceAudit(scope, references, terminal_error, budget_exhausted)
+
+
+def _audit_count(value: object, field: str) -> int:
+    count = require_int(value, field=field)
+    if count < 0:
+        raise BoundaryError(f"{field} must be non-negative")
+    return count
+
+
+def _audit_point_ids(value: object, field: str) -> list[str]:
+    point_ids = require_list(value, field=field)
+    if any(decode_coverage_point_id(point_id) is None for point_id in point_ids):
+        raise BoundaryError(f"{field} must contain canonical Coverage Point IDs")
+    return cast(list[str], point_ids)
+
+
+def _audit_references(value: object, delivered: set[str]) -> dict[str, str]:
+    raw = require_dict(value, field="point_references")
+    references: dict[str, str] = {}
+    for point_ref, point_id in raw.items():
+        if (
+            not is_coverage_point_reference(point_ref)
+            or decode_coverage_point_id(point_id) is None
+        ):
+            raise BoundaryError("point_references must map canonical handles to point IDs")
+        if point_id not in delivered:
+            raise BoundaryError("point_references contains an undelivered Coverage Point")
+        references[cast(str, point_ref)] = cast(str, point_id)
+    return references
+
+
+def _audit_queries(value: object) -> tuple[list[dict[str, object]], set[str]]:
+    queries = require_list(value, field="queries")
+    validated = []
+    queried_ids: set[str] = set()
+    for index, item in enumerate(queries):
+        query = require_dict(item, field=f"queries[{index}]")
+        if set(query) != {"view", "returned", "point_ids"}:
+            raise BoundaryError(f"queries[{index}] has unexpected fields")
+        view = require_str(query, "view")
+        if view not in {"overview", "points", "source"}:
+            raise BoundaryError(f"queries[{index}].view is invalid")
+        returned = _audit_count(query.get("returned"), f"queries[{index}].returned")
+        point_ids = _audit_point_ids(query.get("point_ids"), f"queries[{index}].point_ids")
+        if returned != len(point_ids):
+            raise BoundaryError(f"queries[{index}] returned count is inconsistent")
+        queried_ids.update(point_ids)
+        validated.append({"view": view, "returned": returned, "point_ids": point_ids})
+    return validated, queried_ids
 
 
 class CoverageEvidenceSession:
@@ -55,6 +186,10 @@ class CoverageEvidenceSession:
             sorted((encode_coverage_point(p) for p in campaign.points), key=_point_id)
         )
         self._by_id = {str(point["id"]): point for point in self._points}
+        self._ref_by_id = {
+            str(point["id"]): f"point:{index}" for index, point in enumerate(self._points, start=1)
+        }
+        self._delivered_references: dict[str, str] = {}
         self._total_budget_bytes = total_budget_bytes
         self._delivered_bytes = 0
         self._budget_exhausted = False
@@ -94,6 +229,7 @@ class CoverageEvidenceSession:
             "total_points": len(self._points),
             "points_retrieved": len(point_ids),
             "point_ids": point_ids,
+            "point_references": dict(sorted(self._delivered_references.items())),
             "evidence_bytes_delivered": self._delivered_bytes,
             "evidence_budget_bytes": self._total_budget_bytes,
             "budget_exhausted": self._budget_exhausted,
@@ -149,13 +285,14 @@ class CoverageEvidenceSession:
             "covered",
             "disposition",
             "point_ids",
+            "point_refs",
             "cursor",
             "limit",
         }
         _closed(request, allowed)
         _validate_point_filters(request)
         limit = _bounded_int(request.get("limit", 50), "limit", 1, MAX_POINT_LIMIT)
-        point_ids = _string_list(request.get("point_ids"), "point_ids", MAX_POINT_LIMIT)
+        point_ids = self._query_point_ids(request, MAX_POINT_LIMIT)
         selected = [point for point in self._points if _matches(point, request, point_ids)]
         offset = _cursor_offset(request, len(selected))
         records, end = _bounded_records(selected, offset, limit, "points")
@@ -166,11 +303,8 @@ class CoverageEvidenceSession:
         }
 
     def _source_excerpts(self, request: Mapping[str, object]) -> dict[str, object]:
-        _closed(request, {"view", "point_ids", "context_lines"})
-        point_ids = _string_list(
-            request.get("point_ids"), "point_ids", MAX_SOURCE_POINTS, required=True
-        )
-        assert point_ids is not None
+        _closed(request, {"view", "point_ids", "point_refs", "context_lines"})
+        point_ids = self._query_point_ids(request, MAX_SOURCE_POINTS, required=True)
         context = _bounded_int(
             request.get("context_lines", 8), "context_lines", 0, MAX_CONTEXT_LINES
         )
@@ -178,6 +312,25 @@ class CoverageEvidenceSession:
             return {"source_access": "report_only", "excerpts": []}
         excerpts = [self._excerpt(point_id, context) for point_id in point_ids]
         return {"source_access": "verified", "excerpts": excerpts}
+
+    def _query_point_ids(
+        self, request: Mapping[str, object], maximum: int, *, required: bool = False
+    ) -> list[str] | None:
+        point_ids = _string_list(request.get("point_ids"), "point_ids", maximum)
+        point_refs = _string_list(request.get("point_refs"), "point_refs", maximum)
+        if point_ids is not None and point_refs is not None:
+            raise CoverageEvidenceError("Use point_ids or point_refs, not both")
+        if point_refs is not None:
+            return [self._resolve_point_ref(value) for value in point_refs]
+        if point_ids is None and required:
+            raise CoverageEvidenceError("point_ids or point_refs is required")
+        return point_ids
+
+    def _resolve_point_ref(self, point_ref: str) -> str:
+        point_id = self._delivered_references.get(point_ref)
+        if point_id is None:
+            raise CoverageEvidenceError("Unknown Coverage Point reference")
+        return point_id
 
     def _excerpt(self, point_id: str, context: int) -> dict[str, object]:
         point = self._by_id.get(point_id)
@@ -205,10 +358,11 @@ class CoverageEvidenceSession:
     def _deliver(
         self, view: str, request: Mapping[str, object], result: dict[str, object]
     ) -> dict[str, object]:
-        encoded = _encoded_size(result)
+        presented, references = self._present_result(view, result)
+        encoded = _encoded_size(presented)
         if encoded > MAX_RESPONSE_BYTES and view == "overview":
-            result = _minimal_overview(result)
-            encoded = _encoded_size(result)
+            presented = _minimal_overview(presented)
+            encoded = _encoded_size(presented)
         if encoded > MAX_RESPONSE_BYTES:
             raise CoverageEvidenceError("Evidence response is too large; narrow the query")
         if self._delivered_bytes + encoded > self._total_budget_bytes:
@@ -219,6 +373,7 @@ class CoverageEvidenceSession:
                 "total_budget_bytes": self._total_budget_bytes,
             }
         self._delivered_bytes += encoded
+        self._delivered_references.update(references)
         records = result.get("points", result.get("excerpts", []))
         self._queries.append(
             {
@@ -231,7 +386,29 @@ class CoverageEvidenceSession:
                 else [],
             }
         )
-        return result
+        return presented
+
+    def _present_result(
+        self, view: str, result: dict[str, object]
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        key = "points" if view == "points" else "excerpts" if view == "source" else None
+        if key is None:
+            return result, {}
+        records = cast(list[dict[str, object]], result.get(key, []))
+        id_key = "id" if view == "points" else "point_id"
+        references: dict[str, str] = {}
+        presented = []
+        for item in records:
+            point_id = str(item[id_key])
+            point_ref = self._ref_by_id[point_id]
+            references[point_ref] = point_id
+            presented.append(
+                {
+                    **{name: value for name, value in item.items() if name != id_key},
+                    "point_ref": point_ref,
+                }
+            )
+        return {**result, key: presented}, references
 
 
 def _point_id(point: Mapping[str, object]) -> str:

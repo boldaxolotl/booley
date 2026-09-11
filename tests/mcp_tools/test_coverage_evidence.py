@@ -5,13 +5,18 @@ from dataclasses import replace
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.flows.sim.coverage_analysis_input import CoverageSourceClosure
 from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
     decode_coverage_campaign,
     freeze_coverage_mapping,
 )
-from booley.flows.sim.coverage_evidence import MAX_RESPONSE_BYTES, CoverageEvidenceSession
+from booley.flows.sim.coverage_evidence import (
+    MAX_RESPONSE_BYTES,
+    CoverageEvidenceSession,
+    decode_coverage_evidence_audit,
+)
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -91,6 +96,82 @@ def test_points_filter_and_cursor_are_deterministic():
     assert first["next_cursor"] is None
 
 
+def test_model_facing_points_use_stable_short_references_and_audit_exact_ids():
+    campaign = _campaign_with_waiver()
+    point = campaign.points[0]
+    session = CoverageEvidenceSession(campaign, None)
+
+    first = session.query({"view": "points", "disposition": "waived"})
+    repeated = session.query({"view": "points", "disposition": "waived"})
+
+    assert first["points"][0]["point_ref"] == "point:1"
+    assert "id" not in first["points"][0]
+    assert repeated["points"][0]["point_ref"] == "point:1"
+    assert session.analysis_scope()["point_references"] == {"point:1": point.id}
+
+
+def test_complete_evidence_audit_is_validated_into_public_and_private_parts():
+    campaign = _campaign_with_waiver()
+    session = CoverageEvidenceSession(campaign, None)
+    session.query({"view": "points", "disposition": "waived"})
+
+    audit = decode_coverage_evidence_audit(session.analysis_scope())
+
+    assert audit.analysis_scope["point_ids"] == [campaign.points[0].id]
+    assert audit.point_references == {"point:1": campaign.points[0].id}
+    assert "point_references" not in audit.analysis_scope
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("total_points", True),
+        ("budget_exhausted", "false"),
+        ("queries", [{}]),
+        ("point_ids", [7]),
+    ],
+)
+def test_evidence_audit_rejects_invalid_persisted_fields(field, invalid):
+    session = CoverageEvidenceSession(_campaign_with_waiver(), None)
+    session.query({"view": "points", "disposition": "waived"})
+    audit = session.analysis_scope()
+    audit[field] = invalid
+
+    with pytest.raises(BoundaryError):
+        decode_coverage_evidence_audit(audit)
+
+
+def test_rejected_delivery_does_not_authorize_point_reference():
+    campaign = _campaign_with_waiver()
+    session = CoverageEvidenceSession(campaign, None, total_budget_bytes=1)
+
+    result = session.query({"view": "points", "disposition": "waived"})
+
+    assert result["error"] == "evidence_budget_exhausted"
+    assert session.analysis_scope()["point_references"] == {}
+    with pytest.raises(ValueError, match="Unknown Coverage Point reference"):
+        session.query({"view": "points", "point_refs": ["point:1"]})
+
+
+def test_oversized_response_does_not_authorize_point_reference():
+    campaign = _campaign_with_waiver()
+    point = campaign.points[0]
+    identity = replace(
+        point.identity,
+        collector=freeze_coverage_mapping(
+            {"record_type": "line", "native_key": "x" * (MAX_RESPONSE_BYTES + 1)}
+        ),
+    )
+    session = CoverageEvidenceSession(
+        replace(campaign, points=(replace(point, identity=identity),)), None
+    )
+
+    with pytest.raises(ValueError, match="exceeds the response limit"):
+        session.query({"view": "points", "limit": 1})
+
+    assert session.analysis_scope()["point_references"] == {}
+
+
 def test_points_cursor_advances_within_the_same_filtered_query():
     campaign = _campaign_with_waiver()
     point = campaign.points[0]
@@ -107,8 +188,9 @@ def test_points_cursor_advances_within_the_same_filtered_query():
         }
     )
 
-    assert first["points"][0]["id"] == point.id
-    assert second["points"][0]["id"] == f"{point.id}-second"
+    assert first["points"][0]["point_ref"] != second["points"][0]["point_ref"]
+    assert "id" not in first["points"][0]
+    assert "id" not in second["points"][0]
     assert second["next_cursor"] is None
 
 
@@ -172,6 +254,36 @@ def test_source_view_is_limited_to_exact_campaign_point_ids():
     assert "line 10" in result["excerpts"][0]["text"]
 
 
+def test_source_view_resolves_only_previously_delivered_point_references():
+    document = _valid_document()
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    source = "\n".join(f"line {line}" for line in range(1, 21)) + "\n"
+    sources = CoverageSourceClosure(
+        campaign.target.identity,
+        freeze_coverage_mapping(
+            {
+                "rtl/counter.sv": {
+                    "category": "rtl",
+                    "sha256": "sha256:" + "6" * 64,
+                    "text": source,
+                }
+            }
+        ),
+    )
+    session = CoverageEvidenceSession(campaign, sources)
+
+    with pytest.raises(ValueError, match="Unknown Coverage Point reference"):
+        session.query({"view": "source", "point_refs": ["point:1"]})
+    points = session.query({"view": "points", "limit": 1})
+    point_ref = points["points"][0]["point_ref"]
+    result = session.query({"view": "source", "point_refs": [point_ref]})
+
+    assert result["excerpts"][0]["point_ref"] == point_ref
+    assert "point_id" not in result["excerpts"][0]
+
+
 def test_cumulative_budget_stops_unbounded_model_retrieval():
     campaign = _campaign_with_waiver()
     session = CoverageEvidenceSession(campaign, None, total_budget_bytes=1_500)
@@ -204,7 +316,28 @@ def test_bound_tool_deep_loads_campaign_and_publishes_audit(tmp_path, monkeypatc
     assert result["campaign_id"].startswith("campaign:")
     audit = json.loads(audit_path.read_text())
     assert audit["queries"] == [{"point_ids": [], "returned": 0, "view": "overview"}]
+    assert audit["point_references"] == {}
     assert audit["evidence_bytes_delivered"] > 0
+
+
+def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
+    from booley.mcp import coverage_evidence
+    from tests.mcp_tools.test_coverage_analyst import source_project
+
+    campaign_path = source_project(tmp_path)
+    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
+    monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
+    monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
+    monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(tmp_path / "first-audit.json"))
+    result = coverage_evidence.query_active_coverage_evidence({"view": "points", "limit": 1})
+    point_ref = result["points"][0]["point_ref"]
+
+    monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(tmp_path / "second-audit.json"))
+    with pytest.raises(ValueError, match="Unknown Coverage Point reference"):
+        coverage_evidence.query_active_coverage_evidence(
+            {"view": "source", "point_refs": [point_ref]}
+        )
 
 
 def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
