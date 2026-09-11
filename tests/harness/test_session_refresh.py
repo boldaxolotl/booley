@@ -8,11 +8,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from booley.eda.provisioning.runtime_spec import Issuance
 from booley.harness import session_refresh as harness_refresh
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import LifecycleResult, Status
+from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 
 

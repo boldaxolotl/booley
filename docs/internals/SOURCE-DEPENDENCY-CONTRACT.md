@@ -78,6 +78,27 @@ The dependency change, compatibility migrations, and measured diagnostics for
 [#444](https://github.com/boldaxolotl/booley/issues/444) are recorded in
 [the implementation evidence](../research/config-runtime-444-evidence.md).
 
+## EDA and Session Runtime boundary
+
+Session Runtime owns spec sealing, issuance persistence, authentication,
+validation, image retention, and interrupted invalidation recovery. EDA owns
+installation and License Profile registration, exact Project grants, Vivado
+policy, and resolution of immutable requirements supplied to Runtime. Project
+Initialization and Harness grant coordination compose those two contexts.
+
+EDA reads declarative Flow enablement from `booley.config.flow_enablement`; it
+must not import Flow execution, even from deferred or type-only imports. It also
+must not import Runtime issuance or invalidation modules. D19 and D20 have no
+waiver or composition exception. The dependency and hotspot measurements for
+[#487](https://github.com/boldaxolotl/booley/issues/487) are recorded in
+[the implementation evidence](../research/session-runtime-issuance-487-evidence.md).
+
+Flow enablement preserves the established compatibility rule: only the literal
+boolean `false` disables a Flow. Missing, unreadable, malformed, or non-boolean
+values retain the enabled default. This narrow boundary intentionally differs
+from fail-closed authority and Runtime configuration because legacy Projects
+must not silently lose execution when the declarative reader is unavailable.
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records
@@ -126,6 +147,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
 | D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 | D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
+| D19 | Prefix `booley.eda` | Prefix `booley.flows` | Forbid | EDA consumes declarative enablement without depending on Flow execution. |
+| D20 | Prefix `booley.eda` | Exact modules `booley.runtime.session_issuance`, `booley.runtime.issuance_invalidation` | Forbid | EDA supplies provisioning facts without knowing Runtime issuance, persistence, or invalidation. |
 
 ## Criterion evidence ownership
 

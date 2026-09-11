@@ -145,6 +145,24 @@ def image_id(name: str) -> str | None:
     return value if result.returncode == 0 and value else None
 
 
+def image_id_strict(name: str) -> str | None:
+    """Return an exact image ID while distinguishing absence from inspection failure."""
+    try:
+        result = _run_docker(["image", "inspect", name, "--format", "{{.Id}}"], timeout=15)
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        raise RuntimeError(f"cannot inspect issued Runtime Image keeper: {exc}") from exc
+    value = result.stdout.strip()
+    if result.returncode == 0 and value:
+        return value
+    detail = result.stderr.strip() or result.stdout.strip()
+    if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
+        return None
+    raise RuntimeError(
+        "cannot inspect issued Runtime Image keeper: "
+        + (detail or "docker image inspect returned no image ID")
+    )
+
+
 def _container_image_matches(container: str, image: str) -> bool | None:
     """Whether *container* was created from *image*'s current resolved ID.
 
@@ -187,6 +205,22 @@ def tag_image(source: str, target: str) -> None:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "docker image tag failed"
         raise RuntimeError(f"cannot retain issued Runtime Image: {detail}")
+
+
+def remove_image_tag(target: str) -> None:
+    """Remove one mutable image tag, leaving its underlying image untouched."""
+    try:
+        result = _run_docker(["image", "rm", target], timeout=30)
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        raise RuntimeError(f"cannot remove issued Runtime Image keeper: {exc}") from exc
+    if result.returncode == 0:
+        return
+    detail = result.stderr.strip() or result.stdout.strip()
+    if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
+        return
+    raise RuntimeError(
+        "cannot remove issued Runtime Image keeper: " + (detail or "docker image rm failed")
+    )
 
 
 def issued_image_tags() -> list[str]:

@@ -55,6 +55,50 @@ def fake_docker(monkeypatch):
 
 
 class TestIssuedImageKeepers:
+    def test_strict_image_id_distinguishes_absence_from_daemon_failure(self, fake_docker):
+        fake_docker(
+            [
+                (
+                    lambda args: args[:2] == ["image", "inspect"],
+                    _cp(1, stderr="Error response from daemon: No such image: keeper"),
+                )
+            ]
+        )
+        assert idk.image_id_strict("keeper") is None
+
+        fake_docker(
+            [
+                (
+                    lambda args: args[:2] == ["image", "inspect"],
+                    _cp(1, stderr="Cannot connect to the Docker daemon"),
+                )
+            ]
+        )
+        with pytest.raises(RuntimeError, match="Cannot connect"):
+            idk.image_id_strict("keeper")
+
+    def test_remove_keeper_is_idempotent_but_surfaces_daemon_failure(self, fake_docker):
+        fake_docker(
+            [
+                (
+                    lambda args: args[:2] == ["image", "rm"],
+                    _cp(1, stderr="Error response from daemon: No such image: keeper"),
+                )
+            ]
+        )
+        idk.remove_image_tag("keeper")
+
+        fake_docker(
+            [
+                (
+                    lambda args: args[:2] == ["image", "rm"],
+                    _cp(1, stderr="Cannot connect to the Docker daemon"),
+                )
+            ]
+        )
+        with pytest.raises(RuntimeError, match="Cannot connect"):
+            idk.remove_image_tag("keeper")
+
     def test_tag_image_surfaces_docker_failure(self, fake_docker):
         fake_docker([(lambda args: args[:2] == ["image", "tag"], _cp(1, stderr="no space"))])
         with pytest.raises(RuntimeError, match="no space"):

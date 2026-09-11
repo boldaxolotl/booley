@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
@@ -22,8 +23,8 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
-from booley.eda.provisioning import runtime_spec
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.auth_token import config_dir
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -549,11 +550,29 @@ def recover_all_locked() -> tuple[RecoveryResult, ...]:
     return tuple(recover_project_locked(project) for project in pending_refresh_projects())
 
 
-def shared_recovery_blocks_command(*, read_only: bool) -> bool:
+def shared_recovery_blocks_command(
+    *,
+    read_only: bool,
+    cleanup_resources: Callable[[str], tuple[str, ...]] | None = None,
+) -> bool:
     """Check or recover host-wide journals; report whether the command must stop."""
+    from booley.runtime import issuance_invalidation
+
     if read_only:
-        return bool(pending_refresh_projects())
-    return bool(recover_all_locked())
+        refreshes = pending_refresh_projects()
+        invalidations = issuance_invalidation.pending_invalidations()
+        return bool(refreshes or invalidations)
+    if cleanup_resources is None:
+        from booley.eda.provisioning.licensing.flexnet_docker import (
+            cleanup_project_resources_for_identity,
+        )
+
+        cleanup_resources = cleanup_project_resources_for_identity
+    invalidated = issuance_invalidation.recover_all_locked(
+        cleanup_resources=cleanup_resources,
+    )
+    refreshed = recover_all_locked()
+    return bool(invalidated or refreshed)
 
 
 def _reject_existing_vscode(project_root: Path) -> None:
@@ -701,9 +720,10 @@ def refresh(
 ) -> RefreshImage:
     """Refresh the selected image and replace its headless Session atomically."""
     with host_lifecycle_lock("session refresh"):
-        recovered = recover_all_locked()
+        recovered = shared_recovery_blocks_command(read_only=False)
         if recovered:
             raise sr.SessionError(
-                "recovered an interrupted Session refresh; run `booley session refresh` again"
+                "recovered interrupted Session Runtime host state; "
+                "run `booley session refresh` again"
             )
         return _refresh_unlocked(project_root, images, verbose=verbose)

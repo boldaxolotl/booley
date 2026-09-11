@@ -43,7 +43,6 @@ approved changes. It does not execute Scenario Runs.
 | Path | Contents |
 |---|---|
 | [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, fixtures, specifications, and evaluator material |
-| [`shared/`](shared/) | Reference material used by Checks in more than one Scenario |
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |

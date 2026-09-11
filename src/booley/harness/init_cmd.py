@@ -1461,44 +1461,9 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         return
 
     app = agent_app or _select_interactive_app(ctx.project_root)
-    from booley.eda.config import EdaConfigError
-    from booley.eda.provisioning import authority as eda_authority
-    from booley.eda.provisioning import runtime_spec as eda_runtime_spec
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
-    from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
+    from booley.runtime import session_issuance
 
-    try:
-        project_data_source = eda_runtime_spec.authorized_project_data_source(ctx.project_root)
-        _, installation = eda_runtime_spec.requested_host_installation(ctx.project_root)
-        license_profile = eda_runtime_spec.requested_license(ctx.project_root)
-        if (
-            license_profile is None
-            and not ctx.check_only
-            and shutil.which("docker")
-            and _cleanup_unlicensed_relay(ctx.project_root)
-        ):
-            ok("removed orphaned license relay from unlicensed Project")
-    except (
-        EdaConfigError,
-        eda_authority.AuthorityError,
-        eda_runtime_spec.RuntimeSpecError,
-        RelayDockerError,
-    ) as exc:
-        err(f"commercial EDA authorization failed closed: {exc}")
-        ctx.record("interactive", "err", str(exc))
-        return
-    trusted_eda_mounts = (
-        [(installation.source, CONTAINER_TARGET)] if installation is not None else []
-    )
-    if isinstance(nangate_pdk_root, Path):
-        trusted_eda_mounts.append(
-            (docker_mount_path(nangate_pdk_root), nangate_pdk.CONTAINER_ROOT)
-        )
-    fixed_container_env = (
-        {"XILINXD_LICENSE_FILE": (f"{license_profile.lmgrd_port}@booley-license-xilinx")}
-        if license_profile is not None
-        else None
-    )
     auth_source = _resolve_auth_token_source(app)
     token_seed = _resolve_token_seed_source(app)
     config_seed = _resolve_config_seed_source(app)
@@ -1509,62 +1474,53 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         # --mount (unlike -v) hard-fails on a missing bind source. Created
         # here, not in the spec builder, so build_devcontainer_spec stays pure.
         _mask_source_dir().mkdir(parents=True, exist_ok=True)
-    spec = dc.build_devcontainer_spec(
-        app,
-        image=runtime_image_id or pi.project_sandbox_image(ctx.project_root),
-        project_dir_source=docker_mount_path(project_data_source),
-        project_id=dc.canonical_project_id(ctx.project_root),
-        # docker_mount_path keeps every mount source in ONE path style — the
-        # project-dir source above already goes through it, and a Windows spec
-        # mixing /c/... with C:\... styles reads as accidental (F-8).
-        auth_token_source=docker_mount_path(auth_source) if auth_source else None,
-        config_seed_source=docker_mount_path(config_seed) if config_seed else None,
-        mcp_start_command=dc.mcp_post_start_command(),
-        memory=_project_sandbox_memory(ctx.project_root),
-        # Only reference the app's credential when one actually resolves now, so
-        # an empty ${localEnv:...} can't shadow the mounted subscription creds. A
-        # credential stored by `booley auth` counts: resolve_token checks the env
-        # var first, then Booley's store. Per-app: Claude's setup-token, Codex's
-        # API key.
-        forward_oauth_token=bool(auth_token.resolve_token(app)),
-        # The stored credential additionally rides in as a read-only sidecar
-        # mount: the ${localEnv:...} route above never reaches VS Code's
-        # "Reopen in Container" (VS Code resolves localEnv against its own
-        # process env), so incontainer_register applies the mounted copy on
-        # every container start.
-        token_seed_source=docker_mount_path(token_seed) if token_seed else None,
-        # [sandbox].mount_host_skills: the user's HOST agent skills, resolved to
-        # their real dirs and mounted read-only for use alongside the built-ins.
-        host_skills=host_skills,
-        trusted_eda_mounts=trusted_eda_mounts,
-        protected_devcontainer_source=docker_mount_path(
-            ctx.project_root.resolve() / ".devcontainer"
-        ),
-        fixed_container_env=fixed_container_env,
-        # [sandbox].mask_paths: workspace subtrees hidden from the Session
-        # Runtime via read-only empty binds over both container views.
-        mask_paths=mask_paths,
-        mask_source=docker_mount_path(_mask_source_dir()) if mask_paths else "",
-        local_timezone=detect_host_timezone(),
-    )
 
-    try:
-        if runtime_image_id is None:
-            eda_runtime_spec.pin_image(spec)
-        else:
-            eda_runtime_spec.pin_image(spec, expected_image_id=runtime_image_id)
-        eda_runtime_spec.seal(ctx.project_root, spec)
-    except eda_runtime_spec.RuntimeSpecError as exc:
-        err(f"could not pin Runtime Image: {exc}")
-        ctx.record("interactive", "err", str(exc))
-        return
+    def build_spec(inputs: session_issuance.SessionSpecInputs) -> dict:
+        trusted_eda_mounts = list(inputs.trusted_eda_mounts)
+        if isinstance(nangate_pdk_root, Path):
+            trusted_eda_mounts.append(
+                (docker_mount_path(nangate_pdk_root), nangate_pdk.CONTAINER_ROOT)
+            )
+        fixed_container_env = dict(inputs.fixed_container_environment) or None
+        return dc.build_devcontainer_spec(
+            app,
+            image=runtime_image_id or pi.project_sandbox_image(ctx.project_root),
+            project_dir_source=docker_mount_path(inputs.project_data_source),
+            project_id=dc.canonical_project_id(ctx.project_root),
+            auth_token_source=docker_mount_path(auth_source) if auth_source else None,
+            config_seed_source=docker_mount_path(config_seed) if config_seed else None,
+            mcp_start_command=dc.mcp_post_start_command(),
+            memory=_project_sandbox_memory(ctx.project_root),
+            forward_oauth_token=bool(auth_token.resolve_token(app)),
+            token_seed_source=docker_mount_path(token_seed) if token_seed else None,
+            host_skills=host_skills,
+            trusted_eda_mounts=trusted_eda_mounts,
+            protected_devcontainer_source=docker_mount_path(
+                ctx.project_root.resolve() / ".devcontainer"
+            ),
+            fixed_container_env=fixed_container_env,
+            mask_paths=mask_paths,
+            mask_source=docker_mount_path(_mask_source_dir()) if mask_paths else "",
+            local_timezone=detect_host_timezone(),
+        )
 
     if ctx.check_only:
+        try:
+            prepared = session_issuance.preview(
+                ctx.project_root,
+                build_spec,
+                expected_image_id=runtime_image_id,
+            )
+        except (session_issuance.RuntimeSpecError, RelayDockerError) as exc:
+            err(f"commercial EDA authorization failed closed: {exc}")
+            ctx.record("interactive", "err", str(exc))
+            return
+        licensed = prepared.inputs.license_profile_name is not None
         warn(
             "would write .devcontainer/devcontainer.json + exclude Booley files "
             "and run outputs (build/, util/)"
         )
-        if license_profile is not None:
+        if licensed:
             warn("would build the pinned booley-flexnet-relay image if absent")
         if host_skills:
             warn(f"would mount {len(host_skills)} host skill(s) read-only into the sandbox")
@@ -1575,26 +1531,21 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         ctx.record("interactive", "warn", f"app={app} (check-only)")
         return
 
-    relay_image_built = False
-    if license_profile is not None:
-        from booley.eda.provisioning.licensing.flexnet_docker import ensure_relay_image
-
-        try:
-            relay_image_built = ensure_relay_image(force=ctx.force)
-        except RelayDockerError as exc:
-            err(f"could not prepare immutable FlexNet relay image: {exc}")
-            ctx.record("interactive", "err", str(exc))
-            return
-
-    # Write the untracked spec and hide it (+ .booley_project, .claude) from git history.
-    path = dc.write_devcontainer(ctx.project_root, spec)
     try:
-        issuance = eda_runtime_spec.issue(ctx.project_root, spec, path)
-    except eda_runtime_spec.RuntimeSpecError as exc:
-        path.unlink(missing_ok=True)
+        issuance = session_issuance.issue(
+            ctx.project_root,
+            build_spec,
+            expected_image_id=runtime_image_id,
+            force_dependencies=ctx.force,
+        )
+    except session_issuance.RuntimeSpecError as exc:
         err(f"could not issue Session Runtime specification: {exc}")
         ctx.record("interactive", "err", str(exc))
         return
+    licensed = issuance.license_profile is not None
+    if not licensed and shutil.which("docker") and _cleanup_unlicensed_relay(ctx.project_root):
+        ok("removed orphaned license relay from unlicensed Project")
+    path = dc.devcontainer_path(ctx.project_root)
     if not _reconcile_issued_headless_runtime(ctx, issuance):
         return
     ok(f"wrote {path.relative_to(ctx.project_root)} (app={app})")
@@ -1612,9 +1563,8 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
 
     notes = [f"app={app}"]
-    if license_profile is not None:
-        state = "built" if relay_image_built else "present"
-        notes.append(f"license-relay-image:{state}")
+    if licensed:
+        notes.append("license-relay-image:present")
     ctx.record("interactive", "ok", ", ".join(notes))
 
 
@@ -2294,7 +2244,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         from booley.runtime.session_refresh import shared_recovery_blocks_command
 
         if shared_recovery_blocks_command(read_only=True):
-            err("an interrupted Session refresh requires recovery")
+            err("interrupted Session Runtime host state requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -2302,6 +2252,6 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
 
     with host_lifecycle_lock("project init"):
         if shared_recovery_blocks_command(read_only=False):
-            err("recovered an interrupted Session refresh; run `booley init` again")
+            err("recovered interrupted Session Runtime host state; run `booley init` again")
             return 2
         return _run_init_unlocked(args, project_root)

@@ -2757,7 +2757,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-close
             _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     path = devcontainer_path(project.project_root)
     try:
@@ -2945,13 +2945,13 @@ def _check_issued_license_relay(
     _fail: Fail,
 ) -> None:
     """Validate exact live relay bytes, endpoints, aliases, and hardening."""
-    from booley.eda.provisioning import runtime_spec
     from booley.eda.provisioning.licensing.flexnet_docker import (
         RelayDockerError,
         RelayProfile,
         resources_for_session,
         validate_relay,
     )
+    from booley.runtime import session_issuance as runtime_spec
 
     try:
         profile = runtime_spec.requested_license(project_root)
@@ -3665,7 +3665,7 @@ def _check_issued_image_keepers(
         _pass("no retained Runtime Image keepers")
         return
 
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     mine = runtime_spec.keeper_image(project.project_root)
     others = [tag for tag in tags if tag != mine]

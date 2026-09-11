@@ -13,12 +13,28 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from booley.eda.provisioning import runtime_spec
-from booley.eda.provisioning.runtime_spec import Issuance
 from booley.harness import bootstrap_cli, init_cmd
+from booley.runtime import devcontainer as dc
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
+from booley.runtime.project_dir import reset_cache
+from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
+
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
+
+
+def _replace_fixture_markers(value: object, replacements: dict[str, str]) -> object:
+    if isinstance(value, str):
+        for marker, replacement in replacements.items():
+            value = value.replace(marker, replacement)
+        return value
+    if isinstance(value, list):
+        return [_replace_fixture_markers(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_fixture_markers(item, replacements) for key, item in value.items()}
+    return value
 
 
 def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
@@ -41,7 +57,12 @@ def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
     )
 
 
-def _write_restore_journal(config: Path, project: Path) -> Path:
+def _write_restore_journal(
+    config: Path,
+    project: Path,
+    fixture: str = "restore_eligible_v1.json",
+    replacement_issuance: Issuance | None = None,
+) -> Path:
     root = config / "booley" / "eda" / "session-refresh"
     root.mkdir(parents=True, mode=0o700)
     if os.name != "nt":
@@ -49,42 +70,22 @@ def _write_restore_journal(config: Path, project: Path) -> Path:
             directory.chmod(0o700)
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     path = root / f"{identity}.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "transaction_id": "txn-1",
-                "project_root": str(project),
-                "phase": "parked",
-                "direction": "restore_eligible",
-                "snapshot": {
-                    "spec_present": True,
-                    "spec_content": base64.b64encode(b'{"image":"sha256:prior"}\n').decode(),
-                    "spec_mode": 0o644,
-                    "stamp_present": True,
-                    "stamp_content": base64.b64encode(b'{"version":4}\n').decode(),
-                    "stamp_mode": 0o600,
-                    "image_id": "sha256:prior",
-                },
-                "prior_issuance": asdict(_issuance(project)),
-                "prior_runtime": {
-                    "name": sr.session_container_name(project),
-                    "backup": f"{sr.session_container_name(project)}-pre-refresh",
-                    "was_running": True,
-                    "project_id": identity,
-                    "reconnect_egress": True,
-                    "container_id": "container-prior",
-                    "image_id": "sha256:prior",
-                    "egress_network_id": "network-egress",
-                },
-                "target_image_id": None,
-                "target_payload_fingerprint": None,
-                "replacement_issuance": None,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    content = (_FIXTURES / fixture).read_text(encoding="utf-8")
+    replacements = {
+        "${PROJECT_ROOT}": str(project),
+        "${PROJECT_DATA_SOURCE}": str(project / ".booley_project"),
+        "${PROJECT_ID}": identity,
+        "${KEEPER_IMAGE}": runtime_spec.keeper_image(project),
+        "${SESSION_NAME}": sr.session_container_name(project),
+    }
+    document = _replace_fixture_markers(json.loads(content), replacements)
+    assert isinstance(document, dict)
+    if replacement_issuance is not None:
+        document["target_image_id"] = replacement_issuance.image_id
+        document["replacement_issuance"] = asdict(replacement_issuance)
+    prior_stamp = json.dumps(document["prior_issuance"], sort_keys=True).encode() + b"\n"
+    document["snapshot"]["stamp_content"] = base64.b64encode(prior_stamp).decode()
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if os.name != "nt":
         path.chmod(0o600)
     return path
@@ -208,21 +209,100 @@ def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -
     config = tmp_path / "config"
     journal_path = _write_restore_journal(config, project)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    stamp_directory = runtime_spec.stamp_path(project).parent
+    stamp_directory.mkdir(parents=True, mode=0o700)
+    if os.name != "nt":
+        stamp_directory.chmod(0o700)
 
     with (
-        patch.object(session_refresh, "restore_session_spec") as restore_spec,
         patch.object(sr, "restore_refresh_session") as restore_runtime,
-        patch.object(session_refresh, "_verify_restored_journal"),
+        patch.object(sr, "verify_restored_refresh_session") as verify_runtime,
+        patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch(
+            "booley.runtime.session_spec.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stderr=""),
+        ),
     ):
         result = session_refresh.recover_project_locked(project)
 
     assert result.outcome is session_refresh.RecoveryOutcome.RESTORED
-    snapshot = restore_spec.call_args.args[1]
-    assert snapshot.spec_content == b'{"image":"sha256:prior"}\n'
-    assert snapshot.stamp_content == b'{"version":4}\n'
+    assert (project / ".devcontainer" / "devcontainer.json").read_bytes() == (
+        b'{"image":"sha256:prior","runArgs":[]}\n'
+    )
+    restored = runtime_spec.load_issued_snapshot(project)
+    assert restored.project_root == str(project)
+    assert restored.image_id == "sha256:prior"
+    assert (
+        restored.spec_sha256 == "74d49af930a8b7da7522dfcee8503a0d2a3c614853e52b2637ac535d61f76967"
+    )
     parked = restore_runtime.call_args.args[0]
     assert parked.container_id == "container-prior"
     assert parked.egress_network_id == "network-egress"
+    verify_runtime.assert_called_once_with(parked)
+    assert not journal_path.exists()
+
+
+def test_checked_in_committed_fixture_resumes_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    project = (tmp_path / "project").resolve()
+    project_dir = project / ".booley_project"
+    project_dir.mkdir(parents=True)
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    validator = tmp_path / "trusted" / "bin" / "booley"
+    validator.parent.mkdir(parents=True)
+    validator.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    validator.chmod(0o755)
+    monkeypatch.setenv("PATH", str(validator.parent))
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {validator.parent.resolve(): validator.parent.parent.resolve()},
+    )
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
+    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    spec_path = dc.write_devcontainer(project, spec)
+    replacement = runtime_spec.issue(project, spec, spec_path)
+    journal_path = _write_restore_journal(
+        config,
+        project,
+        "committed_forward_v1.json",
+        replacement,
+    )
+    created = Mock()
+
+    with (
+        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+        patch.object(sr, "_preflight"),
+        patch.object(sr, "_warn_on_image_drift"),
+        patch.object(sr, "_warn_on_stale_booley_bake"),
+        patch.object(sr, "_warn_on_stale_session_containers"),
+        patch.object(sr.idk, "container_exists", return_value=False),
+        patch.object(sr, "_container_matches_issuance", return_value=True),
+        patch.object(sr, "verify_refreshed_session"),
+        patch.object(sr, "_create_session_container", created),
+        patch.object(sr, "_run_hook"),
+        patch.object(sr, "discard_refresh_session"),
+    ):
+        result = session_refresh.recover_project_locked(project)
+
+    assert result.outcome is session_refresh.RecoveryOutcome.RESUMED
+    assert runtime_spec.validate(project, spec, spec_path) == replacement
+    created.assert_called_once()
     assert not journal_path.exists()
 
 

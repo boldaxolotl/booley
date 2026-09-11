@@ -29,10 +29,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.eda.provisioning import runtime_spec
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.project_dir import reset_cache
 
@@ -85,6 +85,10 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
+    monkeypatch.setattr(
+        "booley.runtime.interactive_docker.image_id_strict",
+        lambda _image: None,
+    )
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
