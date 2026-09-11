@@ -1,0 +1,3 @@
+read_verilog -formal -sv rtl/waiver_counter.sv
+prep -top waiver_counter
+sat -seq 4 -tempinduct -prove value[0] 0 -set-init-zero -verify
