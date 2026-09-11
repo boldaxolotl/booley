@@ -23,6 +23,7 @@ from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
+from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
 APP_CLAUDE = "claude"
@@ -89,6 +90,9 @@ _APP_EXTENSION = {
 # Waveform Viewer (ADR 0035): VaporView is installed for every app so
 # `bwave gui` and the agent's scoped-view WCP calls work in the attached
 # window.
+# VaporView WCP has no named red color. `bwave gui` maps its stable
+# red/blue/green interface to the extension's configured custom palette.
+_VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
@@ -434,7 +438,7 @@ def spec_installs_vaporview(spec: dict) -> bool:
 
     The Waveform Viewer (ADR 0035) reaches an attached VS Code window only
     through the generated spec: the ``lramseyer.vaporview`` extension install,
-    the ``vaporview.wcp.enabled``/``vaporview.wcp.port`` settings, AND the
+    the WCP and semantic waveform-color settings, AND the
     ``postAttachCommand`` manifest patch that actually makes the WCP server
     auto-start (the setting alone is inert — it is application-scoped, so the
     container's Machine settings are ignored, and the extension activates
@@ -444,8 +448,9 @@ def spec_installs_vaporview(spec: dict) -> bool:
     surface the drift.
 
     Returns ``True`` only when the extension is listed, the WCP server is
-    enabled on the port bwave's client expects, AND the auto-start patch is
-    wired; any miss means a stale or hand-edited spec that a re-seed would fix.
+    enabled on the port bwave's client expects, its presentation palette is
+    intact, AND the auto-start patch is wired; any miss means a stale or
+    hand-edited spec that a re-seed would fix.
     """
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
@@ -460,6 +465,9 @@ def spec_installs_vaporview(spec: dict) -> bool:
     if not (
         settings.get("vaporview.wcp.enabled") is True
         and settings.get("vaporview.wcp.port") == _VAPORVIEW_WCP_PORT
+        and all(
+            settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
+        )
     ):
         return False
     # The auto-start patch runs from postAttachCommand; without it the settings
@@ -1025,6 +1033,7 @@ def build_devcontainer_spec(
         "settings": {
             "vaporview.wcp.enabled": True,
             "vaporview.wcp.port": _VAPORVIEW_WCP_PORT,
+            **_VAPORVIEW_PRESENTATION_SETTINGS,
             "files.associations": dict(_HIGHLIGHT_FILE_ASSOCIATIONS),
             **_LIVE_PREVIEW_SETTINGS,
             **_PYTHON_TERMINAL_SETTINGS,

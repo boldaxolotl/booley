@@ -293,6 +293,9 @@ class TestAppExtension:
         assert vscode["settings"]["remote.extensionKind"] == {ext: ["workspace"]}
         assert vscode["settings"]["vaporview.wcp.enabled"] is True
         assert vscode["settings"]["vaporview.wcp.port"] == 54322
+        assert vscode["settings"]["vaporview.customColor5"] == "#e5484d"
+        assert vscode["settings"]["vaporview.customColor6"] == "#3b82f6"
+        assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
 
     def test_codex_extension(self):
         spec = dc.build_devcontainer_spec(dc.APP_CODEX)
@@ -332,6 +335,9 @@ class TestAppExtension:
             assert "lramseyer.vaporview" in vscode["extensions"]
             assert vscode["settings"]["vaporview.wcp.enabled"] is True
             assert vscode["settings"]["vaporview.wcp.port"] == 54322
+            assert {
+                key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
+            } == dc._VAPORVIEW_PRESENTATION_SETTINGS
 
     def test_spec_installs_vaporview_detector(self):
         # The single detector booley doctor reads to surface a spec seeded
@@ -441,6 +447,12 @@ class TestAppExtension:
         ):
             spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
             spec["customizations"]["vscode"]["settings"].update(settings_patch)
+            assert dc.spec_installs_vaporview(spec) is False
+
+    def test_spec_installs_vaporview_rejects_presentation_palette_drift(self):
+        for key in dc._VAPORVIEW_PRESENTATION_SETTINGS:
+            spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+            del spec["customizations"]["vscode"]["settings"][key]
             assert dc.spec_installs_vaporview(spec) is False
 
     def test_spec_installs_vaporview_requires_autostart_patch(self):

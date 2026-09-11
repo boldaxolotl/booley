@@ -68,17 +68,26 @@ found:
 ```bash
 bwave find @dut "tb.dut.fifo.overflow" rising --first
 bwave gui @dut \
-  --group 'FIFO handshake=tb.dut.fifo.*' \
-  --group 'Control=tb.dut.ctrl.*' \
+  --signals 'tb.clk%b@red' \
+  --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
+  --group 'Control=tb.dut.ctrl.state%h@blue' \
   --time 1180c:1260c
 ```
 
-**Group multi-part views by default.** Use repeatable
-`--group 'NAME=GLOB'` and choose short names for the signals' roles in the
-current investigation (`Request`, `Arbitration`, `Backpressure`, `Response`),
-not merely their hierarchy prefixes. Repeat the same name to merge more globs
-into one group. Use `--signals` only for a tiny one-purpose view or for rows
-that intentionally belong at the top level.
+**Compose every human view.** Split signals into logical groups and keep
+different module instances in different groups. Within one module, split by
+category when it improves the view—for example AHB, FSM state/outputs, and
+datapath. Choose short names for the roles in the current investigation, not
+merely their hierarchy prefixes. Repeat a name to merge more globs into one
+group; reserve `--signals` for the top-level clock or another intentional
+anchor.
+
+Append a radix and color to each selector as
+`GLOB[%b|%h|%d][@red|@blue|@green]`. Use binary for flags and handshakes,
+hexadecimal for packed state/data, and decimal when magnitude is the point.
+Use red for clocks/resets, blue for known registers, and green for other
+signals. Keep labels and group structure meaningful because color is supporting
+information, not the only information.
 
 It requires VaporView's WCP control server in the user's VS Code window and
 hard-errors when that is off — surface the setup hint rather than assuming it

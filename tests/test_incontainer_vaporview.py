@@ -29,6 +29,9 @@ def _vanilla_manifest() -> dict:
                 "properties": {
                     "vaporview.wcp.enabled": {"scope": "application", "default": False},
                     "vaporview.wcp.port": {"scope": "application", "default": 54322},
+                    "vaporview.customColor5": {"scope": "application", "default": "#ffa557"},
+                    "vaporview.customColor6": {"scope": "application", "default": "#dcdcaa"},
+                    "vaporview.customColor7": {"scope": "application", "default": "#d2a8ff"},
                     "vaporview.other": {"scope": "window"},
                 }
             },
@@ -67,6 +70,12 @@ class TestPatchManifest:
         props = m["contributes"]["configuration"]["properties"]
         assert props["vaporview.wcp.enabled"]["scope"] == "machine"
         assert props["vaporview.wcp.port"]["scope"] == "machine"
+        assert props["vaporview.customColor5"]["scope"] == "machine"
+        assert props["vaporview.customColor6"]["scope"] == "machine"
+        assert props["vaporview.customColor7"]["scope"] == "machine"
+        assert props["vaporview.customColor5"]["default"] == "#e5484d"
+        assert props["vaporview.customColor6"]["default"] == "#3b82f6"
+        assert props["vaporview.customColor7"]["default"] == "#2da44e"
         # Unrelated settings are left untouched.
         assert props["vaporview.other"]["scope"] == "window"
         commands = m["contributes"]["commands"]
@@ -109,8 +118,10 @@ class TestPatchManifest:
         m = _vanilla_manifest()
         m["activationEvents"] = ["onStartupFinished"]
         props = m["contributes"]["configuration"]["properties"]
-        props["vaporview.wcp.enabled"]["scope"] = "machine"
-        props["vaporview.wcp.port"]["scope"] = "machine"
+        for key in iv._MACHINE_SCOPED_KEYS:
+            props[key]["scope"] = "machine"
+        for key, value in iv.vaporview.PRESENTATION_COLOR_SETTINGS.items():
+            props[key]["default"] = value
         m["contributes"]["commands"][0]["enablement"] = "!config.vaporview.wcp.enabled"
         assert iv.patch_manifest(m) is False
 
@@ -285,6 +296,43 @@ class TestGroupedLayoutWcp:
         )
 
 
+class TestGroupedLayoutWcp:
+    def test_adds_set_get_handlers_and_capabilities(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is True
+
+        patched = bundle.read_text(encoding="utf-8")
+        assert 'case"set_signal_layout"' in patched
+        assert 'case"get_signal_layout"' in patched
+        assert "async handleSetSignalLayout" in patched
+        assert "async handleGetSignalLayout" in patched
+        assert '"set_signal_layout","get_signal_layout"' in patched
+
+    def test_patch_is_idempotent(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is True
+        once = bundle.read_text(encoding="utf-8")
+        assert iv._enable_grouped_layout_wcp(extension) is False
+        assert bundle.read_text(encoding="utf-8") == once
+
+    def test_unknown_bundle_shape_is_untouched(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-2.0.0"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("new upstream implementation", encoding="utf-8")
+
+        assert iv._enable_grouped_layout_wcp(extension) is False
+        assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
+
+
 class TestMain:
     @pytest.fixture
     def home(self, tmp_path, monkeypatch):
@@ -316,6 +364,9 @@ class TestMain:
             == "machine"
         )
         assert out["contributes"]["commands"][0]["enablement"] == "!config.vaporview.wcp.enabled"
+        assert iv._LAYOUT_CAPABILITY in (p.parent / "dist" / "extension.js").read_text(
+            encoding="utf-8"
+        )
         assert "patched 1" in capsys.readouterr().out
 
     def test_patches_theme_lookup_when_manifest_is_already_current(self, home, capsys):

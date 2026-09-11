@@ -14,6 +14,22 @@ VERIFIED_VERSION = "1.5.4"
 RELEASES_URL = "https://github.com/Lramseyer/vaporview/releases"
 EDITOR_PROBE_TIMEOUT_SECONDS = 30
 
+# Stable human-facing colors backed by VaporView custom palette slots. The
+# extension's named WCP colors omit red and its theme-derived indices are not
+# deterministic, so every adapter consumes these settings and indices from one
+# source of truth.
+PRESENTATION_COLORS = {
+    "red": ("vaporview.customColor5", 4, "#e5484d"),
+    "blue": ("vaporview.customColor6", 5, "#3b82f6"),
+    "green": ("vaporview.customColor7", 6, "#2da44e"),
+}
+PRESENTATION_COLOR_INDICES = {
+    name: color_index for name, (_setting, color_index, _value) in PRESENTATION_COLORS.items()
+}
+PRESENTATION_COLOR_SETTINGS = {
+    setting: value for setting, _index, value in PRESENTATION_COLORS.values()
+}
+
 
 class ExtensionState(Enum):
     """What an authoritative extension-registry observation established."""

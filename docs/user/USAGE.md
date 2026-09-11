@@ -389,8 +389,9 @@ failure"*) and the agent scopes the view for you:
 
 ```bash
 bwave gui                                                      # latest session trace
-bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*' \
-  --group 'Control=tb.dut.ctrl.*' --time 1200c:1400c
+bwave gui @dut --signals 'tb.clk%b@red' \
+  --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
+  --group 'Control=tb.dut.ctrl.state%h@blue' --time 1200c:1400c
 ```
 
 A scoped view arrives readable rather than as a wall of signals: the trace's
@@ -399,7 +400,10 @@ glitch), each `--group 'NAME=GLOB'` becomes a native named/collapsible section,
 and `--time START:END` drops the viewer's two markers on the ends of the range,
 so the status bar reports the span as a delta instead of making you subtract
 ruler numbers. Repeating a group name adds another pattern to that group;
-`--append` extends a same-name group or adds a new one. The rest of the grammar
+`--append` extends a same-name group or adds a new one. Signal selectors also
+accept `%b`/`%h`/`%d` radix and `@red`/`@blue`/`@green` color suffixes; these
+presentation properties are read back from the viewer before success is
+reported. The rest of the grammar
 (trace resolution, globs, time tokens, `--signals`, `--cursor`) matches `bwave`
 queries and is in `bwave gui --help`. If a scoped view errors out instead of
 opening, see

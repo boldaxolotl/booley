@@ -140,6 +140,18 @@ def test_gui_parser_accepts_repeatable_named_groups():
     assert args.groups == ["Request=tb.dut.req_*", "Response=tb.dut.resp_*"]
 
 
+def test_gui_help_advertises_composable_radix_and_color_suffixes(capsys):
+    from booley.bwave import cli as bwave
+
+    with pytest.raises(SystemExit):
+        bwave._build_parser().parse_args(["gui", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "GLOB[%RADIX][@COLOR]" in help_text
+    assert "%b/%h/%d" in help_text
+    assert "@red/@blue/@green" in help_text
+
+
 @pytest.fixture()
 def launched(monkeypatch):
     """Stub `code` onto PATH and record successful _launch_viewer calls."""
@@ -830,6 +842,124 @@ def test_explicit_named_groups_share_one_native_group(tmp_path, monkeypatch, fak
     assert "Status:" in capsys.readouterr().out
 
 
+def test_radix_and_color_suffixes_apply_to_flat_grouped_and_clock_rows(
+    tmp_path, monkeypatch, fake_rust
+):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [
+        ("tb.clk", 1),
+        ("tb.dut.fifo.full", 1),
+        ("tb.dut.fifo.count[3:0]", 4),
+    ]
+    with _loaded_server(uri, open_docs=[uri]) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(
+            signals=["tb.clk%b@red", "tb.dut.fifo.full%b@green"],
+            groups=["State=tb.dut.fifo.count*%d@blue"],
+        )
+
+    # Annotations are wrapper syntax; only clean signal globs reach B-Wave.
+    list_calls = [call for call in fake_rust["calls"] if call[1] == "list"]
+    assert list_calls
+    assert all("%" not in token and "@red" not in token for call in list_calls for token in call)
+    layout = srv.method_calls("set_signal_layout")[-1]["items"]
+    assert layout[0] == {
+        "dataType": "netlist-variable",
+        "name": "tb.clk",
+        "numberFormat": "binary",
+        "colorIndex": 4,
+    }
+    assert layout[1] == {
+        "dataType": "netlist-variable",
+        "name": "tb.dut.fifo.full",
+        "numberFormat": "binary",
+        "colorIndex": 6,
+    }
+    assert layout[2]["groupName"] == "State"
+    assert layout[2]["children"] == [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.fifo.count",
+            "numberFormat": "decimal",
+            "colorIndex": 5,
+        }
+    ]
+
+
+def test_append_restyles_an_existing_row_without_adding_it(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    existing = [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.fifo.full",
+            "numberFormat": "hexadecimal",
+            "colorIndex": 0,
+        }
+    ]
+    with _loaded_server(uri, open_docs=[uri], layout=existing) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(signals=["tb.dut.fifo.full%b@blue"], append=True)
+
+    assert srv.method_calls("add_signal") == []
+    assert srv.viewer.layout == [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.fifo.full",
+            "numberFormat": "binary",
+            "colorIndex": 5,
+        }
+    ]
+
+
+def test_style_ack_without_matching_readback_is_an_error(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    with _loaded_server(uri, open_docs=[uri]) as srv:
+        original = srv.viewer.set_signal_layout
+
+        def drop_style(params):
+            result = original(params)
+            for item in srv.viewer.layout:
+                item.pop("numberFormat", None)
+                item.pop("colorIndex", None)
+            return result
+
+        srv.responses["set_signal_layout"] = drop_style
+        _use_server(monkeypatch, srv)
+
+        with pytest.raises(SystemExit) as exc:
+            _gui(signals=["tb.dut.fifo.full%b@green"], append=True)
+
+    assert "did not apply the requested signal presentation" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("selector", "message"),
+    [
+        ("tb.dut.fifo.full%u", "unknown radix suffix '%u'"),
+        ("tb.dut.fifo.full@orange", "unknown waveform color '@orange'"),
+        ("tb.dut.fifo.full@red%h", "radix must precede color"),
+    ],
+)
+def test_invalid_display_suffix_fails_before_viewer_mutation(
+    tmp_path, monkeypatch, fake_rust, capsys, selector, message
+):
+    _seed_default(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=[selector])
+
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert fake_rust["calls"] == []
+
+
 def test_distinct_named_groups_preserve_requested_order(tmp_path, monkeypatch, fake_rust):
     trace = _seed_default(tmp_path)
     uri = trace.resolve().as_uri()
@@ -1036,6 +1166,22 @@ def test_group_requires_the_patched_hierarchical_wcp_before_mutation(
     message = str(exc.value)
     assert "cannot create verified signal groups" in message
     assert "incontainer_vaporview" in message
+
+
+def test_style_requires_verified_layout_support_before_mutation(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    old_caps = ["greeting", "open_document", "add_signal", "get_item_info"]
+    with _loaded_server(uri, open_docs=[uri], capabilities=old_caps) as srv:
+        _use_server(monkeypatch, srv)
+
+        with pytest.raises(SystemExit) as exc:
+            _gui(signals=["tb.dut.fifo.full%b@green"])
+
+    assert srv.method_calls("remove_items") == []
+    assert srv.method_calls("add_signal") == []
+    assert "cannot apply verified signal presentation" in str(exc.value)
 
 
 def test_flat_signal_view_remains_compatible_with_stock_wcp(tmp_path, monkeypatch, fake_rust):
@@ -1574,16 +1720,6 @@ def test_max_signals_raises_the_cap(tmp_path, monkeypatch, fake_rust):
 
     assert len(srv.method_calls("add_signal")) == 65
     assert srv.viewer.shown() == bus
-
-
-def test_radix_suffix_in_signals_rejected(tmp_path, monkeypatch, fake_rust, capsys):
-    _seed_default(tmp_path)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.data%d"])
-
-    assert exc.value.code == 2
-    assert "%RADIX" in capsys.readouterr().err
 
 
 def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust):
