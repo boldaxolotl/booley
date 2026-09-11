@@ -3,10 +3,12 @@
 This is the canonical vocabulary for Booley's public qualification suite. Shared
 product concepts such as **Booley Flow** and **Trace Artifact** are defined in
 the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
-[Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario definition rules
-belong in the [authoring guide](user/AUTHORING.md); run-record files and execution
-behavior belong in [FORMAT.md](agents/FORMAT.md) and
-[PROTOCOL.md](agents/PROTOCOL.md), respectively.
+[Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario definition and
+Capability Coverage rules belong in the [authoring guide](doc/AUTHORING.md), and
+Qualification scope and verdict rules belong in the
+[qualification guide](doc/QUALIFICATION.md). Run-record files and execution behavior
+belong in [FORMAT.md](doc/FORMAT.md) and
+[PROTOCOL.md](doc/PROTOCOL.md), respectively.
 
 ## Language
 
@@ -59,7 +61,7 @@ One execution of a Configured Scenario with exact product, suite, input, tool, a
 _Avoid_: QA Run, Job, Ticket run, test invocation
 
 **Protocol Stage**:
-One resumable part of Scenario Run operation: admit, prepare, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work.
+One part of Scenario Run operation: admit, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work within execution.
 _Avoid_: phase, Step, pipeline stage
 
 **Quiescence**:

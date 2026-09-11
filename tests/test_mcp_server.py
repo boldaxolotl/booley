@@ -869,6 +869,10 @@ class TestCoverageEvidenceTool:
 
         assert [tool["name"] for tool in tools] == ["coverage_evidence"]
         assert tools[0]["schema"]["additionalProperties"] is False
+        assert tools[0]["schema"]["properties"]["point_refs"]["maxItems"] == 10
+        assert "point_ids" not in tools[0]["schema"]["properties"]
+        assert "point_refs" in tools[0]["description"]
+        assert "point_ids" not in tools[0]["description"]
 
     def test_coverage_evidence_is_hidden_without_bound_campaign(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")

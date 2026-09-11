@@ -26,7 +26,7 @@ Scenario ID, a Configured Scenario ID, and an artifact root. The agent never inv
 it on its own.
 
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
-is the Scenario Operator. The [protocol](agents/PROTOCOL.md) discloses one resumable
+is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
 only; it does not execute a Scenario Run.
 
@@ -40,9 +40,7 @@ only; it does not execute a Scenario Run.
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
-| [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
-| [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, Check Results, and summary; they are not execution evidence and grant no coverage credit |
+| [`doc/`](doc/) | Execution protocol, run record contract, qualification rules, and Scenario authoring guide |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
@@ -63,12 +61,12 @@ records the historical decisions behind the production files.
 
 ## QA workflow
 
-The Scenario Operator follows [Admit](agents/ADMIT.md),
-[Prepare](agents/PREPARE.md), [Execute](agents/EXECUTE.md), and
-[Finish](agents/FINISH.md) in order, using [Record](agents/RECORD.md) whenever a
-stage writes evidence or changes state. The run files provide the durable cursor for
-context compaction. Finalization releases active or privileged resources and may leave
-eligible inert workspaces for Human Maintainer review.
+The Scenario Operator follows [Admit](doc/ADMIT.md),
+[Execute](doc/EXECUTE.md), and [Finish](doc/FINISH.md) in order, using
+[Record](doc/RECORD.md) whenever a stage writes evidence or changes state. The run
+files provide the durable checkpoint for context compaction. Finalization releases
+active or privileged resources and may leave eligible inert workspaces for Human
+Maintainer review.
 
 GUI Configured Scenarios require the supported VS Code client, WCP, and a qualified screenshot
 observer. If that infrastructure is missing, the affected checks are unavailable and
@@ -96,7 +94,7 @@ The scenario filter cannot produce a whole-suite coverage index. Regression test
 retain a contract for reviewed Configured Scenario parameters, requirements,
 membership, and exclusions. After
 changing QA assets, also run `python -m pytest tests/qa/` as required by the
-[authoring guide](user/AUTHORING.md).
+[authoring guide](doc/AUTHORING.md).
 
 ## Current status
 

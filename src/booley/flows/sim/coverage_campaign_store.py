@@ -33,8 +33,8 @@ from .coverage_campaign import (
     CoverageTarget,
     DurableTargetIdentity,
     FrozenJson,
+    _decode_owned_coverage_campaign,
     coverage_metric_semantics,
-    decode_coverage_campaign,
     derive_coverage_source_rollups,
     encode_coverage_campaign,
     encode_coverage_point,
@@ -710,7 +710,7 @@ def _load_v3(
     del v1_document["point_store"]
     del v1_document["source_rollups"]
     v1_document["points"] = points
-    campaign = decode_coverage_campaign(v1_document, expected_target)
+    campaign = _decode_owned_coverage_campaign(v1_document, expected_target)
     if derive_coverage_source_rollups(campaign.points) != summary.source_rollups:
         raise CoverageCampaignStoreError(
             "COV_SOURCE_ROLLUP_MISMATCH",

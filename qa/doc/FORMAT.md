@@ -1,12 +1,6 @@
 # Scenario Run record format
 
-This document defines the files written by the Scenario Operator during a Scenario
-Run. The Scenario Operator uses it to produce the record; Human Maintainers and other
-consumers use the same contract to audit it. See the [authoring
-guide](../user/AUTHORING.md) for the Scenario definition contract.
-
-Use `format_version: 1` for structured Scenario Run files that declare a format
-version.
+Use `format_version: 1` for structured Scenario Run files that declare a format.
 
 ## Files
 
@@ -27,15 +21,13 @@ created by Steps are recorded as outputs rather than mutations to the original
 `run.json`. Retain evidence outside disposable Project state.
 
 Write mutable JSON files by atomic replacement. `operator-state.json` uses Protocol
-Stages `prepare`, `execute`, `finish`, and `complete`; its cursor makes re-entry
-idempotent by identifying work whose completion must be reconciled before retry. The
-resource ledger uses `released`, `retained-for-review`, `borrowed-preserved`, and
-`release-failed`. A retained entry also records its bounded location, review purpose,
-Human Maintainer owner, deletion instructions, and evidence that it satisfies the
+Stages `execute` and `finish`; `complete` is the terminal `finish` status. The
+checkpoint identifies work to reconcile before retry. The resource ledger uses
+`released`, `retained-for-review`, `borrowed-preserved`, and `release-failed`. A
+retained entry also records the fields and evidence required by the
 [retention predicate](FINISH.md#reconcile-resources).
 
-The summary is a view of these records, not a competing source of truth. Consumers
-can read the small files directly; event replay, supersession projection engines,
-and digest-bound report generation are not prerequisites. Keep original observations
-and explicit correction links visible. Findings must be usable directly by Consolidate
-Findings without a separate Booley Feedback export.
+The structured records are the source of truth; `summary.md` is their view. Keep
+original observations and explicit correction links visible. Findings must be usable
+directly by Consolidate Findings without a separate Booley Feedback export. See the
+[authoring guide](AUTHORING.md) for the Scenario definition contract.

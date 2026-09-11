@@ -5,6 +5,9 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
+Measurements below were verified on 11 SEP 2026 against `main` at `d7b67321`.
+The direction rules are normative; dated graph snapshots are diagnostic evidence.
+
 ## Source map
 
 The package layout maps to the canonical concepts indexed by the
@@ -160,6 +163,19 @@ Flow-specific production remains in `booley.flows`: in particular,
 fingerprints. Moving shared field names below both packages does not move source
 scanning or execution responsibility out of Flows.
 
+`evidence.acceptance` owns storage-independent resolved acceptance inputs.
+`flows.execution_persistence` defines the execution and recording interface;
+`ticket_board.flow_execution` supplies the Ticket Board adapter. This keeps
+Acceptance Basis lookup and ledger writes outside deterministic Flow execution
+under D17.
+
+Coverage Campaign persistence and queries remain Simulation Flow responsibilities.
+`flows.sim.coverage_campaign_store` owns V1/V2 loading, summary access, and complete
+point-store validation. `flows.sim.coverage_evidence` owns bounded evidence queries
+and retrieval accounting; MCP exposes the interface and the Coverage Analyst
+composes its session. See [ADR 0062](../adr/0062-split-coverage-campaign-summary-from-point-storage.md)
+and [ADR 0063](../adr/0063-bind-coverage-analysis-to-budgeted-evidence.md).
+
 D9 resolves PR 1's ambiguous phrase "direct module children" according to its
 Flow-neutral design reason. It includes the root package module and direct file
 modules such as `booley.flows.target_campaign`. It excludes child package
@@ -211,13 +227,14 @@ proofs define that limit:
 | `booley.dev_support.validate_commit_msg` | Imports packaged `core.run_command` or a flat vendored `run_command`; the packaged case is the dynamic equivalent of `booley.dev_support.validate_commit_msg -> booley.core.run_command`. | `tests/dev_support/test_validate_commit_msg.py` proves packaged, vendored, and stale-hook resolution. |
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
+| `booley.ticket_board.flow_runner` | Loads a named Project-local `BooleyFlow` from an explicit file and supplies Ticket Board execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading and Ticket adapter composition. |
 
 Uses of `importlib.metadata`, `importlib.resources`, and `importlib.util.find_spec`
 that inspect distributions, resources, or module availability create no hidden
-in-repository source edges. PR 2 should keep the three named mechanisms explicit
-and must not speculate about arbitrary Python expressions.
+in-repository source edges. Keep these four named mechanisms explicit; the static
+analyzer does not infer dependencies from arbitrary Python expressions.
 
-## Reproducible baseline
+## Historical baseline: 02 SEP 2026
 
 The baseline combines production source at `094d1c5d` (current `main` when PR 1
 began) with the analyzer introduced by PR 1 at `4725cd09`. Reproduce this historical
@@ -231,7 +248,7 @@ python3 "${baseline_dir}/tests/architecture/report.py" \
   --source-root "${baseline_dir}/src/booley" --top 30
 ```
 
-The analyzer parses 370 Python modules and emits 1,761 located dependency facts
+The baseline analyzer parses 370 Python modules and emits 1,761 located dependency facts
 representing 1,378 unique module-to-module edges. At the 02 SEP 2026 baseline,
 seven edges are enforced composition permissions, two Criteria edges are exact
 legacy waivers, and the other 1,369 remain unclassified by design.
@@ -245,11 +262,11 @@ booley.fusesoc, booley.harness, booley.mcp, booley.projects, booley.review,
 booley.runtime, booley.specialists, booley.targets, booley.ticket_board
 ```
 
-The SCC excludes the separate `booley.core`, `booley.data`, and `booley.docker`
-package groups. PR 2's subset ratchet may let the approved SCC split, but it may
-not admit another group or merge groups that were separate.
+The baseline SCC excludes the separate `booley.core`, `booley.data`, and
+`booley.docker` package groups. The gate forbids a cycle extending beyond an
+approved member set. It does not automatically tighten that set after a split.
 
-Current direct mutual top-level package pairs are:
+The 22 direct mutual top-level package pairs at the baseline were:
 
 ```text
 booley.bwave <-> booley.flows
@@ -263,6 +280,7 @@ booley.feedback <-> booley.harness
 booley.flows <-> booley.fusesoc
 booley.flows <-> booley.mcp
 booley.flows <-> booley.targets
+booley.flows <-> booley.ticket_board
 booley.fusesoc <-> booley.runtime
 booley.fusesoc <-> booley.targets
 booley.harness <-> booley.mcp
@@ -275,21 +293,77 @@ booley.review <-> booley.ticket_board
 booley.runtime <-> booley.ticket_board
 ```
 
-The deterministic report lists named composition hotspots under a diagnostic-only
-heading. Their fan-out values do not gate changes:
+## Current snapshot: 11 SEP 2026
 
-| Canonical role | Exact module | Unique target modules |
-| --- | --- | ---: |
-| Host/Project diagnostic composition | `booley.harness.doctor` | 62 |
-| Command composition | `booley.harness.booley` | 52 |
-| Project Initialization | `booley.harness.init_cmd` | 42 |
-| Harness | `booley.harness.developer` | 40 |
-| Simulation Flow | `booley.flows.sim.flow` | 35 |
-| Synthesis Flow | `booley.flows.synth.flow` | 30 |
-| MCP composition | `booley.mcp.server` | 29 |
-| FPGA Flow | `booley.flows.fpga.flow` | 26 |
-| Mutation Specialist | `booley.specialists.mutation_tester` | 24 |
-| Coverage Specialist | `booley.specialists.coverage_analyst` | 22 |
+Source and analyzer revision: `d7b67321` (the latest `main` merge on 11 SEP 2026).
+The comparison revision `1fdc706e` is `main` immediately before 10 SEP in
+Asia/Tbilisi (UTC+04:00). These snapshots describe source imports, not runtime
+performance or product qualification.
+
+| Diagnostic | 02 SEP baseline `094d1c5d` | Before 10 SEP `1fdc706e` | Current `d7b67321` |
+| --- | ---: | ---: | ---: |
+| Parsed Python modules | 370 | 476 | 483 |
+| Located dependency facts | 1,761 | 2,337 | 2,376 |
+| Unique module-to-module edges | 1,378 | 1,915 | 1,951 |
+| Direct mutual package pairs | 22 | 15 | 15 |
+| Largest cyclic package group | 18 | 18 | 18 |
+| Exact composition permissions | 7 | 3 | 3 |
+| Live legacy waivers | 2 | 2 | 0 |
+
+The current SCC is the same 18-member set listed in the historical baseline.
+`booley.evidence`, like `booley.core`, `booley.data`, and `booley.docker`, remains
+outside it. The current 15 mutual pairs are:
+
+```text
+booley.bwave <-> booley.flows
+booley.dev_support <-> booley.runtime
+booley.eda <-> booley.flows
+booley.eda <-> booley.runtime
+booley.feedback <-> booley.harness
+booley.flows <-> booley.targets
+booley.fusesoc <-> booley.runtime
+booley.fusesoc <-> booley.targets
+booley.harness <-> booley.mcp
+booley.harness <-> booley.review
+booley.harness <-> booley.runtime
+booley.harness <-> booley.ticket_board
+booley.mcp <-> booley.specialists
+booley.mcp <-> booley.ticket_board
+booley.review <-> booley.ticket_board
+```
+
+On 10 SEP, Criteria-to-MCP edges fell from two to zero and W1/W2 were removed.
+The direct mutual-pair count stayed at 15 because MCP no longer imported Criteria
+directly at the start of that day. The replacement makes composition explicit:
+Criteria validates immutable relationships, while MCP owns discovery.
+Config-to-Runtime, Criteria-to-Flow, and Flow-to-Ticket-Board separations had
+already landed by `1fdc706e`; they are not additional 10 SEP reductions.
+
+Named composition hotspot fan-out is the number of unique imported modules.
+These diagnostic values do not gate changes:
+
+| Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | Current |
+| --- | --- | ---: | ---: | ---: |
+| Host/Project diagnostic composition | `booley.harness.doctor` | 62 | 66 | 66 |
+| Command composition | `booley.harness.booley` | 52 | 57 | 58 |
+| Project Initialization | `booley.harness.init_cmd` | 42 | 42 | 42 |
+| Harness | `booley.harness.developer` | 40 | 44 | 45 |
+| Simulation Flow | `booley.flows.sim.flow` | 35 | 48 | 48 |
+| Synthesis Flow | `booley.flows.synth.flow` | 30 | 35 | 35 |
+| MCP composition | `booley.mcp.server` | 29 | 30 | 32 |
+| FPGA Flow | `booley.flows.fpga.flow` | 26 | 32 | 32 |
+| Mutation Specialist | `booley.specialists.mutation_tester` | 24 | 25 | 25 |
+| Coverage Specialist | `booley.specialists.coverage_analyst` | 22 | 8 | 13 |
+
+Reproduce either recent snapshot with its own source and analyzer:
+
+```console
+snapshot_ref=d7b67321 # Use 1fdc706e for the before-10-SEP comparison.
+snapshot_dir="$(mktemp -d)"
+git archive "$snapshot_ref" src/booley tests/architecture | tar -x -C "$snapshot_dir"
+python3 "$snapshot_dir/tests/architecture/report.py" \
+  --source-root "$snapshot_dir/src/booley" --top 30
+```
 
 When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
@@ -303,6 +377,14 @@ waiver metadata and stale waivers whose exact edges are absent. Its SCC ratchet
 rejects any current multi-package SCC that is not a subset of an approved legacy
 member set. Approved groups may split; new acyclic singletons need no baseline
 entry.
+
+The approved SCC sets are fixed metadata, not a record of the smallest groups
+ever observed. New cycles entirely within an approved set can pass this check,
+and a split can recombine until the approved sets are explicitly tightened.
+Direction rules still apply to every edge. Package projection also combines
+distinct modules: a package SCC does not establish a module-level import cycle.
+A passing gate therefore proves the stated source rules, not complete separation,
+small caller interfaces, or bounded runtime resource use.
 
 Direction failures name the source location, normalized edge, rule, and any exact
 permission or waiver for that source under the rule.

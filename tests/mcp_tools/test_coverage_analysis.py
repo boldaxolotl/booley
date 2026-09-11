@@ -1,6 +1,10 @@
 """Report-driven Analyst behavior at its agreed deep-module seam."""
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import (
+    DurableTargetIdentity,
+    decode_coverage_campaign,
+    decode_coverage_point_id,
+)
 from booley.specialists.coverage_analysis import CoverageAnalyzer
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -104,6 +108,38 @@ def test_model_cannot_overwrite_observations_or_invent_references(response):
     )
     with pytest.raises(CoverageAnalysisError):
         CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+
+
+def test_invalid_reference_diagnostics_aggregate_paths_and_categories():
+    document = _valid_document()
+    foreign_id = (
+        "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjE6Zm9yZWlnbiIsInJlY29yZF90eX"
+        "BlIjoidl9saW5lIn0sImhpZXJhcmNoeSI6IlRPUC5mb3JlaWduIiwibG9jYXRpb24iOnsiZW"
+        "5kIjp7ImNvbHVtbiI6MiwibGluZSI6MX0sInNvdXJjZSI6InJ0bC9mb3JlaWduLnN2Iiwic3"
+        "RhcnQiOnsiY29sdW1uIjoxLCJsaW5lIjoxfX0sIm1ldHJpYyI6ImxpbmUiLCJzdWJqZWN0Ij"
+        "p7ImJhc2ljX2Jsb2NrIjowfX0"
+    )
+    assert decode_coverage_point_id(foreign_id) is not None
+    response = {
+        "hypotheses": [
+            {"point_ids": [foreign_id], "explanation": "foreign"},
+            {"point_ids": [foreign_id], "explanation": "duplicate"},
+        ],
+        "recommendations": [{"point_ids": ["cp1:x"], "action": "malformed"}],
+        "waiver_candidates": [],
+    }
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+
+    with pytest.raises(CoverageAnalysisError) as captured:
+        CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
+
+    message = str(captured.value)
+    assert "/hypotheses/0/point_ids/0: cp1_not_in_campaign" in message
+    assert "/hypotheses/1/point_ids/0: cp1_not_in_campaign" in message
+    assert "/recommendations/0/point_ids/0: malformed_cp1" in message
+    assert foreign_id not in message
 
 
 @pytest.mark.parametrize(
