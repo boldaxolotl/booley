@@ -952,12 +952,14 @@ Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `project_data_repository`) and safe relative `directory`. Target window/hook
 configuration remains under `flow_options.booley.coverage`.
 
-The canonical Target directory holds the V2 `coverage.json` manifest, required
+The canonical Target directory holds the V3 `coverage.json` manifest, required
 `coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
 and hook sidecars. The manifest is the canonical entry point and contains
-provenance, rollups, percentages, collection, and evaluation without inline
-Coverage Points. It integrity-binds the compressed JSON Lines point store.
-Retained self-contained V1 Campaigns remain readable. Native paths in the Campaign
+provenance, overall rollups, deterministic source-file rollups, percentages,
+collection, and evaluation without inline Coverage Points. Source rollups cover
+line, branch, expression, and toggle with overall eligibility and waiver policy;
+they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
+Lines point store. V1 and V2 Campaigns are rejected and must be recollected. Native paths in the Campaign
 are relative to that Target directory; Flow artifact pointers are relative to
 the producing work directory. No flat per-Target compatibility report is
 written in any Simulation mode. The separate report-driven Analyst consumes the
@@ -969,7 +971,9 @@ The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers validate its path, schema, byte counts, point count, digest, every
 point, recomputed rollups, and evaluation before accepting point-dependent
-evidence. Contract failures expose stable `COV_*` error codes. Summary readers
+evidence. Deep readers also recompute the exact source-file distribution; summary
+readers validate source ordering, metric ordering, arithmetic, and reconciliation
+with overall rollups. Contract failures expose stable `COV_*` error codes. Summary readers
 validate manifest-local facts without opening point
 storage. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
@@ -1038,7 +1042,7 @@ quarantines, invocation locks, or number tombstones.
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its integrity-linked point store when V2, and checks its
+its V3 integrity-linked point store, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The

@@ -23,6 +23,7 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
+    CAMPAIGN_SCHEMA_V3,
     MAX_COMPRESSED_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
@@ -87,25 +88,229 @@ def _large_campaign(point_count: int):
     return replace(base, points=frozen, rollups=derive_coverage_rollups(frozen))
 
 
+def _point(
+    *, source: str, metric: str, line: int, hits: int, disposition: str, hierarchy: str
+) -> CoveragePoint:
+    identity = CoveragePointIdentity(
+        metric=metric,
+        location=freeze_coverage_mapping(
+            {
+                "source": source,
+                "start": {"line": line, "column": 1},
+                "end": {"line": line, "column": 2},
+            }
+        ),
+        hierarchy=hierarchy,
+        subject=freeze_coverage_mapping({"outcome": line}),
+        collector=freeze_coverage_mapping(
+            {"record_type": f"v_{metric}", "native_key": f"{source}:{metric}:{line}"}
+        ),
+    )
+    point = CoveragePoint(
+        "pending",
+        identity,
+        {"run:reset": hits} if hits else {},
+        freeze_coverage_mapping({"kind": disposition}),
+    )
+    encoded_identity = encode_coverage_point(point)["identity"]
+    assert isinstance(encoded_identity, dict)
+    return replace(point, id=_point_id(encoded_identity))
+
+
+def _source_campaign():
+    base = _campaign()
+    points = (
+        _point(
+            source="rtl/z.sv",
+            metric="line",
+            line=1,
+            hits=1,
+            disposition="eligible",
+            hierarchy="TOP.first",
+        ),
+        _point(
+            source="rtl/z.sv",
+            metric="line",
+            line=2,
+            hits=0,
+            disposition="waived",
+            hierarchy="TOP.second",
+        ),
+        _point(
+            source="rtl/a.sv",
+            metric="branch",
+            line=3,
+            hits=0,
+            disposition="eligible",
+            hierarchy="TOP.third",
+        ),
+        _point(
+            source="tb/bench.sv",
+            metric="expression",
+            line=4,
+            hits=1,
+            disposition="unscored",
+            hierarchy="TOP.tb",
+        ),
+        _point(
+            source="rtl/a.sv",
+            metric="toggle",
+            line=5,
+            hits=2,
+            disposition="eligible",
+            hierarchy="TOP.fourth",
+        ),
+        _point(
+            source="rtl/a.sv",
+            metric="cover_property",
+            line=6,
+            hits=1,
+            disposition="eligible",
+            hierarchy="TOP.fifth",
+        ),
+    )
+    return replace(base, points=points, rollups=derive_coverage_rollups(points))
+
+
+def _two_source_line_campaign():
+    base = _campaign()
+    points = (
+        _point(
+            source="rtl/counter.sv",
+            metric="line",
+            line=10,
+            hits=1,
+            disposition="eligible",
+            hierarchy="TOP.first",
+        ),
+        _point(
+            source="tb/counter_tb.sv",
+            metric="line",
+            line=11,
+            hits=0,
+            disposition="unscored",
+            hierarchy="TOP.second",
+        ),
+    )
+    return replace(base, points=points, rollups=derive_coverage_rollups(points))
+
+
 def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    assert manifest["$schema"] == "booley.coverage-campaign/v2"
+    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V3
     assert "points" not in manifest
     assert manifest["rollups"][0]["percent"] == 100.0
     assert manifest["evaluation"]["status"] == "not_requested"
     assert manifest["point_store"]["path"] == "coverage-points.jsonl.gz"
     assert manifest["point_store"]["point_count"] == 1
+    assert [item["source"] for item in manifest["source_rollups"]] == ["rtl/counter.sv"]
+    assert [item["metric"] for item in manifest["source_rollups"][0]["rollups"]] == [
+        "line",
+        "branch",
+        "expression",
+        "toggle",
+    ]
+    assert manifest["source_rollups"][0]["rollups"][0]["percent"] == 100.0
     assert paths.points.is_file()
 
     summary = read_coverage_summary(paths.campaign, TARGET)
     loaded = load_coverage_campaign(paths.campaign, TARGET)
     assert summary.rollups[0].percent == 100.0
+    assert summary.source_rollups[0].source == "rtl/counter.sv"
     assert summary.evaluation["status"] == "not_requested"
     assert loaded.summary == summary
     assert loaded.campaign == _campaign()
     assert not hasattr(loaded.campaign, "schema")
+
+
+def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _source_campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+
+    assert [item["source"] for item in manifest["source_rollups"]] == [
+        "rtl/a.sv",
+        "rtl/z.sv",
+        "tb/bench.sv",
+    ]
+    assert all(
+        [rollup["metric"] for rollup in source["rollups"]]
+        == ["line", "branch", "expression", "toggle"]
+        for source in manifest["source_rollups"]
+    )
+    by_source = {item["source"]: item["rollups"] for item in manifest["source_rollups"]}
+    z_line = by_source["rtl/z.sv"][0]
+    assert z_line == {
+        "metric": "line",
+        "semantics": (
+            "One Verilator basic-block point; covered when its count is greater than zero."
+        ),
+        "total_points": 2,
+        "eligible_points": 1,
+        "covered_points": 1,
+        "waived_points": 1,
+        "percent": 100.0,
+    }
+    assert by_source["rtl/a.sv"][1]["percent"] == 0.0
+    assert by_source["rtl/a.sv"][3]["percent"] == 100.0
+    assert by_source["tb/bench.sv"][2]["total_points"] == 1
+    assert by_source["tb/bench.sv"][2]["eligible_points"] == 0
+    assert by_source["tb/bench.sv"][2]["percent"] is None
+    assert all(
+        rollup["metric"] != "cover_property"
+        for source in manifest["source_rollups"]
+        for rollup in source["rollups"]
+    )
+
+
+def test_deep_reader_rejects_source_distribution_tamper(tmp_path: Path) -> None:
+    campaign = _two_source_line_campaign()
+    paths = publish_coverage_campaign(tmp_path, campaign)
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    by_source = {item["source"]: item for item in manifest["source_rollups"]}
+    rtl_line = by_source["rtl/counter.sv"]["rollups"][0]
+    tb_line = by_source["tb/counter_tb.sv"]["rollups"][0]
+    rtl_line.update(
+        total_points=0, eligible_points=0, covered_points=0, waived_points=0, percent=None
+    )
+    tb_line.update(
+        total_points=2, eligible_points=1, covered_points=1, waived_points=0, percent=100.0
+    )
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    read_coverage_summary(paths.campaign, TARGET)
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
+
+
+def test_summary_reader_rejects_source_semantics_tamper(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    manifest["source_rollups"][0]["rollups"][0]["semantics"] = "tampered"
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
+
+
+def test_publish_rejects_oversized_manifest_and_removes_point_store(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import booley.flows.sim.coverage_campaign_store as store
+
+    monkeypatch.setattr(store, "MAX_MANIFEST_BYTES", 1)
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        publish_coverage_campaign(tmp_path, _campaign())
+
+    assert error.value.code == "COV_MANIFEST_LIMIT"
+    assert not (tmp_path / "coverage.json").exists()
+    assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
 def test_summary_read_does_not_require_point_storage(tmp_path: Path) -> None:
@@ -216,25 +421,18 @@ def test_summary_read_rejects_invalid_stored_evaluation_without_opening_points(
         read_coverage_summary(paths.campaign, TARGET)
 
 
-def test_deep_reader_preserves_retained_v1_campaigns(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reader", [read_coverage_summary, load_coverage_campaign])
+@pytest.mark.parametrize("schema", ["booley.coverage-campaign/v1", "booley.coverage-campaign/v2"])
+def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, schema: str) -> None:
     path = tmp_path / "coverage.json"
-    path.write_text(json.dumps(_valid_document()), encoding="utf-8")
+    document = _valid_document()
+    document["$schema"] = schema
+    path.write_text(json.dumps(document), encoding="utf-8")
 
-    loaded = load_coverage_campaign(path, TARGET)
+    with pytest.raises(CoverageCampaignStoreError, match="recollect coverage") as error:
+        reader(path, TARGET)
 
-    assert loaded.summary.source_schema == "booley.coverage-campaign/v1"
-    assert loaded.summary.point_store is None
-    assert loaded.campaign == _campaign()
-
-
-def test_summary_reader_preserves_retained_v1_campaigns(tmp_path: Path) -> None:
-    path = tmp_path / "coverage.json"
-    path.write_text(json.dumps(_valid_document()), encoding="utf-8")
-
-    summary = read_coverage_summary(path, TARGET)
-
-    assert summary.source_schema == "booley.coverage-campaign/v1"
-    assert summary.point_store is None
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
 
 
 def test_summary_reader_rejects_unsupported_schema(tmp_path: Path) -> None:
@@ -249,7 +447,9 @@ def test_summary_reader_rejects_unsupported_schema(tmp_path: Path) -> None:
     assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
 
 
-def test_v1_deep_reader_decodes_once(tmp_path: Path, monkeypatch) -> None:
+def test_unsupported_schema_is_rejected_before_campaign_decode(
+    tmp_path: Path, monkeypatch
+) -> None:
     import booley.flows.sim.coverage_campaign_store as store
 
     path = tmp_path / "coverage.json"
@@ -264,9 +464,11 @@ def test_v1_deep_reader_decodes_once(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(store, "decode_coverage_campaign", counted_decode)
 
-    load_coverage_campaign(path, TARGET)
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(path, TARGET)
 
-    assert calls == 1
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+    assert calls == 0
 
 
 def test_large_campaign_keeps_manifest_and_summary_work_constant(tmp_path: Path) -> None:

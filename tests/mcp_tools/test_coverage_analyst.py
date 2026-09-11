@@ -7,17 +7,21 @@ from pathlib import Path
 import pytest
 
 from booley.core.models import AgentResult
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
 def persist_campaign(root: Path):
-    path = root / "reports/sim/12/targets/sim_counter/coverage.json"
-    path.parent.mkdir(parents=True)
     document = _valid_document()
-    path.write_text(json.dumps(document))
-    (path.parent / "simulation.json").write_text(
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    target_dir = root / "reports/sim/12/targets/sim_counter"
+    path = publish_coverage_campaign(target_dir, campaign).campaign
+    (target_dir / "simulation.json").write_text(
         json.dumps(
             {
                 "flow": "sim",
@@ -26,6 +30,7 @@ def persist_campaign(root: Path):
                 "target_identity": document["target"]["identity"],
                 "collection": "complete",
                 "evaluation": "not_requested",
+                "coverage_campaign": "coverage.json",
             }
         )
     )
@@ -64,7 +69,7 @@ def _successful_claude_query(options_seen):
     return query
 
 
-def persist_large_v2_campaign(root: Path, point_count: int = 2_000) -> Path:
+def persist_large_v3_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
         _point_id,
@@ -110,8 +115,8 @@ def persist_large_v2_campaign(root: Path, point_count: int = 2_000) -> Path:
     return paths.campaign
 
 
-def test_large_v2_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
-    path = persist_large_v2_campaign(tmp_path)
+def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
+    path = persist_large_v3_campaign(tmp_path)
     calls = []
 
     def bounded_model(params):
@@ -159,9 +164,7 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
     report = analyst.coverage_analyst(path).to_dict()
 
     assert report["analysis_scope"]["points_retrieved"] == 1
-    assert report["analysis_scope"]["point_ids"] == [
-        json.loads(path.read_text())["points"][0]["id"]
-    ]
+    assert report["analysis_scope"]["point_ids"] == [_valid_document()["points"][0]["id"]]
 
 
 def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state(tmp_path):
@@ -171,7 +174,7 @@ def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(path, "Explain the gaps").to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v1"
+    assert report["$schema"] == "booley.coverage-analysis/v2"
     assert report["source_access"] == "report_only"
     assert len(model.calls) == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
@@ -298,7 +301,7 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
 
 def test_verified_candidate_is_ready_only_for_human_review(tmp_path):
     path = source_project(tmp_path)
-    point = json.loads(path.read_text())["points"][0]
+    point = _valid_document()["points"][0]
 
     def model(params):
         return AgentResult(

@@ -245,13 +245,18 @@ directory; `--report-dir` selects an explicit root. Each invocation owns:
     ... hook and queryability evidence
 ```
 
-New `coverage.json` manifests use `booley.coverage-campaign/v2`. They keep exact
+New `coverage.json` manifests use `booley.coverage-campaign/v3`. They keep exact
 source/build/tool and suite fingerprints, independent per-run verdicts,
-capabilities, rollups, percentages, and stored evaluation in a small summary.
+capabilities, overall rollups, deterministic per-source-file rollups, percentages,
+and stored evaluation. Source rollups cover line, branch, expression, and toggle
+metrics, use the same eligibility and waiver rules as overall rollups, and group by
+source path rather than hierarchy. They are persisted only in `coverage.json`; the
+Simulation response remains compact and points to that file.
 Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
 positive hit incidence; the manifest binds it by schema, exact relative path,
-compressed and uncompressed byte counts, point count, and SHA-256. Retained V1
-Campaigns with inline points remain readable. Pass consumers the exact
+compressed and uncompressed byte counts, point count, and SHA-256. V1 and V2
+Campaigns are rejected at a hard schema cutoff; recollect coverage to produce V3.
+Pass consumers the exact
 `coverage.json` path; never pass or edit the point store directly.
 Native artifact paths are relative to the Target directory; Flow pointers are
 relative to the producing work directory. There is no project-wide latest

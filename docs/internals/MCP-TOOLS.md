@@ -800,17 +800,16 @@ for the ordered persistence and Criterion-evidence transaction.
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
-path) and optional `instruction`. Retained V1 input returns
-`booley.coverage-analysis/v1`; V2 input returns `booley.coverage-analysis/v2`
+path) and optional `instruction`. V3 input returns `booley.coverage-analysis/v2`
 with the Campaign manifest and integrity-linked point-store digest as observed evidence.
-Both carry immutable observed evidence, model-authored hypotheses and recommendations,
+The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
 bounded evidence-retrieval scope.
 No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete V2
+The wrapper checks canonical invocation/Target identity, the complete V3
 manifest/point-store relationship, and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
@@ -824,7 +823,7 @@ The model prompt contains only a compact Campaign reference. One isolated read-o
 verified `source` excerpts for exact point IDs. Point records include their complete
 eligible, unscored, or waived disposition and Approved Waiver provenance. Responses
 are bounded individually and cumulatively; the host first deep-validates the complete
-V2 manifest/point-store pair, so paging never weakens Campaign integrity. No other MCP
+V3 manifest/point-store pair, so paging never weakens Campaign integrity. No other MCP
 tool is visible to this model.
 
 Stored evaluation maps directly to closure recommendations:
