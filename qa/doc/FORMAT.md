@@ -1,6 +1,6 @@
 # Scenario Run record format
 
-Use `format_version: 1` for structured Scenario Run files that declare a format
+Use `format_version: 1` for structured Scenario Run files that declare a format.
 
 ## Files
 
@@ -30,4 +30,4 @@ retained entry also records the fields and evidence required by the
 The structured records are the source of truth; `summary.md` is their view. Keep
 original observations and explicit correction links visible. Findings must be usable
 directly by Consolidate Findings without a separate Booley Feedback export. See the
-[authoring guide](../user/AUTHORING.md) for the Scenario definition contract.
+[authoring guide](AUTHORING.md) for the Scenario definition contract.
