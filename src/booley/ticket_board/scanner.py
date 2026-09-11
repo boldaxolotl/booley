@@ -140,9 +140,7 @@ def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None
         entry["last_update"] = tl["last_update"]
 
 
-def _enrich_from_acceptance(
-    entry: dict[str, Any], tickets_dir: Path, slug: str
-) -> None:
+def _enrich_from_acceptance(entry: dict[str, Any], tickets_dir: Path, slug: str) -> None:
     """Add optional acceptance progress without making Board discovery fragile."""
     try:
         journal_state = acceptance_state(tickets_dir, slug)

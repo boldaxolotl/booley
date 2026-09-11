@@ -313,9 +313,7 @@ class TestAcceptanceProgress:
         ],
         ids=["unreadable-json", "unreadable-utf8", "legacy-schema"],
     )
-    def test_scan_isolates_malformed_acceptance_journal(
-        self, tmp_path, caplog, journal, error
-    ):
+    def test_scan_isolates_malformed_acceptance_journal(self, tmp_path, caplog, journal, error):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "done", "legacy")
         make_ticket_in_dir(tio, "queue", "new-ticket")
