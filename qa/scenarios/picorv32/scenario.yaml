@@ -679,7 +679,7 @@ phases:
   title: Ticket 2, remaining allocated checks and complete final regression
   minutes: 210
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 20
 steps:
 - id: inputs.project-pin
@@ -2905,11 +2905,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-fifo
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-fresh
   phase: interactive
   action: |-
@@ -2928,11 +2923,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-fresh
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.TRACE-ARTIFACT.trace-vcd-convert
   phase: interactive
   action: |-
@@ -2951,11 +2941,6 @@ steps:
     capture: evidence/picorv32-published-demo-continuity.inventory.TRACE-ARTIFACT.trace-vcd-convert
   requires:
   - inputs.project-pin
-  assets:
-  - base: shared
-    path: references/bwave-matrices.md
-    audience: scenario-operator
-    sha256: f8d05cb1938ba5b2f05bee4a80884507fe51e77cde2789bee272f82b25067a3b
 - id: inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
   phase: interactive
   action: |-
@@ -5520,7 +5505,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned branches for review when eligible; otherwise release them.
     expected: Retain run-owned branches for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.branches
 - id: cleanup.worktrees
@@ -5532,7 +5517,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned worktrees for review when eligible; otherwise release them.
     expected: Retain run-owned worktrees for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.worktrees
 - id: cleanup.targets
@@ -5544,7 +5529,7 @@ steps:
     - TARGET-CATALOG
     stimulus: Retain run-owned Targets for review when eligible; otherwise release them.
     expected: Retain run-owned Targets for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.targets
 - id: cleanup.projections
@@ -5556,7 +5541,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned projections for review when eligible; otherwise release them.
     expected: Retain run-owned projections for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.projections
 - id: cleanup.hooks
@@ -5568,7 +5553,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Disable run-owned executable hooks; retain only eligible inert hook state.
     expected: Disable run-owned executable hooks; retain only eligible inert hook state.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.hooks
 - id: cleanup.runtimes
@@ -5580,7 +5565,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned Session Runtime and prove its absence.
     expected: Release every run-owned Session Runtime and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.runtimes
 - id: cleanup.processes
@@ -5592,7 +5577,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned process and prove no descendants remain.
     expected: Release every run-owned process and prove no descendants remain.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.processes
 - id: cleanup.project-grants
@@ -5604,7 +5589,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Revoke every run-owned Grant and prove its absence.
     expected: Revoke every run-owned Grant and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.project-grants
 - id: cleanup.license-profiles
@@ -5616,7 +5601,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned License Profile and prove its absence.
     expected: Release every run-owned License Profile and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.license-profiles
 - id: cleanup.relays
@@ -5628,7 +5613,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned relay and prove its absence.
     expected: Release every run-owned relay and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.relays
 - id: cleanup.installation-registrations
@@ -5640,7 +5625,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned installation registration and prove its absence.
     expected: Release every run-owned installation registration and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.installation-registrations
 - id: cleanup.mounts
@@ -5652,7 +5637,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Unmount every run-owned mount and prove its absence.
     expected: Unmount every run-owned mount and prove its absence.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/picorv32-published-demo-continuity.cleanup.mounts
 - id: cleanup.preserve-borrowed
@@ -5676,7 +5661,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Record final pinned-repository state and preserve it for review when eligible.
     expected: Record final pinned-repository state and preserve it for review when eligible.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Tree/status against initial pins; accepted evolution commits retained as evidence before restoration.
     capture: evidence/picorv32-published-demo-continuity.cleanup.clean-pins
 - id: cleanup.remotes
@@ -5700,6 +5685,6 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Finalize record, Findings, recovery links and resource disposition with no secret values.
     expected: Finalize record, Findings, recovery links and resource disposition with no secret values.
-    authority_ref: ../../agents/FINISH.md
-    evidence: Compact run files, immutable external evidence, and quiescence-complete recovery point.
+    authority_ref: ../../doc/FINISH.md
+    evidence: Compact run files, immutable external evidence, and recovery point after safe resource cleanup.
     capture: evidence/picorv32-published-demo-continuity.evidence.finalize

@@ -16,8 +16,9 @@ defines the scope, instructions, evidence, and verdict rules needed to do that w
 letting an agent decide for itself what counts as a pass.
 
 Agents perform setup, product exercises, fault injection, recovery, evidence
-collection, and final quiescence. The Human Maintainer still owns the Scenarios, required
-Configured Scenarios, acceptance rules, and final qualification decision.
+collection, and safe shutdown and cleanup of run-owned resources. The Human Maintainer
+still owns the Scenarios, required Configured Scenarios, acceptance rules, and final
+qualification decision.
 
 ## Starting a run
 
@@ -26,27 +27,63 @@ Scenario ID, a Configured Scenario ID, and an artifact root. The agent never inv
 it on its own.
 
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
-is the Scenario Operator. The [protocol](agents/PROTOCOL.md) discloses one resumable
+is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
 only; it does not execute a Scenario Run.
+
+## Adding behavior to QA
+
+Explicitly invoke the user-only [`booley-add-to-qa` skill](booley-add-to-qa/SKILL.md)
+with prose describing the proposed public behavior. It identifies existing coverage or
+proposes new Capabilities and Checks for Human Maintainer approval, then validates the
+approved changes. It does not execute Scenario Runs.
 
 ## What's in this directory
 
 | Path | Contents |
 |---|---|
 | [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, fixtures, specifications, and evaluator material |
-| [`shared/`](shared/) | Reference material used by Checks in more than one Scenario |
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
+| [`booley-add-to-qa/`](booley-add-to-qa/) | Explicitly invoked skill that turns a proposed public behavior into reviewed Capability and Check changes |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
-| [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
-| [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, Check Results, and summary; they are not execution evidence and grant no coverage credit |
+| [`doc/`](doc/) | Execution protocol, run record contract, and qualification rules |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
 represented. They do not prove that Booley passes them.
+
+## Scenario and Check structure
+
+[`scenario.schema.json`](scenario.schema.json) is the structural authority. Scenario
+files use `format_version: 1`.
+
+A Scenario declares:
+
+- its identity, source, inputs, and public authorities;
+- named Check sets and Configured Scenarios;
+- a shared time budget and ordered phases; and
+- ordered Steps.
+
+Each Step declares:
+
+- its identity, phase, action, and Checks; and
+- any prerequisites, authority, timeout, retry, recovery, resources, and assets.
+
+A Configured Scenario declares:
+
+- whether it is required;
+- its host, client, and backend parameters;
+- its pre-run requirements and selected Check sets; and
+- any justified exclusions.
+
+Each Check is one independently observable product claim declaring:
+
+- its ID and Capability references;
+- its stimulus and expected result;
+- the public authority for that expectation; and
+- its required evidence, capture location, and any navigation-only references.
 
 ## Scenarios
 
@@ -61,56 +98,11 @@ fault and recovery sequences, independent evaluation, and product cleanup Checks
 [published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
 records the historical decisions behind the production files.
 
-## QA workflow
-
-The Scenario Operator follows [Admit](agents/ADMIT.md),
-[Prepare](agents/PREPARE.md), [Execute](agents/EXECUTE.md), and
-[Finish](agents/FINISH.md) in order, using [Record](agents/RECORD.md) whenever a
-stage writes evidence or changes state. The run files provide the durable cursor for
-context compaction. Finalization releases active or privileged resources and may leave
-eligible inert workspaces for Human Maintainer review.
-
-GUI Configured Scenarios require the supported VS Code client, WCP, and a qualified screenshot
-observer. If that infrastructure is missing, the affected checks are unavailable and
-the Scenario Run Outcome is incomplete. A headless substitute does not earn GUI credit, and
-the Scenario Run cannot be narrowed after it starts.
-
 ## Validate changes
 
-Install the validator dependencies, then run the whole-suite check:
+After changing QA assets, run:
 
 ```sh
-python -m pip install -r qa/requirements-validation.txt
 python qa/validate.py
+python -m pytest tests/qa/
 ```
-
-During authoring, validate one scenario or write the derived whole-suite coverage
-index for review:
-
-```sh
-python qa/validate.py --scenario picorv32-published-demo-continuity
-python qa/validate.py --coverage-index /tmp/booley-qa-coverage.json
-```
-
-The scenario filter cannot produce a whole-suite coverage index. Regression tests
-retain a contract for reviewed Configured Scenario parameters, requirements,
-membership, and exclusions. After
-changing QA assets, also run `python -m pytest tests/qa/` as required by the
-[authoring guide](user/AUTHORING.md).
-
-## Current status
-
-The repository contains the production Scenarios and validation tooling, but no
-full qualification evidence. The exact, immutable Booley build under test may be a
-published release or an unreleased candidate, with package/image provenance and a
-matching documentation snapshot. Execution also requires the reference native hosts,
-provider access, authorized disposable resources, declared EDA provisioning, and
-independent evidence storage. GUI Configured Scenarios require actual supported VS Code
-clients, WCP, and a qualified screenshot observer; no headless substitute or narrower
-configuration is implied. Record implementation progress in the relevant pull request
-or issue, and put Check Results in run records.
-
-For the UART scenario, exact-a/VAL=32 timeout comparisons use the approved public
-30 to 34 bit-time window in the [timing addendum](scenarios/uart/spec/timing-addendum.md).
-Other timing observations remain blocked when the public contract cannot establish a
-verdict.

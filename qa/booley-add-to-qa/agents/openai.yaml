@@ -1,0 +1,7 @@
+interface:
+  display_name: "Add to Booley QA"
+  short_description: "Turn product requirements into public QA checks"
+  default_prompt: "Use $booley-add-to-qa to turn this public Booley behavior into reviewed QA Capability and Check changes."
+
+policy:
+  allow_implicit_invocation: false

@@ -456,7 +456,7 @@ phases:
   title: Final regression/archive
   minutes: 30
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 30
 steps:
 - id: published-release
@@ -6027,7 +6027,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Stop/remove owned processes and runtimes.
     expected: Ledger and inspection prove release; pre-existing resources untouched.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Ledger and inspection prove release; pre-existing resources untouched.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-processes
 - id: cleanup-git
@@ -6039,7 +6039,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain owned Workspaces, worktrees, and branches for review when eligible.
     expected: Immutable evidence verified; retained state satisfies the retention predicate.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Immutable evidence verified; retained state satisfies the retention predicate.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-git
 - id: cleanup-projects
@@ -6051,7 +6051,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release owned Project inventory entries; retain eligible Project directories for review.
     expected: Ledger reconciled with remaining state, no unrelated deletion.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Ledger reconciled with remaining state, no unrelated deletion.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-projects
 - id: cleanup-evaluator
@@ -6063,7 +6063,7 @@ steps:
     - SIMULATION-FLOW
     stimulus: Retain eligible evaluator state for review; otherwise release it.
     expected: Private evidence archived outside mutable state; any retained evaluator state is eligible.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Private evidence archived outside mutable state; any retained evaluator state is eligible.
     capture: evidence/opentitan-uart-clean-room-greenfield.cleanup-evaluator
 - id: cleanup-preservation
@@ -6087,10 +6087,10 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Observe elapsed time and stop new work at 7h30.
     expected: |-
-      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
-    authority_ref: ../../agents/FINISH.md
+      Resource cleanup reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
+    authority_ref: ../../doc/FINISH.md
     evidence: |-
-      Quiescence reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
+      Resource cleanup reserve honored, eight-hour completion recorded honestly; unfinished required Checks blocked, never silently omitted.
     capture: evidence/opentitan-uart-clean-room-greenfield.deadline
 - id: retry-policy
   phase: cleanup

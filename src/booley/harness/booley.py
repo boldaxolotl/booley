@@ -1717,7 +1717,14 @@ _EARLY_COMMANDS: dict[str, Callable] = {
 
 from booley.eda import cli as _eda_cli
 
-_EARLY_COMMANDS["eda"] = _eda_cli.run
+
+def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness.eda_grants import COORDINATOR
+
+    return _eda_cli.run(args, project_root, grant_mutator=COORDINATOR)
+
+
+_EARLY_COMMANDS["eda"] = _cmd_eda
 
 
 def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | None:

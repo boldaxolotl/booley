@@ -1,11 +1,12 @@
 """Advisory interpretation of immutable native Coverage Campaign evidence."""
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
-from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
     CoverageSourceClosure,
@@ -13,16 +14,18 @@ from booley.flows.sim.coverage_analysis_input import (
 )
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
-    DurableTargetIdentity,
+    CoveragePoint,
     FrozenJson,
-    decode_coverage_campaign,
+    decode_coverage_point_id,
     encode_coverage_campaign,
+    encode_coverage_point,
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
     CoverageCampaignSummary,
 )
+from booley.flows.sim.coverage_evidence import is_coverage_point_reference
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class CoverageModelResult:
 
     response: object
     analysis_scope: Mapping[str, FrozenJson]
+    point_references: Mapping[str, str]
 
 
 def _json_value(value: object) -> object:
@@ -57,8 +61,12 @@ class _AnalysisEnvelope:
 
 
 def _analysis_envelope(
-    observed: dict[str, object], summary: CoverageCampaignSummary | None
-) -> _AnalysisEnvelope:
+    campaign: CoverageCampaign, summary: CoverageCampaignSummary | None
+) -> tuple[_AnalysisEnvelope, dict[str, object]]:
+    target: dict[str, object] = {
+        "identity": campaign.target.identity,
+        "selector": campaign.target.selector,
+    }
     storage_schema = "booley.coverage-campaign/v1"
     point_store = None
     manifest = None
@@ -68,24 +76,28 @@ def _analysis_envelope(
         point_store = manifest.get("point_store")
     reference = {
         "campaign_reference": {
-            "campaign_id": observed["campaign_id"],
-            "target": observed["target"],
-            "point_count": len(cast(list[object], observed["points"])),
+            "campaign_id": campaign.campaign_id,
+            "target": target,
+            "point_count": len(campaign.points),
             "storage_schema": storage_schema,
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
     if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V3:
-        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed)
+        observed = encode_coverage_campaign(campaign)
+        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed), target
     assert manifest is not None
     assert summary.point_store is not None
-    return _AnalysisEnvelope(
-        "booley.coverage-analysis/v2",
-        reference,
-        {
-            "campaign_manifest": manifest,
-            "point_store_sha256": summary.point_store.sha256,
-        },
+    return (
+        _AnalysisEnvelope(
+            "booley.coverage-analysis/v2",
+            reference,
+            {
+                "campaign_manifest": manifest,
+                "point_store_sha256": summary.point_store.sha256,
+            },
+        ),
+        target,
     )
 
 
@@ -103,9 +115,7 @@ class CoverageAnalyzer:
         *,
         summary: CoverageCampaignSummary | None = None,
     ) -> CoverageAnalysisReport:
-        observed = encode_coverage_campaign(campaign)
-        decode_coverage_campaign(observed, DurableTargetIdentity(campaign.target.identity))
-        envelope = _analysis_envelope(observed, summary)
+        envelope, target = _analysis_envelope(campaign, summary)
         eligibility, limitations = _eligibility(campaign)
         sources = verified_source_snapshot(campaign, sources)
         if sources is None:
@@ -115,14 +125,15 @@ class CoverageAnalyzer:
         response, analysis_scope = _model_response(
             self._model(_analysis_prompt(envelope, sources, instruction)), campaign
         )
-        response = _validate_response(response, campaign)
+        points = {point.id: point for point in campaign.points}
+        response = _validate_response(response, points)
         response["waiver_candidates"] = _screen_candidates(
-            response["waiver_candidates"], campaign, sources
+            response["waiver_candidates"], campaign, points, sources
         )
         report = {
             "$schema": envelope.schema,
             "campaign_id": campaign.campaign_id,
-            "target": observed["target"],
+            "target": target,
             "eligibility": eligibility,
             "source_access": "report_only" if sources is None else "verified",
             "limitations": limitations,
@@ -145,8 +156,8 @@ def _analysis_prompt(
             **envelope.model_campaign,
             "evidence_access": (
                 "Use the coverage_evidence tool for overview, points, and verified source "
-                "excerpts. Begin with overview and retrieve only evidence needed for exact "
-                "point_ids."
+                "excerpts. Begin with overview, retrieve only evidence needed for the "
+                "analysis, and cite only point_ref values returned by the tool."
             ),
             "source_access": "verified" if sources is not None else "report_only",
             "instruction": instruction,
@@ -167,7 +178,199 @@ def _model_response(
         "queries": [],
         **model_result.analysis_scope,
     }
-    return model_result.response, scope
+    response = _normalize_scoped_response(
+        model_result.response, campaign, model_result.point_references, scope
+    )
+    return response, scope
+
+
+@dataclass(frozen=True)
+class _ReferenceIssue:
+    pointer: str
+    category: str
+    fingerprint: str
+
+
+def _normalize_scoped_response(
+    value: object,
+    campaign: CoverageCampaign,
+    point_references: Mapping[str, str],
+    analysis_scope: Mapping[str, object],
+) -> dict[str, object]:
+    response = require_dict(value)
+    if set(response) != {"hypotheses", "recommendations", "waiver_candidates"}:
+        raise CoverageAnalysisError(
+            "Model must return only hypotheses, recommendations and waiver_candidates"
+        )
+    points = {point.id for point in campaign.points}
+    delivered = set(cast(list[str], analysis_scope.get("point_ids", [])))
+    references = _validated_reference_map(point_references, points, delivered)
+    issues: list[_ReferenceIssue] = []
+    normalized: dict[str, object] = {}
+    for category, text_key in (("hypotheses", "explanation"), ("recommendations", "action")):
+        normalized[category] = _normalize_scoped_records(
+            response[category], category, text_key, references, points, delivered, issues
+        )
+    normalized["waiver_candidates"] = _normalize_scoped_candidates(
+        response["waiver_candidates"], references, points, delivered, issues
+    )
+    _raise_reference_issues(issues)
+    return normalized
+
+
+def _validated_reference_map(
+    references: Mapping[str, str], points: set[str], delivered: set[str]
+) -> dict[str, str]:
+    valid = {}
+    for point_ref, point_id in references.items():
+        if (
+            not is_coverage_point_reference(point_ref)
+            or not isinstance(point_id, str)
+            or point_id not in points
+            or point_id not in delivered
+        ):
+            raise CoverageAnalysisError("Malformed Coverage Point reference audit")
+        valid[point_ref] = point_id
+    return valid
+
+
+def _normalize_scoped_records(
+    value: object,
+    category: str,
+    text_key: str,
+    references: Mapping[str, str],
+    points: set[str],
+    delivered: set[str],
+    issues: list[_ReferenceIssue],
+) -> list[dict[str, object]]:
+    normalized = []
+    for index, item in enumerate(require_list(value)):
+        record = require_dict(item)
+        reference_key = _model_reference_key(record, text_key)
+        if reference_key is None:
+            raise CoverageAnalysisError(f"Malformed model {category}")
+        text = require_str(record, text_key)
+        pointer = f"/{category}/{index}/{reference_key}"
+        point_ids = _resolve_references(
+            record[reference_key], pointer, references, points, delivered, issues
+        )
+        normalized.append({"point_ids": point_ids, text_key: text})
+    return normalized
+
+
+def _model_reference_key(record: Mapping[str, object], text_key: str) -> str | None:
+    for reference_key in ("point_refs", "point_ids"):
+        if set(record) == {reference_key, text_key}:
+            return reference_key
+    return None
+
+
+def _normalize_scoped_candidates(
+    value: object,
+    references: Mapping[str, str],
+    points: set[str],
+    delivered: set[str],
+    issues: list[_ReferenceIssue],
+) -> list[dict[str, object]]:
+    normalized = []
+    fields = {"reason", "evidence", "proof_reference"}
+    for index, item in enumerate(require_list(value)):
+        record = require_dict(item)
+        reference_key = next(
+            (key for key in ("point_ref", "point_id") if set(record) == fields | {key}), None
+        )
+        if reference_key is None:
+            raise CoverageAnalysisError("Malformed waiver candidate")
+        values = _candidate_strings(record, fields)
+        point_ids = _resolve_references(
+            [record[reference_key]],
+            f"/waiver_candidates/{index}/{reference_key}",
+            references,
+            points,
+            delivered,
+            issues,
+        )
+        normalized.append({"point_id": point_ids[0] if point_ids else "", **values})
+    return normalized
+
+
+def _candidate_strings(record: Mapping[str, object], keys: set[str]) -> dict[str, str]:
+    values = {key: as_str(record.get(key)) for key in keys}
+    if any(value is None for value in values.values()):
+        raise CoverageAnalysisError("Candidate fields must be strings")
+    return cast(dict[str, str], values)
+
+
+def _resolve_references(
+    value: object,
+    pointer: str,
+    references: Mapping[str, str],
+    points: set[str],
+    delivered: set[str] | None,
+    issues: list[_ReferenceIssue],
+) -> list[str]:
+    resolved = []
+    values = require_list(value)
+    for index, reference in enumerate(values):
+        point_id, category = _resolve_reference(reference, references, points, delivered)
+        if category is None:
+            assert point_id is not None
+            resolved.append(point_id)
+        else:
+            item_pointer = (
+                pointer
+                if len(values) == 1 and pointer.endswith("point_ref")
+                else f"{pointer}/{index}"
+            )
+            issues.append(
+                _ReferenceIssue(item_pointer, category, _reference_fingerprint(reference))
+            )
+    return resolved
+
+
+def _resolve_reference(
+    value: object,
+    references: Mapping[str, str],
+    points: set[str],
+    delivered: set[str] | None,
+) -> tuple[str | None, str | None]:
+    point_id = None
+    category = None
+    if not isinstance(value, str):
+        category = "non_string_reference"
+    elif value.startswith("point:"):
+        if not is_coverage_point_reference(value):
+            category = "malformed_point_ref"
+        elif value in references:
+            point_id = references[value]
+        else:
+            category = "unknown_point_ref"
+    elif value.startswith("cp1:"):
+        if decode_coverage_point_id(value) is None:
+            category = "malformed_cp1"
+        elif value not in points:
+            category = "cp1_not_in_campaign"
+        elif delivered is not None and value not in delivered:
+            category = "cp1_not_delivered"
+        else:
+            point_id = value
+    else:
+        category = "malformed_point_ref"
+    return point_id, category
+
+
+def _reference_fingerprint(value: object) -> str:
+    raw = value.encode() if isinstance(value, str) else type(value).__name__.encode()
+    return f"sha256:{hashlib.sha256(raw).hexdigest()[:12]}"
+
+
+def _raise_reference_issues(issues: list[_ReferenceIssue]) -> None:
+    if not issues:
+        return
+    detail = "; ".join(
+        f"{issue.pointer}: {issue.category} ({issue.fingerprint})" for issue in issues
+    )
+    raise CoverageAnalysisError(f"Invalid Coverage Point references: {detail}")
 
 
 _RECOMMENDATIONS = {
@@ -202,26 +405,31 @@ def _eligibility(campaign: CoverageCampaign) -> tuple[str, list[str]]:
     return ("eligible_with_limits" if limitations else "eligible"), limitations
 
 
-def _validate_response(value: object, campaign: CoverageCampaign) -> dict[str, object]:
+def _validate_response(value: object, points: Mapping[str, CoveragePoint]) -> dict[str, object]:
     try:
         response = require_dict(value)
         if set(response) != {"hypotheses", "recommendations", "waiver_candidates"}:
             raise CoverageAnalysisError(
                 "Model must return only hypotheses, recommendations and waiver_candidates"
             )
-        points = {point.id for point in campaign.points}
+        known_points = set(points)
+        issues: list[_ReferenceIssue] = []
         for category, text_key in (("hypotheses", "explanation"), ("recommendations", "action")):
-            for item in require_list(response[category]):
+            for item_index, item in enumerate(require_list(response[category])):
                 record = require_dict(item)
                 if set(record) != {"point_ids", text_key}:
                     raise CoverageAnalysisError(f"Malformed model {category}")
                 require_str(record, text_key)
                 references = require_list(record["point_ids"])
-                if any(
-                    not isinstance(reference, str) or reference not in points
-                    for reference in references
-                ):
-                    raise CoverageAnalysisError("Model referenced an unknown Coverage Point")
+                _resolve_references(
+                    references,
+                    f"/{category}/{item_index}/point_ids",
+                    {},
+                    known_points,
+                    None,
+                    issues,
+                )
+        _raise_reference_issues(issues)
         require_list(response["waiver_candidates"])
         return dict(response)
     except BoundaryError as exc:
@@ -229,12 +437,11 @@ def _validate_response(value: object, campaign: CoverageCampaign) -> dict[str, o
 
 
 def _screen_candidates(
-    value: object, campaign: CoverageCampaign, sources: CoverageSourceClosure | None
+    value: object,
+    campaign: CoverageCampaign,
+    points: Mapping[str, CoveragePoint],
+    sources: CoverageSourceClosure | None,
 ) -> list[dict[str, object]]:
-    points = {
-        point["id"]: point
-        for point in cast(list[dict[str, Any]], encode_coverage_campaign(campaign)["points"])
-    }
     rtl = {
         record["path"]: record["sha256"]
         for record in cast(tuple[Mapping[str, str], ...], campaign.source_closure["rtl"])
@@ -259,10 +466,8 @@ def _screen_candidates(
             {
                 **item,
                 "target_identity": campaign.target.identity,
-                "point_identity": point["identity"] if point else None,
-                "source_fingerprint": rtl.get(point["identity"]["location"]["source"])
-                if point
-                else None,
+                "point_identity": encode_coverage_point(point)["identity"] if point else None,
+                "source_fingerprint": rtl.get(point.identity.source) if point else None,
                 "screening": screening,
                 "screening_reason": detail,
                 "approval": "not_approved",
@@ -272,9 +477,9 @@ def _screen_candidates(
 
 
 def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
-    if point is None or point["identity"]["location"]["source"] not in rtl:
+    if point is None or point.identity.source not in rtl:
         return "forbidden", "Candidate must identify an exact RTL Coverage Point"
-    if point["disposition"]["kind"] != "eligible" or item["reason"] not in {
+    if point.disposition["kind"] != "eligible" or item["reason"] not in {
         "excluded",
         "unreachable",
     }:
@@ -285,7 +490,7 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
             "Verified sources and supporting evidence are required for human review",
         )
     if item["reason"] == "unreachable" and (
-        not item["proof_reference"].strip() or point["hits_by_run"]
+        not item["proof_reference"].strip() or point.hits_by_run
     ):
         return (
             "investigate",

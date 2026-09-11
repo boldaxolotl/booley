@@ -10,7 +10,7 @@
     "taxi-ubuntu-codex-cli": {
       "required": true,
       "semantics": "267fa24760adc3b0a055b7cb774dde6c1ac7cdceae2a41f91e0d7544e870bd8d",
-      "checks": "0aeff1c5b39cc680a49bce0c29710ab71d4a42fab99ca1fe10a5b902f32bbb5e",
+      "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-cli": {
@@ -28,7 +28,7 @@
     "taxi-ubuntu-codex-vscode": {
       "required": true,
       "semantics": "25846640140bbf6f3cb932f45a81fb1e41e645a0f17c99efc2a56249be40e865",
-      "checks": "cdad32fdfa462a30c08f12af007ed5db2aaef1b26307e396a74f78c40b24537e",
+      "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-vscode": {
@@ -46,7 +46,7 @@
     "taxi-windows-codex-cli": {
       "required": true,
       "semantics": "5be6c42d9d3d9d4964593ac2d1939ffcd963a3f0aecd9951e2218bc68172777a",
-      "checks": "0aeff1c5b39cc680a49bce0c29710ab71d4a42fab99ca1fe10a5b902f32bbb5e",
+      "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-cli": {
@@ -64,7 +64,7 @@
     "taxi-windows-codex-vscode": {
       "required": true,
       "semantics": "d71a81d40ad12d448e2135ef888c28a8bc497b28f5f6db75d8c46010eb0261d9",
-      "checks": "cdad32fdfa462a30c08f12af007ed5db2aaef1b26307e396a74f78c40b24537e",
+      "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-vscode": {

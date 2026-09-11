@@ -51,11 +51,11 @@ _D17_REASON = (
     "deterministic Flow execution consumes resolved acceptance inputs and records through "
     "composition without knowing Ticket Board persistence"
 )
-_D19_REASON = (
+_D21_REASON = (
     "Review renders artifacts from resolved evidence without knowing Ticket Board "
     "lifecycle or Harness orchestration"
 )
-_D20_REASON = "Ticket Board composes Review only through its exact artifact-generation entry point"
+_D22_REASON = "Ticket Board composes Review only through its exact artifact-generation entry point"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -91,16 +91,31 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
-        "D19",
+        "D22",
+        (prefix("booley.ticket_board"),),
+        (prefix("booley.review"),),
+        _D22_REASON,
+    ),
+    DirectionRule(
+        "D21",
         (prefix("booley.review"),),
         (prefix("booley.ticket_board"), prefix("booley.harness")),
-        _D19_REASON,
+        _D21_REASON,
     ),
     DirectionRule(
         "D20",
-        (prefix("booley.ticket_board"),),
-        (prefix("booley.review"),),
-        _D20_REASON,
+        (prefix("booley.eda"),),
+        (
+            exact("booley.runtime.session_issuance"),
+            exact("booley.runtime.issuance_invalidation"),
+        ),
+        "EDA supplies provisioning facts without knowing Runtime issuance or invalidation",
+    ),
+    DirectionRule(
+        "D19",
+        (prefix("booley.eda"),),
+        (prefix("booley.flows"),),
+        "EDA provisioning consumes declarative enablement without depending on Flow execution",
     ),
     DirectionRule(
         "D18",
@@ -254,7 +269,7 @@ DIRECTION_RULES = (
 COMPOSITION_PERMISSIONS = (
     CompositionPermission(
         "C9",
-        "D20",
+        "D22",
         "booley.ticket_board.review_preparation",
         "booley.review.generation",
         "Ticket Board supplies resolved immutable inputs to the Review artifact generator.",

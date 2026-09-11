@@ -72,7 +72,7 @@ def test_registration_grant_resolution_and_referential_integrity(
         lmgrd_port=2100,
         vendor_port=2101,
     )
-    grant = authority.add_grant(
+    grant = authority._add_grant(
         project, "vivado", installation="vivado_2025_2", license_profile=profile.name
     )
 
@@ -89,7 +89,7 @@ def test_issuance_resolves_the_installation_selected_only_by_the_grant(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, source = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
     with authority.resolve_for_issuance(project, True) as (installation, profile):
         assert installation is not None
@@ -109,7 +109,7 @@ def test_issuance_rejects_host_provisioning_without_an_installation_grant(
         lmgrd_port=2100,
         vendor_port=2101,
     )
-    authority.add_grant(project, "vivado", license_profile="site_a")
+    authority._add_grant(project, "vivado", license_profile="site_a")
 
     with (
         pytest.raises(authority.AuthorityError, match="grant has no installation"),
@@ -122,7 +122,7 @@ def test_issuance_does_not_mount_a_stale_installation_grant(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
     with (
         pytest.raises(authority.AuthorityError, match="does not request host provisioning"),
@@ -138,7 +138,7 @@ def test_exact_project_identity_does_not_authorize_copy(
     copied = tmp_path / "copied"
     copied.mkdir()
     (copied / ".git").mkdir()
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(copied, "vivado")
@@ -149,7 +149,7 @@ def test_grant_canonicalizes_a_marked_project_symlink(tmp_path: Path, private_st
     alias = tmp_path / "project-alias"
     alias.symlink_to(project, target_is_directory=True)
 
-    grant = authority.add_grant(alias, "vivado", installation="vivado_2025_2")
+    grant = authority._add_grant(alias, "vivado", installation="vivado_2025_2")
 
     assert grant.project_root == str(project.resolve())
     assert authority.resolve_grant(project, "vivado") == grant
@@ -161,7 +161,7 @@ def test_grant_rejects_non_project_directory(tmp_path: Path, private_state: Path
     unrelated.mkdir()
 
     with pytest.raises(authority.AuthorityError, match=r"no canonical \.git or \.booley_project"):
-        authority.add_grant(unrelated, "vivado", installation="vivado_2025_2")
+        authority._add_grant(unrelated, "vivado", installation="vivado_2025_2")
 
 
 @pytest.mark.parametrize("root", [Path("/"), Path.home(), Path("/etc"), Path("/tmp")])
@@ -173,7 +173,7 @@ def test_grant_rejects_broad_or_system_root(
         pytest.skip(f"system root absent on this platform: {root}")
 
     with pytest.raises(authority.AuthorityError, match="unsafe Project root"):
-        authority.add_grant(root, "vivado", installation="vivado_2025_2")
+        authority._add_grant(root, "vivado", installation="vivado_2025_2")
 
 
 def test_grant_rejects_private_authority_overlap(tmp_path: Path, private_state: Path) -> None:
@@ -182,7 +182,7 @@ def test_grant_rejects_private_authority_overlap(tmp_path: Path, private_state: 
     (private_state / ".git").mkdir()
 
     with pytest.raises(authority.AuthorityError, match="private EDA authority"):
-        authority.add_grant(private_state, "vivado", installation="vivado_2025_2")
+        authority._add_grant(private_state, "vivado", installation="vivado_2025_2")
 
 
 def test_grant_rejects_registered_installation_overlap(
@@ -195,83 +195,53 @@ def test_grant_rejects_registered_installation_overlap(
     authority.register_installation("nested", "vivado", source)
 
     with pytest.raises(authority.AuthorityError, match=r"overlaps.*installation"):
-        authority.add_grant(project, "vivado", installation="nested")
+        authority._add_grant(project, "vivado", installation="nested")
 
 
-def test_revoke_removes_authority_before_invalidation_failure(
-    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+def test_revoke_removes_authority_without_runtime_knowledge(
+    tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
-    monkeypatch.setattr(
-        authority, "invalidate_project_specs", lambda _root: (_ for _ in ()).throw(OSError("boom"))
-    )
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
-    with pytest.raises(OSError, match="boom"):
-        authority.revoke_grant(project, "vivado")
-    with pytest.raises(authority.AuthorityError, match="no exact"):
-        authority.resolve_grant(project, "vivado")
+    authority._revoke_grant(project, "vivado")
 
-
-def test_revoke_cleans_exact_runtime_after_authority_removal(
-    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
-    cleaned: list[str] = []
-    monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
-
-    authority.revoke_grant(project, "vivado")
-
-    assert cleaned == [str(project.resolve())]
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(project, "vivado")
 
 
 def test_revoke_uses_stored_identity_after_project_root_is_deleted(
-    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    grant = authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    grant = authority._add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
-    invalidated: list[str] = []
-    cleaned: list[str] = []
-    monkeypatch.setattr(authority, "invalidate_project_specs", invalidated.append)
-    monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
 
-    assert authority.revoke_grant(project, "vivado") == grant
+    assert authority.revoke_project_identity(project, "vivado") == grant.project_root
+    assert authority._revoke_grant(project, "vivado") == grant
 
-    assert invalidated == [grant.project_root]
-    assert cleaned == [grant.project_root]
     assert authority.load_state().grants == ()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="directory symlink privileges vary on Windows")
 def test_revoke_uses_stored_identity_after_project_path_is_rebound(
-    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    grant = authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    grant = authority._add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
     replacement = tmp_path / "replacement"
     replacement.mkdir()
     project.symlink_to(replacement, target_is_directory=True)
-    invalidated: list[str] = []
-    cleaned: list[str] = []
-    monkeypatch.setattr(authority, "invalidate_project_specs", invalidated.append)
-    monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
-
-    assert authority.revoke_grant(project, "vivado") == grant
-
-    assert invalidated == [grant.project_root]
-    assert cleaned == [grant.project_root]
+    assert authority.revoke_project_identity(project, "vivado") == grant.project_root
+    assert authority._revoke_grant(project, "vivado") == grant
 
 
 def test_revoke_missing_relative_root_points_to_project_inventory(
     tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
     monkeypatch.chdir(tmp_path)
 
@@ -279,26 +249,9 @@ def test_revoke_missing_relative_root_points_to_project_inventory(
         authority.AuthorityError,
         match=r"absolute canonical path.*`booley projects`",
     ):
-        authority.revoke_grant(Path("project"), "vivado")
+        authority._revoke_grant(Path("project"), "vivado")
 
     assert len(authority.load_state().grants) == 1
-
-
-def test_revoke_reports_cleanup_failure_but_keeps_authority_revoked(
-    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
-    monkeypatch.setattr(
-        authority,
-        "_cleanup_revoked_runtime",
-        lambda _project: (_ for _ in ()).throw(authority.AuthorityError("residual relay")),
-    )
-
-    with pytest.raises(authority.AuthorityError, match="residual relay"):
-        authority.revoke_grant(project, "vivado")
-    with pytest.raises(authority.AuthorityError, match="no exact"):
-        authority.resolve_grant(project, "vivado")
 
 
 @pytest.mark.parametrize(
@@ -350,7 +303,7 @@ def test_insecure_registry_mode_and_symlink_fail_closed(
 
 def test_corrupt_and_duplicate_grants_fail_closed(tmp_path: Path, private_state: Path) -> None:
     project, _ = _registered(tmp_path)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
     path = authority.state_path()
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["grants"].append(dict(raw["grants"][0]))

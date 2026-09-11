@@ -74,3 +74,27 @@ def test_shared_runtime_does_not_depend_on_harness() -> None:
         path for path in _python_files("runtime") if path.name not in composition_entrypoints
     ]
     _assert_no_import_prefixes(shared_runtime, ("booley.harness",))
+
+
+def test_session_issuance_is_one_deep_boundary_for_independent_callers() -> None:
+    """Deleting the facade breaks four callers with distinct policy needs."""
+    consumers = {
+        "harness/init_cmd.py": {"preview", "issue"},
+        "harness/doctor.py": {"validate", "requested_license", "keeper_image"},
+        "runtime/session_runtime.py": {"authenticate", "validate", "labels"},
+        "runtime/session_refresh.py": {
+            "load_issued_snapshot",
+            "load_recovery_snapshot",
+            "issuance_from_document",
+        },
+    }
+    for relative, capabilities in consumers.items():
+        source = (_PACKAGE / relative).read_text(encoding="utf-8")
+        assert "session_issuance" in source
+        assert all(f".{capability}" in source for capability in capabilities)
+
+    eda_provider = (_PACKAGE / "eda/provisioning/session_requirements.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_authority = {"def issue(", "def authenticate(", "def invalidate_project("}
+    assert all(symbol not in eda_provider for symbol in runtime_authority)

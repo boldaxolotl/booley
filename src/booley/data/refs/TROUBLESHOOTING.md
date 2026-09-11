@@ -124,12 +124,11 @@ from the matching version on the
 [official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
 (`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
 use **Extensions: Install from VSIX...** in the attached remote window.
-After installation, run
-`python -m booley.runtime.incontainer_vaporview`, then **Developer: Reload
-Window**. Verify with `code --list-extensions --show-versions` in the remote
-terminal; it must list `lramseyer.vaporview@1.5.4`. Be careful with a host
-terminal: a plain host `code` command may install locally instead of into the
-attached container.
+After installation, the Session Runtime's background watcher patches the
+extension automatically; then use **Developer: Reload Window**. Verify with
+`code --list-extensions --show-versions` in the remote terminal; it must list
+`lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
+`code` command may install locally instead of into the attached container.
 
 When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
 not a rebuild. VaporView only
@@ -137,8 +136,13 @@ wakes up for a waveform tab, so Booley patches its manifest to start on every
 window instead — but that patch runs from `postAttachCommand`, which VS Code
 runs *after* it has already started the extension host. On the first window of a
 fresh container the patch therefore lands one beat too late and takes effect on
-the next extension-host start. A rebuild puts you back in exactly that first
-window; one reload does not. `booley doctor` probes the port and says so
+the next extension-host start. When Marketplace installation is delayed, the
+attach hook leaves one background watcher until VaporView arrives. It patches
+VS Code's hidden staging copy before the completed install is published, so the
+next extension-host activation cannot race an unpatched manifest. A rebuild
+puts you back in exactly that first window; one reload does not. Watcher
+diagnostics are written to `~/.booley/vaporview-install-watch.log` if automatic
+repair cannot complete. `booley doctor` probes the port and says so
 ("VaporView WCP server reachable ..."), so you find out before `bwave gui` does.
 
 Do **not** use `WCP: Start Server` while Booley's auto-start setting is enabled.

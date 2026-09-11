@@ -2325,7 +2325,7 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
 
 
 def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2362,7 +2362,7 @@ def _runtime_probe_subprocess(other_stdout: str):
 
 
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2400,7 +2400,7 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
 
 
 def _issued_runtime_state(tmp_path: Path):
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     image = "sha256:" + "a" * 64
     issuance = runtime_spec.Issuance(
@@ -2490,7 +2490,7 @@ def _issued_runtime_state(tmp_path: Path):
     ],
 )
 def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch, drift) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2539,7 +2539,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     tmp_path,
     monkeypatch,
 ) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2584,7 +2584,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
 
 
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:
-    from booley.eda.provisioning import runtime_spec
+    from booley.runtime import session_issuance as runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()

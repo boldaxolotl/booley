@@ -22,10 +22,11 @@ from tests.license_evidence import (
     require_checkout_then_release,
 )
 
-from booley.eda.provisioning import authority, runtime_spec
+from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_mount_poc"
@@ -102,7 +103,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
         lmgrd_port=p.lmgrd_port,
         vendor_port=p.vendor_port,
     )
-    authority.add_grant(
+    authority._add_grant(
         workspace,
         "vivado",
         installation="vivado_2025_2",
