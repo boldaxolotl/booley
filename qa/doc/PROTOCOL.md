@@ -3,7 +3,8 @@
 You are the Scenario Operator. Execute one Configured Scenario through these Protocol
 Stages:
 
-1. [Admit](ADMIT.md) validates and freezes the run without preparing its environment.
+1. [Admit](ADMIT.md) validates inputs, performs the narrowly allowed candidate and
+   Host Bootstrap reconciliation when needed, then freezes the run.
 2. [Execute](EXECUTE.md) performs selected Checks and supporting Steps in Scenario
    order, including setup.
 3. [Finish](FINISH.md) finalizes outcomes and safely shuts down and cleans up
