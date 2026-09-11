@@ -25,8 +25,10 @@ from .coverage_campaign import (
     CoverageCampaign,
     CoverageFinding,
     CoverageRollup,
+    FrozenJson,
     decode_coverage_point_id,
     encode_coverage_point,
+    freeze_coverage_mapping,
 )
 
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -41,7 +43,7 @@ COVERAGE_POINT_REFERENCE_PATTERN = r"^point:[1-9][0-9]*$"
 class CoverageEvidenceAudit:
     """Validated result of one model-facing evidence session."""
 
-    analysis_scope: Mapping[str, object]
+    analysis_scope: Mapping[str, FrozenJson]
     point_references: Mapping[str, str]
     terminal_error: str | None
     budget_exhausted: bool
@@ -116,7 +118,9 @@ def _decode_complete_audit(
         "budget_exhausted": budget_exhausted,
         "queries": queries,
     }
-    return CoverageEvidenceAudit(scope, references, terminal_error, budget_exhausted)
+    return CoverageEvidenceAudit(
+        freeze_coverage_mapping(scope), references, terminal_error, budget_exhausted
+    )
 
 
 def _audit_count(value: object, field: str) -> int:
@@ -305,6 +309,7 @@ class CoverageEvidenceSession:
     def _source_excerpts(self, request: Mapping[str, object]) -> dict[str, object]:
         _closed(request, {"view", "point_ids", "point_refs", "context_lines"})
         point_ids = self._query_point_ids(request, MAX_SOURCE_POINTS, required=True)
+        assert point_ids is not None
         context = _bounded_int(
             request.get("context_lines", 8), "context_lines", 0, MAX_CONTEXT_LINES
         )

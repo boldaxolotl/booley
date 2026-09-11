@@ -117,7 +117,7 @@ def test_complete_evidence_audit_is_validated_into_public_and_private_parts():
 
     audit = decode_coverage_evidence_audit(session.analysis_scope())
 
-    assert audit.analysis_scope["point_ids"] == [campaign.points[0].id]
+    assert audit.analysis_scope["point_ids"] == (campaign.points[0].id,)
     assert audit.point_references == {"point:1": campaign.points[0].id}
     assert "point_references" not in audit.analysis_scope
 
