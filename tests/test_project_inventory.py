@@ -48,7 +48,7 @@ def test_inventory_joins_grants_and_keeps_deleted_root_visible(
     source.mkdir(parents=True)
     project_inventory.remember_project(project)
     authority.register_installation("vivado_2025_2", "vivado", source)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
 
     assert project_inventory.project_inventory() == (
@@ -81,7 +81,7 @@ def test_inventory_includes_a_grant_only_project(
     (project / ".git").mkdir(parents=True)
     source.mkdir(parents=True)
     authority.register_installation("vivado_2025_2", "vivado", source)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
     entry = project_inventory.project_inventory()[0]
 
@@ -141,7 +141,7 @@ def test_forget_refuses_a_root_with_a_live_grant(tmp_path: Path, monkeypatch) ->
     source.mkdir(parents=True)
     project_inventory.remember_project(project)
     authority.register_installation("vivado_2025_2", "vivado", source)
-    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    authority._add_grant(project, "vivado", installation="vivado_2025_2")
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
         project_inventory.forget_project(project)

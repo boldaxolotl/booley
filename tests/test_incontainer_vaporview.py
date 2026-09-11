@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from io import StringIO
 
 import pytest
 
@@ -16,6 +17,8 @@ def _vanilla_manifest() -> dict:
     """A minimal shape mirroring the vendored VaporView manifest: lazy
     activation + application-scoped WCP settings inside a single config block."""
     return {
+        "publisher": "lramseyer",
+        "name": "vaporview",
         "activationEvents": [],
         "contributes": {
             "commands": [
@@ -168,9 +171,10 @@ class TestMain:
         # Disable the install-race wait so the absent-extension paths return at
         # once; the wait itself is exercised in TestInstallRaceWait.
         monkeypatch.setenv(iv._WAIT_ENV, "0")
+        monkeypatch.setattr(iv, "_start_install_watcher", lambda home: False)
         return tmp_path
 
-    def _install(self, home, manifest: dict, ver: str = "1.5.4", *, with_bundle=False):
+    def _install(self, home, manifest: dict, ver: str = "1.5.4", *, with_bundle=True):
         d = home / ".vscode-server" / "extensions" / f"lramseyer.vaporview-{ver}"
         d.mkdir(parents=True)
         p = d / "package.json"
@@ -284,6 +288,7 @@ class TestArgumentHandling:
         # any host process's) can never reach the parser.
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv(iv._WAIT_ENV, "0")
+        monkeypatch.setattr(iv, "_start_install_watcher", lambda home: False)
         monkeypatch.setattr("sys.argv", ["pytest", "-x", "--tb=short"])
         assert iv.main() == 0
 
@@ -295,12 +300,16 @@ class TestInstallRaceWait:
     def home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv(iv._WAIT_ENV, "10")  # enable a 10s budget
+        monkeypatch.setattr(iv, "_start_install_watcher", lambda home: False)
         return tmp_path
 
     def _install(self, home, ver: str = "1.5.4"):
         d = home / ".vscode-server" / "extensions" / f"lramseyer.vaporview-{ver}"
         d.mkdir(parents=True)
         (d / "package.json").write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+        bundle = d / "dist" / "extension.js"
+        bundle.parent.mkdir()
+        bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
 
     @staticmethod
     def _fake_time():
@@ -338,6 +347,124 @@ class TestInstallRaceWait:
         assert iv._wait_sentinel(home).exists()
         assert "not present yet" in capsys.readouterr().out
 
+    def test_staged_install_is_patched_before_vscode_publishes_it(self, home):
+        """F-103: the next activation must only see the patched manifest."""
+        root = home / ".vscode-server" / "extensions"
+        staging = root / ".vscode-extraction"
+        published = root / "lramseyer.vaporview-1.5.4"
+        state = self._fake_time()
+        activation_payload = None
+
+        def sleep(dt):
+            nonlocal activation_payload
+            state.update(t=state["t"] + dt, sleeps=state["sleeps"] + 1)
+            if state["sleeps"] == 1:
+                staging.mkdir(parents=True)
+                (staging / "package.json").write_text(
+                    json.dumps(_vanilla_manifest()), encoding="utf-8"
+                )
+                bundle = staging / "dist" / "extension.js"
+                bundle.parent.mkdir()
+                bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+            elif state["sleeps"] == 2:
+                # VS Code publishes a completed extraction with an atomic rename.
+                # The watcher must have patched staging before this activation point.
+                staging.rename(published)
+                activation_payload = json.loads(
+                    (published / "package.json").read_text(encoding="utf-8")
+                )
+
+        assert iv._watch_for_late_install(
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] > 3,
+        )
+        assert activation_payload is not None
+        assert activation_payload["activationEvents"] == ["onStartupFinished"]
+        properties = activation_payload["contributes"]["configuration"]["properties"]
+        assert properties["vaporview.wcp.enabled"]["scope"] == "machine"
+        assert properties["vaporview.wcp.port"]["scope"] == "machine"
+
+    def test_incomplete_install_is_retried_until_verified(self, home):
+        root = home / ".vscode-server" / "extensions"
+        extension = root / "lramseyer.vaporview-1.5.4"
+        extension.mkdir(parents=True)
+        manifest = extension / "package.json"
+        manifest.write_text("{not json", encoding="utf-8")
+        state = self._fake_time()
+        err = StringIO()
+
+        def sleep(dt):
+            state.update(t=state["t"] + dt, sleeps=state["sleeps"] + 1)
+            if state["sleeps"] == 1:
+                manifest.write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+            elif state["sleeps"] == 2:
+                # The manifest is the commit point and must stay untouched
+                # while the bundle is still incomplete.
+                assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
+                bundle = extension / "dist" / "extension.js"
+                bundle.parent.mkdir()
+                bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+
+        assert iv._watch_for_late_install(
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] > 3,
+            err=err,
+        )
+        assert state["sleeps"] == 2
+        assert "manifest is not readable JSON yet" in err.getvalue()
+        assert "bundle is not readable yet" in err.getvalue()
+        assert iv._installation_is_patched(manifest)
+
+    def test_watcher_has_no_install_deadline(self, home):
+        state = self._fake_time()
+
+        def sleep(dt):
+            state.update(t=state["t"] + dt, sleeps=state["sleeps"] + 1)
+
+        assert not iv._watch_for_late_install(
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] == 40,
+        )
+        assert state["sleeps"] == 40
+
+    def test_watcher_lock_failure_reports_context(self, home, monkeypatch):
+        err = StringIO()
+
+        def fail(_home):
+            raise PermissionError("read-only state directory")
+
+        monkeypatch.setattr(iv, "_open_watch_lock", fail)
+
+        assert not iv._watch_for_late_install(
+            home,
+            sleep=lambda _dt: None,
+            clock=lambda: 0.0,
+            err=err,
+        )
+        assert str(home / ".booley" / iv._WATCH_LOCK) in err.getvalue()
+        assert "read-only state directory" in err.getvalue()
+
+    def test_watcher_spawn_failure_reports_command_home_and_log(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        def fail(*_args, **_kwargs):
+            raise PermissionError("process limit")
+
+        monkeypatch.setattr(iv.subprocess, "Popen", fail)
+
+        assert not iv._start_install_watcher(tmp_path)
+        error = capsys.readouterr().err
+        assert iv._WATCH_FLAG in error
+        assert str(tmp_path) in error
+        assert str(tmp_path / ".booley" / iv._WATCH_LOG) in error
+        assert "process limit" in error
+
     def test_sentinel_skips_the_second_wait(self, home):
         # First run gives up (never installs) and drops the sentinel.
         first = self._fake_time()
@@ -361,6 +488,7 @@ class TestInstallRaceWait:
         assert slept["n"] == 0
         assert "not present yet" in capsys.readouterr().out
 
-    def test_malformed_budget_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv(iv._WAIT_ENV, "not-a-number")
+    @pytest.mark.parametrize("value", ["not-a-number", "nan", "inf", "-inf"])
+    def test_malformed_budget_falls_back_to_default(self, monkeypatch, value):
+        monkeypatch.setenv(iv._WAIT_ENV, value)
         assert iv._wait_budget_seconds() == iv._WAIT_SECONDS_DEFAULT
