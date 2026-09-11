@@ -1,4 +1,4 @@
-"""V2 Coverage Campaign persistence through its public filesystem seam."""
+"""V3 Coverage Campaign persistence through its public filesystem seam."""
 
 from __future__ import annotations
 
@@ -454,7 +454,7 @@ def test_unsupported_schema_is_rejected_before_campaign_decode(
 
     path = tmp_path / "coverage.json"
     path.write_text(json.dumps(_valid_document()), encoding="utf-8")
-    decode = store.decode_coverage_campaign
+    decode = store._decode_owned_coverage_campaign
     calls = 0
 
     def counted_decode(document, expected_target):
@@ -462,7 +462,7 @@ def test_unsupported_schema_is_rejected_before_campaign_decode(
         calls += 1
         return decode(document, expected_target)
 
-    monkeypatch.setattr(store, "decode_coverage_campaign", counted_decode)
+    monkeypatch.setattr(store, "_decode_owned_coverage_campaign", counted_decode)
 
     with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(path, TARGET)

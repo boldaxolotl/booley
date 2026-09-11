@@ -176,6 +176,11 @@ class CoveragePointIdentity:
     subject: Mapping[str, FrozenJson]
     collector: Mapping[str, FrozenJson]
 
+    @property
+    def source(self) -> str:
+        """Return the validated source path named by this identity."""
+        return str(self.location["source"])
+
 
 @dataclass(frozen=True)
 class CoveragePoint:
@@ -1548,7 +1553,23 @@ def _decode_invocation(document: Mapping[str, object]) -> Mapping[str, FrozenJso
     return _freeze_mapping(invocation)
 
 
-def _decode_valid_campaign(document: Mapping[str, object]) -> CoverageCampaign:
+def _decode_points(
+    points: list[object], *, consume_owned_points: bool
+) -> tuple[CoveragePoint, ...]:
+    if not consume_owned_points:
+        return tuple(_decode_point(item) for item in points)
+    decoded = []
+    while points:
+        item = points.pop()
+        assert isinstance(item, Mapping)
+        decoded.append(_decode_point(item))
+    decoded.reverse()
+    return tuple(decoded)
+
+
+def _decode_valid_campaign(
+    document: Mapping[str, object], *, consume_owned_points: bool = False
+) -> CoverageCampaign:
     invocation = document["invocation"]
     target = document["target"]
     collector = document["collector"]
@@ -1581,7 +1602,7 @@ def _decode_valid_campaign(document: Mapping[str, object]) -> CoverageCampaign:
         runs=tuple(_decode_run(item) for item in runs),
         artifacts=tuple(_decode_artifact(item) for item in artifacts),
         normalization=_freeze_mapping(document["normalization"]),
-        points=tuple(_decode_point(item) for item in points),
+        points=_decode_points(points, consume_owned_points=consume_owned_points),
         rollups=tuple(_decode_rollup(item) for item in rollups),
         collection=_freeze_mapping(document["collection"]),
         findings=tuple(_decode_finding(item) for item in findings),
@@ -1594,6 +1615,13 @@ def decode_coverage_campaign(
     expected_target: DurableTargetIdentity,
 ) -> CoverageCampaign:
     """Decode one already-read V1 document into an immutable Campaign."""
+    validated = _validated_campaign_document(document, expected_target)
+    return _decode_valid_campaign(validated)
+
+
+def _validated_campaign_document(
+    document: object, expected_target: DurableTargetIdentity
+) -> Mapping[str, object]:
     if not isinstance(document, Mapping):
         raise CoverageCampaignValidationError(
             (
@@ -1609,7 +1637,15 @@ def decode_coverage_campaign(
     all_findings = structural_findings + semantic_findings
     if all_findings:
         raise CoverageCampaignValidationError(all_findings)
-    return _decode_valid_campaign(document)
+    return document
+
+
+def _decode_owned_coverage_campaign(
+    document: Mapping[str, object], expected_target: DurableTargetIdentity
+) -> CoverageCampaign:
+    """Validate then consume loader-owned point dictionaries during domain decoding."""
+    validated = _validated_campaign_document(document, expected_target)
+    return _decode_valid_campaign(validated, consume_owned_points=True)
 
 
 def validate_coverage_campaign_summary(

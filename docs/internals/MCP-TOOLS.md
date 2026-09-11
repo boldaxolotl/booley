@@ -829,7 +829,10 @@ publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
 deep-validates the complete V3 manifest/point-store pair, so paging and reference
 resolution never weaken Campaign integrity. No other MCP tool is visible to this
-model.
+model. The validated session retains references to immutable
+Coverage Points rather than encoded population copies, uses an exact-ID index, derives
+overview counts once, and keeps at most one filtered match set for consecutive pages.
+Changing filters replaces that session-local cache; only returned page records are encoded.
 
 Stored evaluation maps directly to closure recommendations:
 `pass` → `coverage_ready`, `fail` → `coverage_not_ready`,
