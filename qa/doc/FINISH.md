@@ -38,7 +38,7 @@ completion.
 Append `blocked` Check Results for selected Checks without one. Report execution
 status as `completed`, `deadline reached`, or `operator error`, and quiescence status
 as `complete` or `failed`. Calculate the Scenario Run Outcome and aggregate
-Qualification under [Qualification](../user/QUALIFICATION.md). A product failure
+Qualification under [Qualification](QUALIFICATION.md). A product failure
 remains a failure when work is missing or quiescence fails.
 
 Finish is complete when every selected Check has a Check Result, each ledger resource

@@ -26,7 +26,7 @@ Scenario ID, a Configured Scenario ID, and an artifact root. The agent never inv
 it on its own.
 
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
-is the Scenario Operator. The [protocol](agents/PROTOCOL.md) discloses one resumable
+is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
 only; it does not execute a Scenario Run.
 
@@ -40,9 +40,7 @@ only; it does not execute a Scenario Run.
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
-| [`user/QUALIFICATION.md`](user/QUALIFICATION.md) | Qualification scope, outcomes, and evidence currency |
-| [`user/AUTHORING.md`](user/AUTHORING.md) | Scenario definition, Capability Coverage, and authoring rules |
+| [`doc/`](doc/) | Execution protocol, run record contract, qualification rules, and Scenario authoring guide |
 
 The current suite maps 62 product capabilities and 16 distinct EDA integration
 references to 1,072 checks. Those counts show that the reviewed requirements are
@@ -63,9 +61,9 @@ records the historical decisions behind the production files.
 
 ## QA workflow
 
-The Scenario Operator follows [Admit](agents/ADMIT.md),
-[Execute](agents/EXECUTE.md), and [Finish](agents/FINISH.md) in order, using
-[Record](agents/RECORD.md) whenever a stage writes evidence or changes state. The run
+The Scenario Operator follows [Admit](doc/ADMIT.md),
+[Execute](doc/EXECUTE.md), and [Finish](doc/FINISH.md) in order, using
+[Record](doc/RECORD.md) whenever a stage writes evidence or changes state. The run
 files provide the durable checkpoint for context compaction. Finalization releases
 active or privileged resources and may leave eligible inert workspaces for Human
 Maintainer review.
@@ -96,7 +94,7 @@ The scenario filter cannot produce a whole-suite coverage index. Regression test
 retain a contract for reviewed Configured Scenario parameters, requirements,
 membership, and exclusions. After
 changing QA assets, also run `python -m pytest tests/qa/` as required by the
-[authoring guide](user/AUTHORING.md).
+[authoring guide](doc/AUTHORING.md).
 
 ## Current status
 

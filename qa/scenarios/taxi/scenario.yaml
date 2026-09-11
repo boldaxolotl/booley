@@ -9825,7 +9825,7 @@ steps:
     - DOCUMENTATION-USABILITY
     stimulus: Archive immutable evidence outside retained mutable Project state.
     expected: Archive immutable evidence outside retained mutable Project state.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Archive path and existence/identity; evidence-archive recovery point.
     capture: evidence/taxi-10g-mac-port-evolution.archive.before-delete
 - id: archive.git-bundle
@@ -9864,7 +9864,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned Session Runtime after evidence archive.
     expected: Release every run-owned Session Runtime after evidence archive.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.session-runtimes
 - id: cleanup.processes
@@ -9876,7 +9876,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned process after evidence archive.
     expected: Release every run-owned process after evidence archive.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.processes
 - id: cleanup.worktrees
@@ -9888,7 +9888,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned worktrees for review when eligible; otherwise release them.
     expected: Retain run-owned worktrees for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.worktrees
 - id: cleanup.local-branches
@@ -9900,7 +9900,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned local branches for review when eligible; otherwise release them.
     expected: Retain run-owned local branches for review when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.local-branches
 - id: cleanup.project-inventory-entries
@@ -9912,7 +9912,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Release every run-owned Project inventory entry after evidence archive.
     expected: Release every run-owned Project inventory entry after evidence archive.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-inventory-entries
 - id: cleanup.project-derived-images
@@ -9924,7 +9924,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
     expected: Retain run-owned Project-derived Runtime Images when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.project-derived-images
 - id: cleanup.volumes
@@ -9936,7 +9936,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain run-owned volumes when eligible; otherwise release them.
     expected: Retain run-owned volumes when eligible; otherwise release them.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.volumes
 - id: cleanup.mounts
@@ -9948,7 +9948,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Unmount every run-owned mount after evidence archive.
     expected: Unmount every run-owned mount after evidence archive.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.mounts
 - id: cleanup.inner-project-repository
@@ -9960,7 +9960,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain the run-owned inner Project repository when eligible; otherwise release it.
     expected: Retain the run-owned inner Project repository when eligible; otherwise release it.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.inner-project-repository
 - id: cleanup.disposable-clone
@@ -9972,7 +9972,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Retain the run-owned clone for review when eligible; otherwise release it.
     expected: Retain the run-owned clone for review when eligible; otherwise release it.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Owned identity, ledger disposition, and independent release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.disposable-clone
 - id: cleanup.preserve-host
@@ -10008,7 +10008,7 @@ steps:
     - SESSION-RUNTIME-LIFECYCLE
     stimulus: Failed mandatory quiescence prevents pass; eligible review retention does not.
     expected: Failed mandatory quiescence prevents pass; eligible review retention does not.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict
 - id: physical.archive-cleanup
@@ -10020,6 +10020,6 @@ steps:
     - SYNTHESIS-FLOW
     stimulus: Preserve physical evidence and retain eligible Target, SDC, and Project state for review.
     expected: Preserve physical evidence and retain eligible Target, SDC, and Project state for review.
-    authority_ref: ../../agents/FINISH.md
+    authority_ref: ../../doc/FINISH.md
     evidence: Archive manifest and configuration/resource release or retention proof.
     capture: evidence/taxi-10g-mac-port-evolution.physical.archive-cleanup
