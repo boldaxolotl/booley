@@ -177,6 +177,24 @@ class TestThemeFallback:
         assert iv._disable_remote_theme_lookup(extension) is False
         assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
 
+    def test_missing_bundle_is_a_clean_noop(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+
+        assert iv._disable_remote_theme_lookup(extension) is False
+
+    def test_atomic_write_failure_is_a_clean_noop(self, tmp_path, monkeypatch):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
+
+        def fail_write(_path, _content):
+            raise OSError("simulated write failure")
+
+        monkeypatch.setattr(iv, "_atomic_write_text", fail_write)
+
+        assert iv._disable_remote_theme_lookup(extension) is False
+
 
 class TestGroupedLayoutWcp:
     def test_adds_set_get_handlers_and_capabilities(self, tmp_path):
@@ -216,6 +234,20 @@ class TestGroupedLayoutWcp:
         assert iv._enable_grouped_layout_wcp(extension) is False
         assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
 
+    def test_missing_bundle_is_a_clean_noop(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+
+        assert iv._enable_grouped_layout_wcp(extension) is False
+
+    def test_incomplete_existing_patch_is_reported(self):
+        source = f"prefix {iv._LAYOUT_CAPABILITY} suffix"
+
+        updated, changed, problem = iv._prepare_group_layout_source(source)
+
+        assert updated == source
+        assert not changed
+        assert problem == "bundle contains an incomplete grouped-layout patch"
+
     def test_production_patch_reports_unknown_bundle_as_incomplete(self, tmp_path):
         extension = tmp_path / "lramseyer.vaporview-2.0.0"
         extension.mkdir()
@@ -231,6 +263,26 @@ class TestGroupedLayoutWcp:
         assert not result.changed
         assert result.detail == "bundle grouped-layout anchors do not match VaporView 1.5.4"
         assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
+
+    def test_production_patch_reports_partial_theme_bundle_as_incomplete(self, tmp_path):
+        extension = tmp_path / "lramseyer.vaporview-1.5.4"
+        extension.mkdir()
+        manifest = extension / "package.json"
+        manifest.write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+        bundle = extension / "dist" / "extension.js"
+        bundle.parent.mkdir()
+        bundle.write_text(
+            "prefix this.getTokenColorsForTheme() suffix" + _VANILLA_WCP_BUNDLE,
+            encoding="utf-8",
+        )
+
+        result = iv._patch_file(manifest)
+
+        assert not result.complete
+        assert not result.changed
+        assert result.detail == (
+            "bundle has 1 of 2 expected theme lookup calls and is not fully extracted"
+        )
 
 
 class TestMain:
