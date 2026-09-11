@@ -2673,6 +2673,8 @@ class _JobManager:
         Always spawns: admission (queue or run) is the child's own slot-store
         claim, not this server's decision.
         """
+        from booley.runtime.execution_lease import current_lease_id
+
         run_id = self._next_run_id(name)
         rec = jobrec.JobRecord(
             run_id=run_id,
@@ -2680,6 +2682,7 @@ class _JobManager:
             started_at=utc_now_rfc3339(),
             timeout_s=timeout,
             argv=cmd,
+            lease_id=current_lease_id(),
         )
         jobrec.write_record(rec, root=self._jobs_root)
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold

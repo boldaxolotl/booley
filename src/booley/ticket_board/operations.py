@@ -506,7 +506,7 @@ def _prepare_materialized_basis_view(
 
 
 def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:
-    from booley.harness.job_fence import active_ticket_jobs
+    from .ticket_jobs import active_ticket_jobs
 
     active = active_ticket_jobs(log_dir)
     if not active:
@@ -1016,7 +1016,7 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     from .acceptance_ledger import AcceptanceLedgerError, read_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
-    from booley.review.entry import ReviewEntryError, assert_idle
+    from booley.ticket_board.review_records import ReviewEntryError, assert_idle
 
     try:
         assert_idle(log_dir)
@@ -1366,7 +1366,7 @@ def _reset_owner_available(tio: Any, slug: str, force: bool) -> bool:
 
 def _reset_jobs_inactive(tio: Any, slug: str) -> bool:
     """Refuse to archive runtime state while a detached endpoint owns it."""
-    from booley.harness.job_fence import active_ticket_jobs
+    from .ticket_jobs import active_ticket_jobs
 
     active = active_ticket_jobs(ticket_log_dir(tio.logs_dir, slug))
     if not active:

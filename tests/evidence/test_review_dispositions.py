@@ -1,4 +1,4 @@
-from booley.review.dispositions import (
+from booley.evidence.review_dispositions import (
     collect_review_dispositions,
     review_report_required,
 )

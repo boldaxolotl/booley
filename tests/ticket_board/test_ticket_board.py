@@ -2859,7 +2859,7 @@ class TestOpReset:
         make_progress(tio, "my-ticket", {"step": "implementation"})
         active = SimpleNamespace(endpoint="mutation_tester", run_id="mutation-47")
 
-        with patch("booley.harness.job_fence.active_ticket_jobs", return_value=[active]):
+        with patch("booley.ticket_board.ticket_jobs.active_ticket_jobs", return_value=[active]):
             assert op_reset(tio, "my-ticket", force=True) is False
 
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
@@ -2887,7 +2887,7 @@ class TestOpReset:
             return [SimpleNamespace(endpoint="mutation_tester", run_id="mutation-48")]
 
         tio._ticket_lock = observed_lock
-        with patch("booley.harness.job_fence.active_ticket_jobs", active_jobs):
+        with patch("booley.ticket_board.ticket_jobs.active_ticket_jobs", active_jobs):
             assert op_reset(tio, "my-ticket", force=True) is False
 
         assert events == ["locked", "unlocked"]

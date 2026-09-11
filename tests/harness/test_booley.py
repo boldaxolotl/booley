@@ -557,7 +557,7 @@ def test_prepare_review_board_parser():
 
 
 def test_prepare_review_command_accepts_html_free_briefing(tmp_path, monkeypatch, capsys):
-    from booley.review import preparation as review_prep
+    from booley.ticket_board import review_lifecycle as review_prep
 
     async def prepare(*_args, **_kwargs):
         return review_prep.ReviewPrepOutcome(
@@ -2550,7 +2550,8 @@ def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
 def test_requested_review_cli_routes_arguments_and_failure(
     tmp_path, monkeypatch, capsys, action, ready
 ):
-    from booley.review import preparation, requests
+    from booley.ticket_board import review_lifecycle as requests
+    from booley.ticket_board import review_preparation as preparation
 
     async def request(root, slug, **kwargs):
         assert root == tmp_path and slug == "demo"
@@ -2572,7 +2573,7 @@ def test_requested_review_cli_routes_arguments_and_failure(
 def test_review_exec_cli_preserves_command_exit_or_reports_error(
     tmp_path, monkeypatch, capsys, failure
 ):
-    from booley.review import interactive
+    from booley.ticket_board import review_lifecycle as interactive
 
     def run(root, slug, command):
         assert root == tmp_path and slug == "demo"

@@ -162,7 +162,7 @@ class TicketIO:
                 self._acquire_lock(lock_file, slug, lock_path, pid_to_stamp)
                 locked = True
                 if not review_operation:
-                    from booley.review.entry import assert_idle
+                    from booley.ticket_board.review_records import assert_idle
 
                     assert_idle(log_dir)
                 yield
@@ -388,6 +388,40 @@ class TicketIO:
             if read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind != "accepted":
                 print("Error: unaccepted review requires board request-review", file=sys.stderr)
                 return False
+        return True
+
+    def _move_unaccepted_review_locked(
+        self,
+        slug: str,
+        *,
+        expected_status: str,
+        expected_execution_id: str,
+    ) -> bool:
+        """Move a captured blocked Ticket to review while its review lock is held.
+
+        This is intentionally narrower than ``move_and_update``: only the
+        lifecycle publisher may select the unaccepted-review exception, and it
+        must supply both compare-and-swap identities captured before generation.
+        """
+        file_path, source_status = find_ticket_file(self.tickets_dir, slug)
+        if file_path is None or source_status != expected_status:
+            return False
+        progress = self._load_or_bootstrap_progress(slug, file_path)
+        if progress.get("execution_id", "") != expected_execution_id:
+            return False
+        resolved = self._validated_destination(
+            slug,
+            file_path,
+            source_status,
+            "board/review",
+            enforce_lifecycle=True,
+        )
+        if resolved is None:
+            return False
+        new_path, _source, _destination = resolved
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.exists():
+            shutil.move(str(file_path), str(new_path))
         return True
 
     def move_and_update(
@@ -1046,10 +1080,10 @@ class TicketIO:
     def _validate_return_to_draft_preconditions(
         self, slug: str, *, check_owner: bool = True
     ) -> None:
-        from booley.harness.job_fence import active_ticket_jobs
         from booley.runtime.pid import is_pid_alive
 
         from .helpers import read_lock_pid
+        from .ticket_jobs import active_ticket_jobs
 
         lock = existing_runtime_file(self.logs_dir, slug, "ticket.lock")
         owner = read_lock_pid(lock)

@@ -19,8 +19,8 @@ import pytest
 from booley.harness.blocking import AgentTimeoutError
 from booley.harness.developer import _resolve_ticket_disposition, _run_post_developer_hook
 from booley.harness.models import OnSuccess, TicketContext
-from booley.review.preparation import ReviewPrepOutcome
 from booley.ticket_board.criteria_acceptance import CriteriaVerdict
+from booley.ticket_board.review_lifecycle import ReviewPrepOutcome
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 _ENDPOINTS = builtin_endpoint_catalog()
@@ -62,11 +62,11 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
         "fail": patch("booley.harness.developer.fail_ticket"),
         "handoff": patch("booley.harness.developer.ticket_cli.handoff"),
         "prepare_review": patch(
-            "booley.review.preparation.prepare_review",
+            "booley.ticket_board.review_lifecycle.prepare_review",
             new_callable=AsyncMock,
         ),
         "verify_review": patch(
-            "booley.review.preparation.verify_review_handoff",
+            "booley.ticket_board.review_lifecycle.verify_review_handoff",
         ),
         # Silence terminal output so tests don't spam stdout.
         "terminal_raw": patch("booley.harness.developer.terminal.raw"),

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from booley.core.models import AgentResult
-from booley.review import preparation as rp
+from booley.ticket_board import review_preparation as rp
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 
 
@@ -645,7 +645,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
-    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: _facts())
     monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
     monkeypatch.setattr(rp, "_agent_workspace", workspace)
     monkeypatch.setattr(rp, "_invoke_agent", invoke)
@@ -791,7 +791,7 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
         "health": {},
     }
     monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
-    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: facts)
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: facts)
 
     outcome = rp.review_briefing_command(tmp_path, "demo", open_diffs=False)
 
@@ -815,7 +815,7 @@ async def test_prepare_review_persists_package_when_model_report_is_disabled(
         lambda: (_ for _ in ()).throw(AssertionError("report prompt must stay disabled")),
     )
     monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
-    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: _facts())
     monkeypatch.setattr(
         rp,
         "_invoke_agent",
@@ -853,7 +853,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
-    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: _facts())
     monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
     monkeypatch.setattr(rp, "_agent_workspace", workspace)
     monkeypatch.setattr(rp, "_invoke_agent", invoke)
@@ -929,7 +929,7 @@ async def test_prepare_review_marks_live_input_changes_concurrent(tmp_path: Path
     monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
-    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
+    monkeypatch.setattr(rp, "_build_review_facts", lambda _ctx: _facts())
     monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: next(fingerprints))
     monkeypatch.setattr(rp, "_agent_workspace", workspace)
     monkeypatch.setattr(rp, "_invoke_agent", invoke)
