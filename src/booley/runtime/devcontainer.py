@@ -256,8 +256,9 @@ def vaporview_patch_command() -> str:
     eagerly so its own auto-start runs without an open waveform tab; without
     both, ``wcp.enabled: true`` is inert and the server never binds until a human
     runs the palette command. If installation outlasts the short attach wait,
-    the patcher leaves a bounded background watcher so a later install is not
-    missed. Idempotent and never fails the hook. See
+    the patcher leaves a singleton watcher until the configured extension
+    arrives, including patching VS Code's staging copy before publication.
+    Idempotent and never fails the hook. See
     :mod:`booley.runtime.incontainer_vaporview` for the full rationale.
     """
     return "python -m booley.runtime.incontainer_vaporview"

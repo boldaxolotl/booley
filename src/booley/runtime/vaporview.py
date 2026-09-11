@@ -130,9 +130,9 @@ def install_guidance(*, editor: str = "code") -> str:
         "If the container cannot reach the Marketplace, download "
         f"vaporview-{VERIFIED_VERSION}.vsix from the official releases page on a "
         f'networked host ({RELEASES_URL}), then run "Extensions: Install from VSIX..." in '
-        "the attached remote window. After installation, run:\n"
-        "  python -m booley.runtime.incontainer_vaporview\n"
-        'then run "Developer: Reload Window". Verify in the remote terminal with:\n'
+        "the attached remote window. Booley's attach watcher patches a late install "
+        'automatically; afterward run "Developer: Reload Window". Verify in the remote '
+        "terminal with:\n"
         f"  {editor} --list-extensions --show-versions\n"
         f"which must list {EXTENSION_ID}@{VERIFIED_VERSION}. A host CLI without the remote "
         "window selected may install locally instead of into the container."
