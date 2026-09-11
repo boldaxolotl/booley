@@ -467,7 +467,7 @@ with `booley projects forget /exact/deleted/project`.
 ## Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
-`coverage: true`. V2 keeps percentages and evaluation in the small
+`coverage: true`. V3 keeps overall and per-source-file percentages and evaluation in the
 `coverage.json` manifest and exact points in required
 `coverage-points.jsonl.gz`. Report retention is explicit: native-only pruning
 keeps both Campaign files, `simulation.json`, and hook evidence; full
@@ -485,9 +485,10 @@ numbers and should be retained.
 ### Coverage Analyst input and model availability
 
 Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
-Target names, `latest`, the V2 point-store path, waveforms, and legacy
+Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
-point store makes a V2 Campaign unusable for analysis. A missing or incomplete
+point store makes a V3 Campaign unusable for analysis. V1 and V2 Campaigns are
+not readable; recollect coverage with the current Booley version. A missing or incomplete
 matching `simulation.json` means that Target is
 not ready for analysis; another Target still running does not block a completed one.
 Native-payload pruning preserves analysis. Full-invocation pruning removes the

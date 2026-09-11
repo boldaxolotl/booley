@@ -15,7 +15,7 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then invoke the Analyst with the produced exact path; model transport is substituted and project bytes remain unchanged. |
 | Ticket Mode | The same suite checks independent persisted Simulation/Coverage verdicts for pass/pass, fail/pass, pass/fail, fail/fail, and collector-blocked combinations. Transaction fault tests cover every publication boundary. |
-| Campaign V2 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, exact deep-load equivalence, V1 compatibility, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
+| Campaign V3 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, deterministic source rollups, exact deep-load equivalence, the V1/V2 hard cutoff, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
 | Public contracts | CLI aliases and help, MCP boolean schema, exposed Criterion catalog, generated references, docs-schema tests, and transport schema fixture. |
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |
 | Quality | `ruff check src/ tests/`, `ruff format --check .`, and `pyright`, using the exact pinned quality tools. |
@@ -36,6 +36,10 @@ load took 26.27 seconds and 205,726,188 peak bytes; full Analyst composition too
 175,639,433 peak bytes. These figures characterize one host rather than define portable budgets;
 the structural test requires near-constant manifest size, summary reads with no point-store access,
 lossless deep loading, and compression below the serialized Analyst payload.
+
+V3 intentionally adds source-file rollups to the manifest, so manifest size now scales
+with the number of distinct source paths rather than the number of Coverage Points. A
+16 MiB publication and read ceiling bounds that growth.
 
 The hosted `bwave-smoke` job runs both native pytest suites and checks their
 JUnit report with `--min-tests 18 --max-skips 0`. Missing native prerequisites

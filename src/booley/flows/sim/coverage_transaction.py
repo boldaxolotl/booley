@@ -322,6 +322,7 @@ def _simulation_projection(
         ],
         "collection": campaign.collection["status"],
         "evaluation": campaign.evaluation["status"],
+        "coverage_campaign": "coverage.json",
     }
 
 

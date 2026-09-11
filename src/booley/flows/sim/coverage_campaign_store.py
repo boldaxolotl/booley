@@ -1,4 +1,4 @@
-"""Durable V1/V2 Coverage Campaign persistence behind one filesystem seam."""
+"""Durable V3 Coverage Campaign persistence behind one filesystem seam."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from pathlib import Path
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
+    require_finite_number,
     require_int,
+    require_list,
     require_str,
 )
 from booley.runtime.regular_file import open_regular_nofollow
@@ -27,10 +29,13 @@ from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageRollup,
+    CoverageSourceRollup,
     CoverageTarget,
     DurableTargetIdentity,
     FrozenJson,
+    coverage_metric_semantics,
     decode_coverage_campaign,
+    derive_coverage_source_rollups,
     encode_coverage_campaign,
     encode_coverage_point,
     freeze_coverage_mapping,
@@ -39,6 +44,7 @@ from .coverage_campaign import (
 
 CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
 CAMPAIGN_SCHEMA_V2 = "booley.coverage-campaign/v2"
+CAMPAIGN_SCHEMA_V3 = "booley.coverage-campaign/v3"
 POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
 MAX_COMPRESSED_BYTES = 256 * 1024 * 1024
@@ -52,7 +58,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 @dataclass(frozen=True)
 class CoveragePointStoreReference:
-    """Integrity and resource limits for one V2 point store."""
+    """Integrity and resource limits for one compressed point store."""
 
     path: str
     sha256: str
@@ -69,6 +75,7 @@ class CoverageCampaignSummary:
     campaign_id: str
     target: CoverageTarget
     rollups: tuple[CoverageRollup, ...]
+    source_rollups: tuple[CoverageSourceRollup, ...]
     collection: Mapping[str, FrozenJson]
     evaluation: Mapping[str, FrozenJson]
     document: Mapping[str, FrozenJson]
@@ -86,7 +93,7 @@ class LoadedCoverageCampaign:
 
 @dataclass(frozen=True)
 class CampaignPaths:
-    """Canonical files published for one V2 Campaign."""
+    """Canonical files published for one V3 Campaign."""
 
     campaign: Path
     points: Path
@@ -235,10 +242,29 @@ def _manifest(
     campaign: CoverageCampaign, reference: CoveragePointStoreReference
 ) -> dict[str, object]:
     document = encode_coverage_campaign(campaign)
-    document["$schema"] = CAMPAIGN_SCHEMA_V2
+    document["$schema"] = CAMPAIGN_SCHEMA_V3
     del document["points"]
     document["point_store"] = _point_store_document(reference)
+    document["source_rollups"] = [
+        {
+            "source": item.source,
+            "rollups": [_rollup_document(rollup) for rollup in item.rollups],
+        }
+        for item in derive_coverage_source_rollups(campaign.points)
+    ]
     return document
+
+
+def _rollup_document(rollup: CoverageRollup) -> dict[str, object]:
+    return {
+        "metric": rollup.metric,
+        "semantics": rollup.semantics,
+        "total_points": rollup.total_points,
+        "eligible_points": rollup.eligible_points,
+        "covered_points": rollup.covered_points,
+        "waived_points": rollup.waived_points,
+        "percent": rollup.percent,
+    }
 
 
 def _manifest_bytes(document: Mapping[str, object]) -> bytes:
@@ -259,7 +285,7 @@ def _write_manifest(path: Path, data: bytes) -> None:
 
 
 def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> CampaignPaths:
-    """Publish a complete V2 Campaign without replacing existing final files."""
+    """Publish a complete V3 Campaign without replacing existing final files."""
     if _contains_link(target_dir):
         raise CoverageCampaignStoreError("Coverage Campaign path contains a link")
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -268,11 +294,19 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
     if campaign_path.exists() or points_path.exists():
         raise CoverageCampaignStoreError("Coverage Campaign publication cannot replace evidence")
     reference = _write_point_store(points_path, campaign)
-    document = _manifest(campaign, reference)
-    manifest_bytes = _manifest_bytes(document)
-    digest = f"{_SHA256_PREFIX}{hashlib.sha256(manifest_bytes).hexdigest()}"
-    _summary_v2(document, DurableTargetIdentity(campaign.target.identity), digest)
-    _write_manifest(campaign_path, manifest_bytes)
+    try:
+        document = _manifest(campaign, reference)
+        manifest_bytes = _manifest_bytes(document)
+        if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V3 limit"
+            )
+        digest = f"{_SHA256_PREFIX}{hashlib.sha256(manifest_bytes).hexdigest()}"
+        _summary_v3(document, DurableTargetIdentity(campaign.target.identity), digest)
+        _write_manifest(campaign_path, manifest_bytes)
+    finally:
+        if not campaign_path.exists():
+            points_path.unlink(missing_ok=True)
     return CampaignPaths(campaign_path, points_path)
 
 
@@ -334,7 +368,124 @@ def _validate_reference_limits(reference: CoveragePointStoreReference) -> None:
         )
 
 
-def _summary_v2(
+def _decode_source_rollups(value: object) -> tuple[CoverageSourceRollup, ...]:
+    records = require_list(value, field="source_rollups")
+    decoded: list[CoverageSourceRollup] = []
+    previous_source: str | None = None
+    for index, item in enumerate(records):
+        record = require_dict(item, field=f"source_rollups[{index}]")
+        if set(record) != {"source", "rollups"}:
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_FORMAT", "Malformed V3 source coverage summary"
+            )
+        source = require_str(record, "source")
+        if previous_source is not None and source <= previous_source:
+            raise CoverageCampaignStoreError(
+                "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage summaries are not canonical"
+            )
+        previous_source = source
+        rollup_values = require_list(record["rollups"], field="rollups")
+        metrics = ("line", "branch", "expression", "toggle")
+        if len(rollup_values) != len(metrics):
+            raise CoverageCampaignStoreError(
+                "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage metric order is not canonical"
+            )
+        rollups = tuple(
+            _decode_manifest_rollup(item, expected_metric=metric)
+            for item, metric in zip(rollup_values, metrics, strict=True)
+        )
+        decoded.append(CoverageSourceRollup(source, rollups))
+    return tuple(decoded)
+
+
+def _decode_manifest_rollup(value: object, *, expected_metric: str) -> CoverageRollup:
+    record = require_dict(value, field="source rollup")
+    expected = {
+        "metric",
+        "semantics",
+        "total_points",
+        "eligible_points",
+        "covered_points",
+        "waived_points",
+        "percent",
+    }
+    if set(record) != expected:
+        raise CoverageCampaignStoreError(
+            "COV_MANIFEST_FORMAT", "Malformed V3 source metric summary"
+        )
+    metric = require_str(record, "metric")
+    semantics = require_str(record, "semantics")
+    if metric != expected_metric or semantics != coverage_metric_semantics(metric):
+        raise CoverageCampaignStoreError(
+            "COV_SOURCE_ROLLUP_MISMATCH",
+            "Source coverage metric identity is not canonical",
+        )
+    raw_percent = record["percent"]
+    percent = (
+        require_finite_number(raw_percent, field="percent") if raw_percent is not None else None
+    )
+    rollup = CoverageRollup(
+        metric,
+        semantics,
+        require_int(record["total_points"], field="total_points"),
+        require_int(record["eligible_points"], field="eligible_points"),
+        require_int(record["covered_points"], field="covered_points"),
+        require_int(record["waived_points"], field="waived_points"),
+        percent,
+    )
+    counts = (
+        rollup.total_points,
+        rollup.eligible_points,
+        rollup.covered_points,
+        rollup.waived_points,
+    )
+    expected_percent = (
+        round(rollup.covered_points * 100 / rollup.eligible_points, 2)
+        if rollup.eligible_points
+        else None
+    )
+    if (
+        any(count < 0 for count in counts)
+        or rollup.covered_points > rollup.eligible_points
+        or rollup.eligible_points + rollup.waived_points > rollup.total_points
+        or rollup.percent != expected_percent
+    ):
+        raise CoverageCampaignStoreError(
+            "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage summary arithmetic is invalid"
+        )
+    return rollup
+
+
+def _validate_source_reconciliation(
+    source_rollups: tuple[CoverageSourceRollup, ...], rollups: tuple[CoverageRollup, ...]
+) -> None:
+    overall = {item.metric: item for item in rollups}
+    metrics = ("line", "branch", "expression", "toggle")
+    for index, metric in enumerate(metrics):
+        matches = [source.rollups[index] for source in source_rollups]
+        expected = overall.get(metric)
+        totals = tuple(
+            sum(getattr(item, field) for item in matches)
+            for field in ("total_points", "eligible_points", "covered_points", "waived_points")
+        )
+        expected_totals = (
+            (0, 0, 0, 0)
+            if expected is None
+            else (
+                expected.total_points,
+                expected.eligible_points,
+                expected.covered_points,
+                expected.waived_points,
+            )
+        )
+        if totals != expected_totals:
+            raise CoverageCampaignStoreError(
+                "COV_SOURCE_ROLLUP_MISMATCH",
+                "Source coverage summaries do not reconcile with overall rollups",
+            )
+
+
+def _summary_v3(
     document: Mapping[str, object],
     expected_target: DurableTargetIdentity,
     manifest_sha256: str,
@@ -354,46 +505,32 @@ def _summary_v2(
         "normalization",
         "point_store",
         "rollups",
+        "source_rollups",
         "collection",
         "findings",
         "evaluation",
     }
     if set(document) != expected:
         raise CoverageCampaignStoreError(
-            "COV_MANIFEST_FORMAT", "Malformed V2 Coverage Campaign manifest"
+            "COV_MANIFEST_FORMAT", "Malformed V3 Coverage Campaign manifest"
         )
-    fields = validate_coverage_campaign_summary(document, expected_target)
+    probe = dict(document)
+    source_rollup_values = probe.pop("source_rollups")
+    fields = validate_coverage_campaign_summary(probe, expected_target)
+    source_rollups = _decode_source_rollups(source_rollup_values)
+    _validate_source_reconciliation(source_rollups, fields.rollups)
     return CoverageCampaignSummary(
-        source_schema=CAMPAIGN_SCHEMA_V2,
+        source_schema=CAMPAIGN_SCHEMA_V3,
         campaign_id=fields.campaign_id,
         target=fields.target,
         rollups=fields.rollups,
+        source_rollups=source_rollups,
         collection=fields.collection,
         evaluation=fields.evaluation,
         document=freeze_coverage_mapping(document),
         manifest_sha256=manifest_sha256,
         point_store=_decode_reference(document.get("point_store")),
     )
-
-
-def _summary_v1(
-    document: Mapping[str, object],
-    expected_target: DurableTargetIdentity,
-    manifest_sha256: str,
-) -> LoadedCoverageCampaign:
-    campaign = decode_coverage_campaign(document, expected_target)
-    summary = CoverageCampaignSummary(
-        source_schema=CAMPAIGN_SCHEMA_V1,
-        campaign_id=campaign.campaign_id,
-        target=campaign.target,
-        rollups=campaign.rollups,
-        collection=campaign.collection,
-        evaluation=campaign.evaluation,
-        document=freeze_coverage_mapping(document),
-        manifest_sha256=manifest_sha256,
-        point_store=None,
-    )
-    return LoadedCoverageCampaign(summary, campaign)
 
 
 def _contains_link(path: Path) -> bool:
@@ -415,7 +552,7 @@ def _read_document(path: Path) -> tuple[dict[str, object], str]:
         before = os.fstat(descriptor)
         if before.st_size > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V2 limit"
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V3 limit"
             )
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             data = stream.read(MAX_MANIFEST_BYTES + 1)
@@ -433,16 +570,15 @@ def _read_document(path: Path) -> tuple[dict[str, object], str]:
 def read_coverage_summary(
     path: Path, expected_target: DurableTargetIdentity
 ) -> CoverageCampaignSummary:
-    """Read manifest facts without opening V2 Coverage Point storage."""
+    """Read V3 manifest facts without opening Coverage Point storage."""
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
-        if schema == CAMPAIGN_SCHEMA_V1:
-            return _summary_v1(document, expected_target, digest).summary
-        if schema == CAMPAIGN_SCHEMA_V2:
-            return _summary_v2(document, expected_target, digest)
+        if schema == CAMPAIGN_SCHEMA_V3:
+            return _summary_v3(document, expected_target, digest)
         raise CoverageCampaignStoreError(
-            "COV_SCHEMA_VERSION_UNSUPPORTED", "Unsupported Coverage Campaign schema"
+            "COV_SCHEMA_VERSION_UNSUPPORTED",
+            "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
         )
     except CoverageCampaignStoreError:
         raise
@@ -560,40 +696,45 @@ def _point_documents(path: Path, summary: CoverageCampaignSummary) -> list[dict[
         os.close(descriptor)
 
 
-def _load_v2(
+def _load_v3(
     path: Path,
     document: Mapping[str, object],
     expected_target: DurableTargetIdentity,
     manifest_sha256: str,
 ) -> LoadedCoverageCampaign:
-    summary = _summary_v2(document, expected_target, manifest_sha256)
+    summary = _summary_v3(document, expected_target, manifest_sha256)
     points_path = path.parent / POINT_STORE_NAME
     points = _point_documents(points_path, summary)
     v1_document = dict(document)
     v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
     del v1_document["point_store"]
+    del v1_document["source_rollups"]
     v1_document["points"] = points
     campaign = decode_coverage_campaign(v1_document, expected_target)
+    if derive_coverage_source_rollups(campaign.points) != summary.source_rollups:
+        raise CoverageCampaignStoreError(
+            "COV_SOURCE_ROLLUP_MISMATCH",
+            "Source coverage summaries do not match the deterministic point derivation",
+        )
     return LoadedCoverageCampaign(summary, campaign)
 
 
 def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V1/V2 Campaign and accept no point evidence before validation."""
+    """Deep-load one V3 Campaign and accept no point evidence before validation."""
     try:
         document, digest = _read_document(path)
+        schema = document.get("$schema")
+        if schema != CAMPAIGN_SCHEMA_V3:
+            raise CoverageCampaignStoreError(
+                "COV_SCHEMA_VERSION_UNSUPPORTED",
+                "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
+            )
         if expected_target is None:
             target = require_dict(document.get("target"), field="target")
             expected_target = DurableTargetIdentity(require_str(target, "identity"))
-        schema = document.get("$schema")
-        if schema == CAMPAIGN_SCHEMA_V1:
-            return _summary_v1(document, expected_target, digest)
-        if schema == CAMPAIGN_SCHEMA_V2:
-            return _load_v2(path, document, expected_target, digest)
-        raise CoverageCampaignStoreError(
-            "COV_SCHEMA_VERSION_UNSUPPORTED", "Unsupported Coverage Campaign schema"
-        )
+        return _load_v3(path, document, expected_target, digest)
     except CoverageCampaignValidationError:
         raise
     except CoverageCampaignStoreError:
