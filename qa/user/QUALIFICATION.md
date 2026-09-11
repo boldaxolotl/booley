@@ -65,10 +65,11 @@ product revision and suite revision. Its scope cannot be narrowed after seeing C
    This includes new defects discovered outside a prewritten Check, known defects,
    and flaky failures.
 2. Otherwise any missing, blocked, or unavailable selected Check, invalid evidence,
-   or incomplete mandatory cleanup makes the outcome `incomplete`.
+   or failed mandatory quiescence makes the outcome `incomplete`. Deliberately
+   retained review state does not when it satisfies the protocol's retention predicate.
 3. Otherwise the outcome is `passed`.
 
-Keep failure precedence when a failed Scenario Run also has missing work or cleanup
+Keep failure precedence when a failed Scenario Run also has missing work or quiescence
 problems. List every condition. Friction and impressions do not fail Qualification.
 Findings outside the selected Scenario Run are visible without invalidating unrelated
 claims. A Finding with unresolved scope or classification that could invalidate the
@@ -87,7 +88,7 @@ uart-ubuntu-codex-cli: passed
 picorv32-ubuntu-codex-vscode: incomplete — observer unavailable
 picorv32-windows-claude-vscode: pending (optional)
 Full qualification: incomplete
-Cleanup: complete
+Quiescence: complete; review state retained
 ```
 
 Name missing Checks and link evidence in a real report. A CLI Scenario Run Outcome

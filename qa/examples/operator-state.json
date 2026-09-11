@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "illustrative_only": true,
+  "run_id": "EXAMPLE_EXECUTION_ID",
+  "protocol_stage": "complete",
+  "stage_status": "complete",
+  "entered_at": "2026-09-08T12:21:00Z",
+  "completed_at": "2026-09-08T12:25:00Z",
+  "next_step_id": null,
+  "next_check_id": null,
+  "next_attempt": null,
+  "active_assignments": [],
+  "outstanding_mutations": [],
+  "updated_at": "2026-09-08T12:25:00Z"
+}

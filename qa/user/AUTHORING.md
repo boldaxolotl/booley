@@ -18,7 +18,9 @@ Scenario Run.
 Each Scenario supplies inputs, shared budgets, named check sets, Configured Scenarios,
 and ordered phases and Steps. Each phase records its `id`, `title`, and `minutes`; the
 Scenario budget records its deadline, contingency, cleanup minutes, and cleanup start.
-Phase minutes include cleanup, while contingency is counted once in addition. A Step
+The cleanup reserve covers final records and mandatory quiescence; intentional review
+retention does not extend the run. Phase minutes include cleanup, while contingency is
+counted once in addition. A Step
 records its ID, action, Checks, and any prerequisites, authority, timeout or retry
 restrictions, recovery instructions, owned resources, and phase recovery point.
 Shared behavior comes from the protocol; Scenario instructions may tighten it. Keep
@@ -45,7 +47,8 @@ change thresholds or disclose private assets.
 A restoration Step's `recovery` record identifies its `baseline`, prior `detection`
 Check IDs, and `instruction`. It requires the baseline and remains independent of the
 detection's successful outcome: it cannot depend directly or transitively on that
-outcome. Cleanup must remain independently reachable.
+outcome. Product cleanup Checks remain independently reachable. Finalization must
+leave enough reserve to quiesce active resources and record retained review state.
 
 Check sets are flat and disjoint. A Configured Scenario may select several sets; the
 validator resolves them into one ordered Check list and derives supporting Steps. Each
@@ -85,7 +88,7 @@ and build-matched execution establish the authority's meaning and currency.
    confirm every retained required behavior has a Check, Configured Scenario assignment, and
    evidence contract. Keep unresolved gaps visible.
 4. Review oracle quality, permitted sub-agent freedom, pre-run authority, feasible
-   budgets, continuation, and cleanup. Review literal payloads, public expectation
+   budgets, continuation, product cleanup, and final quiescence. Review literal payloads, public expectation
    authority, prerequisite and supporting work, native-host exclusions, and the
    complete 480-minute allocation. Keep Configured Scenario selections explicit, and review content changes
    before updating asset hashes.

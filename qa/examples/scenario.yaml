@@ -111,15 +111,15 @@ steps:
     capture: evidence/viewer/
   phase: work
 - id: cleanup
-  action: Reconcile and release all run-owned resources on every exit path.
+  action: Quiesce active resources and retain eligible review state on every exit path.
   checks:
   - id: cleanup
     capabilities:
     - example-cleanup
-    stimulus: Restore or release each entry in the ownership ledger.
-    expected: All required cleanup is proven; borrowed resources remain intact.
-    authority_ref: https://github.com/boldaxolotl/booley/issues/249
-    evidence: Final ownership ledger and resource-specific cleanup proof.
+    stimulus: Reconcile each entry in the resource ledger.
+    expected: Mandatory quiescence and retention eligibility are proven; borrowed resources remain intact.
+    authority_ref: ../agents/FINISH.md
+    evidence: Final resource ledger with release or retention proof for each entry.
     capture: evidence/cleanup/
   phase: cleanup
 title: Illustrative Wishbone fault and restoration
@@ -135,5 +135,5 @@ phases:
   title: Illustrative live exercise
   minutes: 445
 - id: cleanup
-  title: Cleanup
+  title: Finish and quiesce
   minutes: 20

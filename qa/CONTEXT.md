@@ -58,6 +58,14 @@ _Avoid_: test runner, coordinator agent, autonomous campaign, delegate
 One execution of a Configured Scenario with exact product, suite, input, tool, and environment identities. It produces Check evidence.
 _Avoid_: QA Run, Job, Ticket run, test invocation
 
+**Protocol Stage**:
+One resumable part of Scenario Run operation: admit, prepare, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work.
+_Avoid_: phase, Step, pipeline stage
+
+**Quiescence**:
+The release of every active, privileged, scarce, or externally visible resource owned by a Scenario Run. Inert state may instead be retained for Human Maintainer review when the protocol's retention predicate is proven.
+_Avoid_: delete everything, abandon resources
+
 **Scenario Run Outcome**:
 The evaluation of one Scenario Run's evidence against its selected Checks. Its value is `passed`, `failed`, or `incomplete`, independently of whether execution completed, reached its deadline, or ended in operator error.
 _Avoid_: Qualification, Profile Verdict

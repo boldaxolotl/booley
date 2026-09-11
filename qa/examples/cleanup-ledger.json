@@ -1,0 +1,31 @@
+{
+  "format_version": 1,
+  "illustrative_only": true,
+  "resources": [
+    {
+      "resource_id": "runtime-1",
+      "kind": "Session Runtime",
+      "ownership": "run-owned",
+      "active_or_privileged": true,
+      "scarce": false,
+      "intended_disposition": "released",
+      "actual_disposition": "released",
+      "evidence": ["evidence/cleanup/runtime-absent.json"]
+    },
+    {
+      "resource_id": "workspace-1",
+      "kind": "workspace",
+      "ownership": "run-owned",
+      "active_or_privileged": false,
+      "scarce": false,
+      "intended_disposition": "retained-for-review",
+      "actual_disposition": "retained-for-review",
+      "location": "/EXAMPLE/artifacts/EXAMPLE_EXECUTION_ID/workspace",
+      "review_purpose": "Inspect the seeded fault and restoration",
+      "review_owner": "Human Maintainer",
+      "deletion_instructions": "Delete this run directory after review",
+      "retention_evidence": ["evidence/cleanup/workspace-inert.json"],
+      "evidence": ["evidence/cleanup/workspace-manifest.json"]
+    }
+  ]
+}

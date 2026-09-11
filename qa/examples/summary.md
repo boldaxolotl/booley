@@ -9,11 +9,12 @@ required CLI Configured Scenario is included.
 | Component | Status | Evidence |
 |---|---|---|
 | Example core slice | passed | `r1`, `r2`, `r3`, `r5` |
-| Example GUI slice | incomplete | `r4`: pre-run observer unavailable; cleanup `r5` passed |
+| Example GUI slice | incomplete | `r4`: pre-run observer unavailable; quiescence `r5` passed |
 
-Execution status: completed. Cleanup: complete. No Findings in this
+Execution status: completed. Quiescence: complete; review workspace retained. No Findings in this
 illustrative slice. Check outcomes: four passed, one unavailable. Records:
-[check-results.jsonl](check-results.jsonl). Evidence references are fictional examples.
+[check-results.jsonl](check-results.jsonl), [operator-state.json](operator-state.json),
+and [cleanup-ledger.json](cleanup-ledger.json). Evidence references are fictional examples.
 
 No complete Scenario, VS Code Runtime Attachment, Waveform Viewer, or real Booley
 product revision is qualified by this example.

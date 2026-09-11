@@ -15,24 +15,20 @@ that agents can execute repeatably and a maintainer can audit afterward. This su
 defines the scope, instructions, evidence, and verdict rules needed to do that without
 letting an agent decide for itself what counts as a pass.
 
-Agents perform the setup, product exercises, fault injection, recovery, evidence
-collection, and cleanup. The Human Maintainer still owns the Scenarios, required
+Agents perform setup, product exercises, fault injection, recovery, evidence
+collection, and final quiescence. The Human Maintainer still owns the Scenarios, required
 Configured Scenarios, acceptance rules, and final qualification decision.
 
 ## Starting a run
 
 Explicitly invoke the user-only [`booley-qa-run` skill](booley-qa-run/SKILL.md) with a
-Scenario ID, a Configured Scenario ID, and an artifact root. The skill creates a fresh
-Scenario Run ID. Invocation grants authority for the resources and mutations
-declared by the selected Scenario; anything outside that scope requires separate
-user authorization. The agent never invokes this skill on its own.
+Scenario ID, a Configured Scenario ID, and an artifact root. The agent never invokes
+it on its own.
 
-QA execution is an agent skill, not a Booley CLI command. The agent executing the
-skill is the Scenario Operator: it follows the selected Scenario and protocol,
-delegates work to sub-agents where useful, and owns the evidence record. `validate.py`
-checks the authored QA assets only; it does not execute a Scenario Run. Once the
-required inputs are available, the skill runs unattended until completion, a declared
-stop condition, or a request for authority outside the Scenario's declared scope.
+QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
+is the Scenario Operator. The [protocol](agents/PROTOCOL.md) discloses one resumable
+stage at a time and owns execution behavior. `validate.py` checks authored QA assets
+only; it does not execute a Scenario Run.
 
 ## What's in this directory
 
@@ -44,7 +40,7 @@ stop condition, or a request for authority outside the Scenario's declared scope
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`agents/`](agents/) | Shared execution protocol and run-record format used by the skill |
+| [`agents/`](agents/) | Staged execution protocol and Scenario Run record contract used by the skill |
 | [`user/`](user/) | Maintainer guides for qualification and scenario authoring |
 | [`examples/`](examples/) | Illustrative Configured Scenario, Scenario Run record, Check Results, and summary; they are not execution evidence and grant no coverage credit |
 
@@ -61,35 +57,18 @@ represented. They do not prove that Booley passes them.
 | Documentation-only standalone UART | Builds a UART from the allowlisted OpenTitan documentation corpus without giving the developer the reference implementation or oracle. It covers Interactive Mode, feature and repair Tickets, independent evaluator controls and cases, external-image handling, final regression, and cleanup. | [Scenario](scenarios/uart/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/375), [oracle contract](scenarios/uart/evaluator/CONTRACT.md) |
 
 The scenarios retain their reviewed pins, workloads, thresholds, prompts, authority,
-fault and recovery sequences, independent evaluation, and cleanup rules. The
+fault and recovery sequences, independent evaluation, and product cleanup Checks. The
 [published design](https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/HANDOFF.md)
 records the historical decisions behind the production files.
 
 ## QA workflow
 
-1. Select a Configured Scenario declared by its `scenario.yaml`. It fixes the host operating
-   system, CPU architecture, native-host scope, agent provider, Interactive Mode
-   client, Ticket Mode backend, pre-run requirements, check sets, and exclusions
-   before execution. The validator resolves the sets into the complete Check list and
-   derives the required Scenario Steps.
-2. Validate the suite structure. Validation catches structural and reference errors;
-   it does not execute a scenario or judge whether an expectation is a sound product
-   oracle.
-3. Prepare the run. Record the exact Booley product revision and artifact, matching docs and image,
-   suite and input revisions, native host, provider, EDA provisioning, authority,
-   deadline, artifact root, and capability assessments in `run.json`. The artifact form
-   must match the Configured Scenario; undeclared substitutions are invalid.
-4. Execute the selected checks in scenario order. Stay within the declared authority
-   and retry limits. Capture the expected observation and the required artifact for
-   each check. Preserve unexpected failures even when recovery or a later retry
-   succeeds.
-5. Record Check Results as defined in [`agents/FORMAT.md`](agents/FORMAT.md). Keep `check-results.jsonl` and
-   `findings.jsonl` append-only, track resources in `cleanup-ledger.json`, retain
-   immutable artifacts under `evidence/`, and derive `summary.md` from those records.
-6. Clean up on every exit path, then calculate the Scenario Run Outcome. A
-   trustworthy required failure makes it `failed`. Missing, blocked,
-   unavailable, or invalid required evidence makes it `incomplete`. It is `passed`
-   only when all selected Checks and cleanup pass.
+The Scenario Operator follows [Admit](agents/ADMIT.md),
+[Prepare](agents/PREPARE.md), [Execute](agents/EXECUTE.md), and
+[Finish](agents/FINISH.md) in order, using [Record](agents/RECORD.md) whenever a
+stage writes evidence or changes state. The run files provide the durable cursor for
+context compaction. Finalization releases active or privileged resources and may leave
+eligible inert workspaces for Human Maintainer review.
 
 GUI Configured Scenarios require the supported VS Code client, WCP, and a qualified screenshot
 observer. If that infrastructure is missing, the affected checks are unavailable and
