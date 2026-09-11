@@ -1173,7 +1173,7 @@ def _check_no_conflict_state(git_cwd):
     return errors
 
 
-def _validate_git_state(
+def validate_git_state(
     fields: dict[str, Any],
     project_root: str | Path | None,
     allowed_dirty_paths: Iterable[str | Path] = (),
@@ -1252,6 +1252,6 @@ def validate_ticket_fields(
     errors.extend(criteria_warnings)
 
     if check_git:
-        errors.extend(_validate_git_state(fields, project_root, allowed_dirty_paths))
+        errors.extend(validate_git_state(fields, project_root, allowed_dirty_paths))
 
     return errors

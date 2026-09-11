@@ -71,9 +71,15 @@ from .scanner import _load_state_data
 from .validation import (
     format_validate_logs_report,
     owned_draft_dirty_paths,
+    validate_git_state,
     validate_logs,
     validate_ticket_fields,
 )
+
+
+class TicketValidationError(RuntimeError):
+    """A draft validation workspace cannot be prepared or inspected."""
+
 
 # ---------------------------------------------------------------------------
 # Pure output commands (no side effects)
@@ -185,63 +191,63 @@ def _cmd_parse_ticket(tio, args):
     return 0
 
 
-def _cmd_validate_ticket(tio, args):
-    path = Path(args.path)
-    if not path.exists():
-        print(json.dumps({"errors": [f"File not found: {args.path}"]}))
-        return 1
-    with path.open(encoding="utf-8") as f:
-        text = f.read()
-    fields, body = parse_frontmatter(text)
-    project_root = detect_project_root()
-    validation_root = project_root
-    basis_workspace: Path | None = None
+def _validation_context(
+    tio, path: Path, fields: dict[str, Any], project_root: Path
+) -> tuple[Path, Path | None, tuple[Path, ...]]:
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
-    if (project_root / ".git").exists() and fields.get("acceptance_basis") is None:
-        try:
-            from booley.ticket_board.workspace_ops import ensure_ticket_workspace
+    if not (project_root / ".git").exists() or fields.get("acceptance_basis") is not None:
+        return project_root, None, allowed_dirty_paths
+    from booley.ticket_board.workspace_ops import ensure_ticket_workspace
 
-            workspace = ensure_ticket_workspace(project_root, path, path.stem)
-        except (RuntimeError, ValueError, OSError) as exc:
-            print(json.dumps({"errors": [f"Ticket workspace preparation failed: {exc}"]}))
-            return 1
-        validation_root = workspace.outer
-        basis_workspace = workspace.outer
-        from .acceptance_targets import acceptance_control_paths
+    try:
+        workspace = ensure_ticket_workspace(project_root, path, path.stem)
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise TicketValidationError(f"Ticket workspace preparation failed: {exc}") from exc
+    from .acceptance_targets import acceptance_control_paths
 
-        try:
-            allowed_dirty_paths = tuple(
-                validation_root / item for item in acceptance_control_paths(validation_root)
-            )
-        except (FuseSocError, OSError, ValueError) as exc:
-            print(json.dumps({"errors": [f"Acceptance input discovery failed: {exc}"]}))
-            return 1
+    try:
+        allowed = tuple(
+            workspace.outer / item for item in acceptance_control_paths(workspace.outer)
+        )
+    except (FuseSocError, OSError, ValueError) as exc:
+        raise TicketValidationError(f"Acceptance input discovery failed: {exc}") from exc
+    return workspace.outer, workspace.outer, allowed
+
+
+def _validate_ticket_input(
+    tio,
+    path: Path,
+    fields: dict[str, Any],
+    body: str,
+    project_root: Path,
+    *,
+    check_git: bool,
+    check_files: bool = True,
+    check_tb_files: bool = True,
+) -> tuple[list[str], list[str]]:
+    validation_root, basis_workspace, allowed_dirty_paths = _validation_context(
+        tio, path, fields, project_root
+    )
     results = validate_ticket_fields(
         fields,
         body,
-        check_files=True,
-        check_git=False if validation_root != project_root else args.check_git,
+        check_files=check_files,
+        check_git=check_git and validation_root == project_root,
         project_root=str(validation_root),
+        check_tb_files=check_tb_files,
         allowed_dirty_paths=allowed_dirty_paths,
     )
-    if args.check_git and validation_root != project_root:
-        root_results = validate_ticket_fields(
-            fields,
-            body,
-            check_files=False,
-            check_git=True,
-            project_root=str(project_root),
-            allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
+    if check_git and validation_root != project_root:
+        results.extend(
+            validate_git_state(
+                fields,
+                project_root,
+                owned_draft_dirty_paths(path, tio.tickets_dir),
+            )
         )
-        results = list(dict.fromkeys([*results, *root_results]))
-    warnings = [e for e in results if e.startswith("[warning] ")]
-    errors = [e for e in results if not e.startswith("[warning] ")]
-    for w in warnings:
-        print(f"Warning: {w}", file=sys.stderr)
-    if errors:
-        print(json.dumps({"errors": errors}, indent=2))
-        return 1
-    if basis_workspace is not None and fields.get("target_plan") is not None:
+    results = list(dict.fromkeys(results))
+    errors = [item for item in results if not item.startswith("[warning] ")]
+    if not errors and basis_workspace is not None and fields.get("target_plan") is not None:
         try:
             from booley.ticket_board.workspace_ops import (
                 AcceptanceBasisOperationError,
@@ -255,8 +261,34 @@ def _cmd_validate_ticket(tio, args):
                 workspace=basis_workspace,
             )
         except (AcceptanceBasisOperationError, OSError, ValueError) as exc:
-            print(json.dumps({"errors": [str(exc)]}, indent=2))
-            return 1
+            errors.append(str(exc))
+    warnings = [item for item in results if item.startswith("[warning] ")]
+    return errors, warnings
+
+
+def _cmd_validate_ticket(tio, args):
+    path = Path(args.path)
+    if not path.exists():
+        print(json.dumps({"errors": [f"File not found: {args.path}"]}))
+        return 1
+    fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    try:
+        errors, warnings = _validate_ticket_input(
+            tio,
+            path,
+            fields,
+            body,
+            detect_project_root(),
+            check_git=args.check_git,
+        )
+    except TicketValidationError as exc:
+        print(json.dumps({"errors": [str(exc)]}))
+        return 1
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    if errors:
+        print(json.dumps({"errors": errors}, indent=2))
+        return 1
     print(json.dumps({"errors": [], "warnings": warnings, "valid": True}))
     return 0
 

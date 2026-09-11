@@ -30,9 +30,20 @@ from booley.ticket_board.workspace_ops import AuthoringWorkspace
 
 def _write_core(path: Path, targets: dict) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    filesets = {
+        name: {}
+        for target in targets.values()
+        for name in target.get("filesets", [])
+        if isinstance(name, str)
+    }
     (path / "toy.core").write_text(
         yaml.safe_dump(
-            {"CAPI=2": None, "name": "acme:lib:toy:1.0", "targets": targets},
+            {
+                "CAPI=2": None,
+                "name": "acme:lib:toy:1.0",
+                "filesets": filesets,
+                "targets": targets,
+            },
             sort_keys=False,
         ),
         encoding="utf-8",

@@ -12,6 +12,7 @@ import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets.domain import FuseSocError
 
 from .persistence import atomic_replace_bytes
 
@@ -225,10 +226,6 @@ def _single_mapping_source(
     )
 
 
-def _single_target_source(text: str, path: Path, target: str) -> tuple[str, int, object]:
-    return _single_mapping_source(text, path, "targets", target)
-
-
 def _without_mapping_siblings(text: str, path: Path, section: str, keep: set[str]) -> str:
     document, _targets_key, _targets = _document(text, path)
     mapping_value = _mapping_value(document, section)
@@ -255,17 +252,30 @@ def _without_sibling_target_surface(text: str, path: Path, target: str, filesets
 
 def _defined_target_filesets(text: str, path: Path, target_body: object) -> tuple[str, ...]:
     if not isinstance(target_body, Mapping):
-        return ()
-    document = yaml.safe_load(text)
-    raw_filesets = document.get("filesets") if isinstance(document, Mapping) else None
-    defined = set(raw_filesets) if isinstance(raw_filesets, Mapping) else set()
-    return tuple(
-        dict.fromkeys(
-            name
-            for name in fusesoc_registry.possible_target_fileset_names(target_body)
-            if name in defined
-        )
-    )
+        raise TargetSurfaceEditError(f".core {path} Target definition is not a mapping")
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise TargetSurfaceEditError(f"cannot parse .core {path}: {exc}") from exc
+    if not isinstance(document, Mapping):
+        raise TargetSurfaceEditError(f".core {path} is not a YAML mapping")
+    try:
+        return tuple(fusesoc_registry.target_fileset_definitions(document, target_body))
+    except FuseSocError as exc:
+        raise TargetSurfaceEditError(f".core {path}: {exc}") from exc
+
+
+def _insert_absent_filesets_mapping(
+    destination_text: str,
+    destination_path: Path,
+    block: str,
+    source_column: int,
+) -> tuple[str, bool]:
+    _document_node, targets_key, _target_mapping = _document(destination_text, destination_path)
+    insertion = _line_start(destination_text, targets_key.start_mark.index)
+    rendered = _reindent(block, source_column, targets_key.start_mark.column + 2)
+    prefix = " " * targets_key.start_mark.column + "filesets:\n"
+    return destination_text[:insertion] + prefix + rendered + destination_text[insertion:], True
 
 
 def _insert_mapping_definition(
@@ -286,15 +296,8 @@ def _insert_mapping_definition(
             raise TargetSurfaceEditError(
                 f".core {destination_path} has no mapping-valued {section} block"
             )
-        _document_node, targets_key, _target_mapping = _document(
-            destination_text, destination_path
-        )
-        insertion = _line_start(destination_text, targets_key.start_mark.index)
-        rendered = _reindent(block, source_column, targets_key.start_mark.column + 2)
-        prefix = " " * targets_key.start_mark.column + "filesets:\n"
-        return (
-            destination_text[:insertion] + prefix + rendered + destination_text[insertion:],
-            True,
+        return _insert_absent_filesets_mapping(
+            destination_text, destination_path, block, source_column
         )
     section_key, mapping = mapping_value
     entries = _entries(mapping)
@@ -366,7 +369,7 @@ def fileset_definition_spans(
 def merge_target_definition(source: Path, destination: Path, target: str) -> bool:
     """Insert one Target and its referenced filesets, retaining unrelated bytes."""
     source_text = source.read_text(encoding="utf-8")
-    block, source_column, source_body = _single_target_source(source_text, source, target)
+    _block, _column, source_body = _single_mapping_source(source_text, source, "targets", target)
     selected_filesets = _defined_target_filesets(source_text, source, source_body)
     if not destination.is_file():
         validate_new_core_surface(source_text, source)
@@ -389,34 +392,10 @@ def merge_target_definition(source: Path, destination: Path, target: str) -> boo
             fileset,
         )
         changed = changed or inserted
-    _document_node, targets_key, targets = _document(destination_text, destination)
-    entries = _entries(targets)
-    if entries and targets.flow_style:
-        raise TargetSurfaceEditError(
-            f".core {destination} uses an inline targets mapping that cannot be edited narrowly"
-        )
-    if target in entries:
-        if _mapping_body(destination_text, destination, "targets", target) != source_body:
-            raise TargetSurfaceEditError(
-                f"destination Target {target!r} differs from the approved definition"
-            )
-        if changed:
-            _write_text(destination, destination_text)
-        return changed
-
-    if entries:
-        last = max(entries.values(), key=lambda entry: entry[1].end_mark.index)
-        _start, insertion = _entry_span(destination_text, last)
-        destination_column = last[0].start_mark.column
-        rendered = _reindent(block, source_column, destination_column)
-        if insertion and not destination_text[:insertion].endswith("\n"):
-            rendered = "\n" + rendered
-        updated = destination_text[:insertion] + rendered + destination_text[insertion:]
-    else:
-        destination_column = targets_key.start_mark.column + 2
-        rendered = _reindent(block, source_column, destination_column)
-        start = targets.start_mark.index
-        end = targets.end_mark.index
-        updated = destination_text[:start] + "\n" + rendered + destination_text[end:]
-    _write_text(destination, updated)
-    return True
+    destination_text, inserted = _insert_mapping_definition(
+        source_text, source, destination_text, destination, "targets", target
+    )
+    changed = changed or inserted
+    if changed:
+        _write_text(destination, destination_text)
+    return changed

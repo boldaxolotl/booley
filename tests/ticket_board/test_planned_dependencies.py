@@ -31,10 +31,10 @@ from booley.ticket_board.planned_dependencies import (
 )
 
 
-def _core(path: Path, targets: str) -> None:
+def _core(path: Path, targets: str, *, filesets: str = "  rtl: {}\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n{targets}",
+        f"CAPI=2:\nname: acme:lib:toy:1.0\nfilesets:\n{filesets}targets:\n{targets}",
         encoding="utf-8",
     )
 
@@ -51,6 +51,8 @@ def test_provider_target_merge_preserves_existing_surface(tmp_path: Path) -> Non
     assert text == (
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
+        "filesets:\n"
+        "  rtl: {}\n"
         "targets:\n"
         "  current:\n"
         "    filesets: [rtl]\n"
@@ -146,7 +148,7 @@ def test_provider_target_merge_inserts_referenced_fileset_only(tmp_path: Path) -
     assert _merge_provider_target(source, destination, Path("toy.core"), "future")
 
     document = yaml.safe_load((destination / "toy.core").read_text(encoding="utf-8"))
-    assert document["filesets"] == {"tb": {"files": ["tb.sv"]}}
+    assert document["filesets"] == {"rtl": {}, "tb": {"files": ["tb.sv"]}}
     assert set(document["targets"]) == {"current", "future"}
 
 
@@ -279,6 +281,17 @@ def test_surface_digest_excludes_unreferenced_filesets(tmp_path: Path) -> None:
     )
 
     assert target_surface_sha256(tmp_path, "future") == first
+
+
+def test_surface_digest_rejects_undefined_referenced_fileset(tmp_path: Path) -> None:
+    core = tmp_path / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets:\n  future: {filesets: [missing]}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlannedDependencyError, match="undefined fileset"):
+        target_surface_sha256(tmp_path, "future")
 
 
 def test_public_materialization_rejects_missing_provider_dependency(
@@ -622,8 +635,16 @@ def test_provider_materialization_uses_published_basis_surface(
     published = tmp_path / "published"
     mutable = tmp_path / "mutable-ticket-ref"
     workspace = tmp_path / "workspace"
-    _core(published / "toy.core", "  future:\n    filesets: [published]\n")
-    _core(mutable / "toy.core", "  future:\n    filesets: [unpublished]\n")
+    _core(
+        published / "toy.core",
+        "  future:\n    filesets: [published]\n",
+        filesets="  published: {}\n",
+    )
+    _core(
+        mutable / "toy.core",
+        "  future:\n    filesets: [unpublished]\n",
+        filesets="  unpublished: {}\n",
+    )
     provider = _Provider(
         "provider",
         {},
@@ -872,7 +893,11 @@ def test_materialized_provider_surface_cannot_be_authored_over(tmp_path: Path) -
     materialization = ProviderMaterialization(
         surface_digests=(("acme:lib:toy:1.0#future", expected),)
     )
-    _core(core, "  future:\n    filesets: [different]\n")
+    _core(
+        core,
+        "  future:\n    filesets: [different]\n",
+        filesets="  different: {}\n",
+    )
 
     with pytest.raises(PlannedDependencyError, match="changed after composition"):
         validate_materialized_surfaces(tmp_path, materialization)

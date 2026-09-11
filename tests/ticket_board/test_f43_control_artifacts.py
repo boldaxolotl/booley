@@ -227,25 +227,37 @@ def test_enqueue_records_tests_toml_update_in_acceptance_basis(
     assert _git(root, "rev-parse", outer_participant.ticket_ref) == outer_participant.authoring_sha
 
 
-def test_validate_and_enqueue_accept_planned_target_with_new_fileset(
+def test_validate_and_enqueue_accept_sim_target_with_scope_new_fileset(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     ticket = _ticket(tio, merge=True, planned=True)
+    update_frontmatter(
+        ticket,
+        {
+            "scope": ["toy.core", "tb/toy_test.py [new]"],
+            "criteria": {
+                "mandatory": {"sim_pass": ["tb/toy_test.py @ sim_toy_new @ all @ none -> pass"]}
+            },
+            "target_plan": [{"target": "sim_toy_new", "role": "persistent"}],
+        },
+    )
     outer = root / ".booley_project" / "worktrees" / "change-target"
     core = outer / "toy.core"
     core.write_text(
         core.read_text(encoding="utf-8").replace(
             "targets:\n",
-            "  lint_inputs:\n"
-            "    files: [rtl/toy.sv]\n"
-            "    file_type: systemVerilogSource\n"
+            "  tb_new:\n"
+            "    files: [tb/toy_test.py]\n"
+            "    file_type: user\n"
+            "    tags: [tb]\n"
             "targets:\n",
         )
-        + "  lint_toy_new:\n"
-        + "    flow: lint\n"
+        + "  sim_toy_new:\n"
+        + "    flow: sim\n"
         + "    flow_options: {tool: verilator}\n"
-        + "    filesets_append: [lint_inputs]\n"
+        + "    filesets: [rtl]\n"
+        + "    filesets_append: [tb_new]\n"
         + "    toplevel: toy\n",
         encoding="utf-8",
     )
@@ -256,6 +268,10 @@ def test_validate_and_enqueue_accept_planned_target_with_new_fileset(
 
     assert main(["validate-ticket", str(ticket), "--check-git"]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
+    assert DirectTicketOps().validate_ticket(root, str(ticket), check_git=True) == {
+        "errors": [],
+        "valid": True,
+    }
     assert _git(outer, "rev-parse", "HEAD") == before
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert "acceptance_basis" not in fields

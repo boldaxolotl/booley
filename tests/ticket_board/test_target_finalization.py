@@ -13,9 +13,9 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import UnknownTargetError
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.target_finalization import (
-    TargetFinalizationBaseline,
     TargetFinalizationError,
     apply_target_removals,
+    plan_orphaned_fileset_removals,
     plan_target_removals,
 )
 
@@ -133,15 +133,9 @@ def test_ephemeral_target_removes_its_newly_authored_fileset(tmp_path: Path) -> 
     _init_repository(root)
     core = root / "toy.core"
     _write_core(core, vlnv="acme:lib:toy:1.0", targets="  baseline: {filesets: [rtl]}\n")
+    baseline_core = core.read_bytes()
     _git(root, "add", "toy.core")
     _git(root, "commit", "-qm", "baseline")
-    baseline = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     core.write_text(
         core.read_text(encoding="utf-8").replace(
             "targets:\n",
@@ -156,8 +150,8 @@ def test_ephemeral_target_removes_its_newly_authored_fileset(tmp_path: Path) -> 
         root,
         (canonical,),
         _binding(canonical),
-        baselines=(TargetFinalizationBaseline(root, baseline),),
     )
+    plan = plan_orphaned_fileset_removals(root, plan, {"toy.core": baseline_core})
     apply_target_removals(root, plan)
 
     document = fusesoc_registry.read_core(core)
@@ -172,15 +166,9 @@ def test_ephemeral_target_retains_new_fileset_used_by_persistent_target(
     _init_repository(root)
     core = root / "toy.core"
     _write_core(core, vlnv="acme:lib:toy:1.0", targets="  baseline: {filesets: [rtl]}\n")
+    baseline_core = core.read_bytes()
     _git(root, "add", "toy.core")
     _git(root, "commit", "-qm", "baseline")
-    baseline = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     core.write_text(
         core.read_text(encoding="utf-8").replace(
             "targets:\n",
@@ -196,13 +184,45 @@ def test_ephemeral_target_retains_new_fileset_used_by_persistent_target(
         root,
         (canonical,),
         _binding(canonical),
-        baselines=(TargetFinalizationBaseline(root, baseline),),
     )
+    plan = plan_orphaned_fileset_removals(root, plan, {"toy.core": baseline_core})
     apply_target_removals(root, plan)
 
     document = fusesoc_registry.read_core(core)
     assert "ephemeral" not in document["targets"]
     assert document["filesets"]["shared"] == {"files": ["tb/shared.sv"]}
+
+
+def test_ephemeral_target_preserves_inline_baseline_filesets(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    _init_repository(root)
+    core = root / "toy.core"
+    core.write_text(
+        "CAPI=2:\nname: acme:lib:toy:1.0\n"
+        "filesets: {rtl: {files: [rtl/toy.sv]}}\n"
+        "targets:\n  baseline: {filesets: [rtl]}\n",
+        encoding="utf-8",
+    )
+    baseline_core = core.read_bytes()
+    _git(root, "add", "toy.core")
+    _git(root, "commit", "-qm", "baseline")
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            "filesets: {rtl: {files: [rtl/toy.sv]}}",
+            "filesets: {rtl: {files: [rtl/toy.sv]}, probe: {files: [tb/probe.sv]}}",
+        )
+        + "  ephemeral: {filesets: [probe]}\n",
+        encoding="utf-8",
+    )
+    canonical = "acme:lib:toy:1.0#ephemeral"
+
+    plan = plan_target_removals(root, (canonical,), _binding(canonical))
+    plan = plan_orphaned_fileset_removals(root, plan, {"toy.core": baseline_core})
+    apply_target_removals(root, plan)
+
+    document = fusesoc_registry.read_core(core)
+    assert document["filesets"] == {"rtl": {"files": ["rtl/toy.sv"]}}
+    assert document["targets"] == {"baseline": {"filesets": ["rtl"]}}
 
 
 def test_finalizer_rejects_target_not_bound_by_ticket_criteria(tmp_path: Path) -> None:

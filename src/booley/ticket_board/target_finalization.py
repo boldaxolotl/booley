@@ -9,7 +9,6 @@ authored.
 from __future__ import annotations
 
 import re
-import subprocess
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -53,14 +52,6 @@ class PlannedFilesetRemoval:
 
     core_path: str
     name: str
-
-
-@dataclass(frozen=True)
-class TargetFinalizationBaseline:
-    """Immutable pre-authoring revision for one acceptance participant."""
-
-    checkout: Path
-    revision: str
 
 
 @dataclass(frozen=True)
@@ -137,8 +128,6 @@ def plan_target_removals(
     project_root: Path | str,
     selectors: Iterable[str],
     bindings: Iterable[AcceptanceTargetBinding],
-    *,
-    baselines: Iterable[TargetFinalizationBaseline] = (),
 ) -> TargetRemovalPlan:
     """Resolve selectors and prove every edit is criterion-bound and unambiguous."""
     root = Path(project_root).resolve()
@@ -180,8 +169,7 @@ def plan_target_removals(
                 _tests_key(root, handle, catalog),
             )
         )
-    fileset_removals = _plan_orphaned_filesets(root, removals, tuple(baselines))
-    plan = TargetRemovalPlan(tuple(sorted(removals)), tuple(sorted(fileset_removals)))
+    plan = TargetRemovalPlan(tuple(sorted(removals)))
     _validate_plan_spans(root, plan)
     return plan
 
@@ -193,7 +181,7 @@ def _mapping_value(node: MappingNode, key: str) -> MappingNode | None:
     return None
 
 
-def _read_core_mapping(text: str, path: Path) -> Mapping[str, Any]:
+def _read_core_mapping(text: str | bytes, path: Path) -> Mapping[str, Any]:
     try:
         value = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -201,62 +189,6 @@ def _read_core_mapping(text: str, path: Path) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TargetFinalizationError(f".core {path} is not a YAML mapping")
     return value
-
-
-def _baseline_core(
-    core_path: Path, baselines: tuple[TargetFinalizationBaseline, ...]
-) -> Mapping[str, Any] | None:
-    selected = next(
-        (
-            baseline
-            for baseline in sorted(
-                baselines,
-                key=lambda item: len(item.checkout.resolve().parts),
-                reverse=True,
-            )
-            if core_path.is_relative_to(baseline.checkout.resolve())
-        ),
-        None,
-    )
-    if selected is None:
-        return None
-    checkout = selected.checkout.resolve()
-    relative = core_path.relative_to(checkout).as_posix()
-    commit = subprocess.run(
-        ["git", "cat-file", "-e", f"{selected.revision}^{{commit}}"],
-        cwd=checkout,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if commit.returncode:
-        raise TargetFinalizationError(
-            f"cannot inspect baseline revision {selected.revision!r} in {checkout}"
-        )
-    exists = subprocess.run(
-        ["git", "cat-file", "-e", f"{selected.revision}:{relative}"],
-        cwd=checkout,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if exists.returncode:
-        return {}
-    shown = subprocess.run(
-        ["git", "show", f"{selected.revision}:{relative}"],
-        cwd=checkout,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if shown.returncode:
-        raise TargetFinalizationError(
-            f"cannot read baseline .core {relative} at {selected.revision}"
-        )
-    return _read_core_mapping(shown.stdout, core_path)
 
 
 def _target_fileset_references(targets: Mapping[str, Any]) -> set[str]:
@@ -271,9 +203,9 @@ def _target_fileset_references(targets: Mapping[str, Any]) -> set[str]:
 def _plan_orphaned_filesets(
     root: Path,
     removals: Iterable[PlannedTargetRemoval],
-    baselines: tuple[TargetFinalizationBaseline, ...],
+    baseline_cores: Mapping[str, bytes | None],
 ) -> list[PlannedFilesetRemoval]:
-    if not baselines:
+    if not baseline_cores:
         return []
     by_core: dict[str, set[str]] = defaultdict(set)
     for removal in removals:
@@ -282,9 +214,12 @@ def _plan_orphaned_filesets(
     for relative, removed_names in by_core.items():
         core_path = root / relative
         current = _read_core_mapping(core_path.read_text(encoding="utf-8"), core_path)
-        baseline = _baseline_core(core_path.resolve(), baselines)
-        if baseline is None:
+        if relative not in baseline_cores:
             continue
+        baseline_content = baseline_cores[relative]
+        baseline = (
+            _read_core_mapping(baseline_content, core_path) if baseline_content is not None else {}
+        )
         current_filesets = current.get("filesets")
         baseline_filesets = baseline.get("filesets")
         current_names = set(current_filesets) if isinstance(current_filesets, Mapping) else set()
@@ -307,6 +242,19 @@ def _plan_orphaned_filesets(
     return planned
 
 
+def plan_orphaned_fileset_removals(
+    project_root: Path | str,
+    plan: TargetRemovalPlan,
+    baseline_cores: Mapping[str, bytes | None],
+) -> TargetRemovalPlan:
+    """Add removals for newly-authored filesets orphaned by Target removal."""
+    root = Path(project_root).resolve()
+    filesets = _plan_orphaned_filesets(root, plan.targets, baseline_cores)
+    result = TargetRemovalPlan(plan.targets, tuple(sorted(filesets)))
+    _validate_plan_spans(root, result)
+    return result
+
+
 def _line_start(text: str, index: int) -> int:
     return text.rfind("\n", 0, index) + 1
 
@@ -320,6 +268,37 @@ def _node_block_end(text: str, start: int, end: int) -> int:
     """Return the exclusive line boundary without consuming the next YAML key."""
     end_line = _line_start(text, end)
     return end_line if end_line > start else _line_end(text, end)
+
+
+def _flow_mapping_replacements(
+    mapping: MappingNode,
+    entries: dict[str, tuple[ScalarNode, object]],
+    names: set[str],
+) -> list[tuple[int, int, str]]:
+    if names == set(entries):
+        return [(mapping.start_mark.index, mapping.end_mark.index, "{}")]
+    ordered = [
+        (key.value, key, value)
+        for key, value in mapping.value
+        if isinstance(key, ScalarNode) and key.value in entries
+    ]
+    selected = [index for index, (name, _key, _value) in enumerate(ordered) if name in names]
+    groups: list[tuple[int, int]] = []
+    for index in selected:
+        if groups and index == groups[-1][1] + 1:
+            groups[-1] = (groups[-1][0], index)
+        else:
+            groups.append((index, index))
+    replacements = []
+    for first, last in groups:
+        start = ordered[first][1].start_mark.index
+        end = ordered[last][2].end_mark.index
+        if first:
+            start = ordered[first - 1][2].end_mark.index
+        elif last + 1 < len(ordered):
+            end = ordered[last + 1][1].start_mark.index
+        replacements.append((start, end, ""))
+    return replacements
 
 
 def _core_replacements(
@@ -342,6 +321,8 @@ def _core_replacements(
         raise TargetFinalizationError(
             f".core {path} no longer declares {section} entries: {', '.join(missing)}"
         )
+    if targets.flow_style:
+        return _flow_mapping_replacements(targets, entries, names)
     if names == set(entries):
         first = min(_line_start(text, entries[name][0].start_mark.index) for name in names)
         last = max(
@@ -461,7 +442,28 @@ def _validate_plan_spans(root: Path, plan: TargetRemovalPlan) -> None:
         _tests_replacements(tests_path.read_text(encoding="utf-8"), tests_keys)
 
 
+def _validate_retained_filesets(root: Path, plan: TargetRemovalPlan) -> None:
+    for relative in sorted({item.core_path for item in plan.targets}):
+        path = root / relative
+        try:
+            document = fusesoc_registry.read_core(path)
+            targets = document.get("targets") or {}
+            if not isinstance(targets, Mapping):
+                raise TargetFinalizationError(
+                    f"finalized .core {path} has no mapping-valued targets block"
+                )
+            for name, body in targets.items():
+                if not isinstance(body, Mapping):
+                    raise TargetFinalizationError(
+                        f"finalized Target {name!r} in {path} is not a mapping"
+                    )
+                fusesoc_registry.target_fileset_definitions(document, body)
+        except FuseSocError as exc:
+            raise TargetFinalizationError(f"finalized .core {path} is invalid: {exc}") from exc
+
+
 def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
+    _validate_retained_filesets(root, plan)
     try:
         catalog = TargetCatalog.build(root)
     except FuseSocError as exc:

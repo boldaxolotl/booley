@@ -296,7 +296,7 @@ def test_new_core_can_author_planned_target_fileset(repository: Path) -> None:
     assert analysis.authored_filesets == ("new.core#tb_new",)
 
 
-def test_added_fileset_cannot_change_baseline_target_inputs(repository: Path) -> None:
+def test_added_fileset_cannot_resolve_dangling_baseline_reference(repository: Path) -> None:
     path = repository / "toy.core"
     baseline = path.read_text(encoding="utf-8").replace(
         "    filesets: [rtl]\n",
@@ -311,7 +311,7 @@ def test_added_fileset_cannot_change_baseline_target_inputs(repository: Path) ->
         encoding="utf-8",
     )
 
-    with pytest.raises(TargetPlanValidationError, match="existing Target"):
+    with pytest.raises(TargetPlanValidationError, match="undefined fileset"):
         _analyze(_persistent_fields(), repository, ((repository, (path.name,)),))
 
 

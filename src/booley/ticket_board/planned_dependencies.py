@@ -121,12 +121,12 @@ def _surface(checkout: Path, target: str) -> tuple[Path, str, str]:
         raise PlannedDependencyError(f"provider Target {target!r} has no declaration")
     tests_key, tests = _owned_tests(checkout, handle.identity, catalog)
     target_body = targets[handle.name]
-    filesets = document.get("filesets")
-    selected_filesets = {
-        name: filesets[name]
-        for name in fusesoc_registry.possible_target_fileset_names(target_body)
-        if isinstance(filesets, dict) and name in filesets
-    }
+    if not isinstance(target_body, dict):
+        raise PlannedDependencyError(f"provider Target {target!r} is not a mapping")
+    try:
+        selected_filesets = fusesoc_registry.target_fileset_definitions(document, target_body)
+    except FuseSocError as exc:
+        raise PlannedDependencyError(str(exc)) from exc
     controls = {
         key: value for key, value in document.items() if key not in {"targets", "filesets"}
     }

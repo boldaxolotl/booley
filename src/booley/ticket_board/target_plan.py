@@ -141,7 +141,11 @@ def _fileset_references(content: bytes | None, *, path: str) -> dict[str, tuple[
         if not isinstance(target_name, str) or not isinstance(body, Mapping):
             continue
         canonical = f"{vlnv}#{target_name}"
-        for fileset in fusesoc_registry.possible_target_fileset_names(body):
+        try:
+            selected = fusesoc_registry.target_fileset_definitions(document, body)
+        except FuseSocError as exc:
+            raise TargetPlanValidationError(f".core {path}: {exc}") from exc
+        for fileset in selected:
             references.setdefault(fileset, set()).add(canonical)
     return {name: tuple(sorted(targets)) for name, targets in references.items()}
 
@@ -533,6 +537,22 @@ def _validate_fileset_coverage(
     return tuple(sorted(authored))
 
 
+def _validate_replacement_baselines(canonical: TargetPlan | None, added: set[str]) -> None:
+    invalid = (
+        sorted(
+            entry.replaces
+            for entry in canonical.entries
+            if entry.role is TargetPlanRole.REPLACEMENT and entry.replaces in added
+        )
+        if canonical is not None
+        else []
+    )
+    if invalid:
+        raise TargetPlanValidationError(
+            "replacement baselines must exist on the destination baseline: " + ", ".join(invalid)
+        )
+
+
 def analyze_target_plan(
     fields: Mapping[str, Any],
     project_root: Path,
@@ -556,20 +576,7 @@ def analyze_target_plan(
     canonical = _canonical_plan(fields, catalog)
     added, planned = _validate_surface_coverage(delta, canonical, provider_targets)
     authored_filesets = _validate_fileset_coverage(delta, planned, provider_targets)
-    invalid_baselines = (
-        sorted(
-            entry.replaces
-            for entry in canonical.entries
-            if entry.role is TargetPlanRole.REPLACEMENT and entry.replaces in added
-        )
-        if canonical is not None
-        else []
-    )
-    if invalid_baselines:
-        raise TargetPlanValidationError(
-            "replacement baselines must exist on the destination baseline: "
-            + ", ".join(invalid_baselines)
-        )
+    _validate_replacement_baselines(canonical, added)
     _validate_test_tables(delta, canonical, provider_test_tables, catalog)
     _validate_plan_bindings(
         fields,
