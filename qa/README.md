@@ -43,6 +43,7 @@ approved changes. It does not execute Scenario Runs.
 | Path | Contents |
 |---|---|
 | [`scenarios/`](scenarios/) | Production scenario YAML plus each Scenario's prompts, Ticket payloads, fixtures, specifications, and evaluator material |
+| [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Fixed native coverage fixtures, expected operands, approved waiver inputs, independent evaluator and external boundary controls |
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
@@ -50,8 +51,8 @@ approved changes. It does not execute Scenario Runs.
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`doc/`](doc/) | Execution protocol, run record contract, and qualification rules |
 
-The current suite maps 62 product capabilities and 16 distinct EDA integration
-references to 1,072 checks. Those counts show that the reviewed requirements are
+The current suite maps 69 product capabilities and 16 distinct EDA integration
+references to 1,658 checks. Those counts show that the reviewed requirements are
 represented. They do not prove that Booley passes them.
 
 ## Scenario and Check structure
@@ -92,6 +93,18 @@ Each Check is one independently observable product claim declaring:
 | PicoRV32 published demo continuity and evolution | Starts from the pinned published-demo Project and upstream source. It checks clean simulation, lint, synthesis, provisioned Linux Vivado, Interactive Mode and waveform diagnosis, two Ticket Mode changes, final regression, and cleanup. | [Scenario](scenarios/picorv32/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/374) |
 | Taxi 10G MAC port and evolution | Starts from a pinned direct clone of Taxi. It checks Project setup, the clean 10G MAC baseline, FST and B-Wave behavior, a disposable submodule companion Project, mutation testing, two Ticket Mode changes, final regression, and cleanup. | [Scenario](scenarios/taxi/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/377) |
 | Documentation-only standalone UART | Builds a UART from the allowlisted OpenTitan documentation corpus without giving the developer the reference implementation or oracle. It covers Interactive Mode, feature and repair Tickets, independent evaluator controls and cases, external-image handling, final regression, and cleanup. | [Scenario](scenarios/uart/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/375), [oracle contract](scenarios/uart/evaluator/CONTRACT.md) |
+
+| Native coverage: measurement | Collection opt-in, harnesses, staging, native windows and exact directional toggle/value-property counts. | [Scenario](scenarios/coverage-measurement/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+| Native coverage: policy | Metric policies, exact thresholds, independent simulation/coverage verdicts and approved waivers. | [Scenario](scenarios/coverage-policy/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+| Native coverage: storage | V3 integrity, per-source aggregation, corruption rejection and large Campaigns. | [Scenario](scenarios/coverage-storage/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+| Native coverage: lifecycle | Durable publication, interrupted/restarted producers, Ticket gap closure and exact retention. | [Scenario](scenarios/coverage-lifecycle/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+| Native coverage: analysis | Real Coverage Analyst advice, source closure modes, exact-path validation and provider isolation. | [Scenario](scenarios/coverage-analysis/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+| Native coverage: boundary | Bounded evidence queries, candidate screening, delivered references and controlled model failures. | [Scenario](scenarios/coverage-boundary/scenario.yaml), [fixture runbook](shared/coverage/RUNBOOK.md) |
+
+The six coverage Scenarios each require Ubuntu and Windows with both Codex and
+Claude native clients: 24 additional Configured Scenario Runs. The fixtures pin
+Verilator 5.052 and exact arithmetic; authoring validation and fixture self-tests
+do not qualify these runs. The three existing Scenarios retain their memberships.
 
 The scenarios retain their reviewed pins, workloads, thresholds, prompts, authority,
 fault and recovery sequences, independent evaluation, and product cleanup Checks. The

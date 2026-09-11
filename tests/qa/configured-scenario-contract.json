@@ -90,6 +90,150 @@
       "semantics": "cc686a910f3a369584768f1915a6a3a37f6308ad2cd6d7dbae8329b8418f6b6a",
       "checks": "79e37eec91eeb966eb3a58b421f383c085cca7d44cde0971c1835d2f50dfb9f4",
       "exclusions": "8d3422eace02fefeb24bfe9c2e08f142cffc254ebd9c46fd8779f5858ac53957"
+    },
+    "coverage-analysis-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "6f23d00cbe1d7d1117db1e312c7b8deb89df9acb370fa641918603af3a4bf9ca",
+      "checks": "df545dc7d8d981afd92e8f431fe9fc0b35fa4e02b52d45e99fb71b4761c4b751",
+      "exclusions": "4a5e02a5666180f5138661ea697e8e26293bcf8e3496b6e79bd3f73031403abc"
+    },
+    "coverage-analysis-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "e74c482dba765474aee9c4a2fd217d3534ccddb8a6f4d5f5865a42836fabc8e7",
+      "checks": "865621be7e3ebfb8646f9000abddd41c94095c824af2da885a327a125b45c2ff",
+      "exclusions": "b7eecec2a69f774d7cf69757164239b616d0788f84bf55949031f5e49d72b3da"
+    },
+    "coverage-analysis-windows-codex-cli": {
+      "required": true,
+      "semantics": "170619476328db68a219b485dde4c907f8c89b857bdec886a2650eab27853186",
+      "checks": "df545dc7d8d981afd92e8f431fe9fc0b35fa4e02b52d45e99fb71b4761c4b751",
+      "exclusions": "4a5e02a5666180f5138661ea697e8e26293bcf8e3496b6e79bd3f73031403abc"
+    },
+    "coverage-analysis-windows-claude-cli": {
+      "required": true,
+      "semantics": "14d313fe942f1cfadd865895fd0f129aed032f5559f13049c2c88f66f0eabc3f",
+      "checks": "865621be7e3ebfb8646f9000abddd41c94095c824af2da885a327a125b45c2ff",
+      "exclusions": "b7eecec2a69f774d7cf69757164239b616d0788f84bf55949031f5e49d72b3da"
+    },
+    "coverage-boundary-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "d2497856c5376ac8e599471f095d29657d8c33e459beaa2e53ff44e81f0981eb",
+      "checks": "ea555d9ad8bb4838d423bdfb2879ba73a3a685e922efe42093e821855d9145e1",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-boundary-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "b15bd43d6eb49ee0ac394ea5fc4e1cdf437d7bc9c8b3fb0916f9426a4fff1230",
+      "checks": "ea555d9ad8bb4838d423bdfb2879ba73a3a685e922efe42093e821855d9145e1",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-boundary-windows-codex-cli": {
+      "required": true,
+      "semantics": "ec1a71a381389f4c8be30e3d6507b37609fc85965ae299d04bfb2e64986a7350",
+      "checks": "ea555d9ad8bb4838d423bdfb2879ba73a3a685e922efe42093e821855d9145e1",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-boundary-windows-claude-cli": {
+      "required": true,
+      "semantics": "3efb6567d7e59e391cf175cb95e9491e49661faa464b3045f1e8f8c3b719eb9d",
+      "checks": "ea555d9ad8bb4838d423bdfb2879ba73a3a685e922efe42093e821855d9145e1",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-lifecycle-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "d2497856c5376ac8e599471f095d29657d8c33e459beaa2e53ff44e81f0981eb",
+      "checks": "6e760a0b268d23726ffa3db4128dcfd718a7ef91148fe887562324fe23a08538",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-lifecycle-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "b15bd43d6eb49ee0ac394ea5fc4e1cdf437d7bc9c8b3fb0916f9426a4fff1230",
+      "checks": "6e760a0b268d23726ffa3db4128dcfd718a7ef91148fe887562324fe23a08538",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-lifecycle-windows-codex-cli": {
+      "required": true,
+      "semantics": "ec1a71a381389f4c8be30e3d6507b37609fc85965ae299d04bfb2e64986a7350",
+      "checks": "6e760a0b268d23726ffa3db4128dcfd718a7ef91148fe887562324fe23a08538",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-lifecycle-windows-claude-cli": {
+      "required": true,
+      "semantics": "3efb6567d7e59e391cf175cb95e9491e49661faa464b3045f1e8f8c3b719eb9d",
+      "checks": "6e760a0b268d23726ffa3db4128dcfd718a7ef91148fe887562324fe23a08538",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-measurement-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "d2497856c5376ac8e599471f095d29657d8c33e459beaa2e53ff44e81f0981eb",
+      "checks": "57d63a72d375c9091717e252b28583282d3696b99f0d9bd8704a37803e9d7d34",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-measurement-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "b15bd43d6eb49ee0ac394ea5fc4e1cdf437d7bc9c8b3fb0916f9426a4fff1230",
+      "checks": "57d63a72d375c9091717e252b28583282d3696b99f0d9bd8704a37803e9d7d34",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-measurement-windows-codex-cli": {
+      "required": true,
+      "semantics": "ec1a71a381389f4c8be30e3d6507b37609fc85965ae299d04bfb2e64986a7350",
+      "checks": "57d63a72d375c9091717e252b28583282d3696b99f0d9bd8704a37803e9d7d34",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-measurement-windows-claude-cli": {
+      "required": true,
+      "semantics": "3efb6567d7e59e391cf175cb95e9491e49661faa464b3045f1e8f8c3b719eb9d",
+      "checks": "57d63a72d375c9091717e252b28583282d3696b99f0d9bd8704a37803e9d7d34",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-policy-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "d2497856c5376ac8e599471f095d29657d8c33e459beaa2e53ff44e81f0981eb",
+      "checks": "e359bb12290589c86f9e74f6b88714348dcc69b029b1bd5446ed7ebf76995744",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-policy-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "b15bd43d6eb49ee0ac394ea5fc4e1cdf437d7bc9c8b3fb0916f9426a4fff1230",
+      "checks": "e359bb12290589c86f9e74f6b88714348dcc69b029b1bd5446ed7ebf76995744",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-policy-windows-codex-cli": {
+      "required": true,
+      "semantics": "ec1a71a381389f4c8be30e3d6507b37609fc85965ae299d04bfb2e64986a7350",
+      "checks": "e359bb12290589c86f9e74f6b88714348dcc69b029b1bd5446ed7ebf76995744",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-policy-windows-claude-cli": {
+      "required": true,
+      "semantics": "3efb6567d7e59e391cf175cb95e9491e49661faa464b3045f1e8f8c3b719eb9d",
+      "checks": "e359bb12290589c86f9e74f6b88714348dcc69b029b1bd5446ed7ebf76995744",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-storage-ubuntu-codex-cli": {
+      "required": true,
+      "semantics": "d2497856c5376ac8e599471f095d29657d8c33e459beaa2e53ff44e81f0981eb",
+      "checks": "8663caed8d8521fae81c5af1f2a7a6ce70ea5525e622199cf4b1317250b5a398",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-storage-ubuntu-claude-cli": {
+      "required": true,
+      "semantics": "b15bd43d6eb49ee0ac394ea5fc4e1cdf437d7bc9c8b3fb0916f9426a4fff1230",
+      "checks": "8663caed8d8521fae81c5af1f2a7a6ce70ea5525e622199cf4b1317250b5a398",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-storage-windows-codex-cli": {
+      "required": true,
+      "semantics": "ec1a71a381389f4c8be30e3d6507b37609fc85965ae299d04bfb2e64986a7350",
+      "checks": "8663caed8d8521fae81c5af1f2a7a6ce70ea5525e622199cf4b1317250b5a398",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "coverage-storage-windows-claude-cli": {
+      "required": true,
+      "semantics": "3efb6567d7e59e391cf175cb95e9491e49661faa464b3045f1e8f8c3b719eb9d",
+      "checks": "8663caed8d8521fae81c5af1f2a7a6ce70ea5525e622199cf4b1317250b5a398",
+      "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     }
   }
 }

@@ -1,0 +1,3 @@
+# Merge this section into the resolved Project config only for collect.pre-sim.
+[flows.sim]
+pre_run_commands = ["python3 scripts/stage_vector.py"]

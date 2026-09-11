@@ -1,0 +1,120 @@
+{
+  "baseline.native": {
+    "target": "sim_toggle",
+    "tests": [
+      "half"
+    ],
+    "policy": null
+  },
+  "baseline.analysis": {
+    "primary": {
+      "target": "sim_hdl",
+      "tests": [
+        "gap"
+      ],
+      "policy": null
+    },
+    "property_control": {
+      "target": "sim_properties4",
+      "tests": [
+        "half"
+      ],
+      "policy": null
+    }
+  },
+  "baseline.policy": {
+    "target": "sim_properties3",
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66
+      }
+    }
+  },
+  "baseline.waiver": {
+    "target": "sim_waiver",
+    "tests": [
+      "run"
+    ],
+    "metrics": {
+      "toggle": {
+        "min_pct": 1
+      }
+    }
+  },
+  "baseline.retention": {
+    "targets": [
+      "sim_toggle",
+      "sim_properties4"
+    ],
+    "tests": {
+      "sim_toggle": [
+        "half"
+      ],
+      "sim_properties4": [
+        "half"
+      ]
+    },
+    "policy": null
+  },
+  "baseline.custom": {
+    "target": "sim_custom",
+    "tests": [
+      "gap"
+    ],
+    "policy": null
+  },
+  "baseline.multi": {
+    "target": "sim_multi",
+    "tests": [
+      "run"
+    ],
+    "policy": null
+  },
+  "baseline.scale": {
+    "target": "sim_scale",
+    "tests": [
+      "run"
+    ],
+    "policy": null
+  },
+  "baseline.analysis-fail": {
+    "target": "sim_properties3",
+    "tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 100
+      }
+    }
+  },
+  "baseline.analysis-blocked": {
+    "target": "sim_properties3",
+    "required_tests": [
+      "half",
+      "full"
+    ],
+    "selected_tests": [
+      "half"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66
+      }
+    }
+  },
+  "baseline.sim-fail": {
+    "target": "sim_custom",
+    "tests": [
+      "fail"
+    ],
+    "metrics": {
+      "cover_property": {
+        "min_pct": 66
+      }
+    }
+  }
+}

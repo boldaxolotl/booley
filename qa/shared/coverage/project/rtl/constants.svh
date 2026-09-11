@@ -1,0 +1,1 @@
+`define QA_COUNTER_STEP 4'd1

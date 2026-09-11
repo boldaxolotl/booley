@@ -8023,7 +8023,7 @@ steps:
       The Criterion is bound to code-style review evidence and evaluated.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
     evidence: |-
-      Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; hidden coverage criterion excluded. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; Coverage Criteria are exercised in the dedicated native coverage Scenarios. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.CRITERION-EVIDENCE-BINDING.criterion-review-code-style
   requires:
   - inputs.pin
@@ -8041,7 +8041,7 @@ steps:
       The Criterion is bound to protocol-compliance review evidence and evaluated.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
     evidence: |-
-      Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; hidden coverage criterion excluded. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Sealed Ticket, exact family/Target/test/ref binding and acceptance evaluation. Each focus and family is separate. Standalone Flow success alone earns none of these checks; Coverage Criteria are exercised in the dedicated native coverage Scenarios. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.CRITERION-EVIDENCE-BINDING.criterion-review-protocol
   requires:
   - inputs.pin
