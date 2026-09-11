@@ -51,9 +51,9 @@ them. We add two narrowly scoped WCP methods to the shipped bundle:
 ``set_signal_layout`` applies VaporView's own saved-row hierarchy, and
 ``get_signal_layout`` reads that same hierarchy back. ``bwave gui`` uses the
 pair to create and verify presentation, and to restore the prior layout when a
-later update fails. The patch is strictly shape-checked against the verified
-1.5.4 bundle; an unfamiliar future bundle is left untouched rather than
-partially rewritten.
+later update fails. The patch is pinned to the SHA-256 fingerprint of the
+official 1.5.4 release bundle (plus its exact pre-existing theme-repaired form);
+an unfamiliar or future bundle is left untouched rather than partially rewritten.
 
 Idempotent and defensive: a no-op if the extension is absent (install may still
 be in flight), or already patched, and it never raises out of :func:`main` — a
@@ -81,6 +81,7 @@ the foreground budget with ``BOOLEY_VAPORVIEW_WAIT_SECONDS``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -129,12 +130,20 @@ _THEME_LOOKUP_CALL_COUNT = 2
 _THEME_LOOKUP_METHOD = "getTokenColorsForTheme"
 _VAPORVIEW_BUNDLE = Path("dist") / "extension.js"
 
+# Exact fingerprints of the official 1.5.4 release asset. The second input is
+# the same bundle after Booley's pre-existing theme fallback repair, allowing a
+# running container to migrate safely. No other compiled bundle is rewritten.
+_SUPPORTED_BUNDLE_SHA256 = {
+    "86beb8680b1199941d53799f929a9ac61938e8a0ffe86f9fe56c878a0b882797",
+    "cc0ad7cdca5649711151e020d72d447618d326529589652b43dd779182f12d4b",
+}
+_PATCHED_BUNDLE_SHA256 = "3fdf252dd43655c2a55fb4841b4bcb19c8118d46c73709a39b3882cdbb3b5de7"
+
 # Exact anchors from the production-minified VaporView 1.5.4 bundle. Keeping
 # the adapter here makes the upstream compatibility debt explicit and lets a
 # changed upstream bundle fail closed. The injected methods deliberately call
 # VaporView's public document.applySettings surface with its native saved-row
 # representation instead of reproducing group behavior in Booley.
-_LAYOUT_CAPABILITY = "set_signal_layout"
 _WCP_SWITCH_ANCHOR = (
     'case"get_capabilities":t=await this.handleGetCapabilities();break;case"open_document":'
 )
@@ -164,6 +173,13 @@ _WCP_HANDLER_PATCH = (
 _WCP_CAPABILITIES_ANCHOR = '"add_variables","get_capabilities","open_document"'
 _WCP_CAPABILITIES_PATCH = (
     '"add_variables","get_capabilities","set_signal_layout","get_signal_layout","open_document"'
+)
+_WCP_LAYOUT_MARKERS = (
+    'case"set_signal_layout"',
+    'case"get_signal_layout"',
+    "async handleSetSignalLayout",
+    "async handleGetSignalLayout",
+    '"set_signal_layout","get_signal_layout"',
 )
 
 # Install-race wait: how long to wait for VaporView's manifest to land before
@@ -286,6 +302,8 @@ def _manifest_is_complete(manifest: dict) -> bool:
     """Validate the current VaporView manifest shape before mutating it."""
     if f"{manifest.get('publisher')}.{manifest.get('name')}".lower() != vaporview.EXTENSION_ID:
         return False
+    if manifest.get("version") != vaporview.VERIFIED_VERSION:
+        return False
     contributes = manifest.get("contributes")
     if not isinstance(contributes, dict):
         return False
@@ -328,6 +346,11 @@ def _atomic_write_text(path: Path, content: str) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _bundle_sha256(source: str) -> str:
+    """Fingerprint the exact UTF-8 bundle text used by the adapter."""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def _prepare_theme_source(source: str) -> tuple[str, bool, str | None]:
@@ -388,10 +411,11 @@ def _disable_remote_theme_lookup(extension_dir: Path) -> bool:
 
 def _prepare_grouped_layout_source(source: str) -> tuple[str, bool, str | None]:
     """Prepare the saved-row WCP adapter, shape-checking every anchor."""
-    if _LAYOUT_CAPABILITY in source:
-        if _group_layout_patch_is_complete(source):
-            return source, False, None
-        return source, False, "bundle contains an incomplete grouped-layout patch"
+    present = [marker in source for marker in _WCP_LAYOUT_MARKERS]
+    if all(present):
+        return source, False, None
+    if any(present):
+        return source, False, "bundle contains a partial WCP layout adapter"
     replacements = (
         (_WCP_SWITCH_ANCHOR, _WCP_SWITCH_PATCH),
         (_WCP_HANDLER_ANCHOR, _WCP_HANDLER_PATCH),
@@ -410,7 +434,8 @@ def _enable_grouped_layout_wcp(extension_dir: Path) -> bool:
 
     Each anchor must occur exactly once before any replacement happens. This
     prevents a future or locally modified bundle from receiving a partial
-    protocol patch. All injected surfaces form the idempotency marker.
+    protocol patch. All injected handlers and capabilities form the
+    idempotency signature; a partial signature is rejected.
     """
     bundle = extension_dir / _VAPORVIEW_BUNDLE
     try:
@@ -428,19 +453,31 @@ def _enable_grouped_layout_wcp(extension_dir: Path) -> bool:
 
 
 def _prepare_compatible_bundle(extension_dir: Path) -> tuple[Path, str | None, str | None]:
-    """Prepare every bundle compatibility edit as one atomic replacement."""
+    """Prepare the exact supported bundle as one atomic replacement."""
     bundle = extension_dir / _VAPORVIEW_BUNDLE
     try:
         source = bundle.read_text(encoding="utf-8")
     except OSError as exc:
         return bundle, None, f"bundle is not readable yet ({exc})"
+    fingerprint = _bundle_sha256(source)
+    if fingerprint == _PATCHED_BUNDLE_SHA256:
+        return bundle, None, None
+    if fingerprint not in _SUPPORTED_BUNDLE_SHA256:
+        return (
+            bundle,
+            None,
+            f"bundle fingerprint {fingerprint} is not a supported VaporView "
+            f"{vaporview.VERIFIED_VERSION} build",
+        )
     updated, theme_changed, problem = _prepare_theme_source(source)
-    if problem is not None:
-        return bundle, None, problem
-    updated, layout_changed, problem = _prepare_grouped_layout_source(updated)
+    layout_changed = False
+    if problem is None:
+        updated, layout_changed, problem = _prepare_grouped_layout_source(updated)
     if problem is not None:
         return bundle, None, problem
     changed = theme_changed or layout_changed
+    if not changed or _bundle_sha256(updated) != _PATCHED_BUNDLE_SHA256:
+        return bundle, None, "prepared bundle does not match the verified patched build"
     return bundle, updated if changed else None, None
 
 
@@ -457,7 +494,7 @@ def _installation_is_patched(path: Path) -> bool:
         and not patch_manifest(manifest)
         and _THEME_LOOKUP_CALL_RE.search(bundle) is None
         and _THEME_LOOKUP_METHOD in bundle
-        and _group_layout_patch_is_complete(bundle)
+        and _bundle_sha256(bundle) == _PATCHED_BUNDLE_SHA256
     )
 
 
@@ -469,6 +506,12 @@ def _read_complete_manifest(path: Path) -> tuple[dict | None, str | None]:
         return None, f"manifest is not readable JSON yet ({exc})"
     if not isinstance(manifest, dict):
         return None, "manifest root is not an object"
+    if manifest.get("version") != vaporview.VERIFIED_VERSION:
+        return (
+            None,
+            f"unsupported VaporView version {manifest.get('version')!r}; "
+            f"expected {vaporview.VERIFIED_VERSION}",
+        )
     if not _manifest_is_complete(manifest):
         return None, "manifest does not contain all expected VaporView fields"
     return manifest, None

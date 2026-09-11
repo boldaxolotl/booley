@@ -135,7 +135,9 @@ The same repair applies when `--group` or a radix/color suffix reports missing
 `set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
 Stock VaporView 1.5.4 does not expose its recursive presentation state over WCP;
 Booley's compatibility patch adds the layout write/readback pair used to create,
-verify, and roll back groups, radixes, and colors.
+verify groups, radixes, and colors. That adapter is restricted to the exact
+official 1.5.4 bundle fingerprint; a different or partially modified bundle is
+left untouched and reported as unsupported rather than rewritten heuristically.
 
 When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
 not a rebuild. VaporView only

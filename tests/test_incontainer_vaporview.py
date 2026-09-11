@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -19,6 +20,7 @@ def _vanilla_manifest() -> dict:
     return {
         "publisher": "lramseyer",
         "name": "vaporview",
+        "version": "1.5.4",
         "activationEvents": [],
         "contributes": {
             "commands": [
@@ -60,6 +62,22 @@ _VANILLA_WCP_BUNDLE = "".join(
 )
 
 _COMPLETE_VANILLA_BUNDLE = _VANILLA_BUNDLE + _VANILLA_WCP_BUNDLE
+
+
+@pytest.fixture(autouse=True)
+def _pin_synthetic_bundle_fingerprints(monkeypatch):
+    """Give integration tests exact fingerprints for their compact fixture."""
+    source = _COMPLETE_VANILLA_BUNDLE
+    theme_source, _changed, problem = iv._prepare_theme_source(source)
+    assert problem is None
+    patched_source, _changed, problem = iv._prepare_grouped_layout_source(theme_source)
+    assert problem is None
+
+    def digest(value):
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    monkeypatch.setattr(iv, "_SUPPORTED_BUNDLE_SHA256", {digest(source), digest(theme_source)})
+    monkeypatch.setattr(iv, "_PATCHED_BUNDLE_SHA256", digest(patched_source))
 
 
 class TestPatchManifest:
@@ -132,6 +150,12 @@ class TestPatchManifest:
         iv.patch_manifest(m)
 
         assert m["contributes"]["commands"][0]["enablement"] == "vaporview.manualMode"
+
+    def test_complete_manifest_is_pinned_to_verified_version(self):
+        manifest = _vanilla_manifest()
+        manifest["version"] = "1.6.0"
+
+        assert not iv._manifest_is_complete(manifest)
 
 
 class TestFindManifests:
@@ -207,7 +231,7 @@ class TestThemeFallback:
         assert iv._disable_remote_theme_lookup(extension) is False
 
 
-class TestGroupedLayoutWcp:
+class TestGroupedLayoutCompatibility:
     def test_adds_set_get_handlers_and_capabilities(self, tmp_path):
         extension = tmp_path / "lramseyer.vaporview-1.5.4"
         bundle = extension / "dist" / "extension.js"
@@ -251,13 +275,13 @@ class TestGroupedLayoutWcp:
         assert iv._enable_grouped_layout_wcp(extension) is False
 
     def test_incomplete_existing_patch_is_reported(self):
-        source = f"prefix {iv._LAYOUT_CAPABILITY} suffix"
+        source = f"prefix {iv._WCP_LAYOUT_MARKERS[0]} suffix"
 
-        updated, changed, problem = iv._prepare_group_layout_source(source)
+        updated, changed, problem = iv._prepare_grouped_layout_source(source)
 
         assert updated == source
         assert not changed
-        assert problem == "bundle contains an incomplete grouped-layout patch"
+        assert problem == "bundle contains a partial WCP layout adapter"
 
     def test_production_patch_reports_unknown_bundle_as_incomplete(self, tmp_path):
         extension = tmp_path / "lramseyer.vaporview-2.0.0"
@@ -272,7 +296,9 @@ class TestGroupedLayoutWcp:
 
         assert not result.complete
         assert not result.changed
-        assert result.detail == "bundle grouped-layout anchors do not match VaporView 1.5.4"
+        assert result.detail is not None
+        assert "fingerprint" in result.detail
+        assert "not a supported VaporView 1.5.4 build" in result.detail
         assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
 
     def test_production_patch_reports_partial_theme_bundle_as_incomplete(self, tmp_path):
@@ -291,46 +317,31 @@ class TestGroupedLayoutWcp:
 
         assert not result.complete
         assert not result.changed
-        assert result.detail == (
-            "bundle has 1 of 2 expected theme lookup calls and is not fully extracted"
-        )
+        assert result.detail is not None
+        assert "fingerprint" in result.detail
+        assert "not a supported VaporView 1.5.4 build" in result.detail
 
+    def test_partial_adapter_is_rejected_as_incomplete(self):
+        source = 'prefix case"set_signal_layout" suffix'
 
-class TestGroupedLayoutWcp:
-    def test_adds_set_get_handlers_and_capabilities(self, tmp_path):
+        updated, changed, problem = iv._prepare_grouped_layout_source(source)
+
+        assert updated == source
+        assert changed is False
+        assert problem == "bundle contains a partial WCP layout adapter"
+
+    def test_integrated_patch_rejects_a_partial_layout_token(self, tmp_path):
         extension = tmp_path / "lramseyer.vaporview-1.5.4"
         bundle = extension / "dist" / "extension.js"
         bundle.parent.mkdir(parents=True)
-        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
+        source = _COMPLETE_VANILLA_BUNDLE + "set_signal_layout"
+        bundle.write_text(source, encoding="utf-8")
 
-        assert iv._enable_grouped_layout_wcp(extension) is True
+        _path, updated, problem = iv._prepare_compatible_bundle(extension)
 
-        patched = bundle.read_text(encoding="utf-8")
-        assert 'case"set_signal_layout"' in patched
-        assert 'case"get_signal_layout"' in patched
-        assert "async handleSetSignalLayout" in patched
-        assert "async handleGetSignalLayout" in patched
-        assert '"set_signal_layout","get_signal_layout"' in patched
-
-    def test_patch_is_idempotent(self, tmp_path):
-        extension = tmp_path / "lramseyer.vaporview-1.5.4"
-        bundle = extension / "dist" / "extension.js"
-        bundle.parent.mkdir(parents=True)
-        bundle.write_text(_VANILLA_WCP_BUNDLE, encoding="utf-8")
-
-        assert iv._enable_grouped_layout_wcp(extension) is True
-        once = bundle.read_text(encoding="utf-8")
-        assert iv._enable_grouped_layout_wcp(extension) is False
-        assert bundle.read_text(encoding="utf-8") == once
-
-    def test_unknown_bundle_shape_is_untouched(self, tmp_path):
-        extension = tmp_path / "lramseyer.vaporview-2.0.0"
-        bundle = extension / "dist" / "extension.js"
-        bundle.parent.mkdir(parents=True)
-        bundle.write_text("new upstream implementation", encoding="utf-8")
-
-        assert iv._enable_grouped_layout_wcp(extension) is False
-        assert bundle.read_text(encoding="utf-8") == "new upstream implementation"
+        assert updated is None
+        assert problem is not None and "fingerprint" in problem
+        assert bundle.read_text(encoding="utf-8") == source
 
 
 class TestMain:
@@ -364,7 +375,7 @@ class TestMain:
             == "machine"
         )
         assert out["contributes"]["commands"][0]["enablement"] == "!config.vaporview.wcp.enabled"
-        assert iv._LAYOUT_CAPABILITY in (p.parent / "dist" / "extension.js").read_text(
+        assert 'case"set_signal_layout"' in (p.parent / "dist" / "extension.js").read_text(
             encoding="utf-8"
         )
         assert "patched 1" in capsys.readouterr().out

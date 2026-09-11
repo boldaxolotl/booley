@@ -14,6 +14,7 @@ import copy
 import fnmatch
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -569,6 +570,22 @@ def _list_row(sig) -> dict:
     return {"name": name, "width": width}
 
 
+def _fake_signal_matches(name: str, pattern: str) -> bool:
+    """Model B-Wave's public glob contract, including literal indices."""
+    index = re.search(r"\[(?:\d+|\d+:\d+)\]$", pattern)
+    meta_scan = pattern[: index.start()] if index else pattern
+    wrapped = pattern if any(char in meta_scan for char in "*?[") else f"*{pattern}"
+    original = wrapped
+    if index:
+        open_bracket = len(wrapped) - (len(pattern) - index.start())
+        original = f"{wrapped[:open_bracket]}[[]{wrapped[open_bracket + 1 :]}"
+    stripped_name = name.split("[", 1)[0]
+    stripped_pattern = wrapped.split("[", 1)[0]
+    return fnmatch.fnmatchcase(name, original) or fnmatch.fnmatchcase(
+        stripped_name, stripped_pattern
+    )
+
+
 class _FakeViewer:
     """VaporView's netlist + displayed list, modeled the way the extension is.
 
@@ -585,12 +602,9 @@ class _FakeViewer:
 
     @staticmethod
     def _signal_item(path: str, params: dict | None = None) -> dict:
-        item = {"dataType": "netlist-variable", "name": path}
-        if params is not None:
-            for key in ("msb", "lsb"):
-                if key in params:
-                    item[key] = params[key]
-        return item
+        # VaporView resolves msb/lsb during add_signal but omits those lookup
+        # fields from SavedNetlistVariable.getSaveData() readback.
+        return {"dataType": "netlist-variable", "name": path}
 
     @classmethod
     def _signal_names(cls, items: list[dict]) -> list[str]:
@@ -690,9 +704,8 @@ def fake_rust(monkeypatch):
                 for signal in state["signals"]
                 if not patterns
                 or any(
-                    fnmatch.fnmatchcase(
-                        signal[0] if isinstance(signal, tuple) else signal,
-                        pattern,
+                    _fake_signal_matches(
+                        signal[0] if isinstance(signal, tuple) else signal, pattern
                     )
                     for pattern in patterns
                 )
@@ -751,7 +764,7 @@ def _loaded_server(
     """Fake VaporView preloaded for a scoped open against *uri*."""
     viewer = _FakeViewer(_CANNED_NETLIST if netlist is None else netlist, displayed)
     if layout is not None:
-        viewer.layout = layout
+        viewer.layout = copy.deepcopy(layout)
     event = {"type": "event", "event": "waveform_loaded", "uri": uri}
     greeting = None
     if capabilities is not None:
@@ -787,14 +800,21 @@ def test_scoped_gui_happy_path(tmp_path, monkeypatch, fake_rust, capsys):
     trace = _seed_default(tmp_path)
     uri = trace.resolve().as_uri()
     # VaporView auto-populates a fresh document (openFile maxSignals default),
-    # so a replace-mode view must clear items even right after open_document.
+    # so the atomic replacement must omit that stale row.
     with _loaded_server(uri, displayed=["tb.rst_n"]) as srv:
         _use_server(monkeypatch, srv)
 
         _gui(signals=["tb.dut.fifo.*"], time="100c:200c")
 
     assert srv.method_calls("open_document") == [{"uri": uri}]
-    assert srv.method_calls("set_signal_layout") == [{"items": [], "uri": uri}]
+    layout_calls = srv.method_calls("set_signal_layout")
+    assert len(layout_calls) == 1
+    assert [item["name"] for item in layout_calls[0]["items"]] == [
+        "tb.clk",
+        "tb.dut.fifo.full",
+        "tb.dut.fifo.empty",
+        "tb.dut.fifo.count",
+    ]
     assert srv.method_calls("remove_items") == []
     assert srv.method_calls("add_signal") == [
         {"instance_path": "tb.clk", "uri": uri},  # clock is row 1, unasked-for
@@ -888,6 +908,25 @@ def test_radix_and_color_suffixes_apply_to_flat_grouped_and_clock_rows(
     ]
 
 
+def test_exact_indexed_selector_keeps_radix_and_color(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.words[56]", 1)]
+    with _loaded_server(uri, open_docs=[uri], netlist=["tb.dut.words"]) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(signals=["words[56]%h@blue"], no_clock=True)
+
+    assert srv.viewer.layout == [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.words",
+            "numberFormat": "hexadecimal",
+            "colorIndex": 5,
+        }
+    ]
+
+
 def test_append_restyles_an_existing_row_without_adding_it(tmp_path, monkeypatch, fake_rust):
     trace = _seed_default(tmp_path)
     uri = trace.resolve().as_uri()
@@ -936,7 +975,36 @@ def test_style_ack_without_matching_readback_is_an_error(tmp_path, monkeypatch, 
         with pytest.raises(SystemExit) as exc:
             _gui(signals=["tb.dut.fifo.full%b@green"], append=True)
 
-    assert "did not apply the requested signal presentation" in str(exc.value)
+    assert "did not apply the exact requested signal presentation" in str(exc.value)
+    assert srv.viewer.layout == []
+
+
+def test_replace_rejects_inexact_tree_and_restores_previous_layout(
+    tmp_path, monkeypatch, fake_rust
+):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    previous = [{"dataType": "netlist-variable", "name": "tb.dut.old"}]
+    with _loaded_server(uri, open_docs=[uri], layout=previous) as srv:
+        original = srv.viewer.set_signal_layout
+
+        def add_unrequested_row(params):
+            result = original(params)
+            if params.get("items") != previous:
+                srv.viewer.layout.append(
+                    {"dataType": "netlist-variable", "name": "tb.dut.unrequested"}
+                )
+            return result
+
+        srv.responses["set_signal_layout"] = add_unrequested_row
+        _use_server(monkeypatch, srv)
+
+        with pytest.raises(SystemExit) as exc:
+            _gui(signals=["tb.dut.fifo.full%b@green"], no_clock=True)
+
+    assert "did not apply the exact requested signal presentation" in str(exc.value)
+    assert srv.viewer.layout == previous
 
 
 @pytest.mark.parametrize(
@@ -1003,7 +1071,7 @@ def test_group_readback_rejects_reordered_hierarchy(tmp_path, monkeypatch, fake_
 
         srv.responses["set_signal_layout"] = reorder_groups
 
-        with pytest.raises(SystemExit, match="signal-group hierarchy"):
+        with pytest.raises(SystemExit, match="exact requested signal presentation"):
             _gui(
                 groups=[
                     "Backpressure=tb.dut.fifo.full",
@@ -1082,7 +1150,9 @@ def test_append_moves_an_existing_top_level_row_into_a_group(tmp_path, monkeypat
     ]
 
 
-def test_append_distinguishes_slices_with_the_same_instance_path(tmp_path, monkeypatch, fake_rust):
+def test_append_recognizes_native_saved_vector_without_lookup_range(
+    tmp_path, monkeypatch, fake_rust
+):
     trace = _seed_default(tmp_path)
     uri = trace.resolve().as_uri()
     fake_rust["signals"] = [("tb.dut.bus[3:0]", 4)]
@@ -1090,8 +1160,6 @@ def test_append_distinguishes_slices_with_the_same_instance_path(tmp_path, monke
         {
             "dataType": "netlist-variable",
             "name": "tb.dut.bus",
-            "msb": 7,
-            "lsb": 4,
         }
     ]
     with _loaded_server(
@@ -1104,21 +1172,11 @@ def test_append_distinguishes_slices_with_the_same_instance_path(tmp_path, monke
 
         _gui(groups=["Low word=tb.dut.bus*"], append=True)
 
-    assert srv.method_calls("add_signal") == [
-        {
-            "instance_path": "tb.dut.bus",
-            "uri": uri,
-            "msb": 3,
-            "lsb": 0,
-        }
-    ]
+    assert srv.method_calls("add_signal") == []
     layout = srv.method_calls("set_signal_layout")[0]["items"]
-    assert layout[0] == existing[0]
-    assert layout[1]["children"][0] == {
+    assert layout[0]["children"][0] == {
         "dataType": "netlist-variable",
         "name": "tb.dut.bus",
-        "msb": 3,
-        "lsb": 0,
     }
 
 
@@ -1484,7 +1542,14 @@ def test_scoped_replace_on_already_open_document(tmp_path, monkeypatch, fake_rus
         _gui(signals=["tb.dut.fifo.*"])
 
     assert srv.method_calls("open_document") == []
-    assert srv.method_calls("set_signal_layout") == [{"items": [], "uri": uri}]
+    layout_calls = srv.method_calls("set_signal_layout")
+    assert len(layout_calls) == 1
+    assert [item["name"] for item in layout_calls[0]["items"]] == [
+        "tb.clk",
+        "tb.dut.fifo.full",
+        "tb.dut.fifo.empty",
+        "tb.dut.fifo.count",
+    ]
     assert srv.method_calls("remove_items") == []
 
 

@@ -69,8 +69,10 @@ is never duplicated merely to satisfy overlapping selectors.
 In replace mode the requested groups become the new view. With `--append`, a
 same-name group is extended and a new name creates another group. Existing
 collapse state and signal formatting are preserved. `gui` reads the hierarchy
-back from VaporView before reporting success; missing grouped-layout support or
-a mismatched hierarchy is an error, never a silently flattened view.
+back from VaporView before reporting success. Replace mode stages additions,
+commits one exact ordered tree, and restores the previous tree if the commit or
+readback fails. Missing grouped-layout support or any mismatch in membership,
+placement, order, radix, or color is an error, never a silently altered view.
 
 ## Top-level rows: `--signals`
 
