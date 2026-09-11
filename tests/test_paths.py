@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from booley.dev_support import reference_docs
 from booley.runtime import paths
 
 
@@ -43,11 +44,24 @@ class TestTroubleshootingPath:
         assert result.is_file()
 
     def test_packaged_guide_matches_public_document(self):
-        public = Path(__file__).resolve().parent.parent / "docs" / "user" / "TROUBLESHOOTING.md"
-        assert paths.troubleshooting_path().read_bytes() == public.read_bytes()
+        assert reference_docs.troubleshooting_mirror_is_current(), (
+            "run: python -m booley.dev_support.reference_docs"
+        )
 
     def test_faq_path_remains_a_compatibility_alias(self):
         assert paths.faq_path() == paths.troubleshooting_path()
+
+    def test_reference_doc_command_regenerates_the_packaged_copy(self, tmp_path, monkeypatch):
+        source = tmp_path / "source.md"
+        packaged = tmp_path / "packaged.md"
+        source.write_text("canonical\n", encoding="utf-8")
+        packaged.write_text("stale\n", encoding="utf-8")
+        monkeypatch.setattr(reference_docs, "_SOURCE", source)
+        monkeypatch.setattr(reference_docs, "_PACKAGED", packaged)
+
+        assert reference_docs.sync_troubleshooting_mirror() is True
+        assert packaged.read_bytes() == source.read_bytes()
+        assert reference_docs.sync_troubleshooting_mirror() is False
 
 
 class TestChangelogPath:

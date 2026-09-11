@@ -389,16 +389,20 @@ failure"*) and the agent scopes the view for you:
 
 ```bash
 bwave gui                                                      # latest session trace
-bwave gui @dut --signals 'tb.dut.fifo.*' --time 1200c:1400c    # exactly this view
+bwave gui @dut --group 'FIFO handshake=tb.dut.fifo.*' \
+  --group 'Control=tb.dut.ctrl.*' --time 1200c:1400c
 ```
 
 A scoped view arrives readable rather than as a wall of signals: the trace's
 clock lands on row 1 (a waveform without its clock can't tell a cycle from a
-glitch), and `--time START:END` drops the viewer's two markers on the ends of
-the range, so the status bar reports the span as a delta instead of making you
-subtract ruler numbers. The rest of the grammar (trace resolution, globs, time
-tokens, `--append`, `--cursor`) matches `bwave` queries and is in `bwave gui
---help`. If a scoped view errors out instead of opening, see
+glitch), each `--group 'NAME=GLOB'` becomes a native named/collapsible section,
+and `--time START:END` drops the viewer's two markers on the ends of the range,
+so the status bar reports the span as a delta instead of making you subtract
+ruler numbers. Repeating a group name adds another pattern to that group;
+`--append` extends a same-name group or adds a new one. The rest of the grammar
+(trace resolution, globs, time tokens, `--signals`, `--cursor`) matches `bwave`
+queries and is in `bwave gui --help`. If a scoped view errors out instead of
+opening, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
 
 ## Ticket-Driven Workflow

@@ -10,6 +10,8 @@ Three layers:
 from __future__ import annotations
 
 import argparse
+import copy
+import fnmatch
 import json
 import os
 import socket
@@ -96,6 +98,7 @@ def _gui(target: str | None = None, **kwargs) -> None:
         cursor=kwargs.pop("cursor", None),
         append=kwargs.pop("append", False),
         no_clock=kwargs.pop("no_clock", False),
+        groups=kwargs.pop("groups", []),
         max_signals=kwargs.pop("max_signals", None),
     )
     assert not kwargs, f"unknown open args: {kwargs}"
@@ -118,6 +121,23 @@ def _probe_finds(monkeypatch, present: set[str]) -> None:
     )
     monkeypatch.setattr(bwave, "_extension_missing", lambda cli: False)
     monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.INSTALLED)
+
+
+def test_gui_parser_accepts_repeatable_named_groups():
+    from booley.bwave import cli as bwave
+
+    args = bwave._build_parser().parse_args(
+        [
+            "gui",
+            "@dut",
+            "--group",
+            "Request=tb.dut.req_*",
+            "-g",
+            "Response=tb.dut.resp_*",
+        ]
+    )
+
+    assert args.groups == ["Request=tb.dut.req_*", "Response=tb.dut.resp_*"]
 
 
 @pytest.fixture()
@@ -549,25 +569,57 @@ class _FakeViewer:
     def __init__(self, netlist: list[str], displayed=()):
         self.ids = {path: i for i, path in enumerate(netlist, start=1)}
         self.paths = {i: path for path, i in self.ids.items()}
-        self.displayed = [self.ids[p] for p in displayed]
+        self.layout = [self._signal_item(path) for path in displayed]
+
+    @staticmethod
+    def _signal_item(path: str, params: dict | None = None) -> dict:
+        item = {"dataType": "netlist-variable", "name": path}
+        if params is not None:
+            for key in ("msb", "lsb"):
+                if key in params:
+                    item[key] = params[key]
+        return item
+
+    @classmethod
+    def _signal_names(cls, items: list[dict]) -> list[str]:
+        names: list[str] = []
+        for item in items:
+            if item.get("dataType") == "signal-group":
+                names.extend(cls._signal_names(item.get("children", [])))
+            elif isinstance(item.get("name"), str):
+                names.append(item["name"])
+        return names
 
     def shown(self) -> list[str]:
-        return [self.paths[i] for i in self.displayed]
+        return self._signal_names(self.layout)
 
     def add_signal(self, params) -> dict:
-        netlist_id = self.ids.get(params.get("instance_path"))
+        path = params.get("instance_path")
+        netlist_id = self.ids.get(path)
         if netlist_id is not None:
-            self.displayed.append(netlist_id)
+            self.layout.append(self._signal_item(path, params))
         return {"success": True}  # acks the miss too — the bug in one line
 
     def remove_items(self, params) -> dict:
-        for netlist_id in params.get("ids", []):
-            if netlist_id in self.displayed:
-                self.displayed.remove(netlist_id)
+        removed = set(params.get("ids", []))
+
+        def keep(items: list[dict]) -> list[dict]:
+            result = []
+            for item in items:
+                if item.get("dataType") == "signal-group":
+                    updated = {**item, "children": keep(item.get("children", []))}
+                    result.append(updated)
+                    continue
+                if self.ids.get(item.get("name")) not in removed:
+                    result.append(item)
+            return result
+
+        self.layout = keep(self.layout)
         return {"success": True}
 
     def get_item_list(self, _params) -> dict:
-        return {"type": "response", "command": "get_item_list", "ids": list(self.displayed)}
+        ids = [self.ids[path] for path in self.shown() if path in self.ids]
+        return {"type": "response", "command": "get_item_list", "ids": ids}
 
     def get_item_info(self, params) -> dict:
         return {
@@ -578,6 +630,23 @@ class _FakeViewer:
                 for i in params.get("ids", [])
                 if i in self.paths
             ],
+        }
+
+    def set_signal_layout(self, params) -> dict:
+        self.layout = copy.deepcopy(params.get("items", []))
+        return {"success": True}
+
+    def get_signal_layout(self, _params) -> dict:
+        return {"items": self.layout}
+
+    def get_viewer_state(self, _params) -> dict:
+        return {
+            "marker_time": 11,
+            "alt_marker_time": 22,
+            "time_unit": "ns",
+            "zoom_ratio": 1.5,
+            "scroll_left": 7,
+            "displayed_signals": [],
         }
 
 
@@ -603,11 +672,24 @@ def fake_rust(monkeypatch):
             # detected (gui makes it row 1) and the end of the trace. Both used
             # to come off `stats`, which walks every transition and times out on
             # a large store.
+            patterns = [cmd[index + 1] for index, token in enumerate(cmd) if token == "-s"]
+            selected = [
+                signal
+                for signal in state["signals"]
+                if not patterns
+                or any(
+                    fnmatch.fnmatchcase(
+                        signal[0] if isinstance(signal, tuple) else signal,
+                        pattern,
+                    )
+                    for pattern in patterns
+                )
+            ]
             data = {
                 "scope_prefix": "",
                 "clock": state["clock"],
                 "total_ticks": state["total_ticks"],
-                "signals": [_list_row(s) for s in state["signals"]],
+                "signals": [_list_row(s) for s in selected],
             }
         elif sub == "value":
             token = cmd[cmd.index("--at") + 1]
@@ -651,12 +733,26 @@ def _loaded_server(
     open_docs: list[str] | None = None,
     netlist: list[str] | None = None,
     displayed=(),
+    layout: list[dict] | None = None,
+    capabilities: list[str] | None = None,
 ):
     """Fake VaporView preloaded for a scoped open against *uri*."""
     viewer = _FakeViewer(_CANNED_NETLIST if netlist is None else netlist, displayed)
+    if layout is not None:
+        viewer.layout = layout
     event = {"type": "event", "event": "waveform_loaded", "uri": uri}
+    greeting = None
+    if capabilities is not None:
+        greeting = {
+            "name": "Vaporview",
+            "version": "1.5.4",
+            "protocol": "WCP",
+            "protocol_version": "0",
+            "capabilities": capabilities,
+        }
     srv = FakeWcpServer(
         responses={
+            **({"greeting": greeting} if greeting is not None else {}),
             "get_open_documents": {
                 "documents": open_docs or [],
                 "last_active_document": (open_docs or [None])[0],
@@ -665,6 +761,9 @@ def _loaded_server(
             "get_item_info": viewer.get_item_info,
             "add_signal": viewer.add_signal,
             "remove_items": viewer.remove_items,
+            "set_signal_layout": viewer.set_signal_layout,
+            "get_signal_layout": viewer.get_signal_layout,
+            "get_viewer_state": viewer.get_viewer_state,
         },
         events_after={"open_document": event},
     )
@@ -678,13 +777,13 @@ def test_scoped_gui_happy_path(tmp_path, monkeypatch, fake_rust, capsys):
     # VaporView auto-populates a fresh document (openFile maxSignals default),
     # so a replace-mode view must clear items even right after open_document.
     with _loaded_server(uri, displayed=["tb.rst_n"]) as srv:
-        stale = [srv.viewer.ids["tb.rst_n"]]
         _use_server(monkeypatch, srv)
 
         _gui(signals=["tb.dut.fifo.*"], time="100c:200c")
 
     assert srv.method_calls("open_document") == [{"uri": uri}]
-    assert srv.method_calls("remove_items") == [{"ids": stale, "uri": uri}]
+    assert srv.method_calls("set_signal_layout") == [{"items": [], "uri": uri}]
+    assert srv.method_calls("remove_items") == []
     assert srv.method_calls("add_signal") == [
         {"instance_path": "tb.clk", "uri": uri},  # clock is row 1, unasked-for
         {"instance_path": "tb.dut.fifo.full", "uri": uri},
@@ -702,6 +801,289 @@ def test_scoped_gui_happy_path(tmp_path, monkeypatch, fake_rust, capsys):
     out = capsys.readouterr().out
     assert "tb.dut.fifo.full" in out and "viewport: 1000..2000 ticks" in out
     assert "START marker: 1000 ticks" in out and "END marker: 2000 ticks" in out
+
+
+def test_explicit_named_groups_share_one_native_group(tmp_path, monkeypatch, fake_rust, capsys):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [
+        ("tb.dut.fifo.full", 1),
+        ("tb.dut.fifo.empty", 1),
+    ]
+    with _loaded_server(uri, open_docs=[uri]) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(
+            groups=[
+                "Status=tb.dut.fifo.full",
+                "Status=tb.dut.fifo.empty",
+            ]
+        )
+
+    layout = srv.method_calls("set_signal_layout")[-1]["items"]
+    assert layout[0] == {"dataType": "netlist-variable", "name": "tb.clk"}
+    assert layout[1]["groupName"] == "Status"
+    assert [item["name"] for item in layout[1]["children"]] == [
+        "tb.dut.fifo.full",
+        "tb.dut.fifo.empty",
+    ]
+    assert "Status:" in capsys.readouterr().out
+
+
+def test_distinct_named_groups_preserve_requested_order(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [
+        ("tb.dut.fifo.full", 1),
+        ("tb.dut.fifo.empty", 1),
+    ]
+    with _loaded_server(uri, open_docs=[uri]) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(
+            groups=[
+                "Backpressure=tb.dut.fifo.full",
+                "Availability=tb.dut.fifo.empty",
+            ]
+        )
+
+    layout = srv.method_calls("set_signal_layout")[-1]["items"]
+    assert [item["groupName"] for item in layout[1:]] == [
+        "Backpressure",
+        "Availability",
+    ]
+
+
+def test_group_readback_rejects_reordered_hierarchy(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [
+        ("tb.dut.fifo.full", 1),
+        ("tb.dut.fifo.empty", 1),
+    ]
+    with _loaded_server(uri, open_docs=[uri]) as srv:
+        _use_server(monkeypatch, srv)
+        apply_layout = srv.viewer.set_signal_layout
+
+        def reorder_groups(params):
+            result = apply_layout(params)
+            if len(srv.viewer.layout) > 2:
+                srv.viewer.layout[1:] = reversed(srv.viewer.layout[1:])
+            return result
+
+        srv.responses["set_signal_layout"] = reorder_groups
+
+        with pytest.raises(SystemExit, match="signal-group hierarchy"):
+            _gui(
+                groups=[
+                    "Backpressure=tb.dut.fifo.full",
+                    "Availability=tb.dut.fifo.empty",
+                ]
+            )
+
+
+def test_append_merges_into_existing_group_and_preserves_its_state(
+    tmp_path, monkeypatch, fake_rust
+):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [
+        ("tb.dut.fifo.full", 1),
+        ("tb.dut.fifo.empty", 1),
+    ]
+    existing = [
+        {"dataType": "netlist-variable", "name": "tb.clk"},
+        {
+            "dataType": "signal-group",
+            "groupName": "Status",
+            "collapseState": 1,
+            "children": [
+                {
+                    "dataType": "netlist-variable",
+                    "name": "tb.dut.fifo.full",
+                    "colorIndex": 3,
+                }
+            ],
+        },
+    ]
+    with _loaded_server(uri, open_docs=[uri], layout=existing) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(groups=["Status=tb.dut.fifo.*"], append=True)
+
+    layout = srv.method_calls("set_signal_layout")[0]["items"]
+    status = layout[1]
+    assert srv.method_calls("add_signal") == [{"instance_path": "tb.dut.fifo.empty", "uri": uri}]
+    assert status["collapseState"] == 1
+    assert status["children"][0]["colorIndex"] == 3
+    assert [item["name"] for item in status["children"]] == [
+        "tb.dut.fifo.full",
+        "tb.dut.fifo.empty",
+    ]
+
+
+def test_append_moves_an_existing_top_level_row_into_a_group(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    existing = [
+        {"dataType": "netlist-variable", "name": "tb.clk"},
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.fifo.full",
+            "colorIndex": 3,
+        },
+    ]
+    with _loaded_server(uri, open_docs=[uri], layout=existing) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(groups=["Backpressure=tb.dut.fifo.full"], append=True)
+
+    assert srv.method_calls("add_signal") == []
+    layout = srv.method_calls("set_signal_layout")[0]["items"]
+    assert [item.get("name") for item in layout if "name" in item] == ["tb.clk"]
+    assert layout[1]["groupName"] == "Backpressure"
+    assert layout[1]["children"] == [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.fifo.full",
+            "colorIndex": 3,
+        }
+    ]
+
+
+def test_append_distinguishes_slices_with_the_same_instance_path(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.bus[3:0]", 4)]
+    existing = [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.dut.bus",
+            "msb": 7,
+            "lsb": 4,
+        }
+    ]
+    with _loaded_server(
+        uri,
+        open_docs=[uri],
+        netlist=["tb.dut.bus"],
+        layout=existing,
+    ) as srv:
+        _use_server(monkeypatch, srv)
+
+        _gui(groups=["Low word=tb.dut.bus*"], append=True)
+
+    assert srv.method_calls("add_signal") == [
+        {
+            "instance_path": "tb.dut.bus",
+            "uri": uri,
+            "msb": 3,
+            "lsb": 0,
+        }
+    ]
+    layout = srv.method_calls("set_signal_layout")[0]["items"]
+    assert layout[0] == existing[0]
+    assert layout[1]["children"][0] == {
+        "dataType": "netlist-variable",
+        "name": "tb.dut.bus",
+        "msb": 3,
+        "lsb": 0,
+    }
+
+
+def test_late_grouped_view_failure_restores_the_original_view(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    original = [
+        {
+            "dataType": "netlist-variable",
+            "name": "tb.rst_n",
+            "colorIndex": 4,
+        }
+    ]
+    marker_error = {"error": {"code": -32000, "message": "marker rejected"}}
+    with _loaded_server(uri, open_docs=[uri], layout=copy.deepcopy(original)) as srv:
+        _use_server(monkeypatch, srv)
+        srv.responses["set_marker"] = marker_error
+
+        with pytest.raises(SystemExit, match="marker rejected"):
+            _gui(groups=["Status=tb.dut.fifo.full"], cursor="10c")
+
+    assert srv.viewer.layout == original
+    restore = srv.method_calls("set_signal_layout")[-1]
+    assert restore["items"] == original
+    assert restore["marker_time"] == 11
+    assert restore["alt_marker_time"] == 22
+
+
+def test_group_requires_the_patched_hierarchical_wcp_before_mutation(
+    tmp_path, monkeypatch, fake_rust
+):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    old_caps = ["greeting", "open_document", "add_signal", "get_item_info"]
+    with _loaded_server(uri, open_docs=[uri], capabilities=old_caps) as srv:
+        _use_server(monkeypatch, srv)
+
+        with pytest.raises(SystemExit) as exc:
+            _gui(groups=["Status=tb.dut.fifo.full"])
+
+    assert srv.method_calls("remove_items") == []
+    assert srv.method_calls("add_signal") == []
+    message = str(exc.value)
+    assert "cannot create verified signal groups" in message
+    assert "incontainer_vaporview" in message
+
+
+def test_flat_signal_view_remains_compatible_with_stock_wcp(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    uri = trace.resolve().as_uri()
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    old_caps = [
+        "greeting",
+        "open_document",
+        "add_signal",
+        "get_item_list",
+        "get_item_info",
+        "remove_items",
+    ]
+    with _loaded_server(
+        uri,
+        open_docs=[uri],
+        displayed=["tb.rst_n"],
+        capabilities=old_caps,
+    ) as srv:
+        stale = [srv.viewer.ids["tb.rst_n"]]
+        _use_server(monkeypatch, srv)
+
+        _gui(signals=["tb.dut.fifo.full"])
+
+    assert srv.method_calls("set_signal_layout") == []
+    assert srv.method_calls("remove_items") == [{"ids": stale, "uri": uri}]
+    assert srv.viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
+
+
+def test_group_rejects_a_missing_name_glob_separator(tmp_path, capsys):
+    _seed_default(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(groups=["Status"])
+
+    assert exc.value.code == 2
+    assert "NAME=GLOB" in capsys.readouterr().err
+
+
+def test_group_rejects_html_control_characters_in_the_viewer_label(tmp_path, capsys):
+    _seed_default(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(groups=["<script>=tb.dut.fifo.full"])
+
+    assert exc.value.code == 2
+    assert "cannot contain" in capsys.readouterr().err
 
 
 def test_multibit_vector_reaches_the_viewer(tmp_path, monkeypatch, fake_rust, capsys):
@@ -951,13 +1333,13 @@ def test_scoped_replace_on_already_open_document(tmp_path, monkeypatch, fake_rus
     trace = _seed_default(tmp_path)
     uri = trace.resolve().as_uri()
     with _loaded_server(uri, open_docs=[uri], displayed=["tb.clk", "tb.rst_n"]) as srv:
-        stale = [srv.viewer.ids["tb.clk"], srv.viewer.ids["tb.rst_n"]]
         _use_server(monkeypatch, srv)
 
         _gui(signals=["tb.dut.fifo.*"])
 
     assert srv.method_calls("open_document") == []
-    assert srv.method_calls("remove_items") == [{"ids": stale, "uri": uri}]
+    assert srv.method_calls("set_signal_layout") == [{"items": [], "uri": uri}]
+    assert srv.method_calls("remove_items") == []
 
 
 def test_time_only_moves_viewport_without_signals(tmp_path, monkeypatch, fake_rust):
@@ -1160,6 +1542,24 @@ def test_signal_cap_is_a_hard_error(tmp_path, monkeypatch, fake_rust, capsys):
     assert exc.value.code == 2
     msg = capsys.readouterr().err
     assert "65 signals" in msg and "--max-signals" in msg
+
+
+def test_signal_cap_counts_flat_and_grouped_selections_together(
+    tmp_path, monkeypatch, fake_rust, capsys
+):
+    _seed_default(tmp_path)
+    fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(10)]
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(
+            signals=["tb.dut.bus.bit0"],
+            groups=["Bus=tb.dut.bus.bit[1-9]"],
+            max_signals=9,
+        )
+
+    assert exc.value.code == 2
+    msg = capsys.readouterr().err
+    assert "10 signals" in msg and "--max-signals" in msg
 
 
 def test_max_signals_raises_the_cap(tmp_path, monkeypatch, fake_rust):
