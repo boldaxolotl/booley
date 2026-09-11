@@ -4,11 +4,11 @@ This is the canonical vocabulary for Booley's public qualification suite. Shared
 product concepts such as **Booley Flow** and **Trace Artifact** are defined in
 the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
 [Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario definition and
-Capability Coverage rules belong in the [authoring guide](user/AUTHORING.md), and
+Capability Coverage rules belong in the [authoring guide](doc/AUTHORING.md), and
 Qualification scope and verdict rules belong in the
-[qualification guide](user/QUALIFICATION.md). Run-record files and execution behavior
-belong in [FORMAT.md](agents/FORMAT.md) and
-[PROTOCOL.md](agents/PROTOCOL.md), respectively.
+[qualification guide](doc/QUALIFICATION.md). Run-record files and execution behavior
+belong in [FORMAT.md](doc/FORMAT.md) and
+[PROTOCOL.md](doc/PROTOCOL.md), respectively.
 
 ## Language
 

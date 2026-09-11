@@ -4,11 +4,10 @@
 
 This guide tells Human Maintainers and reviewers how the Public QA Suite qualifies one
 Booley product revision from Scenario Run evidence. Scenario Operators follow the
-[Scenario protocol](../agents/PROTOCOL.md).
+[Scenario protocol](PROTOCOL.md).
 
-Qualification aggregates required Scenario Run Outcomes. It is `passed` only when
-every required Configured Scenario has a passing run, `failed` when any required run
-fails, and `incomplete` otherwise.
+Qualification aggregates required Scenario Run Outcomes under the
+[outcome rules](#outcomes).
 
 See the [authoring guide](AUTHORING.md) for Capability mapping and Scenario
 definitions, and the [Public QA glossary](../CONTEXT.md) for canonical terms.
