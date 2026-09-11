@@ -65,7 +65,7 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v2"
+    assert document["$schema"] == "booley.coverage-campaign/v3"
     assert "points" not in document
     campaign = load_coverage_campaign(
         outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
@@ -73,7 +73,11 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert campaign.evaluation["status"] == "not_requested"
     assert campaign.rollups[0].eligible_points == 1
     assert campaign.points[0].hits_by_run == {"run:001:reset": 2, "run:002:wrap": 2}
-    assert json.loads(outcome.simulation_path.read_text())["passed"] is True
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert simulation["passed"] is True
+    assert simulation["coverage_campaign"] == "coverage.json"
+    assert "source_rollups" not in simulation
+    assert "source_rollups" not in outcome.detail
     assert progress.outcomes == [outcome]
 
 

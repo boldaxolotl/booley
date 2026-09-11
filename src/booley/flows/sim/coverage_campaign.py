@@ -40,6 +40,7 @@ FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "Fr
 
 _SCHEMA = "booley.coverage-campaign/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
+SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
 _METRIC_SEMANTICS = {
     "line": "One Verilator basic-block point; covered when its count is greater than zero.",
     "branch": "One branch outcome; each outcome is a separate point covered when count is greater than zero.",
@@ -197,6 +198,14 @@ class CoverageRollup:
     covered_points: int
     waived_points: int
     percent: float | None
+
+
+@dataclass(frozen=True)
+class CoverageSourceRollup:
+    """Deterministic summaries for one normalized source file."""
+
+    source: str
+    rollups: tuple[CoverageRollup, ...]
 
 
 @dataclass(frozen=True)
@@ -1760,6 +1769,47 @@ def derive_coverage_rollups(points: tuple[CoveragePoint, ...]) -> tuple[Coverage
         _decode_rollup(item)
         for item in _calculate_rollups({"points": [_encode_point(point) for point in points]})
     )
+
+
+def coverage_metric_semantics(metric: str) -> str:
+    """Return the canonical persisted description for one coverage metric."""
+    return _METRIC_SEMANTICS[metric]
+
+
+def derive_coverage_source_rollups(
+    points: tuple[CoveragePoint, ...],
+) -> tuple[CoverageSourceRollup, ...]:
+    """Derive canonical source-file summaries without using hierarchy."""
+    points_by_source: dict[str, list[dict[str, object]]] = {}
+    for point in points:
+        document = _encode_point(point)
+        source = str(document["identity"]["location"]["source"])
+        points_by_source.setdefault(source, []).append(document)
+    summaries: list[CoverageSourceRollup] = []
+    for source in sorted(points_by_source):
+        calculated = {
+            str(item["metric"]): item
+            for item in _calculate_rollups({"points": points_by_source[source]})
+        }
+        rollups = tuple(
+            _decode_rollup(
+                calculated.get(
+                    metric,
+                    {
+                        "metric": metric,
+                        "semantics": coverage_metric_semantics(metric),
+                        "total_points": 0,
+                        "eligible_points": 0,
+                        "covered_points": 0,
+                        "waived_points": 0,
+                        "percent": None,
+                    },
+                )
+            )
+            for metric in SOURCE_ROLLUP_METRICS
+        )
+        summaries.append(CoverageSourceRollup(source, rollups))
+    return tuple(summaries)
 
 
 def freeze_coverage_mapping(value: Mapping[str, object]) -> Mapping[str, FrozenJson]:

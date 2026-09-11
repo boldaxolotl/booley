@@ -312,7 +312,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     report = analyst.coverage_analyst(campaign).to_dict()
     assert report["$schema"] == "booley.coverage-analysis/v2"
     assert report["observed_evidence"]["campaign_manifest"]["$schema"] == (
-        "booley.coverage-campaign/v2"
+        "booley.coverage-campaign/v3"
     )
     assert "points" not in report["observed_evidence"]
     assert report["observed_evidence"]["point_store_sha256"].startswith("sha256:")
@@ -320,7 +320,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     assert len(model.calls) == 1
     prompt = json.loads(model.calls[0].prompt)
     assert "campaign" not in prompt
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v2"
+    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
     assert prompt["campaign_reference"]["point_count"] == 1
     assert "points" not in prompt
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

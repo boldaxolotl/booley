@@ -20,7 +20,7 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V2,
+    CAMPAIGN_SCHEMA_V3,
     CoverageCampaignSummary,
 )
 
@@ -75,7 +75,7 @@ def _analysis_envelope(
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
-    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V2:
+    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V3:
         return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed)
     assert manifest is not None
     assert summary.point_store is not None
