@@ -13,7 +13,7 @@ configured_scenarios:
 - id: sample-linux-cli
   required: true
   parameters:
-    host_os: Ubuntu 24.04
+    host_os: Ubuntu 26.04
     cpu_architecture: x86-64
     native_host: true
     agent_provider: Codex

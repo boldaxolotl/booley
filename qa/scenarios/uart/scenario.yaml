@@ -307,7 +307,7 @@ configured_scenarios:
 - id: uart-ubuntu-codex-cli
   required: true
   parameters:
-    host_os: Ubuntu 24.04
+    host_os: Ubuntu 26.04
     cpu_architecture: x86-64
     native_host: true
     agent_provider: Codex
@@ -315,7 +315,7 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   check_sets:
@@ -336,7 +336,7 @@ configured_scenarios:
 - id: uart-ubuntu-codex-vscode
   required: true
   parameters:
-    host_os: Ubuntu 24.04
+    host_os: Ubuntu 26.04
     cpu_architecture: x86-64
     native_host: true
     agent_provider: Codex
@@ -344,7 +344,7 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
@@ -375,7 +375,7 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   check_sets:
@@ -393,7 +393,7 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
@@ -776,7 +776,7 @@ steps:
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.booley-rtl
   requires:
   - published-release
@@ -794,7 +794,7 @@ steps:
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.install
   requires:
   - published-release
@@ -812,7 +812,7 @@ steps:
       Documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.pip-distro
   requires:
   - published-release
@@ -830,7 +830,7 @@ steps:
       The same declared build is ready.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.pip-recovery
   requires:
   - published-release

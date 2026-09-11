@@ -20,7 +20,7 @@ The [PicoRV32](../scenarios/picorv32/scenario.yaml),
 Scenarios, required status, parameters, pre-run requirements, check sets, and
 exclusions.
 
-- All three Scenarios run under Codex on Ubuntu 24.04 x86-64 and native Windows
+- All three Scenarios run under Codex on Ubuntu 26.04 x86-64 and native Windows
   x86-64 with Docker Desktop/WSL2.
 - PicoRV32 also runs under Claude on Ubuntu; its Windows/Claude GUI run is optional
   until usage permits.

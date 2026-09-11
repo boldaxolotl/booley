@@ -36,7 +36,7 @@ See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEAT
 
 ## Installation
 
-Booley supports Windows and Linux (Ubuntu 24.04 tested); macOS is not
+Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
 supported. You need:
 
 - Python 3.11+
