@@ -345,8 +345,8 @@ the candidate determines the expanded Criterion name.
   removes its candidate. Every selector resolves uniquely and is bound by Criteria.
   A planned Target may add a dedicated fileset, but it cannot edit an existing
   fileset or attach the new fileset to an unchanged Target. Acceptance removes
-  the derived Target definitions, unambiguously owned `tests.toml` tables, and
-  newly authored filesets orphaned by ephemeral Target removal. Existing and
+  only the derived Target definitions, unambiguously owned `tests.toml` tables,
+  and newly authored filesets orphaned by ephemeral Target removal. Existing and
   still-shared filesets, sources, parameters, constraints, generators, and hooks
   remain.
 
