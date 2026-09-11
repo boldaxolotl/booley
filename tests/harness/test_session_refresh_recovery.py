@@ -25,6 +25,18 @@ from booley.runtime.session_spec import SessionSpecSnapshot
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
 
 
+def _replace_fixture_markers(value: object, replacements: dict[str, str]) -> object:
+    if isinstance(value, str):
+        for marker, replacement in replacements.items():
+            value = value.replace(marker, replacement)
+        return value
+    if isinstance(value, list):
+        return [_replace_fixture_markers(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_fixture_markers(item, replacements) for key, item in value.items()}
+    return value
+
+
 def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     return Issuance(
@@ -65,9 +77,8 @@ def _write_restore_journal(
         "${KEEPER_IMAGE}": runtime_spec.keeper_image(project),
         "${SESSION_NAME}": sr.session_container_name(project),
     }
-    for marker, value in replacements.items():
-        content = content.replace(marker, value)
-    document = json.loads(content)
+    document = _replace_fixture_markers(json.loads(content), replacements)
+    assert isinstance(document, dict)
     if replacement_issuance is not None:
         document["target_image_id"] = replacement_issuance.image_id
         document["replacement_issuance"] = asdict(replacement_issuance)

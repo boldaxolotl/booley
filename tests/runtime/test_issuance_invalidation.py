@@ -24,10 +24,12 @@ def private_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pending_revoke_invalidates_stamp_then_cleans_resources(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    project_identity = str((tmp_path / "project").resolve())
     events = []
-    pending = issuance_invalidation.prepare("/project", cleanup_resources=True)
+    pending = issuance_invalidation.prepare(project_identity, cleanup_resources=True)
     monkeypatch.setattr(
         session_issuance, "invalidate_project", lambda root: events.append(("stamp", root))
     )
@@ -38,17 +40,19 @@ def test_pending_revoke_invalidates_stamp_then_cleans_resources(
     )
 
     assert issuance_invalidation.recover_project_locked(
-        "/project",
+        project_identity,
         cleanup_resources=flexnet_docker.cleanup_project_resources_for_identity,
     )
-    assert events == [("stamp", "/project"), ("resources", "/project")]
+    assert events == [("stamp", project_identity), ("resources", project_identity)]
     assert not issuance_invalidation._path(pending.project_root).exists()
 
 
 def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    issuance_invalidation.prepare("/project", cleanup_resources=True)
+    project_identity = str((tmp_path / "project").resolve())
+    issuance_invalidation.prepare(project_identity, cleanup_resources=True)
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _root: None)
     monkeypatch.setattr(
         flexnet_docker,
@@ -58,12 +62,12 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="residual objects"):
         issuance_invalidation.recover_project_locked(
-            "/project",
+            project_identity,
             cleanup_resources=flexnet_docker.cleanup_project_resources_for_identity,
         )
 
     assert [item.project_root for item in issuance_invalidation.pending_invalidations()] == [
-        "/project"
+        project_identity
     ]
     monkeypatch.setattr(
         flexnet_docker,
@@ -72,17 +76,19 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
     )
     assert issuance_invalidation.recover_all_locked(
         cleanup_resources=flexnet_docker.cleanup_project_resources_for_identity,
-    ) == ("/project",)
+    ) == (project_identity,)
     assert issuance_invalidation.pending_invalidations() == ()
 
 
-def test_tampered_invalidation_journal_fails_closed() -> None:
-    pending = issuance_invalidation.prepare("/project", cleanup_resources=False)
+def test_tampered_invalidation_journal_fails_closed(tmp_path: Path) -> None:
+    project_identity = str((tmp_path / "project").resolve())
+    different_identity = str((tmp_path / "different-project").resolve())
+    pending = issuance_invalidation.prepare(project_identity, cleanup_resources=False)
     issuance_invalidation._path(pending.project_root).write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "project_root": "/different-project",
+                "project_root": different_identity,
                 "cleanup_resources": False,
             }
         ),
@@ -93,8 +99,16 @@ def test_tampered_invalidation_journal_fails_closed() -> None:
         issuance_invalidation.pending_invalidations()
 
 
-@pytest.mark.parametrize("identity", ["relative/project", "/project/../other"])
-def test_invalidation_journal_rejects_noncanonical_project_identity(identity: str) -> None:
+@pytest.mark.parametrize("identity_kind", ["relative", "parent-segment"])
+def test_invalidation_journal_rejects_noncanonical_project_identity(
+    tmp_path: Path,
+    identity_kind: str,
+) -> None:
+    identity = (
+        "relative/project"
+        if identity_kind == "relative"
+        else str(tmp_path / "project" / ".." / "other")
+    )
     with pytest.raises(issuance_invalidation.InvalidationError, match="not canonical"):
         issuance_invalidation._decode(
             {
@@ -105,13 +119,17 @@ def test_invalidation_journal_rejects_noncanonical_project_identity(identity: st
         )
 
 
-def test_direct_invalidation_load_rejects_mismatched_persisted_identity() -> None:
-    pending = issuance_invalidation.prepare("/project", cleanup_resources=False)
+def test_direct_invalidation_load_rejects_mismatched_persisted_identity(
+    tmp_path: Path,
+) -> None:
+    project_identity = str((tmp_path / "project").resolve())
+    different_identity = str((tmp_path / "different-project").resolve())
+    pending = issuance_invalidation.prepare(project_identity, cleanup_resources=False)
     issuance_invalidation._path(pending.project_root).write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "project_root": "/different-project",
+                "project_root": different_identity,
                 "cleanup_resources": False,
             }
         ),
@@ -119,7 +137,10 @@ def test_direct_invalidation_load_rejects_mismatched_persisted_identity() -> Non
     )
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
-        issuance_invalidation.recover_project_locked("/project", cleanup_resources=lambda _: ())
+        issuance_invalidation.recover_project_locked(
+            project_identity,
+            cleanup_resources=lambda _: (),
+        )
 
 
 def test_read_only_runtime_validation_blocks_pending_invalidation(tmp_path: Path) -> None:
@@ -232,7 +253,7 @@ def _assert_runtime_start_is_blocked(
             "_up_unlocked",
             lambda *_args, **_kwargs: invoked.append("up"),
         )
-        with pytest.raises(lifecycle_lock.LifecycleLockError, match="grant revoke"):
+        with pytest.raises(lifecycle_lock.LifecycleLockError, match="lifecycle is busy"):
             session_runtime.up(project)
     else:
         monkeypatch.setattr(
@@ -240,7 +261,7 @@ def _assert_runtime_start_is_blocked(
             "_refresh_unlocked",
             lambda *_args, **_kwargs: invoked.append("refresh"),
         )
-        with pytest.raises(lifecycle_lock.LifecycleLockError, match="grant revoke"):
+        with pytest.raises(lifecycle_lock.LifecycleLockError, match="lifecycle is busy"):
             session_refresh.refresh(project, object())
     assert invoked == []
 
@@ -299,10 +320,12 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
 
 
 def test_failed_mutation_keeps_durable_invalidation_pending(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from booley.runtime import lifecycle_lock
 
+    project_identity = str((tmp_path / "project").resolve())
     monkeypatch.setattr(
         lifecycle_lock,
         "host_lifecycle_lock",
@@ -318,7 +341,7 @@ def test_failed_mutation_keeps_durable_invalidation_pending(
     with pytest.raises(RuntimeError, match="ambiguous write failure"):
         issuance_invalidation.coordinate_mutation(
             operation="grant add",
-            resolve_project_identity=lambda: "/project",
+            resolve_project_identity=lambda: project_identity,
             mutation=lambda _identity: nullcontext(
                 lambda: (_ for _ in ()).throw(RuntimeError("ambiguous write failure"))
             ),
@@ -327,7 +350,7 @@ def test_failed_mutation_keeps_durable_invalidation_pending(
             cleanup_after_mutation=False,
         )
 
-    assert issuance_invalidation.pending_invalidations()[0].project_root == "/project"
+    assert issuance_invalidation.pending_invalidations()[0].project_root == project_identity
 
 
 def test_expected_mutation_validation_failure_does_not_invalidate(
