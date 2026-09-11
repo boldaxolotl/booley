@@ -776,7 +776,7 @@ steps:
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.booley-rtl
   requires:
   - published-release
@@ -794,7 +794,7 @@ steps:
       Metadata, executable, package provenance, source identity and version agree.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.install
   requires:
   - published-release
@@ -812,7 +812,7 @@ steps:
       Documented rejection.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.pip-distro
   requires:
   - published-release
@@ -830,7 +830,7 @@ steps:
       The same declared build is ready.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 21 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.PRODUCT-ARTIFACT-INSTALLATION.pip-recovery
   requires:
   - published-release
