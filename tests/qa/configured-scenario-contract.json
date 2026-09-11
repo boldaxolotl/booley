@@ -3,91 +3,91 @@
   "configured_scenarios": {
     "picorv32-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "b13b49521f8cc06f11b728d2984f0c0a636812e0751a3d0cc2c39fb09f68ff0b",
+      "semantics": "a64b19a7586f76974430c9ea8344fd117121084cfdd2b89d5f2f339e383c346a",
       "checks": "82f19ee8652c8d1988dfca514c40be4b7ce888028a8770e448b0d973f37c7317",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "taxi-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "267fa24760adc3b0a055b7cb774dde6c1ac7cdceae2a41f91e0d7544e870bd8d",
+      "semantics": "286da0a816071f3d85c6f10dd98b8cea3fbf9f0be3ca1c24e829b92aaab9770b",
       "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "2d9a5a84c9b8a4edcbef6dcf3362626db65010b7fd8cd0e5a5058ded7e1a794b",
+      "semantics": "5737ea4fc49668d61bf461737483dbafef780455c55b69d4a99d1f3ef486b145",
       "checks": "08a3d4a65a196c13fb6c16be98f2e9dbf5423f90809ca8c80ae7d2110f202c11",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "685830277c9c09663738f381e1b4adf674408da965f7c23deff31003b904d8c2",
+      "semantics": "636ed0345c62da86d6027e11c3a3d7f9f49f69456d013fba7b2d56d2fbfc6dc6",
       "checks": "d2cf05b7eaddcdc97321e3d1eccb1c850a34bb17b6b9aa7d18a32940d1bb43ee",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "taxi-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "25846640140bbf6f3cb932f45a81fb1e41e645a0f17c99efc2a56249be40e865",
+      "semantics": "0747c0b0dad048762f0455bb8193a0a7a5fd8c496322cda7c19030a741c90f37",
       "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "27c4a3ed7644627fe8882219cd741a26738d43d0820326435015abffa8309da1",
+      "semantics": "98c2885a2980fd00ff3a0c10c595591227d86504f6a66a0325a53407caa7f41c",
       "checks": "20ce2f8f864fac96d386940322bdf10df0cb22e2c767583632d5d46771e16ce3",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-windows-codex-cli": {
       "required": true,
-      "semantics": "4c9ec8aab9f76e7408d28c099b25796b41e58065a57d776d7e56a34bda17bbf6",
+      "semantics": "fb442214acd1eb1fcaf450c0e8449bb0544bb79c417daa61a62c5ba99c769ebf",
       "checks": "f304348b1390ff88ec183eefdfd34f48fd6bdff5d32b2b43ce56e90a1da7afec",
       "exclusions": "8d3422eace02fefeb24bfe9c2e08f142cffc254ebd9c46fd8779f5858ac53957"
     },
     "taxi-windows-codex-cli": {
       "required": true,
-      "semantics": "5be6c42d9d3d9d4964593ac2d1939ffcd963a3f0aecd9951e2218bc68172777a",
+      "semantics": "e614331714c088f05a47a6ab08bda0770e7b43cc93c6a9bc8ba6c31e0b456799",
       "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-cli": {
       "required": true,
-      "semantics": "5be6c42d9d3d9d4964593ac2d1939ffcd963a3f0aecd9951e2218bc68172777a",
+      "semantics": "e614331714c088f05a47a6ab08bda0770e7b43cc93c6a9bc8ba6c31e0b456799",
       "checks": "3d77bd29a6ca427311b1974be0e858b83a0fc111aeea7974ea6c119546406ef0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-codex-vscode": {
       "required": true,
-      "semantics": "e889b297a4b5f4bfd80e56289bfe6696f16004830fb19613d9722c78014fd750",
+      "semantics": "ab59f25c041ba0d5997494468586b9aa455bb492080c0cf701167c4bd0242a95",
       "checks": "1f3aa08f0256a12dcd1e5226b2c6d6349a01fd5cdd696cf5da4c6a98a97af164",
       "exclusions": "8d3422eace02fefeb24bfe9c2e08f142cffc254ebd9c46fd8779f5858ac53957"
     },
     "taxi-windows-codex-vscode": {
       "required": true,
-      "semantics": "d71a81d40ad12d448e2135ef888c28a8bc497b28f5f6db75d8c46010eb0261d9",
+      "semantics": "82ab399c14efcd917e43d02a78fb8dbc5b6c8b08f8676820f08d09804fcd6331",
       "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-vscode": {
       "required": true,
-      "semantics": "d71a81d40ad12d448e2135ef888c28a8bc497b28f5f6db75d8c46010eb0261d9",
+      "semantics": "82ab399c14efcd917e43d02a78fb8dbc5b6c8b08f8676820f08d09804fcd6331",
       "checks": "c68cb1a309b681ed822bd43f59ba831f669d9c94545708d87cff3f0459f47c62",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-ubuntu-claude-cli": {
       "required": true,
-      "semantics": "8c3fae00a5ad153ad9f19dc777a990e37163e16436c2ccbaa12b90fa9c3c23c9",
+      "semantics": "dbd7917fac74d4cbe50b2aa948a058a8da0a259b6a9efb622f10b45356488e13",
       "checks": "aaf62e152bfb640a95a4d62b378b82e9e89f16b524c69a2d22496c92f6106138",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-ubuntu-claude-vscode": {
       "required": true,
-      "semantics": "2aaf8ce93cddd3fa19ddb64a4dc61f822cd404cd9ce46a4ee3c1f2dbfa677d24",
+      "semantics": "562a134f6a20288d3d31a5cc651e518b1338ffd4e46580628240bfd4285ace81",
       "checks": "9a35789c14cd4d9209bc84a9ce99e4bfdd5ed15f67fa5ccba04d93f676b997d6",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-claude-vscode": {
       "required": false,
-      "semantics": "ebad842003c8edd21e48e9879278e79ee407fc7ff5ce25ceb5a16ab382dd891f",
+      "semantics": "cc686a910f3a369584768f1915a6a3a37f6308ad2cd6d7dbae8329b8418f6b6a",
       "checks": "79e37eec91eeb966eb3a58b421f383c085cca7d44cde0971c1835d2f50dfb9f4",
       "exclusions": "8d3422eace02fefeb24bfe9c2e08f142cffc254ebd9c46fd8779f5858ac53957"
     }

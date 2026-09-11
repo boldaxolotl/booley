@@ -6,7 +6,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/README.md#installation
   contract: |-
     `install`: install the exact declared `booley-rtl` artifact in an isolated pipx environment and launch from a new shell → metadata, executable, package provenance, source identity and version agree. The artifact may be a published release or an immutable unreleased candidate. `prerequisite`: omit/age one prerequisite in disposable host fixture → named rejection before mutation. `pip-distro`: on applicable externally-managed distro attempt documented pip route → documented rejection.
-    Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning.
+    Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: HOST-BOOTSTRAP

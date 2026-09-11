@@ -319,10 +319,10 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
   - >-
     Pre-approved Project Setup policy: enable sim, lint, synth and fpga;
@@ -348,11 +348,11 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
   check_sets:
   - picorv32-core
@@ -373,10 +373,10 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -448,11 +448,11 @@ configured_scenarios:
     ticket_mode_backend: Codex
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -526,10 +526,10 @@ configured_scenarios:
     ticket_mode_backend: Claude
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
   check_sets:
   - picorv32-core
@@ -546,11 +546,11 @@ configured_scenarios:
     ticket_mode_backend: Claude
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
   check_sets:
   - picorv32-core
@@ -568,11 +568,11 @@ configured_scenarios:
     ticket_mode_backend: Claude
   pre_run_requirements:
   - Exact published package/release docs and immutable image provenance
-  - Native host OS, Docker/storage and artifact-root capacity
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain; at least 6 GB Docker free storage plus artifact headroom
+  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-gui
@@ -932,7 +932,7 @@ steps:
       Named rejection before mutation.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.PRODUCT-ARTIFACT-INSTALLATION.prerequisite
   requires:
   - inputs.project-pin
@@ -950,7 +950,7 @@ steps:
       Readiness succeeds without orphan state.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/README.md#installation
     evidence: |-
-      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. PicoRV32 separately records at least 6 GB Docker free space plus artifact headroom before RISC-V provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Package metadata, artifact hash/source identity, executable resolution, pre/post owned-state snapshots. `prerequisite-recovery`: supply prerequisite and repeat readiness → success without orphan state. `pip-recovery`: use documented isolated route → same declared build ready. Every Configured Scenario separately records at least 6 GB Docker free space plus artifact-root headroom before provisioning. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.PRODUCT-ARTIFACT-INSTALLATION.prerequisite-recovery
   requires:
   - inputs.project-pin
