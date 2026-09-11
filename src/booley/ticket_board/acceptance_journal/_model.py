@@ -553,10 +553,10 @@ def _normalized(
 
 
 def read_json(path: Path) -> Any:
-    """Read one journal file, failing loudly on filesystem or JSON errors."""
+    """Read one journal file, failing loudly on filesystem, encoding, or JSON errors."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AcceptanceJournalError(f"acceptance journal is unreadable: {path}: {exc}") from exc
 
 
@@ -587,9 +587,11 @@ def load_persisted_journal(path: Path) -> AcceptanceJournal:
     value = read_json(path)
     try:
         mapping = require_dict(value, field="acceptance journal")
+        if mapping.get("schema") != 5:
+            raise BoundaryError("acceptance journal schema must be 5")
         slug = require_str(mapping, "ticket")
         participants = _validated_participants(mapping.get("participants"))
-        cleanup = _persisted_cleanup(mapping)
+        cleanup = _validated_policy(mapping.get("policy"), cleanup=None)
         return validate_journal(
             mapping,
             slug,
@@ -599,12 +601,6 @@ def load_persisted_journal(path: Path) -> AcceptanceJournal:
         )
     except BoundaryError as exc:
         raise AcceptanceJournalError(f"acceptance journal is malformed: {path}: {exc}") from exc
-
-
-def _persisted_cleanup(journal: dict[str, Any]) -> bool:
-    if journal.get("schema") != 5:
-        raise BoundaryError("acceptance journal schema must be 5")
-    return _validated_policy(journal.get("policy"), cleanup=None)
 
 
 def acceptance_state(tickets_dir: Path, slug: str) -> JournalState | None:
