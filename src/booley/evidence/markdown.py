@@ -1,4 +1,4 @@
-"""Boundary-safe Markdown document parsing shared across domains."""
+"""Boundary-safe Markdown document parsing for Evidence records."""
 
 from __future__ import annotations
 

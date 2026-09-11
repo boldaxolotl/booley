@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_str
-from booley.markdown import MarkdownDocumentError, parse_yaml_frontmatter
+from booley.evidence.markdown import MarkdownDocumentError, parse_yaml_frontmatter
 
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
