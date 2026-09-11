@@ -30,6 +30,8 @@ class GrantMutator(Protocol):
 
     def revoke(self, project: Path, kind: str) -> authority.ProjectGrant: ...
 
+    def recovery_pending(self) -> bool: ...
+
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Add the grouped EDA authority command tree."""
@@ -176,11 +178,13 @@ def _grant_action(
     *,
     grant_mutator: GrantMutator | None,
 ) -> _Result:
+    if grant_mutator is None:
+        raise authority.AuthorityError("EDA grant access requires host lifecycle coordination")
+    if action == "list" and grant_mutator.recovery_pending():
+        raise authority.AuthorityError(
+            "Session Runtime recovery is pending; run a host lifecycle command first"
+        )
     if action == "add":
-        if grant_mutator is None:
-            raise authority.AuthorityError(
-                "EDA grant mutation requires host lifecycle coordination"
-            )
         grant = grant_mutator.add(
             args.project,
             args.kind,
@@ -189,10 +193,6 @@ def _grant_action(
         )
         return asdict(grant)
     if action == "revoke":
-        if grant_mutator is None:
-            raise authority.AuthorityError(
-                "EDA grant mutation requires host lifecycle coordination"
-            )
         grant = grant_mutator.revoke(args.project, args.kind)
         result = asdict(grant)
         result["residual_resources"] = []

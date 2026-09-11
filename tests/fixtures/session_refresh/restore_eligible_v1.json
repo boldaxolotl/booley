@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "transaction_id": "txn-1",
+  "project_root": "${PROJECT_ROOT}",
+  "phase": "parked",
+  "direction": "restore_eligible",
+  "snapshot": {
+    "spec_present": true,
+    "spec_content": "eyJpbWFnZSI6InNoYTI1NjpwcmlvciIsInJ1bkFyZ3MiOltdfQo=",
+    "spec_mode": 420,
+    "stamp_present": true,
+    "stamp_content": "${PRIOR_STAMP_B64}",
+    "stamp_mode": 384,
+    "image_id": "sha256:prior"
+  },
+  "prior_issuance": {
+    "version": 4,
+    "project_root": "${PROJECT_ROOT}",
+    "spec_sha256": "74d49af930a8b7da7522dfcee8503a0d2a3c614853e52b2637ac535d61f76967",
+    "image": "sha256:prior",
+    "image_id": "sha256:prior",
+    "keeper_image": "${KEEPER_IMAGE}",
+    "policy_revision": 1,
+    "installation": null,
+    "license_profile": null,
+    "wrapper_sha256": null,
+    "relay_image_id": null,
+    "validator_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "file_sha256": "b7463783ec9c2d069f832ddc160d1ac008ce8ff2dd4d2426c942ac0590cb36b2",
+    "project_data_source": "${PROJECT_ROOT}/.booley_project"
+  },
+  "prior_runtime": {
+    "name": "${SESSION_NAME}",
+    "backup": "${SESSION_NAME}-pre-refresh",
+    "was_running": true,
+    "project_id": "${PROJECT_ID}",
+    "reconnect_egress": true,
+    "container_id": "container-prior",
+    "image_id": "sha256:prior",
+    "egress_network_id": "network-egress"
+  },
+  "target_image_id": null,
+  "target_payload_fingerprint": null,
+  "replacement_issuance": null
+}

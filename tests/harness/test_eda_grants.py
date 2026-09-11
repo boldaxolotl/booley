@@ -80,3 +80,16 @@ def test_grant_revoke_resolves_and_mutates_one_stored_identity(
 def test_raw_grant_mutations_are_not_public() -> None:
     assert not hasattr(authority, "add_grant")
     assert not hasattr(authority, "revoke_grant")
+
+
+def test_pending_recovery_probe_translates_runtime_failure(monkeypatch) -> None:
+    from booley.runtime import session_refresh
+
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("corrupt journal")),
+    )
+
+    with pytest.raises(authority.AuthorityError, match="corrupt journal"):
+        eda_grants.GrantCoordinator().recovery_pending()

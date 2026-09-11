@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import as_dict
 from booley.core.config_paths import resolve_booley_toml, resolve_toml
 from booley.core.project_dir import resolve_project_dir
 from booley.targets.flow_names import config_section
@@ -23,14 +24,11 @@ def flow_enabled(flow_name: str, work_dir: Path | None) -> bool:
 
 def flow_enabled_from_config(flow_name: str, cfg: object) -> bool:
     """Resolve enablement from parsed config and reject retired execution keys."""
-    if not isinstance(cfg, dict):
-        cfg = {}
+    cfg = as_dict(cfg, default={}) or {}
     migration = retired_config_error(cfg)
     if migration:
         raise FlowConfigError(migration)
-    flows = cfg.get("flows", {})
-    if not isinstance(flows, dict):
-        flows = {}
+    flows = as_dict(cfg.get("flows"), default={}) or {}
     section = config_section(flows, flow_name)
     return section.get("enabled", True) is not False
 
@@ -87,7 +85,9 @@ def _load_config(work_dir: Path | None) -> dict[str, Any]:
         main_root = _resolve_main_repo_root(root)
         if main_root is not None:
             return _read_toml(resolve_booley_toml(main_root)) or {}
-    except Exception:  # noqa: BLE001 — bare Flow invocations retain enabled defaults
+    except (OSError, ValueError):
+        # Compatibility contract: unreadable or malformed documents are
+        # absent, so only an explicit parsed ``false`` disables a Flow.
         return {}
     return {}
 

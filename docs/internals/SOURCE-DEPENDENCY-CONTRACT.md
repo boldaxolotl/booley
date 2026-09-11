@@ -90,6 +90,12 @@ waiver or composition exception. The dependency and hotspot measurements for
 [#487](https://github.com/boldaxolotl/booley/issues/487) are recorded in
 [the implementation evidence](../research/session-runtime-issuance-487-evidence.md).
 
+Flow enablement preserves the established compatibility rule: only the literal
+boolean `false` disables a Flow. Missing, unreadable, malformed, or non-boolean
+values retain the enabled default. This narrow boundary intentionally differs
+from fail-closed authority and Runtime configuration because legacy Projects
+must not silently lose execution when the declarative reader is unavailable.
+
 ## Graph semantics
 
 The analyzer uses `ast` to parse every `*.py` file below `src/booley`. It records

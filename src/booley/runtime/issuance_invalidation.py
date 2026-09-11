@@ -10,6 +10,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool,
+    require_dict,
+    require_int,
+    require_str,
+)
 from booley.runtime.auth_token import config_dir
 from booley.runtime.private_store import PrivateStore
 
@@ -34,7 +41,13 @@ class PendingInvalidation:
 
 def prepare(project_root: str, *, cleanup_resources: bool) -> PendingInvalidation:
     """Persist Runtime work before an EDA grant mutation starts."""
-    pending = PendingInvalidation(_SCHEMA_VERSION, project_root, cleanup_resources)
+    pending = _decode(
+        {
+            "schema_version": _SCHEMA_VERSION,
+            "project_root": project_root,
+            "cleanup_resources": cleanup_resources,
+        }
+    )
     store = _store()
     store.ensure_directory()
     store.atomic_write_text(_filename(project_root), json.dumps(asdict(pending), sort_keys=True))
@@ -163,29 +176,39 @@ def _load(project_root: str) -> PendingInvalidation | None:
     if not path.exists():
         return None
     try:
-        return _decode(store.read_json(path.name))
+        pending = _decode(store.read_json(path.name))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InvalidationError(
             f"cannot read issuance invalidation journal {path}: {exc}"
         ) from exc
+    if pending.project_root != project_root:
+        raise InvalidationError(f"issuance invalidation journal identity mismatch: {path}")
+    return pending
 
 
 def _decode(raw: object) -> PendingInvalidation:
-    if not isinstance(raw, dict) or set(raw) != {
+    try:
+        values = require_dict(raw, field="issuance invalidation journal")
+    except BoundaryError as exc:
+        raise InvalidationError(str(exc)) from exc
+    if set(values) != {
         "schema_version",
         "project_root",
         "cleanup_resources",
     }:
         raise InvalidationError("issuance invalidation journal has an invalid shape")
-    if raw["schema_version"] != _SCHEMA_VERSION:
+    try:
+        schema_version = require_int(values.get("schema_version"), field="schema_version")
+        project_root = require_str(values, "project_root")
+        cleanup_resources = require_bool(values, "cleanup_resources")
+    except BoundaryError as exc:
+        raise InvalidationError(f"issuance invalidation journal is invalid: {exc}") from exc
+    if schema_version != _SCHEMA_VERSION:
         raise InvalidationError("issuance invalidation journal has an unsupported schema")
-    if not isinstance(raw["project_root"], str) or not raw["project_root"]:
-        raise InvalidationError("issuance invalidation journal has an invalid Project identity")
-    if not isinstance(raw["cleanup_resources"], bool):
-        raise InvalidationError("issuance invalidation journal has an invalid cleanup policy")
-    return PendingInvalidation(
-        raw["schema_version"], raw["project_root"], raw["cleanup_resources"]
-    )
+    identity = Path(project_root)
+    if not identity.is_absolute() or ".." in identity.parts or str(identity) != project_root:
+        raise InvalidationError("issuance invalidation journal Project identity is not canonical")
+    return PendingInvalidation(schema_version, project_root, cleanup_resources)
 
 
 def _store() -> PrivateStore:

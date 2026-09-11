@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -90,6 +91,35 @@ def test_tampered_invalidation_journal_fails_closed() -> None:
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
         issuance_invalidation.pending_invalidations()
+
+
+@pytest.mark.parametrize("identity", ["relative/project", "/project/../other"])
+def test_invalidation_journal_rejects_noncanonical_project_identity(identity: str) -> None:
+    with pytest.raises(issuance_invalidation.InvalidationError, match="not canonical"):
+        issuance_invalidation._decode(
+            {
+                "schema_version": 1,
+                "project_root": identity,
+                "cleanup_resources": False,
+            }
+        )
+
+
+def test_direct_invalidation_load_rejects_mismatched_persisted_identity() -> None:
+    pending = issuance_invalidation.prepare("/project", cleanup_resources=False)
+    issuance_invalidation._path(pending.project_root).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_root": "/different-project",
+                "cleanup_resources": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
+        issuance_invalidation.recover_project_locked("/project", cleanup_resources=lambda _: ())
 
 
 def test_read_only_runtime_validation_blocks_pending_invalidation(tmp_path: Path) -> None:
@@ -185,6 +215,87 @@ def test_runtime_coordinates_grant_mutation_order_inside_lifecycle_lock(
 
     assert result == "result"
     assert events == [*expected, "lock-exit"]
+
+
+def _assert_runtime_start_is_blocked(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_command: str,
+) -> None:
+    from booley.runtime import lifecycle_lock
+
+    invoked = []
+    if runtime_command == "up":
+        monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *_args: None)
+        monkeypatch.setattr(
+            session_runtime,
+            "_up_unlocked",
+            lambda *_args, **_kwargs: invoked.append("up"),
+        )
+        with pytest.raises(lifecycle_lock.LifecycleLockError, match="grant revoke"):
+            session_runtime.up(project)
+    else:
+        monkeypatch.setattr(
+            session_refresh,
+            "_refresh_unlocked",
+            lambda *_args, **_kwargs: invoked.append("refresh"),
+        )
+        with pytest.raises(lifecycle_lock.LifecycleLockError, match="grant revoke"):
+            session_refresh.refresh(project, object())
+    assert invoked == []
+
+
+@pytest.mark.parametrize("runtime_command", ["up", "refresh"])
+def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_command: str,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    commit_entered = threading.Event()
+    release_commit = threading.Event()
+    grant_done = threading.Event()
+    errors: list[RuntimeError] = []
+
+    @contextmanager
+    def mutation(_identity: str):
+        def commit() -> str:
+            commit_entered.set()
+            if not release_commit.wait(2):
+                raise RuntimeError("test grant gate timed out")
+            return "grant"
+
+        yield commit
+
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(session_issuance, "invalidate_project", lambda _identity: None)
+
+    def run_grant() -> None:
+        try:
+            issuance_invalidation.coordinate_mutation(
+                operation="grant revoke",
+                resolve_project_identity=lambda: str(project),
+                mutation=mutation,
+                cleanup_resources=lambda _identity: (),
+                invalidate_before_mutation=True,
+                cleanup_after_mutation=False,
+            )
+        except RuntimeError as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            grant_done.set()
+
+    grant = threading.Thread(target=run_grant)
+    grant.start()
+    assert commit_entered.wait(2)
+    _assert_runtime_start_is_blocked(project, monkeypatch, runtime_command)
+
+    release_commit.set()
+    grant.join(2)
+    assert grant_done.is_set()
+    assert errors == []
+    assert issuance_invalidation.pending_invalidations() == ()
 
 
 def test_failed_mutation_keeps_durable_invalidation_pending(

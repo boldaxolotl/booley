@@ -25,8 +25,8 @@ python3 tests/architecture/report.py --source-root src/booley --top 30
 | Measurement | Before (`b26efcc8`) | After |
 | --- | ---: | ---: |
 | Parsed Python modules | 483 | 487 |
-| Located dependency facts | 2,371 | 2,389 |
-| Unique normalized edges | 1,946 | 1,959 |
+| Located dependency facts | 2,371 | 2,392 |
+| Unique normalized edges | 1,946 | 1,963 |
 | Multi-package SCC members | 18 | 18 |
 | Mutual package pairs | 15 | 15 |
 
@@ -95,6 +95,18 @@ edges, not EDA knowledge of Runtime issuance.
   Revocation removes authority first, then invalidates the stamp and removes
   exact Project-labeled containers before networks. Residual cleanup leaves the
   journal pending so the next locked host lifecycle operation retries it.
+
+## Deep-module deletion proof
+
+`booley.runtime.session_issuance` is the shared authority boundary for four
+independent callers. Deleting it would force Project Initialization to recreate
+builder input resolution and atomic issuance; Doctor to recreate stamp,
+licence, label, and keeper validation; Session lifecycle to recreate
+authentication and current-authority validation; and refresh recovery to
+recreate snapshot decoding and predecessor/replacement authentication. The
+checked architecture test names those callers and their distinct capabilities,
+and also proves the EDA requirements provider does not reimplement Runtime's
+issue, authenticate, or invalidate operations.
 
 ## Verification
 

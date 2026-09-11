@@ -26,6 +26,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.eda.config import EdaConfig
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
@@ -349,28 +350,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     _pin_devcontainer_mount(spec, project)
     try:
         with _issuance_requirements(project, spec, include_relay_identity=False) as requirements:
-            run_args = spec.get("runArgs")
-            if not isinstance(run_args, list) or any(
-                not isinstance(item, str) for item in run_args
-            ):
-                raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
-            if any(_is_issuance_label(item) for item in run_args):
-                raise RuntimeSpecError("generated Session Runtime spec is already sealed")
-            if requirements.private_network is not None:
-                run_args += ["--network", requirements.private_network]
-            digest = _spec_digest(spec)
-            provisional = _issuance(
-                project,
-                spec,
-                digest,
-                requirements,
-                file_sha256=None,
-                project_data_source=str(project_data_path),
-            )
-            for label in labels(provisional):
-                run_args += ["--label", label]
-            _validate_generated_spec(project, spec, requirements, provisional)
-            return digest
+            return _seal_with_requirements(project, spec, project_data_path, requirements)
     except (
         FlowConfigError,
         authority.AuthorityError,
@@ -379,7 +359,37 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
         raise _runtime_authority_error(spec, exc) from exc
 
 
-def requested_host_installation(project_root: Path):
+def _seal_with_requirements(
+    project: Path,
+    spec: dict[str, Any],
+    project_data_path: Path,
+    requirements: eda_requirements.SessionEdaRequirements,
+) -> str:
+    run_args = spec.get("runArgs")
+    if not isinstance(run_args, list) or any(not isinstance(item, str) for item in run_args):
+        raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
+    if any(_is_issuance_label(item) for item in run_args):
+        raise RuntimeSpecError("generated Session Runtime spec is already sealed")
+    if requirements.private_network is not None:
+        run_args += ["--network", requirements.private_network]
+    digest = _spec_digest(spec)
+    provisional = _issuance(
+        project,
+        spec,
+        digest,
+        requirements,
+        file_sha256=None,
+        project_data_source=str(project_data_path),
+    )
+    for label in labels(provisional):
+        run_args += ["--label", label]
+    _validate_generated_spec(project, spec, requirements, provisional)
+    return digest
+
+
+def requested_host_installation(
+    project_root: Path,
+) -> tuple[EdaConfig | None, authority.Installation | None]:
     """Resolve the grant-selected installation for a host-provisioned Project."""
     try:
         return eda_requirements.requested_host_installation(
@@ -394,7 +404,7 @@ def requested_license(
     project_root: Path,
     *,
     expected_name: str | None = "",
-):
+) -> authority.LicenseProfile | None:
     """Return the host-selected License Profile, when the runtime requests one.
 
     ``expected_name=None`` is the validated no-licence runtime path: it avoids
@@ -420,14 +430,31 @@ def preview(
     """Build, pin, and seal a Runtime spec without persistent side effects."""
     project = project_root.resolve(strict=True)
     try:
-        build_requirements = eda_requirements.build_requirements(
+        with eda_requirements.lease_build_requirements(
             project,
             vivado_enabled=flow_enabled("fpga", project),
-        )
+        ) as leased:
+            return _prepare_spec(
+                project,
+                build_spec,
+                leased,
+                expected_image_id=expected_image_id,
+            )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
+
+
+def _prepare_spec(
+    project: Path,
+    build_spec: SpecBuilder,
+    leased: eda_requirements.LeasedSessionRequirements,
+    *,
+    expected_image_id: str | None,
+) -> PreparedSessionSpec:
+    build_requirements = leased.build
+    project_data_path = authorized_project_data_source(project)
     inputs = SessionSpecInputs(
-        project_data_source=authorized_project_data_source(project),
+        project_data_source=project_data_path,
         trusted_eda_mounts=build_requirements.trusted_mounts,
         fixed_container_environment=build_requirements.container_environment,
         installation_name=build_requirements.installation_name,
@@ -437,7 +464,15 @@ def preview(
     if not isinstance(spec, dict):
         raise RuntimeSpecError("Session Runtime spec builder must return a dictionary")
     pin_image(spec, expected_image_id=expected_image_id)
-    digest = seal(project, spec)
+    _pin_initialize_command(project, spec)
+    _pin_project_data_mount(
+        spec,
+        docker_mount_path(project_data_path),
+        project,
+        project_data_path,
+    )
+    _pin_devcontainer_mount(spec, project)
+    digest = _seal_with_requirements(project, spec, project_data_path, leased.runtime)
     return PreparedSessionSpec(spec, digest, inputs)
 
 
@@ -447,14 +482,27 @@ def issue(
     spec_path: Path | None = None,
     *,
     expected_image_id: str | None = None,
+    force_dependencies: bool = False,
 ) -> Issuance:
     """Issue a prepared/built spec, retaining the legacy document call shape."""
     if callable(prepared_or_spec):
-        prepared_or_spec = preview(
-            project_root,
-            prepared_or_spec,
-            expected_image_id=expected_image_id,
-        )
+        project = project_root.resolve(strict=True)
+        try:
+            with eda_requirements.lease_build_requirements(
+                project,
+                vivado_enabled=flow_enabled("fpga", project),
+                prepare_relay=True,
+                force_relay=force_dependencies,
+            ) as leased:
+                prepared = _prepare_spec(
+                    project,
+                    prepared_or_spec,
+                    leased,
+                    expected_image_id=expected_image_id,
+                )
+                return _persist_prepared(project, prepared, requirements=leased.runtime)
+        except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
+            raise RuntimeSpecError(str(exc)) from exc
     if isinstance(prepared_or_spec, PreparedSessionSpec):
         if spec_path is not None:
             raise TypeError("spec_path is not accepted with a prepared Session Runtime spec")
@@ -464,7 +512,12 @@ def issue(
     return _issue_document(project_root, prepared_or_spec, spec_path)
 
 
-def _persist_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issuance:
+def _persist_prepared(
+    project_root: Path,
+    prepared: PreparedSessionSpec,
+    *,
+    requirements: eda_requirements.SessionEdaRequirements | None = None,
+) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
     from booley.runtime import devcontainer
 
@@ -482,15 +535,27 @@ def _persist_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issu
     if previous_stamp_path.is_file():
         with contextlib.suppress(RuntimeSpecError):
             previous_issuance = _load_stamp(previous_stamp_path)
+    previous_keeper_id = (
+        previous_issuance.image_id
+        if previous_issuance is not None
+        else _current_keeper_id(project)
+    )
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
-        return _issue_document(project, prepared.spec, written)
+        if requirements is None:
+            return _issue_document(project, prepared.spec, written)
+        return _issue_document_with_requirements(
+            project,
+            prepared.spec,
+            written,
+            requirements,
+            str(authorized_project_data_source(project)),
+        )
     except Exception:
         _restore_file(path, previous, previous_mode)
         for stamp_file, (content, mode) in zip(stamp_paths, stamp_snapshots, strict=True):
             _restore_file(stamp_file, content, mode)
-        if previous_issuance is not None:
-            _restore_keeper(previous_issuance)
+        _restore_keeper(project, previous_keeper_id)
         raise
 
 
@@ -519,16 +584,31 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def _restore_keeper(issuance: Issuance) -> None:
+def _current_keeper_id(project: Path) -> str | None:
     from booley.runtime import interactive_docker as docker
 
     try:
-        docker.tag_image(issuance.image_id, issuance.keeper_image)
+        return docker.image_id_strict(keeper_image(project))
+    except RuntimeError as exc:
+        raise RuntimeSpecError(
+            "cannot snapshot the prior Runtime Image keeper before issuance"
+        ) from exc
+
+
+def _restore_keeper(project: Path, image_id: str | None) -> None:
+    from booley.runtime import interactive_docker as docker
+
+    keeper = keeper_image(project)
+    try:
+        if image_id is None:
+            docker.remove_image_tag(keeper)
+            return
+        docker.tag_image(image_id, keeper)
     except RuntimeError as exc:
         raise RuntimeSpecError(
             "failed issuance also prevented restoration of the prior Runtime Image keeper"
         ) from exc
-    if _resolve_image_id(issuance.keeper_image) != issuance.image_id:
+    if _resolve_image_id(keeper) != image_id:
         raise RuntimeSpecError(
             "failed issuance restored the prior stamp but not its Runtime Image keeper"
         )
@@ -540,35 +620,51 @@ def _issue_document(project_root: Path, spec: dict[str, Any], spec_path: Path) -
     project_data_source = str(authorized_project_data_source(project))
     try:
         with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
-            digest = _spec_digest(spec)
-            issuance = _issuance(
+            return _issue_document_with_requirements(
                 project,
                 spec,
-                digest,
+                spec_path,
                 requirements,
-                file_sha256=_file_sha256(spec_path),
-                project_data_source=project_data_source,
+                project_data_source,
             )
-            _validate_generated_spec(project, spec, requirements, issuance)
-            _validate_bind_sources(spec["mounts"])
-            image = _require_string(spec, "image")
-            image_id = _resolve_image_id(image)
-            if image != image_id:
-                raise RuntimeSpecError(
-                    "Session Runtime spec image is mutable; regenerate it through `booley init`"
-                )
-            if requirements.installation is not None:
-                _validate_image_contract(image_id)
-            _retain_issued_image(issuance)
-            _write_stamp(stamp_path(project), issuance)
-            _legacy_stamp_path(str(project)).unlink(missing_ok=True)
-            return issuance
     except (
         FlowConfigError,
         authority.AuthorityError,
         eda_requirements.SessionRequirementsError,
     ) as exc:
         raise _runtime_authority_error(spec, exc) from exc
+
+
+def _issue_document_with_requirements(
+    project: Path,
+    spec: dict[str, Any],
+    spec_path: Path,
+    requirements: eda_requirements.SessionEdaRequirements,
+    project_data_source: str,
+) -> Issuance:
+    digest = _spec_digest(spec)
+    issuance = _issuance(
+        project,
+        spec,
+        digest,
+        requirements,
+        file_sha256=_file_sha256(spec_path),
+        project_data_source=project_data_source,
+    )
+    _validate_generated_spec(project, spec, requirements, issuance)
+    _validate_bind_sources(spec["mounts"])
+    image = _require_string(spec, "image")
+    image_id = _resolve_image_id(image)
+    if image != image_id:
+        raise RuntimeSpecError(
+            "Session Runtime spec image is mutable; regenerate it through `booley init`"
+        )
+    if requirements.installation is not None:
+        _validate_image_contract(image_id)
+    _retain_issued_image(issuance)
+    _write_stamp(stamp_path(project), issuance)
+    _legacy_stamp_path(str(project)).unlink(missing_ok=True)
+    return issuance
 
 
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:

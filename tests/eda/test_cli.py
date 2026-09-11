@@ -20,6 +20,9 @@ def _parse(*argv: str) -> argparse.Namespace:
 
 
 class _DirectGrantMutator:
+    def recovery_pending(self):
+        return False
+
     def add(self, project, kind, *, installation, license_profile):
         return authority._add_grant(
             project,
@@ -202,3 +205,39 @@ def test_legacy_grant_list_is_hidden_and_warns(
     ]
     assert "deprecated" in streams.err.lower()
     assert "booley projects" in streams.err
+
+
+def test_grant_list_fails_closed_while_runtime_recovery_is_pending(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mutator = _DirectGrantMutator()
+    mutator.recovery_pending = lambda: True
+
+    assert (
+        cli.run(
+            _parse("grant", "list"),
+            Path("/project"),
+            grant_mutator=mutator,
+        )
+        == 2
+    )
+    assert "recovery is pending" in capsys.readouterr().err
+
+
+def test_pending_recovery_does_not_bypass_coordinated_grant_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grant = authority.ProjectGrant(str(tmp_path), "vivado")
+    mutator = _DirectGrantMutator()
+    mutator.recovery_pending = lambda: True
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *_args: grant)
+
+    assert (
+        cli.run(
+            _parse("grant", "revoke", str(tmp_path), "--kind", "vivado"),
+            tmp_path,
+            grant_mutator=mutator,
+        )
+        == 0
+    )

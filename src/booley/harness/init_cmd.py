@@ -1504,26 +1504,18 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
             local_timezone=detect_host_timezone(),
         )
 
-    try:
-        prepared = session_issuance.preview(
-            ctx.project_root,
-            build_spec,
-            expected_image_id=runtime_image_id,
-        )
-        licensed = prepared.inputs.license_profile_name is not None
-        if (
-            not licensed
-            and not ctx.check_only
-            and shutil.which("docker")
-            and _cleanup_unlicensed_relay(ctx.project_root)
-        ):
-            ok("removed orphaned license relay from unlicensed Project")
-    except (session_issuance.RuntimeSpecError, RelayDockerError) as exc:
-        err(f"commercial EDA authorization failed closed: {exc}")
-        ctx.record("interactive", "err", str(exc))
-        return
-
     if ctx.check_only:
+        try:
+            prepared = session_issuance.preview(
+                ctx.project_root,
+                build_spec,
+                expected_image_id=runtime_image_id,
+            )
+        except (session_issuance.RuntimeSpecError, RelayDockerError) as exc:
+            err(f"commercial EDA authorization failed closed: {exc}")
+            ctx.record("interactive", "err", str(exc))
+            return
+        licensed = prepared.inputs.license_profile_name is not None
         warn(
             "would write .devcontainer/devcontainer.json + exclude Booley files "
             "and run outputs (build/, util/)"
@@ -1539,23 +1531,20 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         ctx.record("interactive", "warn", f"app={app} (check-only)")
         return
 
-    relay_image_built = False
-    if licensed:
-        from booley.eda.provisioning.licensing.flexnet_docker import ensure_relay_image
-
-        try:
-            relay_image_built = ensure_relay_image(force=ctx.force)
-        except RelayDockerError as exc:
-            err(f"could not prepare immutable FlexNet relay image: {exc}")
-            ctx.record("interactive", "err", str(exc))
-            return
-
     try:
-        issuance = session_issuance.issue(ctx.project_root, prepared)
+        issuance = session_issuance.issue(
+            ctx.project_root,
+            build_spec,
+            expected_image_id=runtime_image_id,
+            force_dependencies=ctx.force,
+        )
     except session_issuance.RuntimeSpecError as exc:
         err(f"could not issue Session Runtime specification: {exc}")
         ctx.record("interactive", "err", str(exc))
         return
+    licensed = issuance.license_profile is not None
+    if not licensed and shutil.which("docker") and _cleanup_unlicensed_relay(ctx.project_root):
+        ok("removed orphaned license relay from unlicensed Project")
     path = dc.devcontainer_path(ctx.project_root)
     if not _reconcile_issued_headless_runtime(ctx, issuance):
         return
@@ -1575,8 +1564,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
 
     notes = [f"app={app}"]
     if licensed:
-        state = "built" if relay_image_built else "present"
-        notes.append(f"license-relay-image:{state}")
+        notes.append("license-relay-image:present")
     ctx.record("interactive", "ok", ", ".join(notes))
 
 

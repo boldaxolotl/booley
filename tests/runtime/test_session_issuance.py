@@ -5,16 +5,19 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
+from booley.harness import eda_grants
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime, session_spec
@@ -71,14 +74,20 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
     project.mkdir()
     captured: list[runtime_spec.SessionSpecInputs] = []
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
+    build_requirements = SimpleNamespace(
+        trusted_mounts=(("/host/tool", "/opt/tool"),),
+        container_environment=(("EDA_LICENSE", "server"),),
+        installation_name="vivado",
+        license_profile_name="floating",
+    )
     monkeypatch.setattr(
         runtime_spec.eda_requirements,
-        "build_requirements",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            trusted_mounts=(("/host/tool", "/opt/tool"),),
-            container_environment=(("EDA_LICENSE", "server"),),
-            installation_name="vivado",
-            license_profile_name="floating",
+        "lease_build_requirements",
+        lambda *_args, **_kwargs: nullcontext(
+            SimpleNamespace(
+                build=build_requirements,
+                runtime=SimpleNamespace(private_network=None),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -91,7 +100,18 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
         "pin_image",
         lambda spec, **_kwargs: spec.update(image="sha256:pinned") or spec["image"],
     )
-    monkeypatch.setattr(runtime_spec, "seal", lambda _project, _spec: "digest")
+    monkeypatch.setattr(
+        runtime_spec,
+        "_pin_initialize_command",
+        lambda _project, _spec: None,
+    )
+    monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
+    monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime_spec,
+        "_seal_with_requirements",
+        lambda *_args: "digest",
+    )
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
         captured.append(inputs)
@@ -187,11 +207,158 @@ def test_prepared_issue_restores_spec_when_writer_partially_fails(
         raise OSError("disk full")
 
     monkeypatch.setattr(dc, "write_devcontainer", partial_write)
+    monkeypatch.setattr("booley.runtime.interactive_docker.image_id_strict", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
 
     with pytest.raises(OSError, match="disk full"):
         runtime_spec.issue(project, prepared)
 
     assert path.read_text(encoding="utf-8") == "previous\n"
+
+
+def test_failed_first_issue_removes_new_keeper_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec={"image": "sha256:pinned"},
+        digest="digest",
+        inputs=runtime_spec.SessionSpecInputs(project, (), (), None, None),
+    )
+    removed = []
+
+    def remove_keeper(image: str) -> None:
+        removed.append(image)
+
+    monkeypatch.setattr("booley.runtime.interactive_docker.image_id_strict", lambda _image: None)
+    monkeypatch.setattr(
+        "booley.runtime.interactive_docker.remove_image_tag",
+        remove_keeper,
+    )
+    monkeypatch.setattr(
+        dc,
+        "write_devcontainer",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        runtime_spec.issue(project, prepared)
+
+    assert removed == [runtime_spec.keeper_image(project)]
+
+
+def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prepared = runtime_spec.PreparedSessionSpec(
+        spec={"image": "sha256:pinned"},
+        digest="digest",
+        inputs=runtime_spec.SessionSpecInputs(project, (), (), None, None),
+    )
+    writer = Mock()
+    monkeypatch.setattr(dc, "write_devcontainer", writer)
+    monkeypatch.setattr(
+        "booley.runtime.interactive_docker.image_id_strict",
+        lambda _image: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot snapshot"):
+        runtime_spec.issue(project, prepared)
+
+    writer.assert_not_called()
+
+
+def _concurrent_licensed_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    reset_cache()
+    project = tmp_path / "project"
+    project_dir = project / ".booley_project"
+    project_dir.mkdir(parents=True)
+    (project_dir / "booley.toml").write_text(
+        '[flows.fpga]\nenabled = true\n[eda.vivado]\nprovisioning = "image"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    profile = authority.register_license(
+        "site",
+        server_ipv4="10.20.30.40",
+        server_hostid="licenses.example.internal",
+        lmgrd_port=2100,
+        vendor_port=2101,
+    )
+    authority._add_grant(project, "vivado", license_profile=profile.name)
+    monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        eda_requirements,
+        "_relay_image_id",
+        lambda: "sha256:" + "d" * 64,
+    )
+    monkeypatch.setattr(runtime_spec, "pin_image", lambda *_args, **_kwargs: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_pin_initialize_command", lambda *_args: None)
+    monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
+    monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
+    monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
+    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _root: ())
+    return project
+
+
+def test_builder_issuance_serializes_with_concurrent_grant_revoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _concurrent_licensed_project(tmp_path, monkeypatch)
+
+    persistence_entered = threading.Event()
+    allow_persistence = threading.Event()
+    issue_done = threading.Event()
+    revoke_done = threading.Event()
+    errors: list[BaseException] = []
+
+    def persist(*_args, **_kwargs):
+        persistence_entered.set()
+        if not allow_persistence.wait(2):
+            raise runtime_spec.RuntimeSpecError("test persistence gate timed out")
+        return object()
+
+    monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
+
+    def run_issue() -> None:
+        try:
+            runtime_spec.issue(project, lambda _inputs: {"image": "booley-sandbox"})
+        except RuntimeError as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            issue_done.set()
+
+    def run_revoke() -> None:
+        try:
+            eda_grants.GrantCoordinator().revoke(project, "vivado")
+        except RuntimeError as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            revoke_done.set()
+
+    issuer = threading.Thread(target=run_issue)
+    issuer.start()
+    assert persistence_entered.wait(2)
+    revoker = threading.Thread(target=run_revoke)
+    revoker.start()
+    assert not revoke_done.wait(0.2)
+    allow_persistence.set()
+    issuer.join(2)
+    revoker.join(2)
+
+    assert issue_done.is_set() and revoke_done.is_set()
+    assert errors == []
+    reset_cache()
 
 
 def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:

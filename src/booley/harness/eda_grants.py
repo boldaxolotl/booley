@@ -14,6 +14,14 @@ from booley.runtime import issuance_invalidation
 class GrantCoordinator:
     """Serialize grant changes with durable Runtime invalidation."""
 
+    def recovery_pending(self) -> bool:
+        from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+        try:
+            return shared_recovery_blocks_command(read_only=True)
+        except RuntimeError as exc:
+            raise authority.AuthorityError(str(exc)) from exc
+
     def add(
         self,
         project: Path,

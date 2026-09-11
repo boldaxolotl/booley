@@ -12,6 +12,7 @@ from booley.eda.config import PROVISIONING_HOST, EdaConfig, EdaConfigError, load
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
+    ensure_relay_image,
     resolve_relay_image_id,
     resources_for_session,
 )
@@ -58,20 +59,68 @@ class SessionBuildRequirements:
     license_profile_name: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class LeasedSessionRequirements:
+    """EDA facts held under one authority lease for Runtime preparation."""
+
+    build: SessionBuildRequirements
+    runtime: SessionEdaRequirements
+
+
 def build_requirements(
     project_root: Path,
     *,
     vivado_enabled: bool,
 ) -> SessionBuildRequirements:
     """Resolve value-only EDA inputs for a prospective Runtime specification."""
+    with lease_build_requirements(project_root, vivado_enabled=vivado_enabled) as leased:
+        return leased.build
+
+
+@contextmanager
+def lease_build_requirements(
+    project_root: Path,
+    *,
+    vivado_enabled: bool,
+    prepare_relay: bool = False,
+    force_relay: bool = False,
+) -> Iterator[LeasedSessionRequirements]:
+    """Hold one coherent EDA snapshot through Runtime spec persistence."""
+    project = project_root.resolve(strict=True)
     try:
-        _, installation = requested_host_installation(
-            project_root,
-            vivado_enabled=vivado_enabled,
-        )
-        profile = requested_license(project_root, vivado_enabled=vivado_enabled)
+        config = load_eda_config(project).get("vivado")
     except EdaConfigError as exc:
         raise SessionRequirementsError(str(exc)) from exc
+    if config is None or not vivado_enabled:
+        runtime = _requirements(project, None, None, include_relay_identity=False)
+        yield LeasedSessionRequirements(_build_values(None, None), runtime)
+        return
+    host_provisioning = config.provisioning == PROVISIONING_HOST
+    try:
+        with authority.resolve_for_issuance(project, host_provisioning) as (
+            installation,
+            profile,
+        ):
+            if profile is not None and prepare_relay:
+                ensure_relay_image(force=force_relay)
+            runtime = _requirements(
+                project,
+                installation,
+                profile,
+                include_relay_identity=prepare_relay,
+            )
+            yield LeasedSessionRequirements(
+                _build_values(installation, profile),
+                runtime,
+            )
+    except (authority.AuthorityError, RelayDockerError) as exc:
+        raise SessionRequirementsError(str(exc)) from exc
+
+
+def _build_values(
+    installation: authority.Installation | None,
+    profile: authority.LicenseProfile | None,
+) -> SessionBuildRequirements:
     return SessionBuildRequirements(
         trusted_mounts=(
             ((installation.source, CONTAINER_TARGET),) if installation is not None else ()
@@ -81,8 +130,8 @@ def build_requirements(
             if profile is not None
             else ()
         ),
-        installation_name=installation.name if installation is not None else None,
-        license_profile_name=profile.name if profile is not None else None,
+        installation_name=installation.name if installation else None,
+        license_profile_name=profile.name if profile else None,
     )
 
 
@@ -148,19 +197,6 @@ def resolve_for_session(
     )
     if not eda_requested and not license_marker and not prior_eda:
         return nullcontext(_requirements(project_root, None, None, include_relay_identity=False))
-    return _leased_requirements(
-        project_root,
-        host_provisioning=host_provisioning,
-        include_relay_identity=include_relay_identity,
-    )
-
-
-def _leased_requirements(
-    project_root: Path,
-    *,
-    host_provisioning: bool,
-    include_relay_identity: bool,
-) -> AbstractContextManager[SessionEdaRequirements]:
     return _authority_lease(
         project_root,
         host_provisioning=host_provisioning,

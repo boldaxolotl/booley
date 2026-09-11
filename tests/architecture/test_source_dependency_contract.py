@@ -240,6 +240,17 @@ def test_config_runtime_rule_catches_all_static_import_locations(tmp_path, state
     [
         ("import booley.flows.execution\n", "booley.flows.execution", "D19"),
         (
+            "def helper():\n    from booley.flows import execution\n",
+            "booley.flows.execution",
+            "D19",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n    import booley.flows.execution\n",
+            "booley.flows.execution",
+            "D19",
+        ),
+        (
             "def helper():\n    from booley.runtime import session_issuance\n",
             "booley.runtime.session_issuance",
             "D20",

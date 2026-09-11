@@ -16,6 +16,21 @@ def test_defaults_enabled_without_config(tmp_path):
     assert flow_enabled("sim", tmp_path) is True
 
 
+def test_malformed_config_preserves_legacy_enabled_default(tmp_path):
+    root = _project(tmp_path, "[flows.sim\nenabled = false\n")
+    assert flow_enabled("sim", root) is True
+
+
+@pytest.mark.parametrize("config", [None, [], {"flows": []}])
+def test_non_mapping_config_preserves_enabled_default(config):
+    assert flow_enabled_from_config("sim", config) is True
+
+
+@pytest.mark.parametrize("value", [None, 0, "false", {}])
+def test_only_explicit_boolean_false_disables_flow(value):
+    assert flow_enabled_from_config("sim", {"flows": {"sim": {"enabled": value}}}) is True
+
+
 def test_enabled_false_read_from_flow_section(tmp_path):
     root = _project(tmp_path, "[flows.sim]\nenabled = false\n")
     assert flow_enabled("sim", root) is False
