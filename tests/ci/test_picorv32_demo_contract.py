@@ -16,7 +16,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
-from picorv32_ci_inputs import PICORV32_PULL_REQUEST_PATHS
+from picorv32_ci_inputs import PICORV32_INPUT_FILES
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
@@ -100,8 +100,27 @@ def _workflow_commands(path: Path) -> str:
 
 def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
     events = _workflow_events()
+    paths = set(events["pull_request"]["paths"])
 
-    assert set(events["pull_request"]["paths"]) == PICORV32_PULL_REQUEST_PATHS
+    assert paths >= PICORV32_INPUT_FILES
+    assert ".github/actions/prepare-picorv32-demo/**" in paths
+    assert "src/booley/**" not in paths
+    assert {
+        "src/booley/dev_support/demo_contract.py",
+        "src/booley/feedback/**",
+        "src/booley/harness/**",
+        "src/booley/projects/**",
+        "src/booley/runtime/**",
+        "src/booley/targets/**",
+        "src/booley/ticket_board/**",
+    } <= paths
+    assert paths.isdisjoint(
+        {
+            "src/booley/bwave/**",
+            "src/booley/docker/**",
+            "src/booley/review/**",
+        }
+    )
     assert events["push"] == {"branches": ["main"]}
     assert events["merge_group"] is None
     assert events["schedule"] == [{"cron": "23 3 * * *"}]

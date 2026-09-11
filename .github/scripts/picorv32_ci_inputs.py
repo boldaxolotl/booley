@@ -1,4 +1,4 @@
-"""Authoritative path sets for PicoRV32 CI assurance."""
+"""Shared input paths for PicoRV32 CI assurance."""
 
 from __future__ import annotations
 
@@ -14,14 +14,6 @@ PICORV32_INPUT_FILES = frozenset(
         ".github/scripts/verify_picorv32_demo.sh",
         ".github/workflows/picorv32-demo.yml",
         "pyproject.toml",
-    }
-)
-
-PICORV32_PULL_REQUEST_PATHS = frozenset(
-    {
-        ".github/actions/prepare-picorv32-demo/**",
-        *PICORV32_INPUT_FILES,
-        "src/booley/**",
     }
 )
 
