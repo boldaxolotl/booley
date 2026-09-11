@@ -3,8 +3,8 @@
 This is the canonical vocabulary for Booley's public qualification suite. Shared
 product concepts such as **Booley Flow** and **Trace Artifact** are defined in
 the [shared glossary](../docs/CONTEXT.md); **Finding** belongs to the
-[Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario definition and
-Capability Coverage rules belong in the [authoring guide](doc/AUTHORING.md), and
+[Feedback glossary](../src/booley/feedback/CONTEXT.md). Scenario and Check structure
+is summarized in the [suite README](README.md#scenario-and-check-structure), and
 Qualification scope and verdict rules belong in the
 [qualification guide](doc/QUALIFICATION.md). Run-record files and execution behavior
 belong in [FORMAT.md](doc/FORMAT.md) and
@@ -63,10 +63,6 @@ _Avoid_: QA Run, Job, Ticket run, test invocation
 **Protocol Stage**:
 One part of Scenario Run operation: admit, execute, or finish. It is distinct from a Scenario phase, which allocates and orders product work within execution.
 _Avoid_: phase, Step, pipeline stage
-
-**Quiescence**:
-The release of every active, privileged, scarce, or externally visible resource owned by a Scenario Run. Inert state may instead be retained for Human Maintainer review when the protocol's retention predicate is proven.
-_Avoid_: delete everything, abandon resources
 
 **Scenario Run Outcome**:
 The evaluation of one Scenario Run's evidence against its selected Checks. Its value is `passed`, `failed`, or `incomplete`, independently of whether execution completed, reached its deadline, or ended in operator error.

@@ -618,7 +618,7 @@ phases:
   title: Complete final regression
   minutes: 30
 - id: cleanup
-  title: Finish and quiesce
+  title: Finish and clean up resources
   minutes: 15
 steps:
 - id: inputs.pin
@@ -9646,13 +9646,13 @@ steps:
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.remotes
 - id: cleanup.verdict
   phase: cleanup
-  action: Failed mandatory quiescence prevents pass; eligible review retention does not.
+  action: Failed required resource cleanup prevents pass; eligible review retention does not.
   checks:
   - id: cleanup.verdict
     capabilities:
     - SESSION-RUNTIME-LIFECYCLE
-    stimulus: Failed mandatory quiescence prevents pass; eligible review retention does not.
-    expected: Failed mandatory quiescence prevents pass; eligible review retention does not.
+    stimulus: Failed required resource cleanup prevents pass; eligible review retention does not.
+    expected: Failed required resource cleanup prevents pass; eligible review retention does not.
     authority_ref: ../../doc/FINISH.md
     evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict
