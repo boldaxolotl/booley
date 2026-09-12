@@ -529,6 +529,12 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 18 --max-skips 0" in coverage["run"]
+    ticket_mode = next(step for step in validations if step["name"].startswith("Run Ticket Mode"))
+    assert "install -d -m 0777" in ticket_mode["run"]
+    assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
+    assert '"${VALIDATION_TMP}/alias-project/.booley_project"' in ticket_mode["run"]
+    assert "dst=/booley-project" in ticket_mode["run"]
+    assert "BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project" in ticket_mode["run"]
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
     assert "cd /validation-tmp/project" in rendered

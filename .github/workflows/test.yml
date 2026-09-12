@@ -1117,7 +1117,9 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
             run: >-
-              mkdir -p "${VALIDATION_TMP}/alias-project/.booley_project" &&
+              install -d -m 0777
+              "${VALIDATION_TMP}/alias-project"
+              "${VALIDATION_TMP}/alias-project/.booley_project" &&
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
               docker run --rm --init
