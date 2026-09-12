@@ -17,7 +17,7 @@ from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
-from booley.runtime.project_prepare import prepare_project
+from booley.runtime.project_prepare import PreparationResult, prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
@@ -773,11 +773,18 @@ def _validate_materialized_acceptance_basis(
         assert_ticket_worktree_inputs_unchanged,
     )
 
+    ticket_path = _current_ticket_path(ctx)
+    if ticket_path is None:
+        return StepResult(
+            block_reason=f"acceptance-input-change-required: Ticket {ctx.slug!r} is unavailable"
+        )
     try:
         assert_ticket_worktree_inputs_unchanged(
             ctx.project_root,
             ctx.acceptance_basis,
             worktree_path,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
         )
     except (OSError, AcceptanceBasisError) as exc:
         return StepResult(block_reason=str(exc))
@@ -817,10 +824,6 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
 
-    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
-    if basis_failure is not None:
-        return basis_failure
-
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
     if project_worktree is not None:
         _install_scope_hook(
@@ -830,6 +833,36 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
             acceptance_surface_root=worktree_path,
         )
     return None
+
+
+def _prepare_ticket_checkout(
+    ctx: TicketContext,
+    ticket_path: Path | None,
+    sim_flow_enabled: bool,
+) -> PreparationResult | StepResult:
+    if ctx.acceptance_basis is None:
+        preparation = prepare_project(
+            ctx.project_root,
+            ctx.work_dir,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
+            sim_flow_enabled=sim_flow_enabled,
+        )
+        return preparation if preparation.ok else StepResult(block_reason=preparation.error)
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+    from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+
+    if ticket_path is None:
+        return StepResult(block_reason=f"Ticket {ctx.slug!r} is unavailable during setup")
+    try:
+        return prepare_acceptance_checkout(
+            ctx.project_root,
+            ctx.work_dir,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
+        )
+    except AcceptanceBasisError as exc:
+        return StepResult(block_reason=str(exc))
 
 
 async def run(ctx: TicketContext) -> StepResult:
@@ -843,15 +876,13 @@ async def run(ctx: TicketContext) -> StepResult:
     project_root = ctx.project_root
     worktree_path = ctx.worktree_path
     sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
-    preparation = prepare_project(
-        project_root,
-        worktree_path,
-        slug=ctx.slug,
-        ticket_path=_current_ticket_path(ctx),
-        sim_flow_enabled=sim_flow_enabled,
-    )
-    if not preparation.ok:
-        return StepResult(block_reason=preparation.error)
+    ticket_path = _current_ticket_path(ctx)
+    preparation = _prepare_ticket_checkout(ctx, ticket_path, sim_flow_enabled)
+    if isinstance(preparation, StepResult):
+        return preparation
+    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
+    if basis_failure is not None:
+        return basis_failure
     fail = (
         (_commit_hook_outputs(ctx) if preparation.hook is not None else None)
         or _verify_project_paths(worktree_path, synth_flow_enabled, ctx.has_synth)

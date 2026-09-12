@@ -166,7 +166,13 @@ def test_pre_handoff_basis_guard_preserves_one_canonical_reason(
     monkeypatch.setattr(developer, "block_ticket", block)
 
     assert developer._block_changed_acceptance_basis(ctx, run_index=3) is True
-    validate.assert_called_once_with(tmp_path, basis, worktree)
+    validate.assert_called_once_with(
+        tmp_path,
+        basis,
+        worktree,
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+    )
     block.assert_called_once_with(
         ctx,
         "acceptance-input-change-required: projected core changed",

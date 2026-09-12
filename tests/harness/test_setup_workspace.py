@@ -111,7 +111,13 @@ class TestMaterializedAcceptanceBasis:
             result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 
         assert result is None
-        validate.assert_called_once_with(ctx.project_root, ctx.acceptance_basis, tmp_path)
+        validate.assert_called_once_with(
+            ctx.project_root,
+            ctx.acceptance_basis,
+            tmp_path,
+            slug=ctx.slug,
+            ticket_path=ctx.ticket_path,
+        )
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
@@ -756,6 +762,57 @@ def _mock_success(**kwargs):
 
 class TestWorkspaceRun:
     """Call actual setup.workspace.run() — kills real mutants."""
+
+    @pytest.mark.asyncio
+    async def test_basis_setup_prepares_live_checkout_before_validation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from booley.harness.setup import workspace as workspace_module
+        from booley.harness.setup.workspace import run
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        ctx = _make_ctx(
+            tmp_path,
+            acceptance_basis=MagicMock(),
+            worktree_path=worktree,
+        )
+        ctx.ticket_path.parent.mkdir(parents=True)
+        ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+        events: list[str] = []
+
+        def prepare(*_args, **_kwargs):
+            events.append("prepare")
+            return MagicMock(ok=True, error="", hook=None)
+
+        def validate(*_args, **_kwargs):
+            events.append("validate")
+
+        with (
+            patch.object(workspace_module, "_prepare_outer_worktree", return_value=None),
+            patch.object(
+                workspace_module,
+                "_prepare_project_worktree_and_scopes",
+                return_value=None,
+            ),
+            patch.object(workspace_module, "_load_flow_enablement", return_value=(False, False)),
+            patch.object(workspace_module, "_verify_project_paths", return_value=None),
+            patch.object(workspace_module, "_freeze_synth_baseline", return_value=None),
+            patch(
+                "booley.ticket_board.acceptance_validation.prepare_acceptance_checkout",
+                side_effect=prepare,
+            ),
+            patch.object(
+                workspace_module,
+                "_validate_materialized_acceptance_basis",
+                side_effect=validate,
+            ),
+        ):
+            result = await run(ctx)
+
+        assert result.block_reason is None
+        assert events == ["prepare", "validate"]
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

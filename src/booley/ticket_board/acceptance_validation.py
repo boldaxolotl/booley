@@ -16,6 +16,7 @@ from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     resolve_checkout_project_dir,
 )
+from booley.runtime.project_prepare import PreparationResult, prepare_project
 
 from .acceptance_basis import (
     BLOCK_REASON,
@@ -30,18 +31,61 @@ def assert_ticket_worktree_inputs_unchanged(
     project_root: Path | str,
     basis: AcceptanceBasis,
     live_checkout: Path | str,
+    *,
+    slug: str,
+    ticket_path: Path | str,
 ) -> None:
     """Validate one live Ticket Workspace against a rendered immutable Basis."""
     try:
-        _validate_live_worktree(Path(project_root), basis, Path(live_checkout))
+        _validate_live_worktree(
+            Path(project_root),
+            basis,
+            Path(live_checkout),
+            slug=slug,
+            ticket_path=Path(ticket_path),
+        )
     except (AcceptanceBasisError, CoreProjectionError, OSError, ValueError) as exc:
         raise _canonical_block_error(exc) from exc
+
+
+def prepare_acceptance_checkout(
+    project_root: Path | str,
+    checkout: Path | str,
+    *,
+    slug: str,
+    ticket_path: Path | str,
+) -> PreparationResult:
+    """Apply the deterministic Acceptance Basis preparation contract."""
+    root = Path(project_root).resolve()
+    prepared = Path(checkout).resolve()
+    try:
+        _require_contained_project_directory(prepared)
+        from booley.flows.execution import flow_enabled
+
+        result = prepare_project(
+            root,
+            prepared,
+            slug=slug,
+            ticket_path=ticket_path,
+            sim_flow_enabled=flow_enabled("sim", prepared),
+        )
+        if not result.ok:
+            raise AcceptanceBasisError(result.error)
+        reconcile_projected_cores(prepared)
+        if native_cores_ignored(prepared):
+            reconcile_isolated_registry(prepared)
+    except (AcceptanceBasisError, CoreProjectionError, OSError, ValueError) as exc:
+        raise _canonical_block_error(exc) from exc
+    return result
 
 
 def _validate_live_worktree(
     project_root: Path,
     basis: AcceptanceBasis,
     live_checkout: Path,
+    *,
+    slug: str,
+    ticket_path: Path,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="booley-live-basis-") as raw_directory:
         reference = materialize_basis_checkout(
@@ -49,10 +93,12 @@ def _validate_live_worktree(
             basis,
             Path(raw_directory) / "checkout",
         )
-        _require_contained_project_directory(reference)
-        reconcile_projected_cores(reference)
-        if native_cores_ignored(reference):
-            reconcile_isolated_registry(reference)
+        prepare_acceptance_checkout(
+            project_root,
+            reference,
+            slug=slug,
+            ticket_path=ticket_path,
+        )
         _assert_renderers_preserved_authoring(reference, basis)
         assert_candidate_inputs_unchanged(
             basis,
@@ -63,7 +109,12 @@ def _validate_live_worktree(
 
 
 def _require_contained_project_directory(reference: Path) -> None:
-    project_dir = resolve_checkout_project_dir(reference).resolve()
+    try:
+        project_dir = resolve_checkout_project_dir(reference).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        raise AcceptanceBasisError(
+            f"cannot prepare materialized Acceptance Basis at {reference}: {exc}"
+        ) from exc
     try:
         project_dir.relative_to(reference.resolve())
     except ValueError as exc:
