@@ -240,11 +240,13 @@ the diff, but that is not a substitute for engineering review.
 > **Tip: let the agent commit, you push.** In Interactive Mode, let the agent
 > commit its own work. It saves you the time of writing proper commit messages,
 > and there's little to gain from doing it by hand. What the agent **can't** do
-> is push to `origin`, which is blocked by design, so a sandboxed agent can never
-> corrupt your remote. So the loop is: let it commit, review the commits, then
-> push them yourself from a terminal outside the Booley sandbox. (In Ticket Mode
-> this isn't a choice: the agent always commits, since that's how a ticket's
-> work is recorded and moved to review; the same push-to-`origin` block applies.)
+> is push to a Git server outside the Session Runtime: default-deny egress blocks
+> that network access. Container-local repositories and local-path remotes,
+> including one named `origin`, remain writable sandbox state. So the loop is:
+> let the agent commit, review the commits, then push them yourself from a
+> terminal outside the Booley sandbox. (In Ticket Mode this isn't a choice: the
+> agent always commits, since that's how a ticket's work is recorded and moved
+> to review; the same external-server boundary applies.)
 
 ## Booley Flows & Specialists
 

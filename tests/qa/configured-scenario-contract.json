@@ -3,7 +3,7 @@
   "configured_scenarios": {
     "picorv32-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "3fac2c80527f4f1c390e1721eba402c6105b9b8cfde7b6535a40357b36cd582e",
+      "semantics": "2d2d69734fab55e43316d4e76d4fd3a7f46e7b94429f4162129299d98f69da18",
       "checks": "e79ff864fab24f291c3ef3c667384363b6be3c68541e1bf7d3d60d51dd1762e4",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
