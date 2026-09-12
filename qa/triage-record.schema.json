@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/boldaxolotl/booley/qa/triage-record.schema.json",
+  "title": "Booley Public QA triage records",
+  "$defs": {
+    "configuredScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "configured_scenario_id",
+        "required",
+        "parameters",
+        "expected_check_ids",
+        "exclusions",
+        "pre_run_requirements"
+      ],
+      "properties": {
+        "scenario_id": {"type": "string", "minLength": 1},
+        "configured_scenario_id": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "parameters": {"type": "object"},
+        "expected_check_ids": {
+          "type": ["array", "null"],
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "exclusions": {"type": "array", "items": {"type": "object"}},
+        "pre_run_requirements": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "triage_format_version",
+        "record_type",
+        "session_id",
+        "target_product_revision",
+        "target_suite_revision",
+        "qualification_policy_revision",
+        "helper_revision",
+        "suite_root",
+        "scenario_files",
+        "created_at",
+        "configured_scenarios"
+      ],
+      "properties": {
+        "triage_format_version": {"const": 1},
+        "record_type": {"const": "triage-session"},
+        "session_id": {"type": "string", "minLength": 1},
+        "target_product_revision": {"type": "string", "minLength": 1},
+        "target_suite_revision": {"type": "string", "minLength": 1},
+        "qualification_policy_revision": {"type": "string", "minLength": 1},
+        "helper_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "suite_root": {"type": "string", "minLength": 1},
+        "scenario_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["scenario_id", "path", "sha256"],
+            "properties": {
+              "scenario_id": {"type": "string", "minLength": 1},
+              "path": {"type": "string", "minLength": 1},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        },
+        "created_at": {"type": "string", "format": "date-time"},
+        "configured_scenarios": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/configuredScenario"},
+          "minItems": 1
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "triage_format_version",
+        "record_type",
+        "session_id",
+        "sequence",
+        "event_id",
+        "idempotency_key",
+        "event_type",
+        "timestamp",
+        "payload"
+      ],
+      "properties": {
+        "triage_format_version": {"const": 1},
+        "record_type": {"const": "triage-event"},
+        "session_id": {"type": "string", "minLength": 1},
+        "sequence": {"type": "integer", "minimum": 1},
+        "event_id": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "event_type": {
+          "enum": [
+            "run-admitted",
+            "run-superseded",
+            "case-proposed",
+            "case-merged",
+            "case-split",
+            "case-reopened",
+            "case-dispositioned",
+            "qualification-calculated"
+          ]
+        },
+        "timestamp": {"type": "string", "format": "date-time"},
+        "payload": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

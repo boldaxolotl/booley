@@ -12,7 +12,7 @@ the context that owns the work at hand.
 | B-Wave | [crates/bwave/CONTEXT.md](crates/bwave/CONTEXT.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/CONTEXT.md](src/booley/flows/sim/CONTEXT.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
 | Feedback | [src/booley/feedback/CONTEXT.md](src/booley/feedback/CONTEXT.md) | Findings, friction, impressions, and their durable log |
-| Public QA | [qa/CONTEXT.md](qa/CONTEXT.md) | Qualification Scenarios, Configured Scenarios, Scenario Runs, Checks, outcomes, and Capability Coverage |
+| Public QA | [qa/CONTEXT.md](qa/CONTEXT.md) | Qualification Scenarios, Configured Scenarios, Scenario Runs, Checks, Observations, human triage, outcomes, and Capability Coverage |
 
 ## Relationships
 
@@ -24,8 +24,8 @@ the context that owns the work at hand.
   shared Target through one Simulation Flow invocation.
 - **Simulation Coverage → Ticket Board**: a Coverage Criterion contributes
   coverage evidence to a Ticket's acceptance state.
-- **Shared Booley and Public QA → Feedback**: product use and Scenario Runs record
-  observations as Findings in the Findings Log.
+- **Shared Booley and Public QA → Feedback**: product use records observations; Public
+  QA human triage promotes confirmed product and documentation problems to Findings.
 - **Public QA → all product contexts**: Scenario Checks qualify behavior
   across the other contexts. Its Capability Coverage is suite mapping, distinct
   from the RTL measurements owned by Simulation Coverage.

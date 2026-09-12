@@ -13,12 +13,12 @@ Booley, Ticket Board, and B-Wave vocabulary.
 Booley has one maintainer and no human QA team. Release QA therefore has to be work
 that agents can execute repeatably and a maintainer can audit afterward. This suite
 defines the scope, instructions, evidence, and verdict rules needed to do that without
-letting an agent decide for itself what counts as a pass.
+letting a Scenario Operator decide which failures are actionable.
 
 Agents perform setup, product exercises, fault injection, recovery, evidence
 collection, and safe shutdown and cleanup of run-owned resources. The Human Maintainer
-still owns the Scenarios, required Configured Scenarios, acceptance rules, and final
-qualification decision.
+still owns the Scenarios, required Configured Scenarios, acceptance rules, and every
+Triage Disposition. Deterministic tooling derives outcomes from those decisions.
 
 ## Starting a run
 
@@ -44,6 +44,31 @@ is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumabl
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
 only; it does not execute a Scenario Run.
 
+The operator finishes by sealing version-2 `check-results.jsonl`,
+`observations.jsonl`, evidence, execution status, and cleanup status. It does not
+create Findings, calculate a Scenario Run Outcome, or calculate Qualification.
+
+## Triaging completed runs
+
+Explicitly invoke the user-only [`booley-qa-triage` skill](booley-qa-triage/SKILL.md)
+with a triage artifact root and one or more sealed Scenario Run roots. The skill uses
+the deterministic [`triage.py`](triage.py) helper to validate records, enumerate every
+non-pass result and Observation, and group only explicitly causal results into Triage
+Cases. A consequential failure is shown inside its suspected root case instead of as a
+separate question; it never disappears from the evidence or accounting.
+
+The Human Maintainer reviews each Triage Case and may confirm, split, merge, reopen,
+or disposition it. Confirmed product and documentation problems become
+`findings.jsonl`; actionable suite work becomes `qa-changes.jsonl`. Every candidate
+must belong to exactly one active case and every case must have a disposition before
+the helper calculates its Scenario Run Outcome.
+
+Qualification is the final triage step. It aggregates compatible, completely triaged
+runs for one product and target suite revision. A failed required run makes
+Qualification fail even when another required run is missing or incomplete; without
+a failure, missing or incomplete required runs make it incomplete. Optional runs are
+reported separately. Adding a later passing run never erases a trustworthy failure.
+
 ## Adding behavior to QA
 
 Explicitly invoke the user-only [`booley-add-to-qa` skill](booley-add-to-qa/SKILL.md)
@@ -59,10 +84,14 @@ approved changes. It does not execute Scenario Runs.
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Fixed native coverage fixtures, expected operands, approved waiver inputs, independent evaluator and external boundary controls |
 | [`coverage.yaml`](coverage.yaml) | Product capability inventory and public contract sources |
 | [`scenario.schema.json`](scenario.schema.json) | Structural contract for scenario files |
+| [`run-record.schema.json`](run-record.schema.json) | Structural contract for version-2 Scenario Run records |
+| [`triage-record.schema.json`](triage-record.schema.json) | Structural contract for version-1 triage sessions and events |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
+| [`triage.py`](triage.py) | Deterministic sealing, candidate grouping, event replay, and verdict helper used by human triage |
 | [`booley-add-to-qa/`](booley-add-to-qa/) | Explicitly invoked skill that turns a proposed public behavior into reviewed Capability and Check changes |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
-| [`doc/`](doc/) | Execution protocol, run record contract, and qualification rules |
+| [`booley-qa-triage/`](booley-qa-triage/) | Explicitly invoked skill for Human Maintainer triage and Qualification |
+| [`doc/`](doc/) | Scenario Run execution protocol and record contract |
 
 The current suite maps 69 product capabilities and 16 distinct EDA integration
 references to 1,658 checks. Those counts show that the reviewed requirements are

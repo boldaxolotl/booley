@@ -10,7 +10,9 @@ their pre-state, command evidence, and resulting identities with the producing S
 
 Use documentation and packaged skills matching the tested build, CLI or MCP help,
 and ordinary Project inspection. Consult source only to verify or classify behavior
-after preserving the original observation.
+after preserving the original Observation. Append unexpected behavior, incidental
+facts, friction, impressions, and wins to `observations.jsonl` without deciding
+whether they are Findings.
 
 Record active sub-agent assignments in `operator-state.json` and reconcile them before
 finishing execution. Sub-agents cannot change authority or acceptance requirements.
@@ -32,6 +34,8 @@ failures after workarounds or retries; later success does not turn them into pas
 Record alternatives and deviations with the affected Check. A declared alternative
 may satisfy it. An undeclared change to inputs, actions, authority, or evidence blocks
 the claim unless trustworthy failure evidence already exists; preserve that failure.
+Use an exact `caused_by_result_ids` link only when a prior Check Result caused the
+current result. Shared messages, tools, resources, and timing alone are not causality.
 
 Execution ends when every selected Check has a Check Result and no active assignment
 or uncertain mutation remains. On a deadline, loss of control, or other stop, record

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Triage Booley QA"
+  short_description: "Human-owned triage and QA qualification"
+  default_prompt: "Use $booley-qa-triage to triage these sealed Scenario Runs and calculate Qualification."
+
+policy:
+  allow_implicit_invocation: false

@@ -11,6 +11,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- Public QA Scenario Runs now seal versioned Check Results, free-form
+  Observations, evidence, and cleanup state without deciding Findings or verdicts.
+  The explicitly invoked `booley-qa-triage` skill gives the Human Maintainer an
+  exhaustive causal-case review and deterministically projects Findings, QA
+  Changes, Scenario Run Outcomes, and final Qualification.
 - Every built-in Flow now returns the same versioned `FlowPlan` from a dry run.
   The plan records each Target or baseline work unit, timeout, resolved inputs,
   recipe, command, expected artifacts, and planning errors without running EDA
@@ -62,6 +67,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- Existing version-1 Public QA run records remain historical evidence and cannot
+  be triaged in place. New runs use the version-2 record contract and a separate
+  triage artifact root; the standalone qualification guide has been removed
+  because Qualification is now the final triage step.
 - Replace `--timeout` with `--timeout-ms`. The old CLI spelling remains a
   deprecated alias for one compatibility window. Configuration and MCP calls
   use `timeout_ms`.

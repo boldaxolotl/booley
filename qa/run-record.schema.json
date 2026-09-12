@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/boldaxolotl/booley/qa/run-record.schema.json",
+  "title": "Booley Public QA Scenario Run records",
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["run_record_format_version", "record_type", "run_id"],
+      "properties": {
+        "run_record_format_version": {"const": 2},
+        "record_type": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "run": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_record_format_version",
+            "record_type",
+            "run_id",
+            "scenario_id",
+            "configured_scenario_id",
+            "product_revision",
+            "suite_revision",
+            "selected_check_ids",
+            "parameters",
+            "identities",
+            "authority",
+            "created_at",
+            "deadline_at",
+            "admission_evidence"
+          ],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "run"},
+            "run_id": {"type": "string", "minLength": 1},
+            "scenario_id": {"type": "string", "minLength": 1},
+            "configured_scenario_id": {"type": "string", "minLength": 1},
+            "product_revision": {"type": "string", "minLength": 1},
+            "suite_revision": {"type": "string", "minLength": 1},
+            "selected_check_ids": {"$ref": "#/$defs/stringArray"},
+            "parameters": {"type": "object"},
+            "identities": {"type": "object"},
+            "authority": {"type": "object"},
+            "created_at": {"type": "string", "format": "date-time"},
+            "deadline_at": {"type": "string", "format": "date-time"},
+            "admission_evidence": {"$ref": "#/$defs/stringArray"}
+          }
+        }
+      ]
+    },
+    "operatorState": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_record_format_version",
+            "record_type",
+            "run_id",
+            "stage",
+            "status",
+            "entered_at",
+            "completed_at",
+            "next_step_id",
+            "next_check_attempt",
+            "active_assignments",
+            "outstanding_mutations",
+            "execution_status",
+            "cleanup_status",
+            "last_updated_at"
+          ],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "operator-state"},
+            "run_id": {"type": "string", "minLength": 1},
+            "stage": {"enum": ["execute", "finish"]},
+            "status": {"enum": ["running", "complete"]},
+            "entered_at": {"type": "string", "format": "date-time"},
+            "completed_at": {"type": ["string", "null"], "format": "date-time"},
+            "next_step_id": {"type": ["string", "null"]},
+            "next_check_attempt": {"type": ["string", "null"]},
+            "active_assignments": {"type": "array", "items": {"type": "object"}},
+            "outstanding_mutations": {"type": "array", "items": {"type": "object"}},
+            "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
+            "cleanup_status": {"enum": ["complete", "failed"]},
+            "last_updated_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "deviation": {
+      "type": ["object", "null"],
+      "required": ["kind", "declared", "actual", "reason", "evidence_refs"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "declared": {"type": "string", "minLength": 1},
+        "actual": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/stringArray"}
+      },
+      "additionalProperties": false
+    },
+    "checkResult": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_record_format_version",
+            "record_type",
+            "run_id",
+            "check_result_id",
+            "step_id",
+            "check_id",
+            "timestamp",
+            "attempt",
+            "status",
+            "expected",
+            "observed",
+            "evidence_refs",
+            "producing_step_identities",
+            "caused_by_result_ids",
+            "corrects_result_id",
+            "review_reasons",
+            "evidence_integrity",
+            "deviation",
+            "recovery_refs"
+          ],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "check-result"},
+            "run_id": {"type": "string", "minLength": 1},
+            "check_result_id": {"type": "string", "minLength": 1},
+            "step_id": {"type": "string", "minLength": 1},
+            "check_id": {"type": "string", "minLength": 1},
+            "timestamp": {"type": "string", "format": "date-time"},
+            "attempt": {"type": "integer", "minimum": 1},
+            "status": {"enum": ["pass", "fail", "blocked", "unavailable"]},
+            "expected": {"type": "string", "minLength": 1},
+            "observed": {"type": "string", "minLength": 1},
+            "evidence_refs": {"$ref": "#/$defs/stringArray"},
+            "producing_step_identities": {"type": "object"},
+            "caused_by_result_ids": {"$ref": "#/$defs/stringArray"},
+            "corrects_result_id": {"type": ["string", "null"]},
+            "review_reasons": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "nonpass",
+                  "conflicting",
+                  "correction-chain",
+                  "deviation",
+                  "evidence-integrity"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "evidence_integrity": {"enum": ["valid", "invalid", "uncertain"]},
+            "deviation": {"$ref": "#/$defs/deviation"},
+            "recovery_refs": {"$ref": "#/$defs/stringArray"}
+          }
+        }
+      ]
+    },
+    "observation": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_record_format_version",
+            "record_type",
+            "run_id",
+            "observation_id",
+            "timestamp",
+            "text",
+            "step_id",
+            "check_result_ids",
+            "caused_by_result_ids",
+            "evidence_refs",
+            "corrects_observation_id",
+            "review_reasons"
+          ],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "observation"},
+            "run_id": {"type": "string", "minLength": 1},
+            "observation_id": {"type": "string", "minLength": 1},
+            "timestamp": {"type": "string", "format": "date-time"},
+            "text": {"type": "string", "minLength": 1},
+            "step_id": {"type": ["string", "null"]},
+            "check_result_ids": {"$ref": "#/$defs/stringArray"},
+            "caused_by_result_ids": {"$ref": "#/$defs/stringArray"},
+            "evidence_refs": {"$ref": "#/$defs/stringArray"},
+            "corrects_observation_id": {"type": ["string", "null"]},
+            "review_reasons": {
+              "type": "array",
+              "items": {"enum": ["observation", "correction-chain"]},
+              "uniqueItems": true,
+              "contains": {"const": "observation"}
+            }
+          }
+        }
+      ]
+    },
+    "cleanupLedger": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_record_format_version", "record_type", "run_id", "resources"],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "cleanup-ledger"},
+            "run_id": {"type": "string", "minLength": 1},
+            "resources": {"type": "array", "items": {"type": "object"}}
+          }
+        }
+      ]
+    },
+    "evidenceManifest": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_record_format_version", "record_type", "run_id", "entries"],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "evidence-manifest"},
+            "run_id": {"type": "string", "minLength": 1},
+            "entries": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "sha256", "size", "source_refs"],
+                "properties": {
+                  "path": {"type": "string", "minLength": 1},
+                  "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  "size": {"type": "integer", "minimum": 0},
+                  "source_refs": {"$ref": "#/$defs/stringArray"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "runManifest": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_record_format_version",
+            "record_type",
+            "run_id",
+            "sealed_at",
+            "execution_status",
+            "cleanup_status",
+            "record_counts",
+            "files",
+            "evidence_manifest_sha256"
+          ],
+          "properties": {
+            "run_record_format_version": {"const": 2},
+            "record_type": {"const": "run-manifest"},
+            "run_id": {"type": "string", "minLength": 1},
+            "sealed_at": {"type": "string", "format": "date-time"},
+            "execution_status": {"enum": ["completed", "deadline-reached", "operator-error"]},
+            "cleanup_status": {"enum": ["complete", "failed"]},
+            "record_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["check_results", "observations", "evidence"],
+              "properties": {
+                "check_results": {"type": "integer", "minimum": 0},
+                "observations": {"type": "integer", "minimum": 0},
+                "evidence": {"type": "integer", "minimum": 0}
+              }
+            },
+            "files": {
+              "type": "object",
+              "minProperties": 7,
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "evidence_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
