@@ -19,6 +19,7 @@ from .acceptance_basis import (
     validate_ticket_view,
 )
 from .acceptance_targets import resolve_commit
+from .acceptance_validation import prepare_acceptance_checkout
 from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
 from .validation import validate_ticket_fields
@@ -116,19 +117,14 @@ def _validate_current_ticket_view(
     fields: dict[str, object],
     body: str,
 ) -> list[str]:
-    from booley.flows.execution import flow_enabled
-
     with tempfile.TemporaryDirectory(prefix="booley-readiness-basis-") as directory:
         current = materialize_current_ticket_checkout(root, basis, Path(directory) / "checkout")
-        preparation = prepare_project(
+        prepare_acceptance_checkout(
             root,
             current,
             slug=slug,
             ticket_path=ticket,
-            sim_flow_enabled=flow_enabled("sim", current),
         )
-        if not preparation.ok:
-            raise AcceptanceBasisError(preparation.error)
         errors = validate_ticket_fields(
             fields,
             body,
@@ -137,7 +133,7 @@ def _validate_current_ticket_view(
             project_root=current,
             check_tb_files=True,
         )
-        errors.extend(validate_ticket_view(current, basis, allow_generated=True))
+        errors.extend(validate_ticket_view(current, basis))
         assert_live_inputs_unchanged(basis, root, current)
         return errors
 

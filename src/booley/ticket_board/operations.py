@@ -476,33 +476,20 @@ def _prepare_materialized_basis_view(
     basis: Any,
 ) -> list[str]:
     """Prepare and validate one exact composite through the runtime contract."""
-    from booley.flows.execution import flow_enabled
-    from booley.runtime.project_dir import resolve_checkout_project_dir
-    from booley.runtime.project_prepare import prepare_project
-
     from .acceptance_basis import AcceptanceBasisError, validate_ticket_view
+    from .acceptance_validation import prepare_acceptance_checkout
     from .io import find_ticket_file
 
     ticket, _status = find_ticket_file(tio.tickets_dir, slug)
     if ticket is None:
         raise AcceptanceBasisError(f"ticket {slug!r} is unavailable during Basis validation")
-    try:
-        project_dir = resolve_checkout_project_dir(checkout).resolve()
-        project_dir.relative_to(checkout.resolve())
-        preparation = prepare_project(
-            tio._project_root,
-            checkout,
-            slug=slug,
-            ticket_path=ticket,
-            sim_flow_enabled=flow_enabled("sim", checkout),
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        raise AcceptanceBasisError(
-            f"cannot prepare materialized Acceptance Basis at {checkout}: {exc}"
-        ) from exc
-    if not preparation.ok:
-        raise AcceptanceBasisError(preparation.error)
-    return validate_ticket_view(checkout, basis, allow_generated=True)
+    prepare_acceptance_checkout(
+        tio._project_root,
+        checkout,
+        slug=slug,
+        ticket_path=ticket,
+    )
+    return validate_ticket_view(checkout, basis)
 
 
 def _handoff_jobs_clear(log_dir: Path, slug: str) -> bool:

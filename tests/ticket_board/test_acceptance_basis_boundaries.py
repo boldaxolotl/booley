@@ -16,6 +16,7 @@ import pytest
 from booley.fusesoc import core_projection
 from booley.ticket_board import (
     acceptance_basis,
+    acceptance_validation,
 )
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
@@ -385,18 +386,21 @@ def test_destination_and_ticket_commit_inputs_require_complete_full_sha_maps(
         )
 
 
-def test_validate_ticket_view_wraps_generated_projection_failure(
+def test_prepare_acceptance_checkout_wraps_generated_projection_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
 
     monkeypatch.setattr(
-        core_projection,
+        acceptance_validation,
         "reconcile_projected_cores",
         lambda *_args: (_ for _ in ()).throw(core_projection.CoreProjectionError("broken")),
     )
-    with pytest.raises(AcceptanceBasisError, match="could not prepare generated"):
-        acceptance_basis.validate_ticket_view(
-            tmp_path, AcceptanceBasis((_participant(),)), allow_generated=True
+    with pytest.raises(AcceptanceBasisError, match="acceptance-input-change-required: broken"):
+        acceptance_validation.prepare_acceptance_checkout(
+            tmp_path,
+            tmp_path,
+            slug="ticket",
+            ticket_path=tmp_path / "ticket.md",
         )
 
 
