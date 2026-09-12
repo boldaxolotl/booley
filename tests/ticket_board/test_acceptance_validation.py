@@ -7,7 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -507,30 +507,45 @@ def test_external_reference_project_route_fails_closed_before_preparation(
     prepare.assert_not_called()
 
 
-def test_setup_guard_accepts_matching_post_setup_marker(tmp_path: Path) -> None:
-    from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker_uses_worktree_path", [False, True])
+async def test_setup_run_enforces_post_setup_marker_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker_uses_worktree_path: bool,
+) -> None:
+    from booley.harness.setup import workspace as setup_workspace
 
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
-    prepare_acceptance_checkout(
-        root,
-        workspace,
+    root, workspace, basis = _enqueued_projection_ticket(
+        tmp_path,
+        post_setup_marker=True,
+        marker_uses_worktree_path=marker_uses_worktree_path,
+    )
+    ctx = TicketContext(
         slug="generated-input",
         ticket_path=_runtime_ticket(root),
-    )
-    ctx = SimpleNamespace(
+        ticket_type="feature",
+        branch="main",
+        summary="Accept generated input",
         project_root=root,
         acceptance_basis=basis,
-        slug="generated-input",
-        ticket_path=_runtime_ticket(root),
-        _tickets_dir=root / ".booley_project/tickets",
+        worktree_path=workspace,
+    )
+    monkeypatch.setattr(setup_workspace, "_prepare_outer_worktree", lambda _ctx: None)
+    monkeypatch.setattr(
+        setup_workspace,
+        "_prepare_project_worktree_and_scopes",
+        lambda _ctx: None,
     )
 
-    assert _validate_materialized_acceptance_basis(ctx, workspace) is None
-    (workspace / "picosoc/FUSESOC_IGNORE").write_text("drift", encoding="utf-8")
-    blocked = _validate_materialized_acceptance_basis(ctx, workspace)
+    result = await setup_workspace.run(ctx)
 
-    assert blocked is not None
-    assert blocked.block_reason.count("acceptance-input-change-required") == 1
+    if marker_uses_worktree_path:
+        assert result.block_reason is not None
+        assert "picosoc/FUSESOC_IGNORE" in result.block_reason
+    else:
+        assert result.block_reason is None
+        assert (workspace / "picosoc/FUSESOC_IGNORE").read_text(encoding="utf-8") == "stable"
 
 
 def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marker(
@@ -653,8 +668,10 @@ def test_developer_handoff_accepts_matching_post_setup_marker_and_rejects_drift(
     assert reason.count("acceptance-input-change-required") == 1
 
 
-def test_resumed_setup_accepts_matching_post_setup_marker_and_rejects_missing_marker(
+@pytest.mark.asyncio
+async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
     prepare_acceptance_checkout(
@@ -672,51 +689,62 @@ def test_resumed_setup_accepts_matching_post_setup_marker_and_rejects_missing_ma
         project_root=root,
         acceptance_basis=basis,
         worktree_path=workspace,
+        completed_steps=["setup"],
+        feature_branch="generated-input",
+    )
+    monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
+    monkeypatch.setattr(
+        "booley.harness.setup.workspace.refresh_scope_guards",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        developer,
+        "_deferred_criteria_failure",
+        lambda _ctx: "stop after resume guard",
+    )
+    block = MagicMock()
+    monkeypatch.setattr(developer, "block_ticket", block)
+    monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
+
+    await developer._run_ticket_body(ctx, root, 0.0)
+    block.assert_called_once_with(ctx, "stop after resume guard", "setup")
+
+    block.reset_mock()
+    (workspace / "picosoc/FUSESOC_IGNORE").unlink()
+    await developer._run_ticket_body(ctx, root, 0.0)
+
+    reason = block.call_args.args[1]
+    assert "picosoc/FUSESOC_IGNORE" in reason
+    assert reason.count("acceptance-input-change-required") == 1
+
+
+def test_readiness_entry_accepts_marker_and_rejects_missing_marker(
+    tmp_path: Path,
+) -> None:
+    from booley.ticket_board.readiness import check_ticket_ready
+
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
     )
 
-    assert developer._resumed_basis_failure(ctx) is None
+    assert check_ticket_ready(root, "generated-input").errors == ()
     (workspace / "picosoc/FUSESOC_IGNORE").unlink()
 
-    failure = developer._resumed_basis_failure(ctx)
-    assert failure is not None
-    assert failure.count("acceptance-input-change-required") == 1
+    errors = check_ticket_ready(root, "generated-input").errors
+
+    assert any("picosoc/FUSESOC_IGNORE" in error for error in errors)
 
 
-def test_readiness_accepts_matching_post_setup_marker(
+def test_terminal_handoff_path_accepts_marker_and_rejects_drift(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from booley.ticket_board import readiness
-
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
-    ticket = _runtime_ticket(root)
-    prepare_acceptance_checkout(
-        root,
-        workspace,
-        slug="generated-input",
-        ticket_path=ticket,
-    )
-    monkeypatch.setattr(readiness, "validate_ticket_fields", lambda *_args, **_kwargs: [])
-
-    assert (
-        readiness._validate_current_ticket_view(
-            root,
-            ticket,
-            "generated-input",
-            basis,
-            {},
-            "",
-        )
-        == []
-    )
-
-
-def test_terminal_handoff_accepts_matching_post_setup_marker(tmp_path: Path) -> None:
     from booley.ticket_board import operations
-    from booley.ticket_board.acceptance_basis import (
-        assert_live_inputs_unchanged,
-        materialize_current_ticket_checkout,
-    )
 
     root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
     ticket = _runtime_ticket(root)
@@ -726,22 +754,18 @@ def test_terminal_handoff_accepts_matching_post_setup_marker(tmp_path: Path) -> 
         slug="generated-input",
         ticket_path=ticket,
     )
-    reference = materialize_current_ticket_checkout(root, basis, tmp_path / "handoff")
     tio = SimpleNamespace(
         _project_root=root,
         tickets_dir=root / ".booley_project/tickets",
+        logs_dir=root / ".booley_project/tickets/logs",
+        _load_basis_unlocked=lambda *_args, **_kwargs: basis,
     )
 
-    assert (
-        operations._prepare_materialized_basis_view(
-            tio,
-            "generated-input",
-            reference,
-            basis,
-        )
-        == []
-    )
-    assert_live_inputs_unchanged(basis, root, reference)
+    assert operations._handoff_basis_heads(tio, "generated-input") is not None
+    (workspace / "picosoc/FUSESOC_IGNORE").write_text("drift", encoding="utf-8")
+
+    assert operations._handoff_basis_heads(tio, "generated-input") is None
+    assert "picosoc/FUSESOC_IGNORE" in capsys.readouterr().err
 
 
 def test_live_guard_materializes_and_prepares_reference_once(
