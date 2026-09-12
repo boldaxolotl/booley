@@ -17,7 +17,7 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
-from booley.runtime.project_dir import resolve_project_dir, runtime_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .persistence import atomic_replace_bytes
@@ -60,11 +60,31 @@ def _digest(content: bytes) -> str:
 
 
 def _journal_path(project_root: Path, slug: str) -> Path:
-    return runtime_dir(project_root) / "acceptance" / "enqueue" / f"{slug}.json"
+    return _transaction_runtime_dir(project_root) / "acceptance" / "enqueue" / f"{slug}.json"
 
 
 def _operation_directory(project_root: Path, operation_id: str) -> Path:
-    return runtime_dir(project_root) / "acceptance" / "enqueue" / operation_id
+    return _transaction_runtime_dir(project_root) / "acceptance" / "enqueue" / operation_id
+
+
+def _transaction_project_dir(project_root: Path) -> Path:
+    """Choose one Project alias for every path in an enqueue transaction."""
+    checkout = resolve_checkout_project_dir(project_root)
+    active = resolve_project_dir(project_root)
+    if checkout == active:
+        return active
+    try:
+        if checkout.samefile(active):
+            return active
+    except OSError:
+        pass
+    return checkout
+
+
+def _transaction_runtime_dir(project_root: Path) -> Path:
+    directory = _transaction_project_dir(project_root) / ".runtime"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def write_enqueue_journal(project_root: Path, journal: EnqueueJournal) -> None:
@@ -139,7 +159,7 @@ def _validate_journal_identity(slug: str, journal: EnqueueJournal) -> None:
 
 
 def _validate_board_paths(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
-    board = resolve_project_dir(project_root) / "tickets" / "board"
+    board = _transaction_project_dir(project_root) / "tickets" / "board"
     source = Path(journal.source)
     destination = Path(journal.destination)
     if source != board / "drafts" / f"{slug}.md":
@@ -156,17 +176,17 @@ def _canonicalize_board_path(
     states: tuple[str, ...],
     label: str,
 ) -> Path:
-    board = resolve_project_dir(project_root) / "tickets" / "board"
+    board = _transaction_project_dir(project_root) / "tickets" / "board"
     if path.name != f"{slug}.md" or path.parent.name not in states:
         raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
     canonical = board / path.parent.name / path.name
     if path == canonical:
         return canonical
     try:
-        same_parent = path.parent.samefile(canonical.parent)
+        same_board = path.parent.parent.samefile(board)
     except OSError as exc:
-        raise EnqueuePublicationError(f"enqueue journal {label} directory is unavailable") from exc
-    if not same_parent:
+        raise EnqueuePublicationError(f"enqueue journal {label} board is unavailable") from exc
+    if not same_board:
         raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
     return canonical
 

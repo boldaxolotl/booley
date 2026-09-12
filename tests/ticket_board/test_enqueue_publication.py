@@ -84,8 +84,8 @@ def _bind_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
 
     monkeypatch.setattr(
         enqueue_publication,
-        "runtime_dir",
-        lambda _root: runtime_alias / ".runtime",
+        "resolve_checkout_project_dir",
+        lambda _root: checkout_alias,
     )
     monkeypatch.setattr(
         enqueue_publication,
@@ -93,18 +93,6 @@ def _bind_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
         lambda _root: runtime_alias,
         raising=False,
     )
-    # Bind mounts retain their lexical mountpoint after Path.resolve(), unlike
-    # these symlink-backed aliases. Preserve that behavior in the unit fixture.
-    real_resolve = Path.resolve
-
-    def bind_resolve(path: Path, *args, **kwargs) -> Path:
-        absolute = path.absolute()
-        aliases = (runtime_alias.absolute(), checkout_alias.absolute())
-        if any(absolute == alias or alias in absolute.parents for alias in aliases):
-            return absolute
-        return real_resolve(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", bind_resolve)
     return runtime_alias, checkout_alias
 
 
@@ -150,11 +138,7 @@ def test_enqueue_journal_parser_and_identity_validation(
         "_operation_directory",
         lambda *_args: tmp_path / "operation",
     )
-    monkeypatch.setattr(
-        enqueue_publication,
-        "resolve_project_dir",
-        lambda _root: tmp_path,
-    )
+    monkeypatch.setattr(enqueue_publication, "_transaction_project_dir", lambda _root: tmp_path)
     enqueue_publication.write_enqueue_journal(tmp_path, journal)
     assert enqueue_publication.load_enqueue_journal(tmp_path, "ticket") == journal
     for changed in (
@@ -179,7 +163,7 @@ def test_enqueue_payload_validation_rejects_each_bound_identity(
     monkeypatch.setattr(
         enqueue_publication, "_operation_directory", lambda *_args: tmp_path / "operation"
     )
-    monkeypatch.setattr(enqueue_publication, "resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(enqueue_publication, "_transaction_project_dir", lambda _root: tmp_path)
     for changed in (
         replace(journal, source_sha256="bad"),
         replace(journal, basis={}),
@@ -204,6 +188,64 @@ def test_enqueue_uses_one_anchor_for_normal_runtime_alias(
 
     assert all(
         Path(value).is_relative_to(runtime_alias)
+        for value in (
+            journal.source,
+            journal.destination,
+            journal.candidate,
+            journal.backup,
+        )
+    )
+
+
+def test_enqueue_normalizes_relative_paths_before_destination_directory_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "work"
+    project_dir = project / ".booley_project"
+    (project_dir / "tickets/board/drafts").mkdir(parents=True)
+    monkeypatch.setattr(
+        enqueue_publication,
+        "resolve_checkout_project_dir",
+        lambda _root: project_dir,
+    )
+    monkeypatch.setattr(enqueue_publication, "resolve_project_dir", lambda _root: project_dir)
+    monkeypatch.chdir(tmp_path)
+    source = Path("work/.booley_project/tickets/board/drafts/ticket.md")
+    destination = Path("work/.booley_project/tickets/board/queue/ticket.md")
+
+    journal = _prepare(project, source, destination)
+
+    assert Path(journal.source) == project_dir / "tickets/board/drafts/ticket.md"
+    assert Path(journal.destination) == project_dir / "tickets/board/queue/ticket.md"
+    assert not destination.parent.exists()
+
+
+def test_enqueue_prefers_explicit_checkout_over_unrelated_active_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "work"
+    project_dir = project / ".booley_project"
+    active_project_dir = tmp_path / "unrelated-project"
+    for directory in (project_dir, active_project_dir):
+        for state in ("drafts", "queue", "waiting"):
+            (directory / "tickets" / "board" / state).mkdir(parents=True)
+    monkeypatch.setattr(
+        enqueue_publication,
+        "resolve_checkout_project_dir",
+        lambda _root: project_dir,
+    )
+    monkeypatch.setattr(
+        enqueue_publication,
+        "resolve_project_dir",
+        lambda _root: active_project_dir,
+    )
+    source = project_dir / "tickets/board/drafts/ticket.md"
+    destination = project_dir / "tickets/board/queue/ticket.md"
+
+    journal = _prepare(project, source, destination)
+
+    assert all(
+        Path(value).is_relative_to(project_dir)
         for value in (
             journal.source,
             journal.destination,

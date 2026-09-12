@@ -167,20 +167,14 @@ def _interrupt_enqueue(
         [Path, enqueue_publication.EnqueueJournal], enqueue_publication.EnqueueJournal
     ],
 ) -> None:
-    if checkpoint == "source-preserved":
+    if checkpoint in {"source-preserved", "candidate-published"}:
         enqueue_publication._preserve_source(
             Path(journal.source),
             Path(journal.backup),
             Path(journal.destination),
             journal,
         )
-    elif checkpoint == "candidate-published":
-        enqueue_publication._preserve_source(
-            Path(journal.source),
-            Path(journal.backup),
-            Path(journal.destination),
-            journal,
-        )
+    if checkpoint == "candidate-published":
         enqueue_publication._publish_candidate(
             Path(journal.candidate),
             Path(journal.destination),
