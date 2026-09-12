@@ -333,7 +333,11 @@ configured_scenarios:
     skip native parity; and use file-only feedback. Preserve the hidden
     footprint, stealth-authored cores, native-core isolation and RISC-V
     sandbox; use this Configured Scenario's declared provider/auth policy. Do
-    not repeat the setup interview.
+    not repeat the setup interview. After initialization, create the paired
+    run-owned outer and project-data Ticket destination branches, commit the
+    authorized project-data setup changes to the project-data destination
+    branch, and prove both destination branches clean before either Ticket
+    Create invocation.
   check_sets:
   - picorv32-core
   - picorv32-ubuntu
@@ -744,15 +748,18 @@ steps:
   - inputs.project-pin
 - id: project.separate-repository
   phase: prepare
-  action: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
+  action: |-
+    Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain. Create paired run-owned outer and project-data Ticket destination branches from that initialized state. Before Ticket authoring, commit every authorized acceptance-input change produced by the applicable Configured Scenario's Project Setup—including its Flow enablement, EDA provisioning and Doctor Targets—to the project-data destination branch; prove both destination branches clean.
   checks:
   - id: project.separate-repository
     capabilities:
     - DOCUMENTATION-USABILITY
-    stimulus: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
-    expected: Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission.
+    stimulus: |-
+      Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain. Create paired run-owned outer and project-data Ticket destination branches from that initialized state. Before Ticket authoring, commit every authorized acceptance-input change produced by the applicable Configured Scenario's Project Setup—including its Flow enablement, EDA provisioning and Doctor Targets—to the project-data destination branch; prove both destination branches clean.
+    expected: |-
+      Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission. The paired destination refs exist before Ticket Create. The outer ref preserves the pinned upstream source, while the project-data ref contains the initialized, authorized setup for the selected Configured Scenario. Where provisioned Vivado and the FPGA Criterion apply, that commit has `flows.fpga.enabled = true`, `[eda.vivado]` provisioning set to `host`, and the FPGA Doctor Target; configurations that exclude FPGA preserve their declared opt-out. Both repositories are clean, so Ticket Acceptance Basis creation needs no live-worktree configuration change.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
-    evidence: Repository topology, clean status, initialization output; frozen prepared recovery point.
+    evidence: Repository topology, initialization output, paired full `refs/heads/...` names and commit identities, committed Project Setup diff, clean status for both repositories, and frozen prepared recovery point.
     capture: evidence/picorv32-published-demo-continuity.project.separate-repository
   requires:
   - inputs.project-pin
@@ -2814,18 +2821,18 @@ steps:
 - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   phase: interactive
   action: |-
-    Exercise `origin-push-deny`: runtime attempts harmless local-fixture origin push.
+    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
   checks:
   - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
     capabilities:
     - SECURITY-RUNTIME-ISOLATION
     stimulus: |-
-      Exercise `origin-push-deny`: runtime attempts harmless local-fixture origin push.
+      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
     expected: |-
-      Prohibited by documented agent boundary.
+      The outside-runtime control push succeeds. The Session Runtime push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
     evidence: |-
-      Mount/capability metadata and benign check outputs; do not enumerate unrelated secrets. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Session Runtime push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
     capture: evidence/picorv32-published-demo-continuity.inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   requires:
   - inputs.project-pin
@@ -2976,20 +2983,21 @@ steps:
 - id: create.dhrystone-self-checking-cycle-contract.payload
   phase: create
   action: |-
-    Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+    Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
   checks:
   - id: create.dhrystone-self-checking-cycle-contract.payload
     capabilities:
     - DOCUMENTATION-USABILITY
     stimulus: |-
-      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
     expected: |-
-      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+      Invoke Ticket Create skill for `dhrystone-self-checking-cycle-contract` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Exact invocation, full prompt hash and payload; this is a skill invocation, not ordinary CLI.
     capture: evidence/picorv32-published-demo-continuity.create.dhrystone-self-checking-cycle-contract.payload
   requires:
   - inputs.project-pin
+  - project.separate-repository
   - interactive.restore
   assets:
   - path: tickets/continuity.md
@@ -3031,20 +3039,21 @@ steps:
 - id: create.rv32-zbb-pcpi.payload
   phase: create
   action: |-
-    Invoke Ticket Create skill for `rv32-zbb-pcpi` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+    Invoke Ticket Create skill for `rv32-zbb-pcpi` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`; where provisioned Vivado and the FPGA Criterion apply, the committed project-data destination must have the FPGA Flow enabled.
   checks:
   - id: create.rv32-zbb-pcpi.payload
     capabilities:
     - DOCUMENTATION-USABILITY
     stimulus: |-
-      Invoke Ticket Create skill for `rv32-zbb-pcpi` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+      Invoke Ticket Create skill for `rv32-zbb-pcpi` with complete literal annex field set and `--agent --no-confirm`, using provider spelling and the paired clean destination refs prepared by `project.separate-repository`; where provisioned Vivado and the FPGA Criterion apply, the committed project-data destination must have the FPGA Flow enabled.
     expected: |-
-      Invoke Ticket Create skill for `rv32-zbb-pcpi` with complete literal annex field set and `--agent --no-confirm`, using provider spelling.
+      Where the selected Configured Scenario includes `fpga_impl_ok`, Ticket Create evaluates it against the already-prepared immutable project-data destination where `flows.fpga.enabled = true`; no live-worktree or Ticket-authoring change to `booley.toml` is needed. Configurations that exclude FPGA do not acquire an FPGA setup requirement from this Check.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Exact invocation, full prompt hash and payload; this is a skill invocation, not ordinary CLI.
     capture: evidence/picorv32-published-demo-continuity.create.rv32-zbb-pcpi.payload
   requires:
   - inputs.project-pin
+  - project.separate-repository
   - interactive.restore
   assets:
   - path: tickets/evolution.md

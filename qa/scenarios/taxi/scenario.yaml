@@ -3786,18 +3786,18 @@ steps:
 - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   phase: interactive
   action: |-
-    Exercise `origin-push-deny`: runtime attempts harmless local-fixture origin push.
+    Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
   checks:
   - id: inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
     capabilities:
     - SECURITY-RUNTIME-ISOLATION
     stimulus: |-
-      Exercise `origin-push-deny`: runtime attempts harmless local-fixture origin push.
+      Exercise `origin-push-deny`: prove an outside-runtime control client can push to a Scenario-owned Git server, then attempt the same authorized network transport from the Session Runtime to a separate probe ref.
     expected: |-
-      Prohibited by documented agent boundary.
+      The outside-runtime control push succeeds. The Session Runtime push is blocked by its network boundary—not by Git, server availability, credentials or server authorization—and the external probe ref remains unchanged. Container-local repositories and local-path remotes are out of scope.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model
     evidence: |-
-      Mount/capability metadata and benign check outputs; do not enumerate unrelated secrets. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Sanitized network transport and endpoint identity; successful outside-runtime control push with its ref identity; exact Session Runtime push argv and exit/stdout/stderr identifying the network-policy denial; and external probe-ref identity before and after. Use a Scenario-owned server, never a public or third-party remote. Container-local repositories and local-path remotes cannot satisfy this Check. Shared process evidence can map SESSION-RUNTIME-LIFECYCLE explicitly. Retain fresh invocation, source/Target/runtime identities and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.SECURITY-RUNTIME-ISOLATION.origin-push-deny
   requires:
   - inputs.pin
