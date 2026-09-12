@@ -35,6 +35,31 @@ def _detail(tmp_path: Path, monkeypatch, *, spec_path: Path | None = None) -> di
     return {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}
 
 
+def _ticket_detail(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    decisions: str | None,
+) -> tuple[dict, Path]:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "ticket.md").write_text("Implement UART registers.\n", encoding="utf-8")
+    decisions_path = logs / "answered_questions.md"
+    if decisions is not None:
+        decisions_path.write_text(decisions, encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="spec",
+            scope=(),
+            mode="done",
+        )
+    )
+    return {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}, decisions_path
+
+
 def test_receipt_id_covers_contract_and_source(tmp_path: Path, monkeypatch) -> None:
     detail = _detail(tmp_path, monkeypatch)
 
@@ -107,6 +132,44 @@ def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> No
     assert review_receipt_drift(detail, tmp_path) == []
     (logs / "answered_questions.md").write_text("Use synchronous reset.\n", encoding="utf-8")
     assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+
+
+def test_absent_optional_decisions_stays_fresh_until_created(tmp_path: Path, monkeypatch) -> None:
+    detail, decisions = _ticket_detail(tmp_path, monkeypatch, decisions=None)
+
+    assert review_receipt_drift(detail, tmp_path) == []
+    decisions.write_bytes(b"")
+    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+
+
+def test_removing_persisted_decisions_stales_receipt(tmp_path: Path, monkeypatch) -> None:
+    detail, decisions = _ticket_detail(
+        tmp_path,
+        monkeypatch,
+        decisions="Use active-low reset.\n",
+    )
+    decisions.unlink()
+
+    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+
+
+def test_unreadable_persisted_decisions_raises_context_error(tmp_path: Path, monkeypatch) -> None:
+    detail, decisions = _ticket_detail(
+        tmp_path,
+        monkeypatch,
+        decisions="Use active-low reset.\n",
+    )
+    original_read_bytes = Path.read_bytes
+
+    def fail_decisions_read(path: Path) -> bytes:
+        if path == decisions:
+            raise OSError("synthetic read failure")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_decisions_read)
+
+    with pytest.raises(ReviewContextError, match="synthetic read failure"):
+        review_receipt_drift(detail, tmp_path)
 
 
 def test_ticket_linked_spec_is_resolved_without_ticket_board_dependency(
