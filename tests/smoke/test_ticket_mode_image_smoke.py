@@ -23,7 +23,9 @@ from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
+from booley.ticket_board import enqueue_publication
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.helpers import detect_tickets_dir
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import session_jobs_dir
 
@@ -45,9 +47,8 @@ def _run_git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _initialize_project(tmp_path: Path) -> Path:
-    project = tmp_path / "ticket-mode-project"
-    shutil.copytree(_FIXTURE, project)
+def _initialize_project_at(project: Path) -> Path:
+    shutil.copytree(_FIXTURE, project, dirs_exist_ok=True)
     project_dir = project / ".booley_project"
     board = project_dir / "tickets" / "board"
     for state in ("queue", "active", "blocked", "waiting", "archived", "review", "done"):
@@ -68,6 +69,10 @@ def _initialize_project(tmp_path: Path) -> Path:
     _run_git(project, "commit", "-m", "Initialize Ticket Mode smoke fixture")
     reset_cache()
     return project
+
+
+def _initialize_project(tmp_path: Path) -> Path:
+    return _initialize_project_at(tmp_path / "ticket-mode-project")
 
 
 def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
@@ -122,7 +127,9 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
     assert "STA-0441" not in log.resolve().read_text(encoding="utf-8")
 
 
-def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: list[str]) -> None:
+def _write_ticket_file(
+    project: Path, slug: str, criteria: dict[str, Any], scope: list[str]
+) -> None:
     fields = {
         "summary": f"Production-image smoke for {slug}",
         "type": "verification",
@@ -144,7 +151,80 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
     draft.mkdir(exist_ok=True)
     ticket = draft / f"{slug}.md"
     ticket.write_text(content, encoding="utf-8")
+
+
+def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: list[str]) -> None:
+    _write_ticket_file(project, slug, criteria, scope)
+    tickets = project / ".booley_project" / "tickets"
     assert TicketIO(tickets, project_root=project).enqueue_ticket(slug)
+
+
+def _interrupt_enqueue(
+    checkpoint: str,
+    project_root: Path,
+    journal: enqueue_publication.EnqueueJournal,
+    publish: Callable[
+        [Path, enqueue_publication.EnqueueJournal], enqueue_publication.EnqueueJournal
+    ],
+) -> None:
+    if checkpoint in {"source-preserved", "candidate-published"}:
+        enqueue_publication._preserve_source(
+            Path(journal.source),
+            Path(journal.backup),
+            Path(journal.destination),
+            journal,
+        )
+    if checkpoint == "candidate-published":
+        enqueue_publication._publish_candidate(
+            Path(journal.candidate),
+            Path(journal.destination),
+            journal.candidate_sha256,
+        )
+    elif checkpoint == "published":
+        publish(project_root, journal)
+    raise RuntimeError(f"interrupted after {checkpoint}")
+
+
+def test_enqueue_recovers_across_session_runtime_project_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_value = os.environ.get("BOOLEY_ENQUEUE_ALIAS_PROJECT")
+    if project_value is None:
+        pytest.skip("requires the production dual-mount Session Runtime fixture")
+    project = _initialize_project_at(Path(project_value))
+    active_project_dir = Path("/booley-project")
+    checkout_project_dir = project / ".booley_project"
+    assert active_project_dir.samefile(checkout_project_dir)
+    assert active_project_dir.resolve() != checkout_project_dir.resolve()
+
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(active_project_dir))
+    monkeypatch.delenv("TICKETS_DIR", raising=False)
+    reset_cache()
+    tio = TicketIO(detect_tickets_dir())
+    assert tio.tickets_dir == active_project_dir / "tickets"
+    publish = enqueue_publication.publish_enqueue
+
+    for checkpoint in ("prepared", "source-preserved", "candidate-published", "published"):
+        slug = f"enqueue-alias-{checkpoint}"
+        _write_ticket_file(project, slug, _success_criteria(), ["rtl/dut.sv", "tb/tb_dut.sv"])
+        with monkeypatch.context() as interruption:
+            interruption.setattr(
+                enqueue_publication,
+                "publish_enqueue",
+                lambda root, journal, point=checkpoint: _interrupt_enqueue(
+                    point, root, journal, publish
+                ),
+            )
+            with pytest.raises(RuntimeError, match=f"interrupted after {checkpoint}"):
+                tio.enqueue_ticket(slug)
+
+        assert tio.enqueue_ticket(slug)
+        assert not (checkout_project_dir / f"tickets/board/drafts/{slug}.md").exists()
+        assert (active_project_dir / f"tickets/board/queue/{slug}.md").is_file()
+        transitions = active_project_dir / f"tickets/logs/{slug}/human-logs/transitions.log"
+        assert transitions.read_text(encoding="utf-8").count("enqueue operation ") == 1
+        assert not (active_project_dir / f".runtime/acceptance/enqueue/{slug}.json").exists()
 
 
 def _success_criteria() -> dict[str, Any]:

@@ -108,8 +108,14 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
         request: FlowRequest,
     ) -> ResolvedFlowAcceptance | EndpointOutcome:
         try:
-            basis, project_root = self._load_basis()
-            assert_ticket_worktree_inputs_unchanged(project_root, basis, request.work_dir)
+            basis, project_root, slug, ticket_path = self._load_basis()
+            assert_ticket_worktree_inputs_unchanged(
+                project_root,
+                basis,
+                request.work_dir,
+                slug=slug,
+                ticket_path=ticket_path,
+            )
             paired = self._paired_project_baseline(request.work_dir, basis.project_sha)
             self._configure_runtime(request)
             return ResolvedFlowAcceptance(tuple(basis.bindings), paired, ticket_backed=True)
@@ -118,7 +124,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
         except (OSError, AcceptanceBasisError) as exc:
             return self._blocked(str(exc))
 
-    def _load_basis(self) -> tuple[AcceptanceBasis, Path]:
+    def _load_basis(self) -> tuple[AcceptanceBasis, Path, str, Path]:
         raw_ticket_path = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not raw_ticket_path:
             raise AcceptanceBasisError("ticket snapshot is unavailable")
@@ -132,7 +138,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
         self._basis_record = basis.as_dict()
-        return basis, project_root
+        return basis, project_root, slug, ticket_path
 
     @staticmethod
     def _paired_project_baseline(work_dir: Path, project_sha: str) -> PairedProjectBaseline:

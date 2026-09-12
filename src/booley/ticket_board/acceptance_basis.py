@@ -991,7 +991,6 @@ def assert_candidate_inputs_unchanged(
         generated_reference=reference,
         generated_checkout_root=outer_recorded,
         excluded_prefixes=(prefix,) if project is not None else (),
-        include_reference_only_generated=False,
     )
     if project is None:
         return
@@ -1005,7 +1004,6 @@ def assert_candidate_inputs_unchanged(
         generated_reference=reference / prefix,
         generated_checkout_root=project_recorded.parent,
         ticket_prefix=prefix,
-        include_reference_only_generated=False,
     )
 
 
@@ -1215,28 +1213,10 @@ def materialize_ticket_commits(
 def validate_ticket_view(
     checkout: Path | str,
     basis: AcceptanceBasis,
-    *,
-    allow_generated: bool = False,
 ) -> list[str]:
-    """Validate protected inputs and selectors in one materialized Ticket view."""
+    """Validate protected inputs and selectors in one prepared Ticket view."""
     root = Path(checkout).resolve()
-    if allow_generated:
-        from booley.fusesoc.core_projection import (
-            CoreProjectionError,
-            native_cores_ignored,
-            reconcile_isolated_registry,
-            reconcile_projected_cores,
-        )
-
-        try:
-            reconcile_projected_cores(root)
-            if native_cores_ignored(root):
-                reconcile_isolated_registry(root)
-        except (CoreProjectionError, OSError) as exc:
-            raise AcceptanceBasisError(
-                f"could not prepare generated Acceptance Basis inputs in {root}: {exc}"
-            ) from exc
-    assert_inputs_unchanged(basis, root, generated_reference=root if allow_generated else None)
+    assert_inputs_unchanged(basis, root, generated_reference=root)
     return validate_binding_selectors(root, basis.bindings)
 
 

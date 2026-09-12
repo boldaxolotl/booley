@@ -7,7 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,7 +30,10 @@ from booley.ticket_board.acceptance_basis import (
     BasisParticipant,
 )
 from booley.ticket_board.acceptance_validation import (
-    assert_ticket_worktree_inputs_unchanged,
+    assert_ticket_worktree_inputs_unchanged as _assert_ticket_worktree_inputs_unchanged,
+)
+from booley.ticket_board.acceptance_validation import (
+    prepare_acceptance_checkout,
 )
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 
@@ -77,6 +80,8 @@ def _project_with_projection(
     *,
     ignore_native_cores: bool = False,
     tracked_projection: bool = False,
+    post_setup_marker: bool = False,
+    marker_uses_worktree_path: bool = False,
 ) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -105,6 +110,20 @@ def _project_with_projection(
             "targets: {}\n",
             encoding="utf-8",
         )
+    if post_setup_marker:
+        with (root / ".gitignore").open("a", encoding="utf-8") as ignore:
+            ignore.write("/picosoc/FUSESOC_IGNORE\n")
+        hooks = project_dir / "hooks"
+        hooks.mkdir()
+        hook = hooks / "post-setup.sh"
+        marker_value = '"$BOOLEY_WORKTREE"' if marker_uses_worktree_path else "stable"
+        hook.write_text(
+            "#!/bin/sh\n"
+            'mkdir -p "$BOOLEY_WORKTREE/picosoc"\n'
+            f'printf %s {marker_value} > "$BOOLEY_WORKTREE/picosoc/FUSESOC_IGNORE"\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
     _git(root, "add", "-A")
     _git(root, "add", "-f", ".booley_project")
     if tracked_projection:
@@ -118,11 +137,15 @@ def _enqueued_projection_ticket(
     *,
     ignore_native_cores: bool = False,
     tracked_projection: bool = False,
+    post_setup_marker: bool = False,
+    marker_uses_worktree_path: bool = False,
 ) -> tuple[Path, Path, AcceptanceBasis]:
     root, project_dir, tio = _project_with_projection(
         tmp_path,
         ignore_native_cores=ignore_native_cores,
         tracked_projection=tracked_projection,
+        post_setup_marker=post_setup_marker,
+        marker_uses_worktree_path=marker_uses_worktree_path,
     )
     ticket = tio.create_ticket_file(
         "generated-input",
@@ -137,6 +160,27 @@ def _enqueued_projection_ticket(
     assert ticket is not None
     assert tio.enqueue_ticket("generated-input") is True
     return root, project_dir / "worktrees/generated-input", tio.load_basis("generated-input")
+
+
+def _runtime_ticket(root: Path) -> Path:
+    return root / ".booley_project/tickets/board/queue/generated-input.md"
+
+
+def assert_ticket_worktree_inputs_unchanged(
+    root: Path,
+    basis: AcceptanceBasis,
+    workspace: Path,
+    *,
+    slug: str = "generated-input",
+    ticket_path: Path | None = None,
+) -> None:
+    _assert_ticket_worktree_inputs_unchanged(
+        root,
+        basis,
+        workspace,
+        slug=slug,
+        ticket_path=ticket_path or _runtime_ticket(root),
+    )
 
 
 def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBasis]:
@@ -230,6 +274,78 @@ def test_unchanged_generated_projection_passes_live_guard(tmp_path: Path) -> Non
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
+def test_prepared_post_setup_marker_passes_live_guard_and_missing_marker_fails(
+    tmp_path: Path,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(
+        tmp_path,
+        post_setup_marker=True,
+    )
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
+
+    assert_ticket_worktree_inputs_unchanged(
+        root,
+        basis,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
+
+    (workspace / "picosoc/FUSESOC_IGNORE").unlink()
+    with pytest.raises(AcceptanceBasisError, match=r"picosoc/FUSESOC_IGNORE"):
+        assert_ticket_worktree_inputs_unchanged(
+            root,
+            basis,
+            workspace,
+            slug="generated-input",
+            ticket_path=ticket,
+        )
+
+    marker = workspace / "picosoc/FUSESOC_IGNORE"
+    marker.write_text("stable", encoding="utf-8")
+    extra = workspace / "unexpected/FUSESOC_IGNORE"
+    extra.parent.mkdir()
+    extra.write_text("extra", encoding="utf-8")
+    with pytest.raises(AcceptanceBasisError, match=r"unexpected/FUSESOC_IGNORE"):
+        assert_ticket_worktree_inputs_unchanged(
+            root,
+            basis,
+            workspace,
+            slug="generated-input",
+            ticket_path=ticket,
+        )
+
+
+def test_nondeterministic_post_setup_marker_fails_live_guard(tmp_path: Path) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(
+        tmp_path,
+        post_setup_marker=True,
+        marker_uses_worktree_path=True,
+    )
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
+
+    with pytest.raises(AcceptanceBasisError, match=r"picosoc/FUSESOC_IGNORE"):
+        assert_ticket_worktree_inputs_unchanged(
+            root,
+            basis,
+            workspace,
+            slug="generated-input",
+            ticket_path=ticket,
+        )
+
+
 def test_altered_generated_projection_fails_live_guard(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
@@ -245,11 +361,12 @@ def test_altered_generated_projection_fails_live_guard(tmp_path: Path) -> None:
     assert str(raised.value).count("acceptance-input-change-required") == 1
 
 
-def test_missing_live_projection_is_not_candidate_drift(tmp_path: Path) -> None:
+def test_missing_live_projection_is_candidate_drift(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
 
     assert not (workspace / ".booley-projected-demo.core").exists()
-    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+    with pytest.raises(AcceptanceBasisError, match=r"\.booley-projected-demo\.core"):
+        assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
 def test_live_only_ordinary_core_remains_rejected(tmp_path: Path) -> None:
@@ -357,7 +474,10 @@ def test_paired_participants_accept_root_and_isolated_projections(tmp_path: Path
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
-def test_external_reference_project_route_fails_closed(tmp_path: Path) -> None:
+def test_external_reference_project_route_fails_closed_before_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = tmp_path / "project"
     external = tmp_path / "external"
     root.mkdir()
@@ -375,6 +495,8 @@ def test_external_reference_project_route_fails_closed(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _git(root, "worktree", "add", "-b", ref.removeprefix("refs/heads/"), str(workspace), sha)
     participant = BasisParticipant("outer", sha, ref, "refs/heads/main", sha)
+    prepare = MagicMock()
+    monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
 
     with pytest.raises(AcceptanceBasisError, match="outside"):
         assert_ticket_worktree_inputs_unchanged(
@@ -382,31 +504,62 @@ def test_external_reference_project_route_fails_closed(tmp_path: Path) -> None:
             AcceptanceBasis((participant,)),
             workspace,
         )
+    prepare.assert_not_called()
 
 
-def test_setup_guard_uses_generated_reference_without_double_prefix(tmp_path: Path) -> None:
-    from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker_uses_worktree_path", [False, True])
+async def test_setup_run_enforces_post_setup_marker_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker_uses_worktree_path: bool,
+) -> None:
+    from booley.harness.setup import workspace as setup_workspace
 
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
-    reconcile_projected_cores(workspace)
-    ctx = SimpleNamespace(project_root=root, acceptance_basis=basis)
+    root, workspace, basis = _enqueued_projection_ticket(
+        tmp_path,
+        post_setup_marker=True,
+        marker_uses_worktree_path=marker_uses_worktree_path,
+    )
+    ctx = TicketContext(
+        slug="generated-input",
+        ticket_path=_runtime_ticket(root),
+        ticket_type="feature",
+        branch="main",
+        summary="Accept generated input",
+        project_root=root,
+        acceptance_basis=basis,
+        worktree_path=workspace,
+    )
+    monkeypatch.setattr(setup_workspace, "_prepare_outer_worktree", lambda _ctx: None)
+    monkeypatch.setattr(
+        setup_workspace,
+        "_prepare_project_worktree_and_scopes",
+        lambda _ctx: None,
+    )
 
-    assert _validate_materialized_acceptance_basis(ctx, workspace) is None
-    projection = workspace / ".booley-projected-demo.core"
-    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
-    blocked = _validate_materialized_acceptance_basis(ctx, workspace)
+    result = await setup_workspace.run(ctx)
 
-    assert blocked is not None
-    assert blocked.block_reason.count("acceptance-input-change-required") == 1
+    if marker_uses_worktree_path:
+        assert result.block_reason is not None
+        assert "picosoc/FUSESOC_IGNORE" in result.block_reason
+    else:
+        assert result.block_reason is None
+        assert (workspace / "picosoc/FUSESOC_IGNORE").read_text(encoding="utf-8") == "stable"
 
 
-def test_flow_entry_uses_real_generated_projection_validation(
+def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, workspace, _basis = _enqueued_projection_ticket(tmp_path)
-    reconcile_projected_cores(workspace)
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
     ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr("booley.ticket_board.helpers.detect_project_root", lambda: root)
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
@@ -420,8 +573,7 @@ def test_flow_entry_uses_real_generated_projection_validation(
     flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
 
     assert flow._pre_state_gate() is None
-    projection = workspace / ".booley-projected-demo.core"
-    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    (workspace / "picosoc/FUSESOC_IGNORE").unlink()
     blocked = flow._pre_state_gate()
 
     assert blocked is not None
@@ -484,12 +636,17 @@ def test_ticket_flow_composes_admission_and_durable_evidence(
         assert DevelopmentState.load(state_path).criteria["review_rtl_bugs"].met is True
 
 
-def test_developer_handoff_uses_real_generated_projection_validation(
+def test_developer_handoff_accepts_matching_post_setup_marker_and_rejects_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
-    reconcile_projected_cores(workspace)
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=_runtime_ticket(root),
+    )
     ctx = TicketContext(
         slug="generated-input",
         ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
@@ -502,8 +659,7 @@ def test_developer_handoff_uses_real_generated_projection_validation(
     )
 
     assert developer._block_changed_acceptance_basis(ctx, run_index=1) is False
-    projection = workspace / ".booley-projected-demo.core"
-    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    (workspace / "picosoc/FUSESOC_IGNORE").write_text("drift", encoding="utf-8")
     block = MagicMock()
     monkeypatch.setattr(developer, "block_ticket", block)
 
@@ -512,9 +668,18 @@ def test_developer_handoff_uses_real_generated_projection_validation(
     assert reason.count("acceptance-input-change-required") == 1
 
 
-def test_resumed_setup_uses_real_generated_projection_validation(tmp_path: Path) -> None:
-    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
-    reconcile_projected_cores(workspace)
+@pytest.mark.asyncio
+async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=_runtime_ticket(root),
+    )
     ctx = TicketContext(
         slug="generated-input",
         ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
@@ -524,18 +689,86 @@ def test_resumed_setup_uses_real_generated_projection_validation(tmp_path: Path)
         project_root=root,
         acceptance_basis=basis,
         worktree_path=workspace,
+        completed_steps=["setup"],
+        feature_branch="generated-input",
+    )
+    monkeypatch.setattr(developer, "_display_ticket_banner", lambda _ctx: None)
+    monkeypatch.setattr(
+        "booley.harness.setup.workspace.refresh_scope_guards",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        developer,
+        "_deferred_criteria_failure",
+        lambda _ctx: "stop after resume guard",
+    )
+    block = MagicMock()
+    monkeypatch.setattr(developer, "block_ticket", block)
+    monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
+
+    await developer._run_ticket_body(ctx, root, 0.0)
+    block.assert_called_once_with(ctx, "stop after resume guard", "setup")
+
+    block.reset_mock()
+    (workspace / "picosoc/FUSESOC_IGNORE").unlink()
+    await developer._run_ticket_body(ctx, root, 0.0)
+
+    reason = block.call_args.args[1]
+    assert "picosoc/FUSESOC_IGNORE" in reason
+    assert reason.count("acceptance-input-change-required") == 1
+
+
+def test_readiness_entry_accepts_marker_and_rejects_missing_marker(
+    tmp_path: Path,
+) -> None:
+    from booley.ticket_board.readiness import check_ticket_ready
+
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
     )
 
-    assert developer._resumed_basis_failure(ctx) is None
-    projection = workspace / ".booley-projected-demo.core"
-    projection.write_text(projection.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+    assert check_ticket_ready(root, "generated-input").errors == ()
+    (workspace / "picosoc/FUSESOC_IGNORE").unlink()
 
-    failure = developer._resumed_basis_failure(ctx)
-    assert failure is not None
-    assert failure.count("acceptance-input-change-required") == 1
+    errors = check_ticket_ready(root, "generated-input").errors
+
+    assert any("picosoc/FUSESOC_IGNORE" in error for error in errors)
 
 
-def test_live_guard_materializes_once_without_running_project_setup(
+def test_terminal_handoff_path_accepts_marker_and_rejects_drift(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.ticket_board import operations
+
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
+    ticket = _runtime_ticket(root)
+    prepare_acceptance_checkout(
+        root,
+        workspace,
+        slug="generated-input",
+        ticket_path=ticket,
+    )
+    tio = SimpleNamespace(
+        _project_root=root,
+        tickets_dir=root / ".booley_project/tickets",
+        logs_dir=root / ".booley_project/tickets/logs",
+        _load_basis_unlocked=lambda *_args, **_kwargs: basis,
+    )
+
+    assert operations._handoff_basis_heads(tio, "generated-input") is not None
+    (workspace / "picosoc/FUSESOC_IGNORE").write_text("drift", encoding="utf-8")
+
+    assert operations._handoff_basis_heads(tio, "generated-input") is None
+    assert "picosoc/FUSESOC_IGNORE" in capsys.readouterr().err
+
+
+def test_live_guard_materializes_and_prepares_reference_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -557,14 +790,13 @@ def test_live_guard_materializes_once_without_running_project_setup(
         "materialize_basis_checkout",
         record_materialization,
     )
-    monkeypatch.setattr(
-        "booley.runtime.project_prepare.prepare_project",
-        lambda *_args, **_kwargs: pytest.fail("live guard must not run Project Setup"),
-    )
+    prepare = MagicMock(return_value=SimpleNamespace(ok=True, error=""))
+    monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
 
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
     assert len(destinations) == 1
+    prepare.assert_called_once()
     assert not destinations[0].parent.exists()
 
 

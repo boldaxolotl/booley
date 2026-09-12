@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,15 +47,23 @@ def _submodule_project(tmp_path: Path) -> tuple[Path, Path]:
     return project_root, project_data
 
 
-def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedProcess[str]:
+def _run_worktree_create(
+    project_root: Path,
+    name: str,
+    *,
+    branch_ref: str = "",
+) -> subprocess.CompletedProcess[str]:
     from booley.runtime.paths import dev_support_dir
     from booley.runtime.platform_paths import bash_bin
 
     env = {k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"}
     env["BOOLEY_PYTHON"] = sys.executable
+    payload = {"name": name, "cwd": str(project_root)}
+    if branch_ref:
+        payload["branch_ref"] = branch_ref
     return subprocess.run(
         [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
-        input=json.dumps({"name": name, "cwd": str(project_root)}),
+        input=json.dumps(payload),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -102,7 +111,13 @@ class TestMaterializedAcceptanceBasis:
             result = _validate_materialized_acceptance_basis(ctx, tmp_path)
 
         assert result is None
-        validate.assert_called_once_with(ctx.project_root, ctx.acceptance_basis, tmp_path)
+        validate.assert_called_once_with(
+            ctx.project_root,
+            ctx.acceptance_basis,
+            tmp_path,
+            slug=ctx.slug,
+            ticket_path=ctx.ticket_path,
+        )
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_acceptance_basis
@@ -326,6 +341,175 @@ class TestScopeJsonExclude:
 
 
 class TestWorktreeCreateScript:
+    @pytest.mark.parametrize("recovery", ["missing", "stale", "prunable"])
+    def test_acceptance_basis_recovery_attaches_recorded_branch(
+        self,
+        tmp_path: Path,
+        recovery: str,
+    ) -> None:
+        from booley.harness.setup.workspace import (
+            _attach_basis_branch,
+            _create_fresh_worktree,
+        )
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "switch", "-c", branch)
+        (project_root / "README.md").write_text("execution progress\n", encoding="utf-8")
+        _git(project_root, "commit", "-am", "progress")
+        expected_head = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        _git(project_root, "switch", "master")
+        project_data = project_root / ".booley_project"
+        project_data.mkdir()
+        expected_wt = project_data / "worktrees" / "ticket"
+        if recovery == "stale":
+            expected_wt.mkdir(parents=True)
+            (expected_wt / "stale.txt").write_text("stale\n", encoding="utf-8")
+        elif recovery == "prunable":
+            _git(project_root, "worktree", "add", "--detach", str(expected_wt))
+            shutil.rmtree(expected_wt)
+
+        ticket_ref = f"refs/heads/{branch}"
+        ctx = _make_basis_ctx(project_root, authoring_sha, ticket_ref)
+
+        assert _create_fresh_worktree(ctx, expected_wt) is None
+        assert _attach_basis_branch(ctx, expected_wt) is None
+        assert _git(expected_wt, "symbolic-ref", "HEAD").stdout.strip() == ticket_ref
+        assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == expected_head
+
+    def test_acceptance_basis_reuse_attaches_clean_detached_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import workspace
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "switch", "-c", branch)
+        (project_root / "README.md").write_text("execution progress\n", encoding="utf-8")
+        _git(project_root, "commit", "-am", "progress")
+        expected_head = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        _git(project_root, "switch", "master")
+        project_data = project_root / ".booley_project"
+        project_data.mkdir()
+        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        expected_wt = project_data / "worktrees" / "ticket"
+        _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
+        ticket_ref = f"refs/heads/{branch}"
+        ctx = _make_basis_ctx(project_root, authoring_sha, ticket_ref)
+
+        assert workspace._prepare_outer_worktree(ctx) is None
+        assert _git(expected_wt, "symbolic-ref", "HEAD").stdout.strip() == ticket_ref
+        assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == expected_head
+
+    @pytest.mark.parametrize(
+        ("state", "expected_reason"),
+        [
+            ("dirty", "uncommitted changes"),
+            ("divergent", "not contained"),
+        ],
+    )
+    def test_acceptance_basis_reuse_preserves_unsafe_detached_worktree(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        state: str,
+        expected_reason: str,
+    ) -> None:
+        from booley.harness.setup import workspace
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "branch", branch)
+        project_data = project_root / ".booley_project"
+        project_data.mkdir()
+        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        expected_wt = project_data / "worktrees" / "ticket"
+        _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
+        marker = expected_wt / "preserve.txt"
+        marker.write_text(f"{state}\n", encoding="utf-8")
+        if state == "divergent":
+            _git(expected_wt, "add", "preserve.txt")
+            _git(expected_wt, "commit", "-m", "detached progress")
+        original_head = _git(expected_wt, "rev-parse", "HEAD").stdout.strip()
+        ctx = _make_basis_ctx(project_root, authoring_sha, f"refs/heads/{branch}")
+
+        result = workspace._prepare_outer_worktree(ctx)
+
+        assert result is not None
+        assert expected_reason in result.block_reason
+        assert _git(expected_wt, "symbolic-ref", "--quiet", "HEAD").returncode != 0
+        assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == original_head
+        assert marker.read_text(encoding="utf-8") == f"{state}\n"
+
+    def test_rejects_missing_explicit_branch_without_removing_stale_path(
+        self, tmp_path: Path
+    ) -> None:
+        project_root, project_data = _submodule_project(tmp_path)
+        name = "missing-basis"
+        worktree = project_data / "worktrees" / name
+        worktree.mkdir(parents=True)
+        marker = worktree / "preserve.txt"
+        marker.write_text("preserve\n", encoding="utf-8")
+
+        result = _run_worktree_create(
+            project_root,
+            name,
+            branch_ref="refs/heads/booley-generation/0123456789abcdef/missing",
+        )
+
+        assert result.returncode != 0
+        assert "does not exist" in result.stderr
+        assert marker.read_text(encoding="utf-8") == "preserve\n"
+
+    def test_acceptance_basis_validation_rejects_divergent_branch(self, tmp_path: Path) -> None:
+        from booley.harness.setup.workspace import (
+            _attach_basis_branch,
+            _create_fresh_worktree,
+        )
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        tree = _git(project_root, "rev-parse", "HEAD^{tree}").stdout.strip()
+        orphan = subprocess.run(
+            ["git", "-C", str(project_root), "commit-tree", tree],
+            input="unrelated\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "branch", branch, orphan)
+        (project_root / ".booley_project").mkdir()
+        ticket_ref = f"refs/heads/{branch}"
+        ctx = _make_basis_ctx(project_root, authoring_sha, ticket_ref)
+        expected_wt = project_root / ".booley_project" / "worktrees" / "ticket"
+
+        assert _create_fresh_worktree(ctx, expected_wt) is None
+        result = _attach_basis_branch(ctx, expected_wt)
+
+        assert result is not None
+        assert "does not descend" in result.block_reason
+        assert _git(project_root, "rev-parse", branch).stdout.strip() == orphan
+
     def test_git_identity_comes_from_booley_toml(self, tmp_path: Path):
         project_root, project_data = _submodule_project(tmp_path)
         (project_data / "booley.toml").write_text(
@@ -540,6 +724,32 @@ def _make_ctx(project_root: Path, **overrides) -> TicketContext:
     return TicketContext(**defaults)
 
 
+def _make_basis_ctx(
+    project_root: Path,
+    authoring_sha: str,
+    ticket_ref: str,
+) -> TicketContext:
+    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+
+    basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                authoring_sha,
+                ticket_ref,
+                "refs/heads/master",
+                authoring_sha,
+            ),
+        )
+    )
+    return _make_ctx(
+        project_root,
+        slug="ticket",
+        branch="master",
+        acceptance_basis=basis,
+    )
+
+
 def _populate_wt(wt: Path):
     """Create a worktree directory with .git marker for reuse detection."""
     wt.mkdir(parents=True, exist_ok=True)
@@ -552,6 +762,57 @@ def _mock_success(**kwargs):
 
 class TestWorkspaceRun:
     """Call actual setup.workspace.run() — kills real mutants."""
+
+    @pytest.mark.asyncio
+    async def test_basis_setup_prepares_live_checkout_before_validation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from booley.harness.setup import workspace as workspace_module
+        from booley.harness.setup.workspace import run
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        ctx = _make_ctx(
+            tmp_path,
+            acceptance_basis=MagicMock(),
+            worktree_path=worktree,
+        )
+        ctx.ticket_path.parent.mkdir(parents=True)
+        ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+        events: list[str] = []
+
+        def prepare(*_args, **_kwargs):
+            events.append("prepare")
+            return MagicMock(ok=True, error="", hook=None)
+
+        def validate(*_args, **_kwargs):
+            events.append("validate")
+
+        with (
+            patch.object(workspace_module, "_prepare_outer_worktree", return_value=None),
+            patch.object(
+                workspace_module,
+                "_prepare_project_worktree_and_scopes",
+                return_value=None,
+            ),
+            patch.object(workspace_module, "_load_flow_enablement", return_value=(False, False)),
+            patch.object(workspace_module, "_verify_project_paths", return_value=None),
+            patch.object(workspace_module, "_freeze_synth_baseline", return_value=None),
+            patch(
+                "booley.ticket_board.acceptance_validation.prepare_acceptance_checkout",
+                side_effect=prepare,
+            ),
+            patch.object(
+                workspace_module,
+                "_validate_materialized_acceptance_basis",
+                side_effect=validate,
+            ),
+        ):
+            result = await run(ctx)
+
+        assert result.block_reason is None
+        assert events == ["prepare", "validate"]
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

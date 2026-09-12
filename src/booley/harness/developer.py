@@ -1487,7 +1487,13 @@ def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
     )
 
     try:
-        assert_ticket_worktree_inputs_unchanged(ctx.project_root, basis, ctx.work_dir)
+        assert_ticket_worktree_inputs_unchanged(
+            ctx.project_root,
+            basis,
+            ctx.work_dir,
+            slug=ctx.slug,
+            ticket_path=ctx.ticket_path,
+        )
     except (OSError, AcceptanceBasisError) as exc:
         block_ticket(ctx, str(exc), "developer", run_index=run_index)
         return True

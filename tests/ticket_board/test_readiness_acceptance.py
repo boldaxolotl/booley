@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.ticket_board import (
+    acceptance_validation,
     readiness,
 )
 from booley.ticket_board.acceptance_basis import (
@@ -73,7 +74,12 @@ def test_readiness_prepares_materialized_submodule_checkout(
         assert source.read_text(encoding="utf-8") == "module source; endmodule\n"
         return SimpleNamespace(ok=True, error="")
 
-    monkeypatch.setattr(readiness, "prepare_project", prepare)
+    monkeypatch.setattr(acceptance_validation, "prepare_project", prepare)
+    monkeypatch.setattr(
+        acceptance_validation,
+        "resolve_checkout_project_dir",
+        lambda checkout: checkout,
+    )
     monkeypatch.setattr(readiness, "validate_ticket_fields", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(readiness, "validate_ticket_view", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(readiness, "assert_live_inputs_unchanged", lambda *_args: None)
@@ -110,12 +116,12 @@ def test_readiness_checkout_boundary_and_preparation_failures(
         lambda *_args: root,
     )
     monkeypatch.setattr(
-        readiness,
+        acceptance_validation,
         "prepare_project",
         lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="prepare failed"),
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
-    assert readiness.check_ticket_ready(root, "ticket").errors == ("prepare failed",)
+    assert "prepare failed" in readiness.check_ticket_ready(root, "ticket").errors[0]
 
 
 def test_non_git_readiness_reports_preparation_failure_and_checkout_mutation(

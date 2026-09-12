@@ -17,7 +17,7 @@ from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
-from booley.runtime.project_prepare import prepare_project
+from booley.runtime.project_prepare import PreparationResult, prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
@@ -313,6 +313,20 @@ def _crlf_safe_script(script: Path) -> Path:
     return Path(tmp_name)
 
 
+def _worktree_hook_input(ctx: TicketContext) -> str:
+    payload = {"name": ctx.slug, "cwd": str(ctx.project_root)}
+    if ctx.acceptance_basis is not None:
+        payload["branch_ref"] = ctx.acceptance_basis.participant("outer").ticket_ref
+    return json.dumps(payload)
+
+
+def _worktree_hook_environment() -> dict[str, str]:
+    # Windows may expose only non-runnable Microsoft Store Python aliases.
+    env = {**os.environ}
+    env.setdefault("BOOLEY_PYTHON", sys.executable)
+    return env
+
+
 def _create_fresh_worktree(
     ctx: TicketContext,
     expected_wt: Path,
@@ -323,22 +337,15 @@ def _create_fresh_worktree(
         return StepResult(block_reason=f"Worktree script not found: {wt_script}")
     wt_script = _crlf_safe_script(wt_script)
 
-    hook_input = json.dumps({"name": ctx.slug, "cwd": str(ctx.project_root)})
-    env = {**os.environ}
-    # Pin the script's Python to our own interpreter — a Windows host may have
-    # no runnable python3/python on the shell's PATH, only the Microsoft Store
-    # aliases (F-7).
-    env.setdefault("BOOLEY_PYTHON", sys.executable)
-
     logger.debug("Creating worktree for %s...", ctx.slug)
     try:
         result = subprocess.run(
             [bash_bin(), str(wt_script)],
-            input=hook_input,
+            input=_worktree_hook_input(ctx),
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env=env,
+            env=_worktree_hook_environment(),
             timeout=300,
             check=False,
         )
@@ -484,6 +491,49 @@ def _prepare_branch(
     )
 
 
+def _attach_clean_detached_basis_branch(
+    worktree_path: Path,
+    expected_ref: str,
+) -> StepResult | None:
+    """Attach a reusable detached checkout without discarding unique work."""
+    status = git_run(worktree_path, ["status", "--porcelain"], timeout=10)
+    if status.returncode != 0:
+        return StepResult(
+            block_reason=f"Could not inspect detached Ticket Workspace: {status.stderr.strip()}"
+        )
+    if status.stdout.strip():
+        return StepResult(
+            block_reason=(
+                "Ticket Workspace uses 'detached HEAD' with uncommitted changes; "
+                f"refusing to attach Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ancestry = git_run(
+        worktree_path,
+        ["merge-base", "--is-ancestor", "HEAD", expected_ref],
+        timeout=10,
+    )
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip()
+        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+        return StepResult(
+            block_reason=(
+                "Detached Ticket Workspace HEAD is not contained in "
+                f"Acceptance Basis ref {expected_ref!r}{suffix}"
+            )
+        )
+    branch = expected_ref.removeprefix("refs/heads/")
+    attached = git_run(worktree_path, ["checkout", branch], timeout=30)
+    if attached.returncode != 0:
+        return StepResult(
+            block_reason=(
+                f"Failed to attach Acceptance Basis ref {expected_ref!r}: "
+                f"{attached.stderr.strip()}"
+            )
+        )
+    return None
+
+
 def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult | None:
     """Require the outer checkout to remain on its generation-qualified basis ref."""
     basis = ctx.acceptance_basis
@@ -492,11 +542,30 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
     expected_ref = basis.participant("outer").ticket_ref
     result = git_run(worktree_path, ["symbolic-ref", "--quiet", "HEAD"], timeout=10)
     current_ref = result.stdout.strip()
-    if result.returncode != 0 or current_ref != expected_ref:
+    if result.returncode != 0:
+        failure = _attach_clean_detached_basis_branch(worktree_path, expected_ref)
+        if failure is not None:
+            return failure
+        current_ref = expected_ref
+    if current_ref != expected_ref:
         return StepResult(
             block_reason=(
                 f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
                 f"expected Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ancestry = git_run(
+        worktree_path,
+        ["merge-base", "--is-ancestor", basis.outer_sha, "HEAD"],
+        timeout=10,
+    )
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip()
+        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+        return StepResult(
+            block_reason=(
+                f"Ticket Workspace branch {expected_ref!r} does not descend from "
+                f"Acceptance Basis commit {basis.outer_sha}{suffix}"
             )
         )
     ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
@@ -704,11 +773,18 @@ def _validate_materialized_acceptance_basis(
         assert_ticket_worktree_inputs_unchanged,
     )
 
+    ticket_path = _current_ticket_path(ctx)
+    if ticket_path is None:
+        return StepResult(
+            block_reason=f"acceptance-input-change-required: Ticket {ctx.slug!r} is unavailable"
+        )
     try:
         assert_ticket_worktree_inputs_unchanged(
             ctx.project_root,
             ctx.acceptance_basis,
             worktree_path,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
         )
     except (OSError, AcceptanceBasisError) as exc:
         return StepResult(block_reason=str(exc))
@@ -748,10 +824,6 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
 
-    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
-    if basis_failure is not None:
-        return basis_failure
-
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
     if project_worktree is not None:
         _install_scope_hook(
@@ -761,6 +833,36 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
             acceptance_surface_root=worktree_path,
         )
     return None
+
+
+def _prepare_ticket_checkout(
+    ctx: TicketContext,
+    ticket_path: Path | None,
+    sim_flow_enabled: bool,
+) -> PreparationResult | StepResult:
+    if ctx.acceptance_basis is None:
+        preparation = prepare_project(
+            ctx.project_root,
+            ctx.work_dir,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
+            sim_flow_enabled=sim_flow_enabled,
+        )
+        return preparation if preparation.ok else StepResult(block_reason=preparation.error)
+    from booley.ticket_board.acceptance_basis import AcceptanceBasisError
+    from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+
+    if ticket_path is None:
+        return StepResult(block_reason=f"Ticket {ctx.slug!r} is unavailable during setup")
+    try:
+        return prepare_acceptance_checkout(
+            ctx.project_root,
+            ctx.work_dir,
+            slug=ctx.slug,
+            ticket_path=ticket_path,
+        )
+    except AcceptanceBasisError as exc:
+        return StepResult(block_reason=str(exc))
 
 
 async def run(ctx: TicketContext) -> StepResult:
@@ -774,15 +876,13 @@ async def run(ctx: TicketContext) -> StepResult:
     project_root = ctx.project_root
     worktree_path = ctx.worktree_path
     sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
-    preparation = prepare_project(
-        project_root,
-        worktree_path,
-        slug=ctx.slug,
-        ticket_path=_current_ticket_path(ctx),
-        sim_flow_enabled=sim_flow_enabled,
-    )
-    if not preparation.ok:
-        return StepResult(block_reason=preparation.error)
+    ticket_path = _current_ticket_path(ctx)
+    preparation = _prepare_ticket_checkout(ctx, ticket_path, sim_flow_enabled)
+    if isinstance(preparation, StepResult):
+        return preparation
+    basis_failure = _validate_materialized_acceptance_basis(ctx, worktree_path)
+    if basis_failure is not None:
+        return basis_failure
     fail = (
         (_commit_hook_outputs(ctx) if preparation.hook is not None else None)
         or _verify_project_paths(worktree_path, synth_flow_enabled, ctx.has_synth)
