@@ -313,6 +313,20 @@ def _crlf_safe_script(script: Path) -> Path:
     return Path(tmp_name)
 
 
+def _worktree_hook_input(ctx: TicketContext) -> str:
+    payload = {"name": ctx.slug, "cwd": str(ctx.project_root)}
+    if ctx.acceptance_basis is not None:
+        payload["branch_ref"] = ctx.acceptance_basis.participant("outer").ticket_ref
+    return json.dumps(payload)
+
+
+def _worktree_hook_environment() -> dict[str, str]:
+    # Windows may expose only non-runnable Microsoft Store Python aliases.
+    env = {**os.environ}
+    env.setdefault("BOOLEY_PYTHON", sys.executable)
+    return env
+
+
 def _create_fresh_worktree(
     ctx: TicketContext,
     expected_wt: Path,
@@ -323,22 +337,15 @@ def _create_fresh_worktree(
         return StepResult(block_reason=f"Worktree script not found: {wt_script}")
     wt_script = _crlf_safe_script(wt_script)
 
-    hook_input = json.dumps({"name": ctx.slug, "cwd": str(ctx.project_root)})
-    env = {**os.environ}
-    # Pin the script's Python to our own interpreter — a Windows host may have
-    # no runnable python3/python on the shell's PATH, only the Microsoft Store
-    # aliases (F-7).
-    env.setdefault("BOOLEY_PYTHON", sys.executable)
-
     logger.debug("Creating worktree for %s...", ctx.slug)
     try:
         result = subprocess.run(
             [bash_bin(), str(wt_script)],
-            input=hook_input,
+            input=_worktree_hook_input(ctx),
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env=env,
+            env=_worktree_hook_environment(),
             timeout=300,
             check=False,
         )
@@ -497,6 +504,20 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
             block_reason=(
                 f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
                 f"expected Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ancestry = git_run(
+        worktree_path,
+        ["merge-base", "--is-ancestor", basis.outer_sha, "HEAD"],
+        timeout=10,
+    )
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip()
+        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+        return StepResult(
+            block_reason=(
+                f"Ticket Workspace branch {expected_ref!r} does not descend from "
+                f"Acceptance Basis commit {basis.outer_sha}{suffix}"
             )
         )
     ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
