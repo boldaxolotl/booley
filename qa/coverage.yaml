@@ -521,7 +521,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/bwave/cli.py
   contract: |-
     `gui-scoped`: query known event then scoped open → trace identity, clock row 1, exact signals, range markers and cursor. `gui-append`: append signal → old rows retained plus exact new row. `gui-dropped`: request unsupported/dropped viewer signal → warning and readback discrepancy explicit. `gui-no-clock`: no-clock → no automatic clock. `gui-cap`: small max-signals → documented cap. `gui-no-wcp`: unavailable WCP with scoped request → failure. `gui-bare-fallback`: bare GUI without WCP → documented editor fallback. `gui-recovery`: restore qualified observer/WCP → exact scoped view verified.
-    WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute.
+    WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: STEALTH-MODE
@@ -567,7 +567,7 @@ capabilities:
   - https://github.com/boldaxolotl/booley/blob/main/src/booley/feedback/findings.py
   contract: |-
     `feedback-kinds`: append each defect/friction/impression/win → retained distinct entries. `feedback-list`: listing → same entries. `feedback-triage`: classify project/Booley/docs/unknown → persisted classifications. `feedback-filed`: mark fixture filed → excluded from next candidate report. `feedback-concurrent`: simultaneous appends → all complete entries retained. `feedback-atomic`: controlled triage/filed rewrite → valid complete log. `feedback-regenerate`: restart/regenerate → current persistent report.
-    Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl.
+    Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl.
   applicability: |-
     Supported outcomes under explicit Configured Scenario applicability. No hidden, planned or unsupported cross-product receives credit.
 - id: FEEDBACK-REPORTING

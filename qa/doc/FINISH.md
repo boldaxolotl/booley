@@ -23,27 +23,42 @@ Safely shut down and clean up unknown or ineligible state; resource type alone d
 not prove it inert. Preserve borrowed resources unchanged.
 
 Record one ledger disposition for every resource: `released`, `retained-for-review`,
-`borrowed-preserved`, or `release-failed`. Intentional retention does not prevent a
-pass. `release-failed` or missing evidence for required resource cleanup does.
+`borrowed-preserved`, or `release-failed`. Intentional retention is allowed when it
+satisfies the predicate. Record `release-failed` or missing cleanup evidence without
+trying to decide the Scenario Run Outcome.
 
 Scenario Checks that exercise product cleanup behavior remain authoritative: execute
 their declared deletion or preservation stimulus even when the final workspace would
 otherwise be retained. Archive its evidence first when the Scenario requires it.
 
-## Finalize the run
+## Finalize and seal the run
 
 Finish within the original deadline when possible. If time expires, record the
 overrun and continue required resource cleanup without extending the run or claiming
 timely completion.
 
-Append `blocked` Check Results for selected Checks without one. Report execution
-status as `completed`, `deadline reached`, or `operator error`, and resource cleanup
-status as `complete` or `failed`. Calculate the Scenario Run Outcome and aggregate
-Qualification under [Qualification](QUALIFICATION.md). A product failure
-remains a failure when work is missing or resource cleanup fails.
+Append `blocked` Check Results for selected Checks without one. Finish only after each
+selected Check has a Check Result, every Observation and correction is recorded, every
+ledger resource has a disposition, active assignments and uncertain mutations are
+reconciled, and required cleanup has evidence. Report execution status as `completed`,
+`deadline-reached`, or `operator-error`, and cleanup status as `complete` or `failed`.
 
-Finish is complete when every selected Check has a Check Result, each ledger resource
-has a disposition, required resource cleanup has evidence, retained review state
-satisfies the retention predicate, and `summary.md` contains the required outcomes and
-statuses. Only then set `operator-state.json` to Protocol Stage `finish` with status
-`complete`.
+Write `run-summary.md` with identities, execution and cleanup status, Check Result
+counts and links, Observations, deviations, and retained review locations. It contains
+no Findings, Scenario Run Outcome, or Qualification.
+
+Set `operator-state.json` to Protocol Stage `finish` with status `complete`, then run:
+
+```sh
+python qa/triage.py seal-run <run-root>
+```
+
+The helper validates every version-2 record, writes `evidence-manifest.json`, and
+writes `run-manifest.json` last. A valid manifest is the completion authority. If the
+operator stops after terminal state but before the manifest, a replacement may resume
+only to validate or regenerate the final projections and seal the same records. Once
+sealed, do not modify the run.
+
+Report the sealed artifact root to the Human Maintainer and tell them that Findings,
+outcomes, and Qualification require a separate explicit invocation of
+`booley-qa-triage`.

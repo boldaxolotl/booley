@@ -5781,7 +5781,7 @@ steps:
       Old rows retained plus exact new row.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-append
   requires:
   - inputs.pin
@@ -5799,7 +5799,7 @@ steps:
       Documented editor fallback.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-bare-fallback
   requires:
   - inputs.pin
@@ -5817,7 +5817,7 @@ steps:
       Documented cap.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-cap
   requires:
   - inputs.pin
@@ -5835,7 +5835,7 @@ steps:
       Warning and readback discrepancy explicit.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-dropped
   requires:
   - inputs.pin
@@ -5853,7 +5853,7 @@ steps:
       No automatic clock.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-no-clock
   requires:
   - inputs.pin
@@ -5871,7 +5871,7 @@ steps:
       Failure.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-no-wcp
   requires:
   - inputs.pin
@@ -5889,7 +5889,7 @@ steps:
       Exact scoped view verified.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-recovery
   requires:
   - inputs.pin
@@ -5907,7 +5907,7 @@ steps:
       Trace identity, clock row 1, exact signals, range markers and cursor.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/crates/bwave/docs/public/commands/gui.md
     evidence: |-
-      WCP readback plus rendered screenshot from qualified observer, before/after each state change. An unavailable observer makes the applicable Scenario Run Outcome incomplete; there is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      WCP readback plus rendered screenshot from qualified observer, before/after each state change. Record an unavailable observer in the Check Result; human triage makes the applicable Scenario Run Outcome incomplete. There is no CLI substitute. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/taxi-10g-mac-port-evolution.inventory.WAVEFORM-VIEWER.gui-scoped
   requires:
   - inputs.pin
@@ -9656,7 +9656,7 @@ steps:
     stimulus: Failed required resource cleanup prevents pass; eligible review retention does not.
     expected: Failed required resource cleanup prevents pass; eligible review retention does not.
     authority_ref: ../../doc/FINISH.md
-    evidence: Resource reconciliation, missing actions, Scenario Run Outcome, and execution status.
+    evidence: Resource reconciliation, missing actions, and execution status.
     capture: evidence/taxi-10g-mac-port-evolution.cleanup.verdict
 - id: physical.archive-cleanup
   phase: cleanup

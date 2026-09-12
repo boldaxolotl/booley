@@ -2759,7 +2759,7 @@ steps:
       Valid complete log.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-atomic
   requires:
   - published-release
@@ -2777,7 +2777,7 @@ steps:
       All complete entries retained.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-concurrent
   requires:
   - published-release
@@ -2795,7 +2795,7 @@ steps:
       Excluded from next candidate report.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-filed
   requires:
   - published-release
@@ -2813,7 +2813,7 @@ steps:
       Retained distinct entries.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-kinds
   requires:
   - published-release
@@ -2831,7 +2831,7 @@ steps:
       Same entries.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-list
   requires:
   - published-release
@@ -2849,7 +2849,7 @@ steps:
       Current persistent report.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-regenerate
   requires:
   - published-release
@@ -2867,7 +2867,7 @@ steps:
       Persisted classifications.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/CONFIG.md#feedback-feedback
     evidence: |-
-      Before/after log/report copies and entry IDs; product Findings Log is separate from suite results/findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
+      Before/after log/report copies and entry IDs; the product Findings Log is separate from triage-owned suite findings.jsonl. Retain argv, exit, stdout/stderr, fresh invocation, source/Target/runtime identities, before/after state and raw artifacts before restoration.
     capture: evidence/opentitan-uart-clean-room-greenfield.inventory.FINDINGS-LOG.feedback-triage
   requires:
   - published-release

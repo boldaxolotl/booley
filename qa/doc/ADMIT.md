@@ -69,11 +69,14 @@ Scenario Run when an input, identity, permission, or required access is still mi
 Do not record admission as a Check Result or use it to satisfy a selected provenance,
 installation, or Host Bootstrap Check.
 
-After every gate passes, generate a fresh Scenario Run ID and write `run.json` and
-`operator-state.json` beneath the artifact root as specified by [Format](FORMAT.md).
-Record pre-assessment state and verified admission-reconciliation outputs as initial
-identities. State produced after admission belongs to its producing Step.
+After every gate passes, generate a fresh Scenario Run ID and create the version-2
+`run.json`, `operator-state.json`, `check-results.jsonl`, `observations.jsonl`, and
+`cleanup-ledger.json` beneath the artifact root as specified by
+[Format](FORMAT.md). Record pre-assessment state and verified
+admission-reconciliation outputs as initial identities. State produced after
+admission belongs to its producing Step.
 
 Admission is complete only when `run.json` contains every required initial identity
-and the durable checkpoint names the first Step and Check attempt at Protocol Stage
-`execute`. Then read [Execute](EXECUTE.md).
+and selected Check ID, every created JSON/JSONL object declares
+`run_record_format_version: 2`, and the durable checkpoint names the first Step and
+Check attempt at Protocol Stage `execute`. Then read [Execute](EXECUTE.md).
