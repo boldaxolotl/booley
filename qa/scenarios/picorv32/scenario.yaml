@@ -29,10 +29,6 @@ check_sets:
   - baseline.icarus-dhrystone
   - baseline.verilator-lint
   - baseline.physical-synthesis
-  - vivado.license-create
-  - vivado.license-read
-  - vivado.license-update
-  - vivado.license-delete
   - interactive.child-context
   - interactive.readiness
   - interactive.wishbone-baseline
@@ -155,7 +151,6 @@ check_sets:
   - cleanup.hooks
   - cleanup.runtimes
   - cleanup.processes
-  - cleanup.license-profiles
   - cleanup.mounts
   - cleanup.preserve-borrowed
   - cleanup.clean-pins
@@ -167,13 +162,9 @@ check_sets:
   - vivado.registration
   - vivado.project-grant
   - vivado.readonly-mount
-  - vivado.license-attach
-  - vivado.relay-fault
-  - vivado.relay-recovery
   - vivado.implementation
   - ticket2.fpga
   - cleanup.project-grants
-  - cleanup.relays
   - cleanup.installation-registrations
 - id: picorv32-codex
   checks:
@@ -212,9 +203,6 @@ check_sets:
   - inventory.SYNTHESIS-FLOW.synth-metrics
   - inventory.SYNTHESIS-FLOW.synth-recovery
   - inventory.SYNTHESIS-FLOW.synth-threshold
-  - inventory.EDA-LICENSE-POLICY.profile-attach
-  - inventory.EDA-LICENSE-POLICY.profile-cleanup
-  - inventory.EDA-LICENSE-POLICY.profile-crud
   - inventory.DOCUMENTATION-USABILITY.docs-contract
   - inventory.DOCUMENTATION-USABILITY.docs-recovery
   - inventory.INTERACTIVE-MODE.interactive-commit
@@ -298,7 +286,6 @@ check_sets:
   - inventory.HOST-EDA-PROVISIONING.installation-cleanup
   - inventory.HOST-EDA-PROVISIONING.installation-crud
   - inventory.HOST-EDA-PROVISIONING.mount
-  - inventory.EDA-LICENSE-POLICY.relay-isolation
   - inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
   - inventory.CRITERION-EVIDENCE-BINDING.criterion-fpga
 - id: picorv32-gui
@@ -307,6 +294,23 @@ check_sets:
 - id: picorv32-codex-gui
   checks:
   - inventory.INTERACTIVE-MODE.client-session
+- id: picorv32-paid-license
+  checks:
+  - vivado.license-create
+  - vivado.license-read
+  - vivado.license-update
+  - vivado.license-attach
+  - vivado.relay-fault
+  - vivado.relay-recovery
+  - vivado.license-delete
+  - inventory.EDA-LICENSE-POLICY.profile-attach
+  - inventory.EDA-LICENSE-POLICY.profile-cleanup
+  - inventory.EDA-LICENSE-POLICY.profile-crud
+  - inventory.EDA-LICENSE-POLICY.relay-isolation
+  - cleanup.license-profiles
+  - cleanup.relays
+shared_pre_run_requirements:
+- Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
 configured_scenarios:
 - id: picorv32-ubuntu-codex-cli
   required: true
@@ -322,8 +326,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
-  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  - Approved Vivado 2025.2 installation and exact Project Grant
   - >-
     Pre-approved Project Setup policy: enable sim, lint, synth and fpga;
     merge-refresh Project guidance; keep all compatible Specialists enabled;
@@ -352,8 +355,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
-  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
   - picorv32-ubuntu
@@ -376,67 +378,56 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-codex
   exclusions:
   - check: vivado.version
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.registration
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.project-grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.readonly-mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.license-attach
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-fault
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.implementation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: ticket2.fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.project-grants
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: cleanup.relays
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.installation-registrations
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-authority-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-baseline
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-design-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-dry
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-no-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-denied
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-cleanup
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-crud
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: inventory.EDA-LICENSE-POLICY.relay-isolation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.CRITERION-EVIDENCE-BINDING.criterion-fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
 - id: picorv32-windows-codex-vscode
   required: true
   parameters:
@@ -452,7 +443,6 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -460,61 +450,51 @@ configured_scenarios:
   - picorv32-codex-gui
   exclusions:
   - check: vivado.version
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.registration
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.project-grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.readonly-mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.license-attach
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-fault
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.implementation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: ticket2.fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.project-grants
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: cleanup.relays
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.installation-registrations
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-authority-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-baseline
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-design-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-dry
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-no-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-denied
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-cleanup
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-crud
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: inventory.EDA-LICENSE-POLICY.relay-isolation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.CRITERION-EVIDENCE-BINDING.criterion-fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
 - id: picorv32-ubuntu-claude-cli
   required: true
   parameters:
@@ -529,8 +509,7 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - RISC-V image/toolchain
-  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
   - picorv32-ubuntu
@@ -550,8 +529,7 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
-  - Approved Vivado 2025.2 installation, exact Project Grant and controlled license relay authority
+  - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
   - picorv32-ubuntu
@@ -572,67 +550,78 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - RISC-V image/toolchain
   check_sets:
   - picorv32-core
   - picorv32-gui
   exclusions:
   - check: vivado.version
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.registration
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.project-grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.readonly-mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.license-attach
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-fault
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: vivado.relay-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: vivado.implementation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: ticket2.fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.project-grants
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: cleanup.relays
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: cleanup.installation-registrations
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-authority-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-baseline
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-design-fail
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-dry
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-no-cache
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.FPGA-FLOW.fpga-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-denied
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.grant-recovery
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-cleanup
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.installation-crud
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.HOST-EDA-PROVISIONING.mount
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
-  - check: inventory.EDA-LICENSE-POLICY.relay-isolation
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.CRITERION-EVIDENCE-BINDING.criterion-fpga
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
   - check: inventory.SECURITY-RUNTIME-ISOLATION.vivado-readonly
-    reason: 'Platform applicability: provisioned Vivado/runtime relay is Linux-only; Windows retains ordinary License Profile CRUD.'
+    reason: 'Platform applicability: provisioned Vivado/runtime execution is Linux-only.'
+- id: picorv32-ubuntu-codex-cli-paid-license
+  required: false
+  parameters:
+    host_os: Ubuntu 26.04
+    cpu_architecture: x86-64
+    native_host: true
+    agent_provider: Codex
+    interactive_mode_client: native CLI
+    ticket_mode_backend: Codex
+  pre_run_requirements:
+  - Exact published package/release docs and immutable image provenance
+  - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
+  - Provider/auth class readiness without secret values
+  - Declared authority and owned fixture roots
+  - Approved Vivado 2025.2 installation, exact Project Grant and controlled paid-license relay authority
+  check_sets:
+  - picorv32-core
+  - picorv32-ubuntu
+  - picorv32-codex
+  - picorv32-ubuntu-codex
+  - picorv32-paid-license
+  exclusions: []
 inputs:
 - id: release
   kind: pre-run
@@ -755,13 +744,13 @@ steps:
   - inputs.project-pin
 - id: project.separate-repository
   phase: prepare
-  action: Create a separate clean `.booley_project` repository and initialize the prepared Project.
+  action: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
   checks:
   - id: project.separate-repository
     capabilities:
     - DOCUMENTATION-USABILITY
-    stimulus: Create a separate clean `.booley_project` repository and initialize the prepared Project.
-    expected: Create a separate clean `.booley_project` repository and initialize the prepared Project.
+    stimulus: Create a separate clean `.booley_project` repository and run `booley init` for the prepared Project, including its managed RISC-V image/toolchain.
+    expected: Project Initialization succeeds and creates or reuses the declared managed RISC-V image/toolchain without requiring it to pre-exist admission.
     authority_ref: https://github.com/boldaxolotl/booley/blob/b163fd1f45b76f3950005678e500e695232832fb/qa/handoff/picorv32.md
     evidence: Repository topology, clean status, initialization output; frozen prepared recovery point.
     capture: evidence/picorv32-published-demo-continuity.project.separate-repository

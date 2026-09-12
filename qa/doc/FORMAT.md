@@ -2,16 +2,36 @@
 
 Use `format_version: 1` for structured Scenario Run files that declare a format.
 
+## Admission Attempt records
+
+Before mutating admission reconciliation, create
+`<artifact-root>/admission-attempts/<Admission Attempt ID>/` with a fresh ID and these
+durable records:
+
+| File | Minimum content |
+|---|---|
+| `admission-state.json` | Admission Attempt ID, Scenario and Configured Scenario IDs, exact requested source and resolved commit, intended candidate identity, status, current action, timestamps, and last atomic update |
+| `admission-cleanup-ledger.json` | Planned or exact resource identity, ownership, active-authority and scarcity classification, intended and actual disposition, evidence, and retention details when applicable |
+| `evidence/` | Immutable commands, output, pre/post state, provenance, and hashes for admission reconciliation |
+
+Write both JSON records by atomic replacement. Ledger every operator-owned resource
+before creation; when its exact identity is unknowable in advance, record the planned
+identity first and replace it with the exact identity immediately after acquisition.
+On admission failure, retain the finalized attempt record and reconcile its ledger.
+On success, retain the finalized record beneath the Scenario Run's
+`evidence/admission/`, link it from `run.json`, and transfer every still-owned resource
+to `cleanup-ledger.json` before the first execution checkpoint.
+
 ## Files
 
 | File | Minimum content |
 |---|---|
-| `run.json` | Fresh, unique Scenario Run ID, Configured Scenario ID, declared parameters, exact identities, initial inputs, authority, deadline, and evidence for pre-run requirements |
+| `run.json` | Fresh, unique Scenario Run ID, Configured Scenario ID, declared parameters, exact identities, initial inputs, authority, deadline, and evidence for pre-run requirements, including any admission reconciliation |
 | `operator-state.json` | Scenario Run ID, mutable Protocol Stage and status, entered and completed timestamps, next Step and Check attempt, active assignments, outstanding mutations, and last atomic update |
 | `check-results.jsonl` | Append-only Check Results: Check Result ID, Step ID, Check ID, timestamp, attempt, status, expected and observed outcomes, evidence references, producing-Step identities, and recovery or correction links when applicable |
 | `findings.jsonl` | Original Findings and appended status updates, stable source IDs, kind, classification, original text, Check Result links, evidence, and reproduction data as appropriate |
 | `cleanup-ledger.json` | Mutable resource ledger: exact identity, ownership, active-authority and scarcity classification, intended and actual disposition, evidence, and retention details when applicable |
-| `evidence/` | Immutable artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
+| `evidence/` | Immutable admission provenance, artifacts, logs, traces, diffs, reports, case manifests, and hashes where artifact identity matters |
 | `summary.md` | Scenario Run Outcome and, when applicable, Qualification; tested identities, execution and resource cleanup status, missing and failed Checks, Findings, deviations, and retained review locations |
 
 The containing directory supplies the Scenario Run ID to Check Result and Finding records;

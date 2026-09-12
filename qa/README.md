@@ -26,6 +26,19 @@ Explicitly invoke the user-only [`booley-qa-run` skill](booley-qa-run/SKILL.md) 
 Scenario ID, a Configured Scenario ID, and an artifact root. The agent never invokes
 it on its own.
 
+The selected product may be an existing immutable artifact or an exact source commit.
+For an exact commit, admission may create or refresh its verified candidate wheel,
+install it in an operator-only host environment, and reconcile `booley bootstrap`
+before the Scenario Run is frozen. Before mutation, the operator creates a durable
+Admission Attempt record and resource ledger. Scenario Checks still exercise their
+own declared installation and Host Bootstrap behavior.
+
+Each production Scenario declares a shared pre-run requirement that permits
+admission-time `booley bootstrap` and execution-time `booley init` for its Configured
+Scenarios. A managed image or toolchain that either command owns does not have to
+exist before admission when the host can create it; record its fresh identity in the
+stage that produces it.
+
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
 is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
 stage at a time and owns execution behavior. `validate.py` checks authored QA assets
@@ -63,7 +76,7 @@ files use `format_version: 1`.
 A Scenario declares:
 
 - its identity, source, inputs, and public authorities;
-- named Check sets and Configured Scenarios;
+- named Check sets, shared pre-run requirements, and Configured Scenarios;
 - a shared time budget and ordered phases; and
 - ordered Steps.
 
@@ -76,7 +89,8 @@ A Configured Scenario declares:
 
 - whether it is required;
 - its host, client, and backend parameters;
-- its pre-run requirements and selected Check sets; and
+- its specific pre-run requirements, inherited shared requirements, and selected
+  Check sets; and
 - any justified exclusions.
 
 Each Check is one independently observable product claim declaring:
@@ -90,7 +104,7 @@ Each Check is one independently observable product claim declaring:
 
 | Scenario | What it exercises | Sources |
 |---|---|---|
-| PicoRV32 published demo continuity and evolution | Starts from the pinned published-demo Project and upstream source. It checks clean simulation, lint, synthesis, provisioned Linux Vivado, Interactive Mode and waveform diagnosis, two Ticket Mode changes, final regression, and cleanup. | [Scenario](scenarios/picorv32/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/374) |
+| PicoRV32 published demo continuity and evolution | Starts from the pinned published-demo Project and upstream source. It checks clean simulation, lint, synthesis, license-free Vivado ML Standard execution on provisioned Linux, Interactive Mode and waveform diagnosis, two Ticket Mode changes, final regression, and cleanup. Paid-license policy and relay checks remain in a separate optional Configured Scenario. | [Scenario](scenarios/picorv32/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/374) |
 | Taxi 10G MAC port and evolution | Starts from a pinned direct clone of Taxi. It checks Project setup, the clean 10G MAC baseline, FST and B-Wave behavior, a disposable submodule companion Project, mutation testing, two Ticket Mode changes, final regression, and cleanup. | [Scenario](scenarios/taxi/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/377) |
 | Documentation-only standalone UART | Builds a UART from the allowlisted OpenTitan documentation corpus without giving the developer the reference implementation or oracle. It covers Interactive Mode, feature and repair Tickets, independent evaluator controls and cases, external-image handling, final regression, and cleanup. | [Scenario](scenarios/uart/scenario.yaml), [accepted design](https://github.com/boldaxolotl/booley/issues/375), [oracle contract](scenarios/uart/evaluator/CONTRACT.md) |
 

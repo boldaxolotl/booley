@@ -48,6 +48,17 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "shared_pre_run_requirements": {
+      "description": "Pre-run requirements inherited by every Configured Scenario in this Scenario.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "configured_scenarios": {
       "type": "array",
       "items": {

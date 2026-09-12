@@ -303,6 +303,8 @@ check_sets:
   - gui-runtime-client
   - gui-mcp-integration
   - gui-waveform
+shared_pre_run_requirements:
+- Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
 configured_scenarios:
 - id: uart-ubuntu-codex-cli
   required: true

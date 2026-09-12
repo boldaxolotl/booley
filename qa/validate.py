@@ -99,6 +99,14 @@ def resolved_configured_checks(scenario: dict, configured: dict, path: Path) -> 
     return checks
 
 
+def resolved_pre_run_requirements(scenario: dict, configured: dict) -> list[str]:
+    """Combine Scenario-wide and Configured Scenario-specific admission gates."""
+    return [
+        *scenario.get("shared_pre_run_requirements", []),
+        *configured["pre_run_requirements"],
+    ]
+
+
 def validate_configured_scenarios(scenario: dict, path: Path) -> None:
     """Require complete, explicit Configured Scenarios."""
     unique(scenario["check_sets"], f"{path}: check sets")
@@ -111,6 +119,10 @@ def validate_configured_scenarios(scenario: dict, path: Path) -> None:
     selected_anywhere = set()
     used_sets = set()
     for configured in scenario["configured_scenarios"]:
+        strings(
+            resolved_pre_run_requirements(scenario, configured),
+            f"{path}: {configured['id']}.resolved pre-run requirements",
+        )
         selected = set(resolved_configured_checks(scenario, configured, path))
         selected_anywhere.update(selected)
         used_sets.update(configured["check_sets"])

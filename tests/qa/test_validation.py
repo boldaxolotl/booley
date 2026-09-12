@@ -248,6 +248,18 @@ def test_scenario_schema_rejects_whitespace_only_configured_scenario_strings(tmp
     assert "does not match" in result.stderr
 
 
+def test_shared_pre_run_requirement_cannot_duplicate_configured_requirement(tmp_path):
+    scenario = write_suite(tmp_path)
+    requirement = scenario["configured_scenarios"][0]["pre_run_requirements"][0]
+    scenario["shared_pre_run_requirements"] = [requirement]
+    write_scenario(tmp_path, scenario)
+
+    result = run_validator(tmp_path)
+
+    assert result.returncode == 1
+    assert "resolved pre-run requirements: duplicate values" in result.stderr
+
+
 def test_coverage_index_is_derived_after_validation(tmp_path):
     write_suite(tmp_path)
     destination = tmp_path.parent / (tmp_path.name + "-index.json")
