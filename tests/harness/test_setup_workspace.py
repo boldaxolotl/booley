@@ -376,6 +376,80 @@ class TestWorktreeCreateScript:
         assert _git(expected_wt, "symbolic-ref", "HEAD").stdout.strip() == ticket_ref
         assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == expected_head
 
+    def test_acceptance_basis_reuse_attaches_clean_detached_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import workspace
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "switch", "-c", branch)
+        (project_root / "README.md").write_text("execution progress\n", encoding="utf-8")
+        _git(project_root, "commit", "-am", "progress")
+        expected_head = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        _git(project_root, "switch", "master")
+        project_data = project_root / ".booley_project"
+        project_data.mkdir()
+        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        expected_wt = project_data / "worktrees" / "ticket"
+        _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
+        ticket_ref = f"refs/heads/{branch}"
+        ctx = _make_basis_ctx(project_root, authoring_sha, ticket_ref)
+
+        assert workspace._prepare_outer_worktree(ctx) is None
+        assert _git(expected_wt, "symbolic-ref", "HEAD").stdout.strip() == ticket_ref
+        assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == expected_head
+
+    @pytest.mark.parametrize(
+        ("state", "expected_reason"),
+        [
+            ("dirty", "uncommitted changes"),
+            ("divergent", "not contained"),
+        ],
+    )
+    def test_acceptance_basis_reuse_preserves_unsafe_detached_worktree(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        state: str,
+        expected_reason: str,
+    ) -> None:
+        from booley.harness.setup import workspace
+
+        project_root = tmp_path / "repo"
+        _init_git_repository(project_root)
+        (project_root / "README.md").write_text("basis\n", encoding="utf-8")
+        _git(project_root, "add", "README.md")
+        _git(project_root, "commit", "-m", "basis")
+        authoring_sha = _git(project_root, "rev-parse", "HEAD").stdout.strip()
+        branch = "booley-generation/0123456789abcdef/ticket"
+        _git(project_root, "branch", branch)
+        project_data = project_root / ".booley_project"
+        project_data.mkdir()
+        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        expected_wt = project_data / "worktrees" / "ticket"
+        _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
+        marker = expected_wt / "preserve.txt"
+        marker.write_text(f"{state}\n", encoding="utf-8")
+        if state == "divergent":
+            _git(expected_wt, "add", "preserve.txt")
+            _git(expected_wt, "commit", "-m", "detached progress")
+        original_head = _git(expected_wt, "rev-parse", "HEAD").stdout.strip()
+        ctx = _make_basis_ctx(project_root, authoring_sha, f"refs/heads/{branch}")
+
+        result = workspace._prepare_outer_worktree(ctx)
+
+        assert result is not None
+        assert expected_reason in result.block_reason
+        assert _git(expected_wt, "symbolic-ref", "--quiet", "HEAD").returncode != 0
+        assert _git(expected_wt, "rev-parse", "HEAD").stdout.strip() == original_head
+        assert marker.read_text(encoding="utf-8") == f"{state}\n"
+
     def test_rejects_missing_explicit_branch_without_removing_stale_path(
         self, tmp_path: Path
     ) -> None:
