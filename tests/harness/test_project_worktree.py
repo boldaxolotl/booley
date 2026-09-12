@@ -146,18 +146,119 @@ def test_control_project_repo_ignores_authored_project_dir(
     assert resolve_inner_project_repo(ctx.project_root) == (ctx.project_root / ".booley_project")
 
 
-def test_basis_bound_workspace_does_not_recreate_missing_paired_checkout(
+def test_basis_bound_workspace_recreates_missing_paired_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    authoring_sha = _git(project, "rev-parse", "HEAD")
+    branch = "booley-generation/0123456789abcdef/project"
+    _git(project, "switch", "-c", branch)
+    (project / "cores" / "dut.core").write_text(
+        "CAPI=2:\nname: ::dut:progress\n",
+        encoding="utf-8",
+    )
+    _commit_all(project, "fix: preserve project progress")
+    expected_head = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "main")
+    _git(project, "branch", "--set-upstream-to=main", branch)
+    outer_sha = _git(ctx.project_root, "rev-parse", "HEAD")
+    ctx.acceptance_basis = AcceptanceBasis(
+        (
+            BasisParticipant(
+                "outer",
+                outer_sha,
+                "refs/heads/booley-generation/0123456789abcdef/outer",
+                "refs/heads/main",
+                outer_sha,
+            ),
+            BasisParticipant(
+                "project",
+                authoring_sha,
+                f"refs/heads/{branch}",
+                "refs/heads/main",
+                authoring_sha,
+            ),
+        )
+    )
+
+    nested = prepare_project_worktree(ctx)
+
+    assert nested == ctx.worktree_path / ".booley_project"
+    assert _git(nested, "branch", "--show-current") == branch
+    assert _git(nested, "rev-parse", "HEAD") == expected_head
+    assert prepare_project_worktree(ctx) == nested
+
+
+def test_basis_bound_workspace_preserves_divergent_branch_and_existing_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _make_ticket(tmp_path, monkeypatch)
     workspace = _workspace(ctx)
+    project = ctx.project_root / ".booley_project"
+    authoring_sha = _git(project, "rev-parse", "HEAD")
+    tree = _git(project, "rev-parse", "HEAD^{tree}")
+    orphan = subprocess.run(
+        ["git", "-C", str(project), "commit-tree", tree],
+        input="unrelated\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    branch = "booley-generation/0123456789abcdef/project"
+    _git(project, "branch", branch, orphan)
+    nested = ctx.worktree_path / ".booley_project"
+    marker = nested / "cores" / "dut.core"
     request = replace(
         workspace.request,
-        expected_ref="refs/heads/booley-generation/0123456789abcdef/project",
+        expected_sha=authoring_sha,
+        expected_ref=f"refs/heads/{branch}",
     )
 
-    with pytest.raises(TicketWorkspaceError, match="expected but unavailable"):
+    with pytest.raises(TicketWorkspaceError, match="does not descend"):
         TicketWorkspace(request).prepare()
+
+    assert _git(project, "rev-parse", branch) == orphan
+    assert marker.read_text(encoding="utf-8") == "stale copy\n"
+
+
+@pytest.mark.parametrize(
+    ("expected_ref", "message"),
+    [
+        ("main", "full branch ref"),
+        ("refs/heads/-invalid", "ref is invalid"),
+        ("refs/heads/missing", "ref does not exist"),
+    ],
+)
+def test_basis_branch_rejects_invalid_or_missing_ref(
+    tmp_path: Path,
+    expected_ref: str,
+    message: str,
+) -> None:
+    from booley.ticket_board.ticket_repositories import _basis_branch
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+
+    with pytest.raises(TicketWorkspaceError, match=message):
+        _basis_branch(repository, expected_ref, "")
+
+
+def test_basis_branch_accepts_existing_ref_without_recorded_sha(tmp_path: Path) -> None:
+    from booley.ticket_board.ticket_repositories import _basis_branch
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "README.md").write_text("basis\n", encoding="utf-8")
+    _commit_all(repository, "basis")
+
+    assert _basis_branch(repository, "refs/heads/main", "") == "main"
 
 
 def test_project_scope_is_rebased_for_inner_precommit_hook() -> None:

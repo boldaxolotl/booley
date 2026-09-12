@@ -32,6 +32,7 @@ fi
 INPUT=$(cat)
 NAME=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin)['name'])")
 CWD=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin)['cwd'])")
+BRANCH_REF=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('branch_ref', ''); isinstance(value, str) or sys.exit('ERROR: branch_ref must be a string'); print(value)")
 
 if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "ERROR: worktree name must be a single safe path component: $NAME" >&2
@@ -66,6 +67,19 @@ if ! git -C "$CWD_REAL" rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 CWD="$CWD_REAL"
+
+EXPLICIT_BRANCH=""
+if [ -n "$BRANCH_REF" ]; then
+    if [[ "$BRANCH_REF" != refs/heads/* ]] || ! git -C "$CWD" check-ref-format "$BRANCH_REF"; then
+        echo "ERROR: branch_ref must be a valid refs/heads/... ref: $BRANCH_REF" >&2
+        exit 1
+    fi
+    if ! git -C "$CWD" rev-parse --verify --quiet "${BRANCH_REF}^{commit}" >/dev/null; then
+        echo "ERROR: branch_ref does not exist as a local branch: $BRANCH_REF" >&2
+        exit 1
+    fi
+    EXPLICIT_BRANCH="${BRANCH_REF#refs/heads/}"
+fi
 
 WORKTREE_DIR="$CWD/.booley_project/worktrees/$NAME"
 CREATING_MARKER="$WORKTREE_DIR/.creating"
@@ -246,23 +260,30 @@ fi
 # Check if name encodes a branch: "branch--description" convention.
 # If NAME contains "--", the part before it is treated as a branch to check out.
 TARGET_BRANCH=""
-if [[ "$NAME" == *--* ]]; then
+if [ -n "$EXPLICIT_BRANCH" ]; then
+    TARGET_BRANCH="$EXPLICIT_BRANCH"
+elif [[ "$NAME" == *--* ]]; then
     TARGET_BRANCH="${NAME%%--*}"
     echo "Branch detected in name: $TARGET_BRANCH" >&2
 fi
 
-# Create the worktree (detached HEAD at current commit)
+# Acceptance Basis callers attach their exact existing branch. Other callers
+# retain the generic detached-HEAD behavior and optional name convention.
+WORKTREE_ADD_TARGET=(--detach)
+if [ -n "$EXPLICIT_BRANCH" ]; then
+    WORKTREE_ADD_TARGET=("$EXPLICIT_BRANCH")
+fi
 echo "Creating worktree: $WORKTREE_DIR" >&2
 # stdout goes to stderr too: `git worktree add` prints "HEAD is now at ..."
 # on stdout, and this script's contract is worktree path ONLY on stdout.
 ADD_ERR="$LOCK_DIR/${NAME}.worktree-add.$$.err"
-if ! git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" --detach >&2 2>"$ADD_ERR"; then
+if ! git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" "${WORKTREE_ADD_TARGET[@]}" >&2 2>"$ADD_ERR"; then
     if grep -qi "missing but already registered worktree" "$ADD_ERR"; then
         echo "WARNING: Worktree registered but missing; pruning and retrying" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         git -C "$CWD" worktree prune 2>/dev/null || true
         rm -rf "$WORKTREE_DIR"
-        git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" --detach >&2
+        git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" "${WORKTREE_ADD_TARGET[@]}" >&2
     else
         cat "$ADD_ERR" >&2
         rm -f "$ADD_ERR"
@@ -279,7 +300,7 @@ _parent_lock_release
 touch "$CREATING_MARKER"
 
 # If a target branch was specified, check it out
-if [ -n "$TARGET_BRANCH" ]; then
+if [ -z "$EXPLICIT_BRANCH" ] && [ -n "$TARGET_BRANCH" ]; then
     # Branch selection precedes Python's offline submodule materialization.
     if git -C "$WORKTREE_DIR" rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
         echo "Checking out branch: $TARGET_BRANCH" >&2

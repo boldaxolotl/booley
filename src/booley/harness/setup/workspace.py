@@ -313,6 +313,20 @@ def _crlf_safe_script(script: Path) -> Path:
     return Path(tmp_name)
 
 
+def _worktree_hook_input(ctx: TicketContext) -> str:
+    payload = {"name": ctx.slug, "cwd": str(ctx.project_root)}
+    if ctx.acceptance_basis is not None:
+        payload["branch_ref"] = ctx.acceptance_basis.participant("outer").ticket_ref
+    return json.dumps(payload)
+
+
+def _worktree_hook_environment() -> dict[str, str]:
+    # Windows may expose only non-runnable Microsoft Store Python aliases.
+    env = {**os.environ}
+    env.setdefault("BOOLEY_PYTHON", sys.executable)
+    return env
+
+
 def _create_fresh_worktree(
     ctx: TicketContext,
     expected_wt: Path,
@@ -323,22 +337,15 @@ def _create_fresh_worktree(
         return StepResult(block_reason=f"Worktree script not found: {wt_script}")
     wt_script = _crlf_safe_script(wt_script)
 
-    hook_input = json.dumps({"name": ctx.slug, "cwd": str(ctx.project_root)})
-    env = {**os.environ}
-    # Pin the script's Python to our own interpreter — a Windows host may have
-    # no runnable python3/python on the shell's PATH, only the Microsoft Store
-    # aliases (F-7).
-    env.setdefault("BOOLEY_PYTHON", sys.executable)
-
     logger.debug("Creating worktree for %s...", ctx.slug)
     try:
         result = subprocess.run(
             [bash_bin(), str(wt_script)],
-            input=hook_input,
+            input=_worktree_hook_input(ctx),
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env=env,
+            env=_worktree_hook_environment(),
             timeout=300,
             check=False,
         )
@@ -484,6 +491,49 @@ def _prepare_branch(
     )
 
 
+def _attach_clean_detached_basis_branch(
+    worktree_path: Path,
+    expected_ref: str,
+) -> StepResult | None:
+    """Attach a reusable detached checkout without discarding unique work."""
+    status = git_run(worktree_path, ["status", "--porcelain"], timeout=10)
+    if status.returncode != 0:
+        return StepResult(
+            block_reason=f"Could not inspect detached Ticket Workspace: {status.stderr.strip()}"
+        )
+    if status.stdout.strip():
+        return StepResult(
+            block_reason=(
+                "Ticket Workspace uses 'detached HEAD' with uncommitted changes; "
+                f"refusing to attach Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ancestry = git_run(
+        worktree_path,
+        ["merge-base", "--is-ancestor", "HEAD", expected_ref],
+        timeout=10,
+    )
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip()
+        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+        return StepResult(
+            block_reason=(
+                "Detached Ticket Workspace HEAD is not contained in "
+                f"Acceptance Basis ref {expected_ref!r}{suffix}"
+            )
+        )
+    branch = expected_ref.removeprefix("refs/heads/")
+    attached = git_run(worktree_path, ["checkout", branch], timeout=30)
+    if attached.returncode != 0:
+        return StepResult(
+            block_reason=(
+                f"Failed to attach Acceptance Basis ref {expected_ref!r}: "
+                f"{attached.stderr.strip()}"
+            )
+        )
+    return None
+
+
 def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult | None:
     """Require the outer checkout to remain on its generation-qualified basis ref."""
     basis = ctx.acceptance_basis
@@ -492,11 +542,30 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
     expected_ref = basis.participant("outer").ticket_ref
     result = git_run(worktree_path, ["symbolic-ref", "--quiet", "HEAD"], timeout=10)
     current_ref = result.stdout.strip()
-    if result.returncode != 0 or current_ref != expected_ref:
+    if result.returncode != 0:
+        failure = _attach_clean_detached_basis_branch(worktree_path, expected_ref)
+        if failure is not None:
+            return failure
+        current_ref = expected_ref
+    if current_ref != expected_ref:
         return StepResult(
             block_reason=(
                 f"Ticket Workspace uses {current_ref or 'detached HEAD'!r}; "
                 f"expected Acceptance Basis ref {expected_ref!r}"
+            )
+        )
+    ancestry = git_run(
+        worktree_path,
+        ["merge-base", "--is-ancestor", basis.outer_sha, "HEAD"],
+        timeout=10,
+    )
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip()
+        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+        return StepResult(
+            block_reason=(
+                f"Ticket Workspace branch {expected_ref!r} does not descend from "
+                f"Acceptance Basis commit {basis.outer_sha}{suffix}"
             )
         )
     ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
