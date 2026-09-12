@@ -4,7 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
-from qa.validate import load_scenarios, resolved_configured_checks
+from qa.validate import (
+    load_scenarios,
+    resolved_configured_checks,
+    resolved_pre_run_requirements,
+)
 
 ROOT = Path(__file__).resolve().parents[2] / "qa"
 
@@ -36,7 +40,7 @@ def test_every_configured_scenario_preserves_reviewed_semantics():
         assert membership_digest(exclusion_checks) == expected["exclusions"]
         semantics = {
             "parameters": configured["parameters"],
-            "pre_run_requirements": configured["pre_run_requirements"],
+            "pre_run_requirements": resolved_pre_run_requirements(scenario, configured),
             "exclusions": configured["exclusions"],
         }
         assert (

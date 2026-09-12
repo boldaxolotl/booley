@@ -309,6 +309,8 @@ check_sets:
   - inventory.EDA-LICENSE-POLICY.relay-isolation
   - cleanup.license-profiles
   - cleanup.relays
+shared_pre_run_requirements:
+- Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
 configured_scenarios:
 - id: picorv32-ubuntu-codex-cli
   required: true
@@ -324,7 +326,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   - >-
     Pre-approved Project Setup policy: enable sim, lint, synth and fpga;
@@ -354,7 +355,6 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -378,7 +378,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -444,7 +443,6 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-codex
@@ -511,7 +509,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -532,7 +529,6 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation and exact Project Grant
   check_sets:
   - picorv32-core
@@ -554,7 +550,6 @@ configured_scenarios:
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - picorv32-core
   - picorv32-gui
@@ -619,7 +614,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Approved Vivado 2025.2 installation, exact Project Grant and controlled paid-license relay authority
   check_sets:
   - picorv32-core

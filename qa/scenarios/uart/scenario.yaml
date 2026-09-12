@@ -303,6 +303,8 @@ check_sets:
   - gui-runtime-client
   - gui-mcp-integration
   - gui-waveform
+shared_pre_run_requirements:
+- Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
 configured_scenarios:
 - id: uart-ubuntu-codex-cli
   required: true
@@ -318,7 +320,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - uart-core
   exclusions:
@@ -348,7 +349,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - uart-core
@@ -380,7 +380,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   check_sets:
   - uart-core
   - uart-windows
@@ -399,7 +398,6 @@ configured_scenarios:
   - Native host OS; at least 6 GB Docker free storage plus artifact-root headroom
   - Provider/auth class readiness without secret values
   - Declared authority and owned fixture roots
-  - Permission and capacity for admission-time `booley bootstrap` and execution-time `booley init`; managed images and toolchains created by them need not pre-exist
   - Actual VS Code runtime attachment, MCP and WCP with qualified rendered screenshot observer
   check_sets:
   - uart-core

@@ -3,10 +3,10 @@
 Execute the selected Checks and supporting Steps in Scenario order. The Scenario's
 `prepare` phase runs here.
 
+When the selected production Scenario's shared pre-run requirements permit it,
 Project Initialization, including `booley init`, is ordinary authorized Scenario
-work for every Configured Scenario. It may build or reconcile its declared managed
-images and toolchains; preserve their pre-state, command evidence, and resulting
-identities with the producing Step.
+work. It may build or reconcile its declared managed images and toolchains; preserve
+their pre-state, command evidence, and resulting identities with the producing Step.
 
 Use documentation and packaged skills matching the tested build, CLI or MCP help,
 and ordinary Project inspection. Consult source only to verify or classify behavior

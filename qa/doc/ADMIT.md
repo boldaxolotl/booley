@@ -13,11 +13,12 @@ disposable Project state, and the credentials and licensed EDA access declared b
 Configured Scenario. Keep secret values out of prompts and records; obtain them
 through approved provider and EDA mechanisms.
 
-Every Configured Scenario authorizes `booley bootstrap` during admission and
-`booley init` during execution. Gate on the permission, capacity, and external inputs
-needed to run them, not on the prior existence of managed images or toolchains they
-create. Admission may reconcile Host Bootstrap as described below, but must leave
-Project Initialization and its evidence to the selected execution Step.
+When the selected production Scenario's shared pre-run requirements authorize
+`booley bootstrap` during admission and `booley init` during execution, gate on the
+permission, capacity, and external inputs needed to run them, not on the prior
+existence of managed images or toolchains they create. Admission may reconcile Host
+Bootstrap as described below, but must leave Project Initialization and its evidence
+to the selected execution Step.
 
 Use the declared artifact form. An unreleased candidate, including a local wheel,
 must be immutable and bound to a source commit and content hash. Reject undeclared
@@ -29,28 +30,35 @@ or imports.
 After the static gates pass, reconcile only missing or stale state needed to admit the
 declared build:
 
-1. When the Human Maintainer selected an exact source commit and no matching immutable
-   wheel exists, build or replace the candidate wheel from a clean isolated checkout
-   of that commit using the repository's packaged build path. Verify the embedded
-   source commit and payload fingerprint, calculate the wheel SHA-256, and bind the
-   matching documentation snapshot before use. A dirty, unstamped, mismatched, or
-   multiply resolved build is not admissible.
-2. Install or update that wheel in an isolated operator-only host CLI environment.
+1. Resolve the immutable candidate wheel for the Human Maintainer's exact source
+   commit. When no matching wheel exists, build or replace it from a clean isolated
+   checkout of that commit using the repository's packaged build path.
+2. Whether the wheel is new or reused, verify its embedded source commit and payload
+   fingerprint, calculate its SHA-256, and bind the matching documentation snapshot
+   before use. A dirty, unstamped, mismatched, or multiply resolved build is not
+   admissible.
+3. Install or update that wheel in an isolated operator-only host CLI environment.
    Confirm the executable, imported package, version, source commit, and wheel hash
    all identify the declared build. This environment is separate from the isolated
    installation exercised later by Scenario Checks.
-3. Run the declared build's `booley bootstrap --check-only`. When it reports pending
+4. Run the declared build's `booley bootstrap --check-only`. When it reports pending
    work, run `booley bootstrap`, then repeat `--check-only` and require a ready result.
    Use `--force` only when the Human Maintainer or Configured Scenario explicitly
    authorized forced reconciliation.
 
-Before each action, capture the command, source and destination identities, and
-relevant pre-state in operator-owned temporary storage. Capture exit status, output,
-content hashes, and post-state immediately afterward. On successful admission, retain
-that evidence under `evidence/admission/` and link it from `run.json`; on failure,
-preserve the diagnostic outside Project state and compensate any partially created
-operator-owned resource. Preserve shared caches, existing credentials, borrowed EDA
-installations, and unrelated managed resources.
+Before the first mutating action, allocate a fresh Admission Attempt ID under the
+writable artifact root and create the durable admission records specified by
+[Format](FORMAT.md#admission-attempt-records). Before each action, record the command,
+source and destination identities, relevant pre-state, and every planned
+operator-owned resource. Capture exit status, output, content hashes, post-state, and
+actual resource identities immediately afterward using atomic record updates.
+
+On successful admission, finalize and retain that record under
+`evidence/admission/`, link it from `run.json`, and transfer every still-owned resource
+to the Scenario Run cleanup ledger before entering execution. On failure, preserve the
+diagnostic outside Project state and reconcile every ledger entry, compensating any
+partially created operator-owned resource. Preserve shared caches, existing
+credentials, borrowed EDA installations, and unrelated managed resources.
 
 These actions establish inputs and reusable host readiness only. They do not satisfy
 a Check, replace a Scenario Step, initialize a Project, or count as product evidence.

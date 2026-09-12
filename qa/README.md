@@ -29,13 +29,15 @@ it on its own.
 The selected product may be an existing immutable artifact or an exact source commit.
 For an exact commit, admission may create or refresh its verified candidate wheel,
 install it in an operator-only host environment, and reconcile `booley bootstrap`
-before the Scenario Run is frozen. Scenario Checks still exercise their own declared
-installation and Host Bootstrap behavior.
+before the Scenario Run is frozen. Before mutation, the operator creates a durable
+Admission Attempt record and resource ledger. Scenario Checks still exercise their
+own declared installation and Host Bootstrap behavior.
 
-Every Configured Scenario permits admission-time `booley bootstrap` and
-execution-time `booley init`. A managed image or toolchain that either command owns
-does not have to exist before admission when the host can create it; record its fresh
-identity in the stage that produces it.
+Each production Scenario declares a shared pre-run requirement that permits
+admission-time `booley bootstrap` and execution-time `booley init` for its Configured
+Scenarios. A managed image or toolchain that either command owns does not have to
+exist before admission when the host can create it; record its fresh identity in the
+stage that produces it.
 
 QA execution is an agent skill, not a Booley CLI command. The agent reading the skill
 is the Scenario Operator. The [protocol](doc/PROTOCOL.md) discloses one resumable
@@ -74,7 +76,7 @@ files use `format_version: 1`.
 A Scenario declares:
 
 - its identity, source, inputs, and public authorities;
-- named Check sets and Configured Scenarios;
+- named Check sets, shared pre-run requirements, and Configured Scenarios;
 - a shared time budget and ordered phases; and
 - ordered Steps.
 
@@ -87,7 +89,8 @@ A Configured Scenario declares:
 
 - whether it is required;
 - its host, client, and backend parameters;
-- its pre-run requirements and selected Check sets; and
+- its specific pre-run requirements, inherited shared requirements, and selected
+  Check sets; and
 - any justified exclusions.
 
 Each Check is one independently observable product claim declaring:

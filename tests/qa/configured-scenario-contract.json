@@ -3,91 +3,91 @@
   "configured_scenarios": {
     "picorv32-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "3cc251e8b07e31a95d6fdb9c4400042ebfefa857a1fcb4b78e2d952dc49cbc50",
+      "semantics": "3fac2c80527f4f1c390e1721eba402c6105b9b8cfde7b6535a40357b36cd582e",
       "checks": "e79ff864fab24f291c3ef3c667384363b6be3c68541e1bf7d3d60d51dd1762e4",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "taxi-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "c0dfcf6a92f3d5ba7c6ccfc341d09311063a838f8285e15e34674f7c94a513d4",
+      "semantics": "c0b85eebc93188aeea2317778bc5684f98be89cfbb279526a4c762d46fdd7380",
       "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-cli": {
       "required": true,
-      "semantics": "b87633d01908a1224edbde162c340611eb5a1bcb19e3db0a9735b050d04459ed",
+      "semantics": "8d6dfeb02870aa3a0201c33cac498fd2f4fdc1683de921a2b8d997aa88e0d35a",
       "checks": "08a3d4a65a196c13fb6c16be98f2e9dbf5423f90809ca8c80ae7d2110f202c11",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "8f384ab54cbaeefbeaee8cb3d3c619502bb3052f1e9b1c7298e7c4400758e9c6",
+      "semantics": "50c5ce50a4194fa9cc2899225c693f805a398d4d17d2bb59e2f12be12f089a92",
       "checks": "9690652bdec0468a9f2e70d6f4895211b093de51aca41598c9aefac49167e3ec",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "taxi-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "a3a2b0988a6caaa86e15bc28835c7e135a557a6a410d303e1b64a9c027d7b941",
+      "semantics": "ad841f7ef67f548fdb5bb5ec4de67a5f533c05bfc5a477627d000150cce79f81",
       "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-ubuntu-codex-vscode": {
       "required": true,
-      "semantics": "afbdf0b58f808a0f51dde388f5867ff6c773f522e475cea4c9019bd6c378c48b",
+      "semantics": "c0bb25af2e518b722f1c580043e12957da46828ea49e770fb1fc133f46e4212b",
       "checks": "20ce2f8f864fac96d386940322bdf10df0cb22e2c767583632d5d46771e16ce3",
       "exclusions": "e99903eebfd639b392acd2c057974542a4f667c41b6e49def86a0539bbc9d46d"
     },
     "picorv32-windows-codex-cli": {
       "required": true,
-      "semantics": "88d4f712320068b7a867aaff7a36083e04499c3d1f580d011ee721e6f497cf4c",
+      "semantics": "b5f59d3fb02dd63fb81ebdde40c31e47793870f42e0e13ea8521ba0df60f4fa2",
       "checks": "e95a4bf15db8fcd3aeed46ac4279056bc7abb7c359746274668333374ce884f4",
       "exclusions": "48f0eb0768d7921bc337f38d3c45983b28ff098ac46ff79ac5db863a15f32733"
     },
     "taxi-windows-codex-cli": {
       "required": true,
-      "semantics": "52349132d9c05cdb89ebdefd7ebb90c85951968c62c2de000774051708a039e6",
+      "semantics": "4d070bd00fc544e9c26105e0a638bec50dc42329d6ab0c495fcf706b61c41552",
       "checks": "35070c8d1b7dd17fad89c346f1b95c19397e0f6d4340097619f6cdcc00596299",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-cli": {
       "required": true,
-      "semantics": "52349132d9c05cdb89ebdefd7ebb90c85951968c62c2de000774051708a039e6",
+      "semantics": "4d070bd00fc544e9c26105e0a638bec50dc42329d6ab0c495fcf706b61c41552",
       "checks": "3d77bd29a6ca427311b1974be0e858b83a0fc111aeea7974ea6c119546406ef0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-codex-vscode": {
       "required": true,
-      "semantics": "c1eff24cdab0609c17935ebd8066f5dedb26d690808ff15d5d539a258185d0b9",
+      "semantics": "34ca09ce78cf230603de66438631bac44143bd906f2f37d331d68d90e32b443c",
       "checks": "d849532b9a3e0459a0bced1a052ffa0be9c45b69ad1f67a712b5025aa01e8d44",
       "exclusions": "48f0eb0768d7921bc337f38d3c45983b28ff098ac46ff79ac5db863a15f32733"
     },
     "taxi-windows-codex-vscode": {
       "required": true,
-      "semantics": "af79af305f7098a2313790459523b5870c4adbdb47144925e9d4b66f60b0588c",
+      "semantics": "d31b163afddd79c024c5dcf929049eeee331891b744ee53c615cf9c90261e922",
       "checks": "091c147241ed738be0a5614f1d853c60afd49f3d15bb4110c0aedbae6bfc82b0",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "uart-windows-codex-vscode": {
       "required": true,
-      "semantics": "af79af305f7098a2313790459523b5870c4adbdb47144925e9d4b66f60b0588c",
+      "semantics": "d31b163afddd79c024c5dcf929049eeee331891b744ee53c615cf9c90261e922",
       "checks": "c68cb1a309b681ed822bd43f59ba831f669d9c94545708d87cff3f0459f47c62",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-ubuntu-claude-cli": {
       "required": true,
-      "semantics": "8293a1bf5f8327c18d4d33e43b7567a5dad2a82c23adfda85409d524fc306156",
+      "semantics": "d594721c6748c4571bd9fc64ab4a711b7b61d18fe4b5c0ce2231f53c165db871",
       "checks": "26fd9b549ab3cde909c29cb740c6697cd6f95b585ddeb10980cb0169f4ad919b",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-ubuntu-claude-vscode": {
       "required": true,
-      "semantics": "b0d784705dc1dfd3b5e962169d51926c228b54c110fb145f82b7edc69e00e2c1",
+      "semantics": "27829f617931cc7cc4b87ca677794b136164ca221fea2671094dd920376a2d97",
       "checks": "704a0afbe7772149c3672b99d869d705e7481eb75102ddcb1ce8c498523d7d75",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     },
     "picorv32-windows-claude-vscode": {
       "required": false,
-      "semantics": "20c11545a83af171a4fcd896b3b8a62bd7c2be0623aadf2c346700e1ca5ebdaa",
+      "semantics": "047e1d5d3e80fd9375094d6f607ff40a804089759f61788c94f223206a97d695",
       "checks": "facb2b2440ff587beccb49cb422ddc3df6f7e20a12d4c9dfed77688f4fdd3dfd",
       "exclusions": "48f0eb0768d7921bc337f38d3c45983b28ff098ac46ff79ac5db863a15f32733"
     },
@@ -237,7 +237,7 @@
     },
     "picorv32-ubuntu-codex-cli-paid-license": {
       "required": false,
-      "semantics": "c40d56b330d1e37c8b7c9bf650081ae04f68ca2997496929ca8af6214eba39b2",
+      "semantics": "8dcdbecb9f565fedcbedabb31a05b5502c147ed4696e9645a35c94bb483511f7",
       "checks": "82f19ee8652c8d1988dfca514c40be4b7ce888028a8770e448b0d973f37c7317",
       "exclusions": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     }

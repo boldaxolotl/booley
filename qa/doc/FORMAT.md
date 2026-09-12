@@ -2,6 +2,26 @@
 
 Use `format_version: 1` for structured Scenario Run files that declare a format.
 
+## Admission Attempt records
+
+Before mutating admission reconciliation, create
+`<artifact-root>/admission-attempts/<Admission Attempt ID>/` with a fresh ID and these
+durable records:
+
+| File | Minimum content |
+|---|---|
+| `admission-state.json` | Admission Attempt ID, Scenario and Configured Scenario IDs, exact requested source and resolved commit, intended candidate identity, status, current action, timestamps, and last atomic update |
+| `admission-cleanup-ledger.json` | Planned or exact resource identity, ownership, active-authority and scarcity classification, intended and actual disposition, evidence, and retention details when applicable |
+| `evidence/` | Immutable commands, output, pre/post state, provenance, and hashes for admission reconciliation |
+
+Write both JSON records by atomic replacement. Ledger every operator-owned resource
+before creation; when its exact identity is unknowable in advance, record the planned
+identity first and replace it with the exact identity immediately after acquisition.
+On admission failure, retain the finalized attempt record and reconcile its ledger.
+On success, retain the finalized record beneath the Scenario Run's
+`evidence/admission/`, link it from `run.json`, and transfer every still-owned resource
+to `cleanup-ledger.json` before the first execution checkpoint.
+
 ## Files
 
 | File | Minimum content |

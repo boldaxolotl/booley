@@ -24,15 +24,16 @@ exclusions.
   x86-64 with Docker Desktop/WSL2.
 - PicoRV32 also runs under Claude on Ubuntu; its Windows/Claude GUI run is optional
   until usage permits.
-- Required PicoRV32 profiles exercise the supported Vivado ML Standard target without
+- Required PicoRV32 Configured Scenarios exercise the supported Vivado ML Standard target without
   a License Profile or controlled relay. Paid-license policy, License Profile CRUD,
   and relay fault/recovery coverage belongs to the optional
-  `picorv32-ubuntu-codex-cli-paid-license` profile.
+  `picorv32-ubuntu-codex-cli-paid-license` Configured Scenario.
 - Native CLI runs exercise core behavior. GUI runs also exercise the supported VS
   Code Runtime Attachment and Waveform Viewer integration.
-- Every Configured Scenario permits admission-time Host Bootstrap and execution-time
-  Project Initialization. Run-created managed images and toolchains are evidence from
-  those lifecycle operations, not resources that must pre-exist admission.
+- Each production Scenario's shared pre-run requirements permit admission-time Host
+  Bootstrap and execution-time Project Initialization for its Configured Scenarios.
+  Run-created managed images and toolchains are evidence from those lifecycle
+  operations, not resources that must pre-exist admission.
 - Keep each Scenario's EDA tool, Runtime Image, Stealth Mode, and Linux
   provisioned-Vivado assignments. Windows has no provisioned-Vivado requirement;
   Linux unavailability does not remove the Linux requirement.

@@ -17,6 +17,11 @@ Candidate creation, operator-only CLI installation, and Host Bootstrap performed
 during admission are preparation provenance, not Check Results. Retain their verified
 pre/post evidence under `evidence/admission/` when admission succeeds and link it from
 `run.json`. A later Scenario Check must perform and evidence its own declared stimulus.
+Before those actions mutate state, create the Admission Attempt records defined by
+[Format](FORMAT.md#admission-attempt-records), ledger planned resources, and update
+their identities and dispositions atomically. Transfer still-owned resources to the
+Scenario Run cleanup ledger before execution; a failed admission retains and
+reconciles its own ledger even though no Scenario Run exists.
 
 Append corrections; never rewrite Check Result history. A correction names the
 mistaken Check Result and proves the recording error. Preserve every trustworthy
