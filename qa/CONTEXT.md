@@ -44,14 +44,6 @@ _Avoid_: Finding, Check Result, verdict
 One human decision unit containing a suspected root observation and every explicitly linked consequential Check Result or Observation. Grouping changes presentation, not evidence: every source record remains visible and belongs to exactly one active Triage Case.
 _Avoid_: Finding, hidden failure, issue
 
-**Triage Disposition**:
-The Human Maintainer's recorded classification of one Triage Case. It determines whether the case creates a Finding, creates a QA Change, affects the Scenario Run Outcome, or remains a non-invalidating observation.
-_Avoid_: automated verdict, Check status
-
-**QA Change**:
-One Human Maintainer-approved item describing an actionable defect or improvement in the Public QA Suite rather than in the qualified product or its documentation.
-_Avoid_: Finding, Check correction, Capability
-
 **Capability Coverage**:
 The mapping between inventoried Capabilities and the Scenario Checks that exercise them. Capability Coverage establishes representation, not behavioral evidence.
 _Avoid_: RTL coverage, Coverage Campaign, code coverage
