@@ -3,21 +3,25 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
-import sys
 import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
+
+from booley.runtime.timefmt import utc_now_rfc3339
+
+try:
+    from .triage_lock import exclusive_file_lock
+except ImportError:
+    from triage_lock import exclusive_file_lock
 
 RUN_FORMAT_VERSION = 2
 TRIAGE_FORMAT_VERSION = 1
@@ -68,10 +72,6 @@ class RunRecords:
     @property
     def run_id(self) -> str:
         return str(self.run["run_id"])
-
-
-def utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def sha256_file(path: Path) -> str:
@@ -414,7 +414,7 @@ def seal_run(run_root: Path) -> RunRecords:
         "run_record_format_version": RUN_FORMAT_VERSION,
         "record_type": "run-manifest",
         "run_id": run["run_id"],
-        "sealed_at": utc_now(),
+        "sealed_at": utc_now_rfc3339(),
         "execution_status": state["execution_status"],
         "cleanup_status": state["cleanup_status"],
         "record_counts": {
@@ -600,14 +600,41 @@ def load_suite(suite_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, s
                 "sha256": sha256_file(path),
             }
         )
+        check_sets = {
+            check_set["id"]: set(check_set.get("checks", []))
+            for check_set in scenario.get("check_sets", [])
+            if isinstance(check_set, dict) and isinstance(check_set.get("id"), str)
+        }
         for item in scenario.get("configured_scenarios", []):
             if not isinstance(item, dict) or type(item.get("required")) is not bool:
                 raise TriageError(f"{path}: invalid Configured Scenario")
+            selected_sets = item.get("check_sets")
+            expected_checks = None
+            if selected_sets is not None:
+                unknown_sets = set(selected_sets) - check_sets.keys()
+                if unknown_sets:
+                    raise TriageError(f"{path}: unknown Check sets {sorted(unknown_sets)}")
+                expected_checks = set().union(*(check_sets[set_id] for set_id in selected_sets))
+                exclusions = {
+                    exclusion["check"]
+                    for exclusion in item.get("exclusions", [])
+                    if isinstance(exclusion, dict) and isinstance(exclusion.get("check"), str)
+                }
+                expected_checks -= exclusions
             configured.append(
                 {
                     "scenario_id": scenario["scenario_id"],
                     "configured_scenario_id": item["id"],
                     "required": item["required"],
+                    "parameters": item.get("parameters", {}),
+                    "expected_check_ids": (
+                        sorted(expected_checks) if expected_checks is not None else None
+                    ),
+                    "exclusions": item.get("exclusions", []),
+                    "pre_run_requirements": [
+                        *scenario.get("shared_pre_run_requirements", []),
+                        *item.get("pre_run_requirements", []),
+                    ],
                 }
             )
     identities = [item["configured_scenario_id"] for item in configured]
@@ -656,11 +683,22 @@ def transitive_requirements(steps: dict[str, dict[str, Any]], step_id: str) -> s
 
 def validate_run_against_suite(run: RunRecords, session: dict[str, Any]) -> None:
     scenario = bound_scenario(session, run.run["scenario_id"])
-    configured = {
-        item["id"] for item in scenario.get("configured_scenarios", []) if isinstance(item, dict)
-    }
-    if run.run["configured_scenario_id"] not in configured:
+    matches = [
+        item
+        for item in session["configured_scenarios"]
+        if item["scenario_id"] == run.run["scenario_id"]
+        and item["configured_scenario_id"] == run.run["configured_scenario_id"]
+    ]
+    if len(matches) != 1:
         raise TriageError(f"{run.root}: Configured Scenario is absent from bound Scenario")
+    configured = matches[0]
+    if run.run["parameters"] != configured["parameters"]:
+        raise TriageError(f"{run.root}: parameters differ from Configured Scenario")
+    expected_check_ids = configured["expected_check_ids"]
+    if expected_check_ids is not None and set(run.run["selected_check_ids"]) != set(
+        expected_check_ids
+    ):
+        raise TriageError(f"{run.root}: selected Checks differ from Configured Scenario")
     steps = {
         item["id"]: item
         for item in scenario.get("steps", [])
@@ -677,6 +715,12 @@ def validate_run_against_suite(run: RunRecords, session: dict[str, Any]) -> None
     if unknown := set(run.run["selected_check_ids"]) - check_steps.keys():
         raise TriageError(
             f"{run.root}: selected Checks absent from bound Scenario: {sorted(unknown)}"
+        )
+    if unselected := {result["check_id"] for result in run.results} - set(
+        run.run["selected_check_ids"]
+    ):
+        raise TriageError(
+            f"{run.root}: Check Results include unselected Checks: {sorted(unselected)}"
         )
     by_result = {result["check_result_id"]: result for result in run.results}
     for result in run.results:
@@ -698,7 +742,15 @@ def validate_run_against_suite(run: RunRecords, session: dict[str, Any]) -> None
 
 
 def helper_revision() -> str:
-    return sha256_file(Path(__file__))
+    root = Path(__file__).parent
+    names = [
+        "triage.py",
+        "triage_cli.py",
+        "triage_lock.py",
+        "triage-record.schema.json",
+        "run-record.schema.json",
+    ]
+    return stable_digest({name: sha256_file(root / name) for name in names})
 
 
 def default_policy_revision() -> str:
@@ -709,6 +761,22 @@ def default_policy_revision() -> str:
 
 
 def init_session(
+    triage_root: Path,
+    suite_root: Path,
+    product_revision: str,
+    suite_revision: str,
+) -> dict[str, Any]:
+    triage_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with exclusive_file_lock(triage_root / ".triage.lock"):
+            return _init_session_unlocked(
+                triage_root, suite_root, product_revision, suite_revision
+            )
+    except TimeoutError as error:
+        raise TriageError(str(error)) from error
+
+
+def _init_session_unlocked(
     triage_root: Path,
     suite_root: Path,
     product_revision: str,
@@ -726,7 +794,8 @@ def init_session(
         if actual != expected:
             raise TriageError(f"{session_path}: existing session target differs")
         return session
-    if triage_root.exists() and any(triage_root.iterdir()):
+    contents = [path for path in triage_root.iterdir() if path.name != ".triage.lock"]
+    if contents:
         raise TriageError(f"{triage_root}: new triage root must be empty")
     configured_scenarios, scenario_files = load_suite(suite_root)
     session = {
@@ -739,13 +808,13 @@ def init_session(
         "helper_revision": helper_revision(),
         "suite_root": str(suite_root.resolve()),
         "scenario_files": scenario_files,
-        "created_at": utc_now(),
+        "created_at": utc_now_rfc3339(),
         "configured_scenarios": configured_scenarios,
     }
     validate_definition(session, "triage-record.schema.json", "session", "triage session")
     atomic_json(session_path, session)
     atomic_jsonl(triage_root / "triage-events.jsonl", [])
-    render_session(triage_root)
+    _render_session_unlocked(triage_root)
     return session
 
 
@@ -785,7 +854,7 @@ def make_event(
         "event_id": event_id,
         "idempotency_key": key,
         "event_type": event_type,
-        "timestamp": utc_now(),
+        "timestamp": utc_now_rfc3339(),
         "payload": payload,
     }
 
@@ -797,6 +866,19 @@ def append_event(
 
 
 def append_events(
+    triage_root: Path, additions: list[tuple[str, dict[str, Any], str]]
+) -> list[dict[str, Any]]:
+    try:
+        with exclusive_file_lock(triage_root / ".triage.lock"):
+            appended = _append_events_unlocked(triage_root, additions)
+    except TimeoutError as error:
+        raise TriageError(str(error)) from error
+    if additions:
+        render_session(triage_root)
+    return appended
+
+
+def _append_events_unlocked(
     triage_root: Path, additions: list[tuple[str, dict[str, Any], str]]
 ) -> list[dict[str, Any]]:
     session = read_session(triage_root)
@@ -824,9 +906,8 @@ def append_events(
         projected_candidates = all_candidates(projected_runs)
         projected_cases = case_projection(events)
         validate_case_membership(projected_cases, projected_candidates)
+        run_roles(events, projected_runs)
         atomic_jsonl(triage_root / "triage-events.jsonl", events)
-    if additions:
-        render_session(triage_root)
     return appended
 
 
@@ -1150,10 +1231,51 @@ def disposition_effect(disposition: dict[str, Any], cases: dict[str, dict[str, A
 def source_trace(case: dict[str, Any], candidates: dict[str, dict[str, Any]]) -> dict[str, Any]:
     linked = [candidates[candidate_id] for candidate_id in case["candidate_ids"]]
     return {
+        "source_case_ids": [case["case_id"]],
         "source_candidate_ids": case["candidate_ids"],
         "source_run_ids": sorted({candidate["run_id"] for candidate in linked}),
         "source_evidence_refs": sorted(
             {reference for candidate in linked for reference in candidate["evidence_refs"]}
+        ),
+    }
+
+
+def finding_source_trace(
+    source_case: dict[str, Any],
+    cases: dict[str, dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    def canonical_case_id(case: dict[str, Any]) -> str:
+        current = case
+        while (
+            current["disposition"] is not None
+            and current["disposition"]["disposition"] == "duplicate-finding"
+            and current["disposition"]["details"].get("duplicate_of_case_id")
+        ):
+            current = cases[current["disposition"]["details"]["duplicate_of_case_id"]]
+        return current["case_id"]
+
+    linked_cases = [source_case]
+    for case in active_cases(cases):
+        disposition = case["disposition"]
+        if disposition is None or disposition["disposition"] != "duplicate-finding":
+            continue
+        if canonical_case_id(case) == source_case["case_id"]:
+            linked_cases.append(case)
+    candidate_ids = sorted(
+        {candidate_id for case in linked_cases for candidate_id in case["candidate_ids"]}
+    )
+    linked_candidates = [candidates[candidate_id] for candidate_id in candidate_ids]
+    return {
+        "source_case_ids": sorted(case["case_id"] for case in linked_cases),
+        "source_candidate_ids": candidate_ids,
+        "source_run_ids": sorted({candidate["run_id"] for candidate in linked_candidates}),
+        "source_evidence_refs": sorted(
+            {
+                reference
+                for candidate in linked_candidates
+                for reference in candidate["evidence_refs"]
+            }
         ),
     }
 
@@ -1178,7 +1300,7 @@ def projected_findings(
                 "case_id": case["case_id"],
                 "kind": disposition["disposition"],
                 **details,
-                **source_trace(case, candidates),
+                **finding_source_trace(case, cases, candidates),
             }
         )
     return findings
@@ -1254,7 +1376,22 @@ def progress_summary(
 ) -> str:
     active = active_cases(cases)
     resolved = sum(case["disposition"] is not None for case in active)
-    lines = [
+    lines = summary_header(session, runs, candidates, active, hints, resolved)
+    lines.extend(summary_hints(hints))
+    lines.extend(summary_cases(active, candidates))
+    lines.extend(summary_outputs(cases, candidates, qualification))
+    return "\n".join(lines) + "\n"
+
+
+def summary_header(
+    session: dict[str, Any],
+    runs: dict[str, RunRecords],
+    candidates: dict[str, dict[str, Any]],
+    active: list[dict[str, Any]],
+    hints: list[dict[str, Any]],
+    resolved: int,
+) -> list[str]:
+    return [
         "# Public QA triage",
         "",
         f"Session: `{session['session_id']}`",
@@ -1267,12 +1404,23 @@ def progress_summary(
         f"Non-causal similarity hints: {len(hints)}",
         "",
     ]
+
+
+def summary_hints(hints: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
     if hints:
         lines.extend(["## Similarity hints", ""])
         for hint in hints:
             linked = ", ".join(f"`{item}`" for item in hint["candidate_ids"])
             lines.append(f"- {linked}: {hint['basis']}.")
         lines.append("")
+    return lines
+
+
+def summary_cases(
+    active: list[dict[str, Any]], candidates: dict[str, dict[str, Any]]
+) -> list[str]:
+    lines: list[str] = []
     for case in active:
         status = case["disposition"]["disposition"] if case["disposition"] else "pending"
         lines.extend(
@@ -1293,17 +1441,23 @@ def progress_summary(
                 f"{candidate['text']} Evidence: {evidence}."
             )
         lines.append("")
+    return lines
+
+
+def summary_outputs(
+    cases: dict[str, dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
+    qualification: dict[str, Any] | None,
+) -> list[str]:
     findings = projected_findings(cases, candidates)
     changes = projected_qa_changes(cases, candidates)
-    lines.extend(
-        [
-            "## Outputs",
-            "",
-            f"Findings: {len(findings)}",
-            f"QA Changes: {len(changes)}",
-            "",
-        ]
-    )
+    lines = [
+        "## Outputs",
+        "",
+        f"Findings: {len(findings)}",
+        f"QA Changes: {len(changes)}",
+        "",
+    ]
     if qualification is None:
         lines.append("Qualification has not been calculated for the current projection.")
     else:
@@ -1324,16 +1478,53 @@ def progress_summary(
         ]
         if missing:
             lines.extend(["", "Missing required Configured Scenarios: " + ", ".join(missing)])
-    return "\n".join(lines) + "\n"
+    return lines
+
+
+def run_roles(
+    events: list[dict[str, Any]], runs: dict[str, RunRecords]
+) -> dict[str, dict[str, Any]]:
+    roles = {
+        run_id: {
+            "qualification_role": "active",
+            "superseded_by_run_id": None,
+            "supersession_reason": None,
+            "supersession_basis": None,
+        }
+        for run_id in runs
+    }
+    for event in events:
+        if event["event_type"] != "run-superseded":
+            continue
+        payload = event["payload"]
+        run_id = payload.get("run_id")
+        replacement_run_id = payload.get("replacement_run_id")
+        if run_id not in roles or replacement_run_id not in roles or run_id == replacement_run_id:
+            raise TriageError("run supersession refers to invalid admitted runs")
+        if roles[run_id]["qualification_role"] != "active":
+            raise TriageError(f"{run_id}: run is already historical")
+        if roles[replacement_run_id]["qualification_role"] != "active":
+            raise TriageError(f"{replacement_run_id}: replacement run is not active")
+        roles[payload["run_id"]] = {
+            "qualification_role": "historical",
+            "superseded_by_run_id": replacement_run_id,
+            "supersession_reason": payload["reason"],
+            "supersession_basis": payload["basis"],
+        }
+    return roles
 
 
 def projection_digest(
-    session: dict[str, Any], runs: dict[str, RunRecords], cases: dict[str, dict[str, Any]]
+    session: dict[str, Any],
+    runs: dict[str, RunRecords],
+    cases: dict[str, dict[str, Any]],
+    roles: dict[str, dict[str, Any]],
 ) -> str:
     projection = {
         "session": session,
         "runs": {run_id: run.manifest_hash for run_id, run in sorted(runs.items())},
         "cases": active_cases(cases),
+        "run_roles": roles,
     }
     return stable_digest(projection)
 
@@ -1349,13 +1540,22 @@ def current_qualification(events: list[dict[str, Any]], digest: str) -> dict[str
 
 
 def render_session(triage_root: Path) -> dict[str, Any]:
+    try:
+        with exclusive_file_lock(triage_root / ".triage.lock"):
+            return _render_session_unlocked(triage_root)
+    except TimeoutError as error:
+        raise TriageError(str(error)) from error
+
+
+def _render_session_unlocked(triage_root: Path) -> dict[str, Any]:
     session, events, runs, candidates, cases = load_session_projection(triage_root)
     admitted = admitted_runs(events)
     atomic_json(triage_root / "input-runs.json", input_run_projection(admitted, runs))
     atomic_jsonl(triage_root / "findings.jsonl", projected_findings(cases, candidates))
     atomic_jsonl(triage_root / "qa-changes.jsonl", projected_qa_changes(cases, candidates))
     hints = similarity_hints(candidates)
-    digest = projection_digest(session, runs, cases)
+    roles = run_roles(events, runs)
+    digest = projection_digest(session, runs, cases, roles)
     qualification = current_qualification(events, digest)
     qualification_path = triage_root / "qualification.json"
     if qualification is None:
@@ -1377,7 +1577,7 @@ def render_session(triage_root: Path) -> dict[str, Any]:
         "active_case_count": len(active_cases(cases)),
         "similarity_hint_count": len(hints),
         "last_sequence": len(events),
-        "last_updated_at": utc_now(),
+        "last_updated_at": utc_now_rfc3339(),
     }
     atomic_json(triage_root / "triage-state.json", state)
     return {
@@ -1391,12 +1591,13 @@ def render_session(triage_root: Path) -> dict[str, Any]:
     }
 
 
-def run_outcomes(
+def run_outcomes_and_reasons(
     runs: dict[str, RunRecords],
     candidates: dict[str, dict[str, Any]],
     cases: dict[str, dict[str, Any]],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, list[str]]]:
     conditions: dict[str, list[str]] = {run_id: [] for run_id in runs}
+    reasons: dict[str, list[str]] = {run_id: [] for run_id in runs}
     for case in active_cases(cases):
         disposition = case["disposition"]
         if disposition is None:
@@ -1405,9 +1606,22 @@ def run_outcomes(
         linked = {candidates[item]["run_id"] for item in case["candidate_ids"]}
         for run_id in linked:
             conditions[run_id].append(effect)
+            if effect != "neutral":
+                reasons[run_id].append(f"Case {case['case_id']}: {disposition['disposition']}.")
     outcomes = {}
     for run_id, run in runs.items():
         effects = conditions[run_id]
+        if run.manifest["cleanup_status"] == "failed":
+            reasons[run_id].append("Required cleanup failed.")
+        if run.manifest["execution_status"] != "completed":
+            reasons[run_id].append(f"Execution status: {run.manifest['execution_status']}.")
+        invalid_results = [
+            result["check_result_id"]
+            for result in run.results
+            if result["evidence_integrity"] != "valid"
+        ]
+        for result_id in invalid_results:
+            reasons[run_id].append(f"Check Result {result_id} has invalid evidence integrity.")
         if "failed" in effects:
             outcomes[run_id] = "failed"
         elif (
@@ -1419,36 +1633,57 @@ def run_outcomes(
             outcomes[run_id] = "incomplete"
         else:
             outcomes[run_id] = "passed"
-    return outcomes
+            reasons[run_id] = ["All selected Checks are satisfied and required cleanup completed."]
+    return outcomes, reasons
+
+
+def run_outcomes(
+    runs: dict[str, RunRecords],
+    candidates: dict[str, dict[str, Any]],
+    cases: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    return run_outcomes_and_reasons(runs, candidates, cases)[0]
 
 
 def configured_outcome(values: list[str]) -> str:
     if "failed" in values:
         return "failed"
-    if "passed" in values:
-        return "passed"
-    return "incomplete"
+    if "incomplete" in values:
+        return "incomplete"
+    return "passed"
 
 
 def qualification_projection(
-    session: dict[str, Any], runs: dict[str, RunRecords], outcomes: dict[str, str]
+    session: dict[str, Any],
+    admitted: dict[str, dict[str, Any]],
+    runs: dict[str, RunRecords],
+    outcomes: dict[str, str],
+    reasons: dict[str, list[str]],
+    roles: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     by_configured: dict[str, list[str]] = defaultdict(list)
     for run_id, outcome in outcomes.items():
-        by_configured[runs[run_id].run["configured_scenario_id"]].append(outcome)
+        if roles[run_id]["qualification_role"] == "active":
+            by_configured[runs[run_id].run["configured_scenario_id"]].append(outcome)
     required = []
     optional = []
     for configured in session["configured_scenarios"]:
         configured_id = configured["configured_scenario_id"]
         values = by_configured.get(configured_id, [])
+        run_ids = sorted(
+            run_id
+            for run_id, run in runs.items()
+            if run.run["configured_scenario_id"] == configured_id
+        )
         item = {
-            **configured,
+            "scenario_id": configured["scenario_id"],
+            "configured_scenario_id": configured_id,
+            "required": configured["required"],
             "outcome": configured_outcome(values) if values else "missing",
-            "run_ids": sorted(
-                run_id
-                for run_id, run in runs.items()
-                if run.run["configured_scenario_id"] == configured_id
-            ),
+            "run_ids": run_ids,
+            "active_run_ids": [
+                run_id for run_id in run_ids if roles[run_id]["qualification_role"] == "active"
+            ],
         }
         (required if configured["required"] else optional).append(item)
     verdicts = [item["outcome"] for item in required]
@@ -1465,11 +1700,50 @@ def qualification_projection(
         "target_suite_revision": session["target_suite_revision"],
         "qualification_policy_revision": session["qualification_policy_revision"],
         "helper_revision": session["helper_revision"],
+        "input_runs": [
+            {
+                "run_id": run_id,
+                "manifest_sha256": payload["manifest_sha256"],
+                "configured_scenario_id": payload["configured_scenario_id"],
+                "suite_revision": payload["suite_revision"],
+                "suite_equivalence_reason": payload["suite_equivalence_reason"],
+                **{
+                    key: value
+                    for key, value in roles[run_id].items()
+                    if key != "supersession_basis"
+                },
+            }
+            for run_id, payload in sorted(admitted.items())
+        ],
+        "compatibility_decisions": [
+            {
+                "run_id": run_id,
+                "reason": payload["suite_equivalence_reason"],
+            }
+            for run_id, payload in sorted(admitted.items())
+            if payload["suite_equivalence_reason"] is not None
+        ],
+        "supersession_decisions": [
+            {
+                "run_id": run_id,
+                "replacement_run_id": role["superseded_by_run_id"],
+                "basis": role["supersession_basis"],
+                "reason": role["supersession_reason"],
+            }
+            for run_id, role in sorted(roles.items())
+            if role["qualification_role"] == "historical"
+        ],
+        "reuse_decisions": [
+            {"run_id": run_id, "reason": payload["reuse_reason"]}
+            for run_id, payload in sorted(admitted.items())
+            if payload.get("reuse_reason") is not None
+        ],
         "scenario_run_outcomes": outcomes,
+        "scenario_run_reasons": reasons,
         "required_configured_scenarios": required,
         "optional_configured_scenarios": optional,
         "qualification": qualification,
-        "calculated_at": utc_now(),
+        "calculated_at": utc_now_rfc3339(),
     }
 
 
@@ -1478,6 +1752,7 @@ def admit_run(
     run_root: Path,
     suite_equivalence_reason: str | None,
     idempotency_key: str,
+    reuse_reason: str | None = None,
 ) -> dict[str, Any]:
     session, events, existing_runs, _candidates, _cases = load_session_projection(triage_root)
     run = validate_run(run_root)
@@ -1504,6 +1779,7 @@ def admit_run(
         "product_revision": run.run["product_revision"],
         "suite_revision": suite_revision,
         "suite_equivalence_reason": suite_equivalence_reason,
+        "reuse_reason": reuse_reason,
     }
     append_admission_events(triage_root, run, payload, idempotency_key)
     return render_session(triage_root)
@@ -1623,13 +1899,63 @@ def reopen_case(
     return render_session(triage_root)
 
 
+def supersede_run(
+    triage_root: Path,
+    run_id: str,
+    replacement_run_id: str,
+    basis: str,
+    reason: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    _session, events, runs, candidates, cases = load_session_projection(triage_root)
+    if basis not in {"complete-rerun", "invalid-evidence"}:
+        raise TriageError("supersession basis must be complete-rerun or invalid-evidence")
+    if not reason:
+        raise TriageError("supersession requires a reason")
+    if run_id == replacement_run_id or run_id not in runs or replacement_run_id not in runs:
+        raise TriageError("supersession requires two distinct admitted runs")
+    payload = {
+        "run_id": run_id,
+        "replacement_run_id": replacement_run_id,
+        "basis": basis,
+        "reason": reason,
+    }
+    existing = next(
+        (event for event in events if event["idempotency_key"] == idempotency_key), None
+    )
+    if existing is not None:
+        if existing["event_type"] == "run-superseded" and existing["payload"] == payload:
+            return render_session(triage_root)
+        raise TriageError(f"{triage_root}: idempotency key reused for different event")
+    roles = run_roles(events, runs)
+    if roles[run_id]["qualification_role"] != "active":
+        raise TriageError(f"{run_id}: run is already historical")
+    if roles[replacement_run_id]["qualification_role"] != "active":
+        raise TriageError(f"{replacement_run_id}: replacement run is not active")
+    source = runs[run_id].run
+    replacement = runs[replacement_run_id].run
+    if source["configured_scenario_id"] != replacement["configured_scenario_id"]:
+        raise TriageError("supersession runs must cover the same Configured Scenario")
+    outcomes = run_outcomes(runs, candidates, cases)
+    if outcomes[replacement_run_id] != "passed":
+        raise TriageError("replacement run must pass")
+    if outcomes[run_id] == "failed" and basis != "invalid-evidence":
+        raise TriageError("a trustworthy failed run cannot be superseded")
+    if basis == "complete-rerun" and outcomes[run_id] != "incomplete":
+        raise TriageError("complete-rerun may supersede only an incomplete run")
+    append_event(triage_root, "run-superseded", payload, idempotency_key)
+    return render_session(triage_root)
+
+
 def finalize_session(triage_root: Path, idempotency_key: str) -> dict[str, Any]:
     session, events, runs, candidates, cases = load_session_projection(triage_root)
     pending = [case["case_id"] for case in active_cases(cases) if case["disposition"] is None]
     if pending:
         raise TriageError(f"triage has pending cases: {pending}")
-    outcomes = run_outcomes(runs, candidates, cases)
-    digest = projection_digest(session, runs, cases)
+    outcomes, reasons = run_outcomes_and_reasons(runs, candidates, cases)
+    admitted = admitted_runs(events)
+    roles = run_roles(events, runs)
+    digest = projection_digest(session, runs, cases, roles)
     existing = next(
         (event for event in events if event["idempotency_key"] == idempotency_key), None
     )
@@ -1640,158 +1966,13 @@ def finalize_session(triage_root: Path, idempotency_key: str) -> dict[str, Any]:
         ):
             return render_session(triage_root)
         raise TriageError(f"{triage_root}: idempotency key reused for different event")
-    qualification = qualification_projection(session, runs, outcomes)
+    qualification = qualification_projection(session, admitted, runs, outcomes, reasons, roles)
     payload = {"projection_digest": digest, "qualification": qualification}
     append_event(triage_root, "qualification-calculated", payload, idempotency_key)
     return render_session(triage_root)
 
 
-def print_projection(projection: dict[str, Any]) -> None:
-    print(json.dumps(projection, indent=2, sort_keys=True))
-
-
-def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description=__doc__)
-    commands = root.add_subparsers(dest="command", required=True)
-    add_run_commands(commands)
-    add_session_commands(commands)
-    add_case_commands(commands)
-    return root
-
-
-def add_run_commands(commands: Any) -> None:
-    seal = commands.add_parser("seal-run")
-    seal.add_argument("run_root", type=Path)
-    validate = commands.add_parser("validate-run")
-    validate.add_argument("run_root", type=Path)
-
-
-def add_session_commands(commands: Any) -> None:
-    init = commands.add_parser("init")
-    init.add_argument("triage_root", type=Path)
-    init.add_argument("--suite-root", type=Path, required=True)
-    init.add_argument("--product-revision", required=True)
-    init.add_argument("--suite-revision", required=True)
-    admit = commands.add_parser("admit")
-    admit.add_argument("triage_root", type=Path)
-    admit.add_argument("run_root", type=Path)
-    admit.add_argument("--suite-equivalence-reason")
-    add_key(admit)
-    status = commands.add_parser("status")
-    status.add_argument("triage_root", type=Path)
-    finalize = commands.add_parser("finalize")
-    finalize.add_argument("triage_root", type=Path)
-    add_key(finalize)
-
-
-def add_case_commands(commands: Any) -> None:
-    decide = commands.add_parser("decide")
-    decide.add_argument("triage_root", type=Path)
-    decide.add_argument("case_id")
-    decide.add_argument("disposition", choices=sorted(DISPOSITIONS))
-    decide.add_argument("--details", type=Path, required=True)
-    add_key(decide)
-    merge = commands.add_parser("merge")
-    merge.add_argument("triage_root", type=Path)
-    merge.add_argument("case_ids", nargs="+")
-    merge.add_argument("--reason", required=True)
-    add_key(merge)
-    split = commands.add_parser("split")
-    split.add_argument("triage_root", type=Path)
-    split.add_argument("case_id")
-    split.add_argument("--groups", type=Path, required=True)
-    split.add_argument("--reason", required=True)
-    add_key(split)
-    reopen = commands.add_parser("reopen")
-    reopen.add_argument("triage_root", type=Path)
-    reopen.add_argument("case_id")
-    reopen.add_argument("--reason", required=True)
-    add_key(reopen)
-
-
-def add_key(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--idempotency-key", required=True)
-
-
-def execute(args: argparse.Namespace) -> Any:
-    handlers = {
-        "seal-run": execute_seal,
-        "validate-run": execute_validate,
-        "init": execute_init,
-        "admit": execute_admit,
-        "decide": execute_decide,
-        "merge": execute_merge,
-        "split": execute_split,
-        "reopen": execute_reopen,
-        "status": lambda value: render_session(value.triage_root),
-        "finalize": lambda value: finalize_session(value.triage_root, value.idempotency_key),
-    }
-    return handlers[args.command](args)
-
-
-def execute_seal(args: argparse.Namespace) -> dict[str, Any]:
-    return {"run_id": seal_run(args.run_root).run_id, "sealed": True}
-
-
-def execute_validate(args: argparse.Namespace) -> dict[str, Any]:
-    run = validate_run(args.run_root)
-    return {"run_id": run.run_id, "manifest_sha256": run.manifest_hash}
-
-
-def execute_init(args: argparse.Namespace) -> dict[str, Any]:
-    return init_session(
-        args.triage_root,
-        args.suite_root,
-        args.product_revision,
-        args.suite_revision,
-    )
-
-
-def execute_admit(args: argparse.Namespace) -> dict[str, Any]:
-    return admit_run(
-        args.triage_root,
-        args.run_root,
-        args.suite_equivalence_reason,
-        args.idempotency_key,
-    )
-
-
-def execute_decide(args: argparse.Namespace) -> dict[str, Any]:
-    return decide_case(
-        args.triage_root,
-        args.case_id,
-        args.disposition,
-        args.details,
-        args.idempotency_key,
-    )
-
-
-def execute_merge(args: argparse.Namespace) -> dict[str, Any]:
-    return merge_case_ids(args.triage_root, args.case_ids, args.reason, args.idempotency_key)
-
-
-def execute_split(args: argparse.Namespace) -> dict[str, Any]:
-    return split_case_from_file(
-        args.triage_root,
-        args.case_id,
-        args.groups,
-        args.reason,
-        args.idempotency_key,
-    )
-
-
-def execute_reopen(args: argparse.Namespace) -> dict[str, Any]:
-    return reopen_case(args.triage_root, args.case_id, args.reason, args.idempotency_key)
-
-
-def main() -> int:
-    try:
-        print_projection(execute(parser().parse_args()))
-    except (OSError, TriageError, json.JSONDecodeError, yaml.YAMLError) as error:
-        print(error, file=sys.stderr)
-        return 1
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    from triage_cli import main
+
+    raise SystemExit(main())

@@ -1,6 +1,9 @@
 """Exercise deterministic Public QA run sealing, triage, and qualification."""
 
 import json
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -106,6 +109,7 @@ def write_run(
     suite_revision: str = "suite-v2",
     cleanup_status: str = "complete",
     execution_status: str = "completed",
+    parameters: dict | None = None,
 ) -> Path:
     run_root = root / run_id
     (run_root / "evidence").mkdir(parents=True)
@@ -122,7 +126,7 @@ def write_run(
             "product_revision": "product-v1",
             "suite_revision": suite_revision,
             "selected_check_ids": selected,
-            "parameters": {},
+            "parameters": parameters or {},
             "identities": {},
             "authority": {},
             "created_at": STAMP,
@@ -407,6 +411,51 @@ def test_different_suite_revision_requires_equivalence(tmp_path):
     assert projection["runs"]["run-1"]["suite_equivalence_reason"]
 
 
+def test_admission_rejects_narrowed_configured_scenario_scope(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    scenario_path = suite / "scenarios/sample/scenario.yaml"
+    scenario = yaml.safe_load(scenario_path.read_text())
+    scenario["check_sets"] = [{"id": "required-checks", "checks": ["one", "two"]}]
+    scenario["configured_scenarios"][0].update(
+        {
+            "parameters": {"host_os": "test-os"},
+            "check_sets": ["required-checks"],
+            "exclusions": [],
+        }
+    )
+    scenario_path.write_text(yaml.safe_dump(scenario))
+    run_root = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [check_result("run-1", "ok", "one", "pass")],
+        parameters={"host_os": "test-os"},
+    )
+    triage_root = init_triage(tmp_path, suite)
+
+    with pytest.raises(triage.TriageError, match="selected Checks differ"):
+        admit(triage_root, run_root)
+
+
+def test_admission_rejects_changed_configured_scenario_parameters(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    scenario_path = suite / "scenarios/sample/scenario.yaml"
+    scenario = yaml.safe_load(scenario_path.read_text())
+    scenario["configured_scenarios"][0]["parameters"] = {"host_os": "expected"}
+    scenario_path.write_text(yaml.safe_dump(scenario))
+    run_root = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [check_result("run-1", "ok", "check", "pass")],
+        parameters={"host_os": "different"},
+    )
+    triage_root = init_triage(tmp_path, suite)
+
+    with pytest.raises(triage.TriageError, match="parameters differ"):
+        admit(triage_root, run_root)
+
+
 def test_recording_error_uses_only_sealed_evidence(tmp_path):
     suite = write_suite(tmp_path, [("required", True)])
     run_root = write_run(
@@ -470,7 +519,8 @@ def test_cross_run_duplicate_fails_both_runs_without_duplicate_finding(tmp_path)
     }
     findings = triage.read_jsonl(triage_root / "findings.jsonl")
     assert len(findings) == 1
-    assert findings[0]["source_run_ids"] == ["run-1"]
+    assert findings[0]["source_run_ids"] == ["run-1", "run-2"]
+    assert set(findings[0]["source_case_ids"]) == {first_case, second_case}
 
 
 def test_later_passing_run_does_not_erase_trustworthy_failure(tmp_path):
@@ -494,6 +544,124 @@ def test_later_passing_run_does_not_erase_trustworthy_failure(tmp_path):
     }
     assert qualification["required_configured_scenarios"][0]["outcome"] == "failed"
     assert qualification["qualification"] == "failed"
+
+
+def test_later_pass_does_not_silently_supersede_incomplete_run(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    incomplete = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [check_result("run-1", "blocked", "check", "blocked")],
+    )
+    passed = write_run(
+        tmp_path, "run-2", "required", [check_result("run-2", "ok", "check", "pass")]
+    )
+    triage_root = init_triage(tmp_path, suite)
+    case_id = admit(triage_root, incomplete, "admit-incomplete")["cases"][0]["case_id"]
+    decide(
+        tmp_path,
+        triage_root,
+        case_id,
+        "infrastructure-failure",
+        {"reason": "The test host stopped."},
+    )
+    admit(triage_root, passed, "admit-pass")
+
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+
+    assert qualification["scenario_run_outcomes"] == {
+        "run-1": "incomplete",
+        "run-2": "passed",
+    }
+    assert qualification["required_configured_scenarios"][0]["outcome"] == "incomplete"
+    assert qualification["qualification"] == "incomplete"
+
+
+def test_human_can_supersede_incomplete_run_with_complete_rerun(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    incomplete = write_run(
+        tmp_path,
+        "run-1",
+        "required",
+        [check_result("run-1", "blocked", "check", "blocked")],
+    )
+    passed = write_run(
+        tmp_path, "run-2", "required", [check_result("run-2", "ok", "check", "pass")]
+    )
+    triage_root = init_triage(tmp_path, suite)
+    case_id = admit(triage_root, incomplete, "admit-incomplete")["cases"][0]["case_id"]
+    decide(
+        tmp_path,
+        triage_root,
+        case_id,
+        "infrastructure-failure",
+        {"reason": "The test host stopped."},
+    )
+    admit(triage_root, passed, "admit-pass")
+
+    triage.supersede_run(
+        triage_root,
+        "run-1",
+        "run-2",
+        "complete-rerun",
+        "The rerun completed the same frozen scope on a healthy host.",
+        "supersede",
+    )
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+
+    assert qualification["qualification"] == "passed"
+    assert qualification["required_configured_scenarios"][0]["active_run_ids"] == ["run-2"]
+    assert qualification["supersession_decisions"] == [
+        {
+            "run_id": "run-1",
+            "replacement_run_id": "run-2",
+            "basis": "complete-rerun",
+            "reason": "The rerun completed the same frozen scope on a healthy host.",
+        }
+    ]
+
+
+def test_concurrent_admissions_preserve_every_event(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_roots = [
+        write_run(
+            tmp_path,
+            f"run-{index}",
+            "required",
+            [check_result(f"run-{index}", f"ok-{index}", "check", "pass")],
+        )
+        for index in range(8)
+    ]
+    triage_root = init_triage(tmp_path, suite)
+    helper = Path(triage.__file__).resolve()
+
+    def admit_process(item: tuple[int, Path]) -> subprocess.CompletedProcess[str]:
+        index, run_root = item
+        return subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "admit",
+                str(triage_root),
+                str(run_root),
+                "--idempotency-key",
+                f"admit-{index}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(admit_process, enumerate(run_roots)))
+
+    assert [(result.returncode, result.stderr) for result in results] == [(0, "")] * 8
+    events = triage.read_jsonl(triage_root / "triage-events.jsonl")
+    assert [event["sequence"] for event in events] == list(range(1, 9))
+    assert {event["payload"]["run_id"] for event in events} == {
+        f"run-{index}" for index in range(8)
+    }
 
 
 def test_merge_split_reopen_replay_preserves_unique_membership(tmp_path):
@@ -602,6 +770,33 @@ def test_finalize_retry_is_idempotent_and_summary_includes_outcome(tmp_path):
 
     assert len(triage.read_jsonl(triage_root / "triage-events.jsonl")) == event_count
     assert "Qualification: `passed`" in (triage_root / "triage-summary.md").read_text()
+
+
+def test_qualification_records_input_identities_decisions_and_reasons(tmp_path):
+    suite = write_suite(tmp_path, [("required", True)])
+    run_root = write_run(
+        tmp_path, "run-1", "required", [check_result("run-1", "ok", "check", "pass")]
+    )
+    triage_root = init_triage(tmp_path, suite)
+    admit(triage_root, run_root)
+
+    qualification = triage.finalize_session(triage_root, "finish")["qualification"]
+
+    assert qualification["input_runs"] == [
+        {
+            "run_id": "run-1",
+            "manifest_sha256": triage.sha256_file(run_root / "run-manifest.json"),
+            "configured_scenario_id": "required",
+            "suite_revision": "suite-v2",
+            "suite_equivalence_reason": None,
+            "qualification_role": "active",
+            "superseded_by_run_id": None,
+            "supersession_reason": None,
+        }
+    ]
+    assert qualification["scenario_run_reasons"]["run-1"] == [
+        "All selected Checks are satisfied and required cleanup completed."
+    ]
 
 
 def test_optional_configured_scenario_is_reported_separately(tmp_path):

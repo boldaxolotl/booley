@@ -6,11 +6,30 @@
     "configuredScenario": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scenario_id", "configured_scenario_id", "required"],
+      "required": [
+        "scenario_id",
+        "configured_scenario_id",
+        "required",
+        "parameters",
+        "expected_check_ids",
+        "exclusions",
+        "pre_run_requirements"
+      ],
       "properties": {
         "scenario_id": {"type": "string", "minLength": 1},
         "configured_scenario_id": {"type": "string", "minLength": 1},
-        "required": {"type": "boolean"}
+        "required": {"type": "boolean"},
+        "parameters": {"type": "object"},
+        "expected_check_ids": {
+          "type": ["array", "null"],
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "exclusions": {"type": "array", "items": {"type": "object"}},
+        "pre_run_requirements": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
       }
     },
     "session": {
@@ -83,6 +102,7 @@
         "event_type": {
           "enum": [
             "run-admitted",
+            "run-superseded",
             "case-proposed",
             "case-merged",
             "case-split",

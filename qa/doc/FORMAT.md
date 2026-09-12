@@ -69,16 +69,18 @@ A distinct triage artifact root owns one expandable session:
 
 | File | Ownership and content |
 |---|---|
+| `.triage.lock` | Persistent one-byte cross-process serialization lock; not evidence |
 | `session.json` | Immutable session ID, target product and suite revisions, exact Scenario-file snapshot, policy/helper revisions, and required/optional Configured Scenario matrix |
-| `triage-events.jsonl` | Totally ordered, append-only run admissions, case changes, human dispositions, and Qualification calculations with idempotency keys |
+| `triage-events.jsonl` | Totally ordered, append-only run admissions and supersessions, case changes, human dispositions, and Qualification calculations with idempotency keys |
 | `input-runs.json` | Atomically regenerated projection of admitted sealed runs, manifest hashes, compatibility, and active role |
 | `triage-state.json` | Atomically regenerated resumable progress and pending cases |
-| `findings.jsonl` | Atomically regenerated, maintainer-confirmed product/documentation Findings |
+| `findings.jsonl` | Atomically regenerated, maintainer-confirmed product/documentation Findings with provenance from linked duplicate cases |
 | `qa-changes.jsonl` | Atomically regenerated actionable QA defects and improvements, including whether each invalidates evidence |
 | `triage-summary.md` | Candidate-to-case accounting, dispositions, Findings, QA Changes, outcomes, missing work, and evidence locations |
-| `qualification.json` | Current Scenario Run Outcomes and aggregate Qualification, generated only after every admitted run's active cases are dispositioned |
+| `qualification.json` | Input identities, compatibility/reuse/supersession decisions, outcome reasons, current Scenario Run Outcomes, and aggregate Qualification; generated only after every active case is dispositioned |
 
-The event log is the source of truth. Each event has one monotonic session sequence,
+The event log is the source of truth. Writers hold a bounded cross-process lock while
+assigning sequences and replacing the log. Each event has one monotonic session sequence,
 stable event ID, idempotency key, timestamp, type, and payload. Replay applies
 split/merge/reopen events and requires every candidate to belong to exactly one active
 case. Derived IDs come from disposition event IDs. Replaying after interruption
@@ -89,6 +91,14 @@ until triage completes again; historical calculations remain in the event log. T
 session's product, target suite, policy, and helper revisions never change. Another
 suite revision requires a recorded Human Maintainer editorial-equivalence decision;
 another product revision requires another session.
+
+Every admitted run initially has an active Qualification role. Runs for the same
+Configured Scenario aggregate conservatively: failure takes precedence over
+incompleteness, which takes precedence over pass. A passing rerun does not change an
+earlier run's role. After all cases are dispositioned, the Human Maintainer may record
+`run-superseded` for an incomplete run and a complete passing rerun. A failed run may
+be superseded only when sealed evidence proves it invalid. Superseded runs remain in
+the Qualification audit as historical inputs with the replacement, basis, and reason.
 
 ## Triage Dispositions
 
