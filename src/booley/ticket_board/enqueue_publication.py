@@ -17,7 +17,7 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir, runtime_dir
+from booley.runtime.project_dir import resolve_project_dir, runtime_dir
 
 from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
 from .persistence import atomic_replace_bytes
@@ -83,8 +83,18 @@ def load_enqueue_journal(project_root: Path, slug: str) -> EnqueueJournal | None
         journal = _parse_enqueue_journal(value)
     except (BoundaryError, OSError, json.JSONDecodeError) as exc:
         raise EnqueuePublicationError(f"enqueue journal is unreadable: {path}: {exc}") from exc
-    _validate_journal(project_root, slug, journal)
-    return journal
+    _validate_journal_identity(slug, journal)
+    canonical = _canonicalize_board_paths(
+        project_root,
+        slug,
+        Path(journal.source),
+        Path(journal.destination),
+    )
+    normalized = replace(journal, source=str(canonical[0]), destination=str(canonical[1]))
+    _validate_journal(project_root, slug, normalized)
+    if normalized != journal:
+        write_enqueue_journal(project_root, normalized)
+    return normalized
 
 
 def _parse_enqueue_journal(value: Any) -> EnqueueJournal:
@@ -111,10 +121,7 @@ def _parse_enqueue_journal(value: Any) -> EnqueueJournal:
 
 
 def _validate_journal(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
-    if journal.schema != 1 or journal.slug != slug or journal.state not in _STATES:
-        raise EnqueuePublicationError("enqueue journal identity or schema is invalid")
-    if not _OPERATION_RE.fullmatch(journal.operation_id):
-        raise EnqueuePublicationError("enqueue journal operation ID is invalid")
+    _validate_journal_identity(slug, journal)
     operation = _operation_directory(project_root, journal.operation_id)
     if Path(journal.candidate) != operation / "ticket.md":
         raise EnqueuePublicationError("enqueue journal candidate path is invalid")
@@ -124,15 +131,62 @@ def _validate_journal(project_root: Path, slug: str, journal: EnqueueJournal) ->
     _validate_journal_payload(journal)
 
 
+def _validate_journal_identity(slug: str, journal: EnqueueJournal) -> None:
+    if journal.schema != 1 or journal.slug != slug or journal.state not in _STATES:
+        raise EnqueuePublicationError("enqueue journal identity or schema is invalid")
+    if not _OPERATION_RE.fullmatch(journal.operation_id):
+        raise EnqueuePublicationError("enqueue journal operation ID is invalid")
+
+
 def _validate_board_paths(project_root: Path, slug: str, journal: EnqueueJournal) -> None:
-    board = resolve_checkout_project_dir(project_root) / "tickets" / "board"
-    source = Path(journal.source).resolve()
-    destination = Path(journal.destination).resolve()
-    if source != (board / "drafts" / f"{slug}.md").resolve():
+    board = resolve_project_dir(project_root) / "tickets" / "board"
+    source = Path(journal.source)
+    destination = Path(journal.destination)
+    if source != board / "drafts" / f"{slug}.md":
         raise EnqueuePublicationError("enqueue journal source path is invalid")
-    destinations = {(board / state / f"{slug}.md").resolve() for state in ("queue", "waiting")}
+    destinations = {board / state / f"{slug}.md" for state in ("queue", "waiting")}
     if destination not in destinations:
         raise EnqueuePublicationError("enqueue journal destination path is invalid")
+
+
+def _canonicalize_board_path(
+    project_root: Path,
+    slug: str,
+    path: Path,
+    states: tuple[str, ...],
+    label: str,
+) -> Path:
+    board = resolve_project_dir(project_root) / "tickets" / "board"
+    if path.name != f"{slug}.md" or path.parent.name not in states:
+        raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
+    canonical = board / path.parent.name / path.name
+    if path == canonical:
+        return canonical
+    try:
+        same_parent = path.parent.samefile(canonical.parent)
+    except OSError as exc:
+        raise EnqueuePublicationError(f"enqueue journal {label} directory is unavailable") from exc
+    if not same_parent:
+        raise EnqueuePublicationError(f"enqueue journal {label} path is invalid")
+    return canonical
+
+
+def _canonicalize_board_paths(
+    project_root: Path,
+    slug: str,
+    source: Path,
+    destination: Path,
+) -> tuple[Path, Path]:
+    return (
+        _canonicalize_board_path(project_root, slug, source, ("drafts",), "source"),
+        _canonicalize_board_path(
+            project_root,
+            slug,
+            destination,
+            ("queue", "waiting"),
+            "destination",
+        ),
+    )
 
 
 def _validate_journal_payload(journal: EnqueueJournal) -> None:
@@ -173,10 +227,15 @@ def prepare_enqueue(
     operation_id = receipt.get("operation_id")
     if not isinstance(operation_id, str) or not _OPERATION_RE.fullmatch(operation_id):
         raise EnqueuePublicationError("Acceptance Basis receipt operation ID is invalid")
+    source, destination = _canonicalize_board_paths(
+        project_root,
+        slug,
+        source,
+        destination,
+    )
     operation = _operation_directory(project_root, operation_id)
     candidate = operation / "ticket.md"
     backup = operation / "source.md"
-    atomic_replace_bytes(candidate, candidate_content, mode=0o644)
     journal = EnqueueJournal(
         1,
         operation_id,
@@ -194,6 +253,7 @@ def prepare_enqueue(
         receipt,
     )
     _validate_journal(project_root, slug, journal)
+    atomic_replace_bytes(candidate, candidate_content, mode=0o644)
     write_enqueue_journal(project_root, journal)
     return journal
 

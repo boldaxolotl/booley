@@ -1117,6 +1117,7 @@ jobs:
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
             run: >-
+              mkdir -p "${VALIDATION_TMP}/alias-project/.booley_project" &&
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
               docker run --rm --init
@@ -1124,7 +1125,9 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              --mount type=bind,src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-project
               -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
+              -e BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project
               booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
               python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
               -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
