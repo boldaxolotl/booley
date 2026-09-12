@@ -159,10 +159,11 @@ def test_materialized_handoff_requires_ticket_and_successful_preparation(
         "booley.ticket_board.io.find_ticket_file", lambda *_args: (ticket, "queue")
     )
     monkeypatch.setattr(
-        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: tmp_path
+        "booley.ticket_board.acceptance_validation.resolve_checkout_project_dir",
+        lambda _root: tmp_path,
     )
     monkeypatch.setattr(
-        "booley.runtime.project_prepare.prepare_project",
+        "booley.ticket_board.acceptance_validation.prepare_project",
         lambda *_args, **_kwargs: SimpleNamespace(ok=False, error="prepare failed"),
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)

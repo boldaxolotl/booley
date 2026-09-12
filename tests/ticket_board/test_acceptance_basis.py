@@ -51,6 +51,7 @@ from booley.ticket_board.acceptance_targets import (
     AcceptanceTargetBinding,
     validate_binding_selectors,
 )
+from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 
@@ -860,7 +861,13 @@ def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None
         )
     )
 
-    assert validate_ticket_view(root, basis, allow_generated=True) == []
+    prepare_acceptance_checkout(
+        root,
+        root,
+        slug="prepared-view",
+        ticket_path=project_dir / "tickets/prepared-view.md",
+    )
+    assert validate_ticket_view(root, basis) == []
     assert (root / ".booley-projected-demo.core").is_file()
     assert tuple(isolated_registry_root(root).glob("*.core"))
 
@@ -888,7 +895,13 @@ def test_live_isolated_cores_accept_recorded_host_root(
     basis = tio.load_basis("mounted-generated")
     workspace = project_dir / "worktrees/mounted-generated"
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
-    validate_ticket_view(reference, basis, allow_generated=True)
+    prepare_acceptance_checkout(
+        root,
+        reference,
+        slug="mounted-generated",
+        ticket_path=ticket,
+    )
+    validate_ticket_view(reference, basis)
     host_root = Path("/host/worktrees/mounted-generated")
     _remap_generated_test_view(workspace, host_root)
     monkeypatch.setattr(
@@ -923,7 +936,13 @@ def test_outer_only_isolated_cores_accept_recorded_host_root(
     basis = tio.load_basis("mounted-outer-generated")
     workspace = project_dir / "worktrees/mounted-outer-generated"
     reference = materialize_current_ticket_checkout(root, basis, tmp_path / "reference")
-    validate_ticket_view(reference, basis, allow_generated=True)
+    prepare_acceptance_checkout(
+        root,
+        reference,
+        slug="mounted-outer-generated",
+        ticket_path=ticket,
+    )
+    validate_ticket_view(reference, basis)
     host_root = Path("/host/worktrees/mounted-outer-generated")
     _remap_generated_test_view(workspace, host_root)
     monkeypatch.setattr(

@@ -155,9 +155,7 @@ class TicketWorkspace:
             return existing.worktree
 
         if self.request.expected_ref:
-            raise TicketWorkspaceError(
-                "paired Acceptance Basis worktree is expected but unavailable"
-            )
+            return _prepare_basis_project_checkout(self.request, source)
 
         if source is None:
             if scope_mentions_project_repo(
@@ -510,6 +508,72 @@ def _attach_branch(
         )
 
 
+def _prepare_basis_project_checkout(
+    request: TicketWorkspaceRequest,
+    source: Path | None,
+) -> Path:
+    if source is None:
+        raise TicketWorkspaceError(
+            "paired Acceptance Basis repository is expected but unavailable"
+        )
+    _require_clean_source(source)
+    branch = _basis_branch(source, request.expected_ref, request.expected_sha)
+    if not _branch_upstream(source, branch):
+        raise TicketWorkspaceError(
+            f"paired project branch {branch!r} has no recorded merge target"
+        )
+    destination = ticket_project_worktree(request.worktree)
+    _prepare_destination(destination)
+    _git_or_raise(source, "worktree", "prune")
+    _attach_existing_branch(source, destination, branch)
+    _verify_existing_worktree(
+        destination,
+        source,
+        request.ticket_slug,
+        request.expected_sha,
+        request.expected_ref,
+    )
+    return destination
+
+
+def _attach_existing_branch(source: Path, destination: Path, branch: str) -> None:
+    result = _git(source, "worktree", "add", str(destination), branch)
+    if result.returncode != 0:
+        raise TicketWorkspaceError(
+            f"could not attach paired project worktree (rc={result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+
+def _basis_branch(source: Path, expected_ref: str, expected_sha: str) -> str:
+    if not expected_ref.startswith("refs/heads/"):
+        raise TicketWorkspaceError(
+            f"paired Acceptance Basis ref must be a full branch ref: {expected_ref!r}"
+        )
+    branch = expected_ref.removeprefix("refs/heads/")
+    valid = _git(source, "check-ref-format", "--branch", branch)
+    if valid.returncode != 0:
+        raise TicketWorkspaceError(f"paired Acceptance Basis ref is invalid: {expected_ref!r}")
+    head = _ref_sha(source, expected_ref)
+    if not head:
+        raise TicketWorkspaceError(f"paired Acceptance Basis ref does not exist: {expected_ref!r}")
+    if not expected_sha:
+        return branch
+    ancestry = _git(source, "merge-base", "--is-ancestor", expected_sha, head)
+    if ancestry.returncode == 0:
+        return branch
+    if ancestry.returncode == 1:
+        raise TicketWorkspaceError(
+            f"paired Acceptance Basis ref {expected_ref!r} does not descend from "
+            f"recorded project_sha {expected_sha}"
+        )
+    detail = (ancestry.stderr or ancestry.stdout).strip()
+    raise TicketWorkspaceError(
+        f"could not validate paired Acceptance Basis ref {expected_ref!r} "
+        f"(rc={ancestry.returncode}): {detail}"
+    )
+
+
 def _set_local_upstream(source: Path, branch: str, base: str) -> None:
     result = _git(source, "branch", f"--set-upstream-to={base}", branch)
     if result.returncode != 0:
@@ -526,7 +590,11 @@ def _verify_existing_worktree(
     expected_ref: str = "",
 ) -> None:
     result = _git(worktree, "branch", "--show-current")
-    expected = expected_ref.removeprefix("refs/heads/") or project_ticket_branch(slug)
+    expected = (
+        _basis_branch(source, expected_ref, expected_sha)
+        if expected_ref
+        else project_ticket_branch(slug)
+    )
     if result.returncode != 0 or result.stdout.strip() != expected:
         raise TicketWorkspaceError(
             f"paired project worktree uses {result.stdout.strip()!r}, expected {expected!r}"
@@ -540,7 +608,7 @@ def _verify_existing_worktree(
         raise TicketWorkspaceError(
             f"paired project branch {expected!r} has no recorded merge target"
         )
-    if expected_sha and _ref_sha(worktree, "HEAD") != expected_sha:
+    if expected_sha and not expected_ref and _ref_sha(worktree, "HEAD") != expected_sha:
         raise TicketWorkspaceError(
             f"paired project worktree HEAD does not match recorded project_sha {expected_sha}"
         )
