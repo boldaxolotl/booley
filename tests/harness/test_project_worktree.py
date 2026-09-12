@@ -224,6 +224,43 @@ def test_basis_bound_workspace_preserves_divergent_branch_and_existing_path(
     assert marker.read_text(encoding="utf-8") == "stale copy\n"
 
 
+@pytest.mark.parametrize(
+    ("expected_ref", "message"),
+    [
+        ("main", "full branch ref"),
+        ("refs/heads/-invalid", "ref is invalid"),
+        ("refs/heads/missing", "ref does not exist"),
+    ],
+)
+def test_basis_branch_rejects_invalid_or_missing_ref(
+    tmp_path: Path,
+    expected_ref: str,
+    message: str,
+) -> None:
+    from booley.ticket_board.ticket_repositories import _basis_branch
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+
+    with pytest.raises(TicketWorkspaceError, match=message):
+        _basis_branch(repository, expected_ref, "")
+
+
+def test_basis_branch_accepts_existing_ref_without_recorded_sha(tmp_path: Path) -> None:
+    from booley.ticket_board.ticket_repositories import _basis_branch
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    _git(repository, "config", "user.name", "Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "README.md").write_text("basis\n", encoding="utf-8")
+    _commit_all(repository, "basis")
+
+    assert _basis_branch(repository, "refs/heads/main", "") == "main"
+
+
 def test_project_scope_is_rebased_for_inner_precommit_hook() -> None:
     assert project_repository_scope(
         [
