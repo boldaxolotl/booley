@@ -533,6 +533,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "install -d -m 0777" in ticket_mode["run"]
     assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
     assert '"${VALIDATION_TMP}/alias-project/.booley_project"' in ticket_mode["run"]
+    assert 'sudo chown -R 1000:1000 "${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
     assert "dst=/booley-project" in ticket_mode["run"]
     assert "BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project" in ticket_mode["run"]
     assert "native_fst_verilator_test.py" in rendered

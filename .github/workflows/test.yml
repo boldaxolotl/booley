@@ -1120,6 +1120,7 @@ jobs:
               install -d -m 0777
               "${VALIDATION_TMP}/alias-project"
               "${VALIDATION_TMP}/alias-project/.booley_project" &&
+              sudo chown -R 1000:1000 "${VALIDATION_TMP}/alias-project" &&
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
               docker run --rm --init
