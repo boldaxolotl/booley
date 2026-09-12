@@ -166,10 +166,15 @@ def review_invocation_changed(
     return identity(previous) != identity(current)
 
 
-def _persisted_document_changed(contract: Mapping[str, Any], name: str) -> bool:
+def _persisted_document_changed(
+    contract: Mapping[str, Any],
+    name: str,
+    *,
+    allow_missing: bool = False,
+) -> bool:
     raw_path = contract.get(f"{name}_source")
     path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
-    if path is not None and not path.is_file():
+    if path is not None and not path.is_file() and not allow_missing:
         raise ReviewContextError(f"Could not read persisted Reviewer context: {path}")
     return contract.get(f"{name}_digest") != _document_digest(path)
 
@@ -193,7 +198,11 @@ def review_receipt_drift(
     changed = [
         name
         for name in ("ticket", "spec", "decisions")
-        if _persisted_document_changed(contract, name)
+        if _persisted_document_changed(
+            contract,
+            name,
+            allow_missing=name == "decisions",
+        )
     ]
     raw_scope = contract.get("scope")
     scope = (
