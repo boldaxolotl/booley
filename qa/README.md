@@ -73,8 +73,9 @@ reported separately. Adding a later passing run never erases a trustworthy failu
 
 Explicitly invoke the user-only [`booley-add-to-qa` skill](booley-add-to-qa/SKILL.md)
 with prose describing the proposed public behavior. It identifies existing coverage or
-proposes new Capabilities and Checks for Human Maintainer approval, then validates the
-approved changes. It does not execute Scenario Runs.
+proposes corrections to existing Checks, new Capabilities or Checks, or a new Scenario
+for Human Maintainer approval, then validates the approved changes. It does not execute
+Scenario Runs.
 
 ## What's in this directory
 
@@ -88,7 +89,7 @@ approved changes. It does not execute Scenario Runs.
 | [`triage-record.schema.json`](triage-record.schema.json) | Structural contract for version-1 triage sessions and events |
 | [`validate.py`](validate.py) | Offline validation of structure, references, Configured Scenarios, asset hashes, prerequisites, fault recovery, budgets, and coverage |
 | [`triage.py`](triage.py) | Deterministic sealing, candidate grouping, event replay, and verdict helper used by human triage |
-| [`booley-add-to-qa/`](booley-add-to-qa/) | Explicitly invoked skill that turns a proposed public behavior into reviewed Capability and Check changes |
+| [`booley-add-to-qa/`](booley-add-to-qa/) | Explicitly invoked skill that turns a proposed public behavior into reviewed Capability, Check, or Scenario changes |
 | [`booley-qa-run/`](booley-qa-run/) | Skill that coordinates an evidence-producing Scenario Run |
 | [`booley-qa-triage/`](booley-qa-triage/) | Explicitly invoked skill for Human Maintainer triage and Qualification |
 | [`doc/`](doc/) | Scenario Run execution protocol and record contract |
