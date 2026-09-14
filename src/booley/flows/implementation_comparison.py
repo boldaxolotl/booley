@@ -177,7 +177,7 @@ def _binding_for_candidate(
     )
     if len(matches) != 1:
         raise ImplementationComparisonError(
-            f"Acceptance Basis has no unique {flow}/{criterion} binding for "
+            f"Ticket baseline has no unique {flow}/{criterion} binding for "
             f"candidate Target {candidate.selector!r}"
         )
     return matches[0]
@@ -196,11 +196,11 @@ def _basis_plan(
     if state_baseline.identity != binding.baseline:
         raise ImplementationComparisonError(
             f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
-            "match the Acceptance Basis"
+            "match the Ticket baseline"
         )
     if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
         raise ImplementationComparisonError(
-            f"Acceptance Basis {flow}/{criterion} binding for {candidate.identity!r} "
+            f"Ticket baseline {flow}/{criterion} binding for {candidate.identity!r} "
             "has an empty callable selector"
         )
     baseline = _select_execution_ref(
@@ -217,7 +217,7 @@ def _basis_plan(
     )
     if baseline.identity != binding.baseline or basis_candidate.identity != binding.candidate:
         raise ImplementationComparisonError(
-            f"Acceptance Basis {flow}/{criterion} selectors do not resolve to recorded identities"
+            f"Ticket baseline {flow}/{criterion} selectors do not resolve to recorded identities"
         )
     return _make_plan(flow, baseline, basis_candidate, binding)
 
@@ -291,7 +291,7 @@ def target_pair_plans_for_candidates(
         if basis is not None:
             if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    "Acceptance Basis comparison requires project root and flow"
+                    "Ticket baseline comparison requires project root and flow"
                 )
             plan = _basis_plan(
                 basis,

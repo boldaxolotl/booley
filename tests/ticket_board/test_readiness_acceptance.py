@@ -12,9 +12,9 @@ from booley.ticket_board import (
     acceptance_validation,
     readiness,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
 )
 
 
@@ -66,7 +66,7 @@ def test_readiness_prepares_materialized_submodule_checkout(
     ticket = project_dir / "tickets/board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
-    basis = AcceptanceBasis((BasisParticipant("outer", sha, ticket_ref, "refs/heads/main", sha),))
+    basis = TicketBaseline((BasisParticipant("outer", sha, ticket_ref, "refs/heads/main", sha),))
     monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
 
     def prepare(_root: Path, checkout: Path, **_kwargs: object) -> SimpleNamespace:
@@ -104,10 +104,10 @@ def test_readiness_checkout_boundary_and_preparation_failures(
     assert "legacy Target Contract" in readiness.check_ticket_ready(root, "ticket").errors[0]
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     assert readiness.check_ticket_ready(root, "ticket").errors == (
-        "executable Ticket has no Acceptance Basis",
+        "unsupported Ticket format: executable Ticket needs machine metadata",
     )
-    basis = AcceptanceBasis((_participant(),))
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    basis = TicketBaseline((_participant(),))
+    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: basis)
     monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(
@@ -158,13 +158,13 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     root = tmp_path / "root"
     tickets = root / ".booley_project/tickets"
     (root / ".git").mkdir(parents=True)
-    paired = AcceptanceBasis((_participant(), _participant("project")))
+    paired = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: paired)
     monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(readiness, "resolve_inner_project_repo", lambda _root: None)
     ticket = tickets / "board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
@@ -174,7 +174,7 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
         in readiness.check_ticket_ready(root, "ticket").errors[0]
     )
 
-    native = AcceptanceBasis((_participant(),))
+    native = TicketBaseline((_participant(),))
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: native)
     found = iter(((ticket, "queue"), (None, None)))
     monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: next(found))

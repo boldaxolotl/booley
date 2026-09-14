@@ -126,25 +126,25 @@ approval of those exact edits authorizes applying them; do not ask again.
 - **Amend (approved requirement relaxation)**: `amend` can lower a declared
   floor, raise a ceiling, make an existing mandatory Criterion optional, or add
   Scope. It preserves all Criteria, existing implementation and evidence history,
-  publishes a new immutable Acceptance Basis, then queues the same Ticket to
+  records a new immutable Ticket baseline in machine metadata, then queues the same Ticket to
   resume. Only offer edits supported by the validator and evidence. Give the
   Human the exact preview and apply its digest after approval. Never suggest
   deleting a Criterion or using amendment to legitimize protected-input drift.
 - **Requested review**: `request-review` gives the Human an unaccepted view of
   the current blocked work and unmet gates when interactive verification is wanted.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
-  recreates the worktree and branch from the same immutable Acceptance Basis,
+  recreates the worktree and branch from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
-  execution against the original basis is required.
+  execution against the original Ticket baseline is required.
 - **Return to draft (fresh Ticket authoring)**: this is required when
   `blocked_reason` is `acceptance-input-change-required`, or when the required
-  contract change is outside amendment's narrow operations. It preserves the old Acceptance Basis
+  change is outside amendment's narrow operations. It preserves the old Ticket baseline
   and worktrees for audit, archives the current run history under
   `logs/<slug>/runs/<NNN>/`, and opens a new generation-qualified authoring
   workspace from the committed destination refs. Correct the authoring inputs,
-  validate the draft, and enqueue it to publish a new immutable Acceptance
-  Basis. `unblock` and `reset` retain the original basis and are rejected for
+  validate the draft, and enqueue it to record a new immutable Ticket baseline.
+  `unblock` and `reset` retain the original baseline and are rejected for
   this block reason.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
@@ -154,8 +154,8 @@ Notes:
 - Feedback lives in `blocked.md`; `unblock --feedback` appends to it. A `reset`
   marks earlier entries as prior-run history.
 - `return-to-draft` archives `blocked.md`, human logs, and runtime evidence with
-  the previous run. It strips the prior `acceptance_basis`, `created`,
-  `acceptance_amendment`, `feature_branch`, `steps_completed`, and `stage` fields from the editable
+  the previous run. It strips the prior `machine`, `created`,
+  `feature_branch`, `steps_completed`, and `stage` fields from the editable
   draft; it does not mutate the archived Ticket or old basis.
 
 ## 6. Collect Feedback
@@ -199,7 +199,7 @@ For an unblock retry:
   with the user, then perform this sequence in order:
 
   1. Run `python -m booley.ticket_board return-to-draft "$SLUG"`.
-  2. Correct the authoring filesets and any other Acceptance Basis inputs in
+  2. Correct the authoring filesets and any other Ticket baseline inputs in
      the returned `outer_worktree` and `project_worktree` (when present), and
      update the draft Ticket when its authored fields must change.
   3. Resolve the moved Ticket's absolute path under the Project's
@@ -207,7 +207,7 @@ For an unblock retry:
      `python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git`
      and fix every error before continuing.
   4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
-     Acceptance Basis, then print:
+     Ticket baseline, then print:
      `Returned to draft -> corrected Ticket published and enqueued.`
 
   Do not use the main checkout for the authoring corrections: use the worktree

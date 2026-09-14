@@ -18,8 +18,8 @@ from booley.criteria.templates import (
 )
 from booley.criteria.thresholds import describe_threshold
 
-from .acceptance_basis import PATH_POLICY
 from .acceptance_path_policy import is_static_acceptance_path
+from .ticket_baseline import PATH_POLICY
 
 
 class AmendmentProposalError(ValueError):

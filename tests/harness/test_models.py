@@ -61,7 +61,7 @@ class TestTicketContext:
             project_root=tmp_path,
         )
 
-        with pytest.raises(ValueError, match="no Acceptance Basis"):
+        with pytest.raises(ValueError, match="no machine metadata"):
             ctx.acceptance_basis_fields()
 
 

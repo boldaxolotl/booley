@@ -3,6 +3,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
         log_dir,
         state,
         execution_id="resume-generation",
-        acceptance_basis={"schema": 1, "participants": []},
+        ticket_identity={"schema": 1, "participants": []},
         participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
@@ -115,7 +116,7 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
         log_dir,
         state,
         execution_id="generation-2",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
     )
 
@@ -147,9 +148,62 @@ def test_freeze_rejects_mutable_state_that_disagrees_with_latest_evidence(tmp_pa
             log_dir,
             state,
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
+
+
+@pytest.mark.parametrize("drift", ["matching", "missing", "generation", "authored", "commit"])
+def test_freeze_requires_each_observation_to_match_current_ticket_identity(
+    tmp_path: Path, drift: str
+) -> None:
+    log_dir = tmp_path / "logs" / "fix-uart"
+    state = DevelopmentState()
+    state.slug = "fix-uart"
+    state.init_criteria({"sim_pass_uart": True})
+    changes = state.set_criterion("sim_pass_uart", True)
+    identity = {
+        "generation": "e" * 32,
+        "authored_sha256": "a" * 64,
+        "baseline": {"outer": {"commit": "b" * 40}},
+    }
+    recorded = deepcopy(identity)
+    if drift == "generation":
+        recorded["generation"] = "f" * 32
+    elif drift == "authored":
+        recorded["authored_sha256"] = "c" * 64
+    elif drift == "commit":
+        recorded["baseline"]["outer"]["commit"] = "d" * 40
+    elif drift == "missing":
+        recorded = None
+    record_changes(
+        log_dir,
+        state,
+        changes,
+        invocation_id="sim-green",
+        producer="sim",
+        execution_id="run-1",
+        ticket_identity=recorded,
+    )
+
+    if drift == "matching":
+        snapshot = freeze_acceptance(
+            log_dir,
+            state,
+            execution_id="run-1",
+            ticket_identity=identity,
+            participant_heads={"outer": "b" * 40},
+        )
+        assert len(snapshot.evidence) == 1
+    else:
+        with pytest.raises(AcceptanceLedgerError, match="another Ticket identity"):
+            freeze_acceptance(
+                log_dir,
+                state,
+                execution_id="run-1",
+                ticket_identity=identity,
+                participant_heads={"outer": "b" * 40},
+            )
 
 
 def test_concurrent_observations_receive_unique_completion_sequences(tmp_path):
@@ -192,7 +246,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
         log_dir,
         state,
         execution_id="generation-1",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
@@ -204,7 +258,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
             log_dir,
             state,
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
             accepted_at="2026-08-28T12:00:00Z",
         )
@@ -224,7 +278,7 @@ def test_freeze_rejects_evidence_whose_sequence_disagrees_with_its_directory(tmp
             log_dir,
             _accepted_state(),
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
 
@@ -261,7 +315,7 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
         log_dir,
         _accepted_state(),
         execution_id="generation-1",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
     )
 
@@ -278,12 +332,12 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
 
 def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_path):
     log_dir = tmp_path / "logs" / "fix-uart"
-    basis_id = "f" * 64
+    generation = "f" * 32
     snapshot = freeze_acceptance(
         log_dir,
         _accepted_state(),
         execution_id="generation-1",
-        acceptance_basis={"basis_id": basis_id},
+        ticket_identity={"generation": generation},
         participant_heads={"outer": "a" * 40},
     )
     prep_dir = log_dir / ".runtime" / "triage-prep"
@@ -294,7 +348,7 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
     manifest = {
         "status": "ready",
         "briefing_path": str(briefing),
-        "acceptance_basis_id": basis_id,
+        "ticket_generation": generation,
         "head_sha": "b" * 40,
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -303,12 +357,12 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
         bind_review_package(log_dir, snapshot)
 
     manifest["head_sha"] = "a" * 40
-    manifest["acceptance_basis_id"] = "e" * 64
+    manifest["ticket_generation"] = "e" * 32
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(AcceptanceLedgerError, match="different Acceptance Basis"):
+    with pytest.raises(AcceptanceLedgerError, match="different Ticket generation"):
         bind_review_package(log_dir, snapshot)
 
-    manifest["acceptance_basis_id"] = basis_id
+    manifest["ticket_generation"] = generation
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert bind_review_package(log_dir, snapshot) is True
     validate_review_package_binding(log_dir, snapshot)

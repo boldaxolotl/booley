@@ -482,7 +482,8 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
     assert result.returncode == 0
     fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
     assert fields["summary"] == "Demo"
-    assert fields["acceptance_basis"]["schema"] == 1
+    assert fields["machine"]["schema"] == 1
+    assert fields["machine"]["baseline"]["outer"]["commit"]
     assert "target_contract" not in fields
     assert "- **review_rtl_bugs**" in body
     assert body.endswith("## Description\n\nDo the work.")

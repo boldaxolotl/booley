@@ -127,7 +127,7 @@ def test_unknown_sim_target_names_eligible_correction(tmp_path: Path) -> None:
     )
 
 
-def test_recorded_sim_target_is_not_resolved_in_destination_view(tmp_path: Path) -> None:
+def test_old_basis_ticket_is_rejected_before_target_resolution(tmp_path: Path) -> None:
     project = _project(tmp_path)
     fields = _fields("contract_only")
     fields["acceptance_basis"] = {
@@ -151,7 +151,7 @@ def test_recorded_sim_target_is_not_resolved_in_destination_view(tmp_path: Path)
         project_root=project,
     )
 
-    assert not any("contract_only" in error for error in errors)
+    assert any("unsupported Ticket format" in error for error in errors)
 
 
 def test_ticket_created_sim_target_is_deferred(tmp_path: Path) -> None:

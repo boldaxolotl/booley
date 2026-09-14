@@ -16,7 +16,8 @@ _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Ticket**:
 A self-contained unit of hardware development work carrying its own Criteria
-and lifecycle state.
+and lifecycle state. Human-authored frontmatter and Markdown state the work;
+the reserved `machine` section records execution identities.
 _Avoid_: task, issue, story
 
 ### Authoring
@@ -54,19 +55,19 @@ The disposable checkout set used for Ticket authoring or Developer Agent
 execution.
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
-**Acceptance Basis**:
-The immutable authored inputs and repository identities governing one
-executable version of a Ticket.
+**Ticket Baseline**:
+The repository commits recorded in a Ticket's `machine.baseline` section against
+which its Criteria and protected inputs are evaluated.
 
-**Basis Refresh**:
-A replacement Acceptance Basis for an unchanged waiting Ticket after its
-dependencies are accepted.
-_Avoid_: Target Contract, target snapshot, config patch, mutable recipe
+**Ticket Generation**:
+The stable identity in `machine.generation` for one publication of a Ticket.
+A waiting Ticket receives a new generation after its dependencies are accepted.
+_Avoid_: Acceptance Basis, Target Contract, target snapshot, config patch
 
 **Ticket Amendment**:
 A Human-approved relaxation of Criteria or expansion of Scope on a blocked
-Ticket, published as a new immutable Acceptance Basis while preserving its
-implementation and the earlier basis.
+Ticket, published as a new Ticket generation with machine-only amendment
+provenance and a new pinned baseline while preserving its implementation.
 _Avoid_: Ticket editing, reset, fresh authoring
 
 ### Execution and evidence
@@ -94,7 +95,7 @@ _Avoid_: Execution Rationale, skipped-Flow audit, mandatory route log
 
 **Review Inspection**:
 An immutable, Ticket Board-selected view of one Ticket execution, including its
-Acceptance Basis, Criteria state, participant heads, and accepted or unaccepted
+Ticket generation, Criteria state, participant heads, and accepted or unaccepted
 disposition. Review artifact generation renders this selection but does not own it.
 _Avoid_: review session, mutable report state
 
@@ -108,13 +109,13 @@ _Avoid_: manual acceptance, forced handoff
 **Criteria Satisfaction Record**:
 The immutable record created when a Ticket satisfies its required Criteria,
 freezing the final state of all Criteria together with their evidence,
-Acceptance Basis, and repository identities.
+Ticket generation, and repository identities.
 _Avoid_: Acceptance Evidence, Acceptance Snapshot, final booley_state, cached
 status, review report
 
 **Acceptance Journal**:
 The recoverable record and authority for publishing and cleaning up an
-accepted, basis-bound Ticket.
+accepted Ticket generation.
 _Avoid_: merge log, rollback record, transaction database
 
 ## Retired terminology

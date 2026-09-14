@@ -95,7 +95,7 @@ retry cap as permission to waive a finding silently.
 
 _BASELINE_QOR_RULE = """\
 **BASELINE QoR CRITERIA**: For baseline-relative `synthesis_ok` and \
-`fpga_impl_ok` criteria, every baseline/candidate Target binding is fixed by the Acceptance Basis and \
+`fpga_impl_ok` criteria, every baseline/candidate Target binding is fixed by the Ticket baseline and \
 immutable. For a plain Target name, the recorded Target recipe is immutable: run \
 both the basis commit and the ticket head with that identical recipe. An explicit pair \
 may name different frozen Targets. Never alter either Target, constraint, \
@@ -385,7 +385,7 @@ def _get_criterion_endpoint_map(
             for family, binding in catalog.items()
         }
 
-    except Exception:  # optional mapping must not block the run
+    except Exception:
         logger.warning("Failed to auto-build criterion-to-endpoint map", exc_info=True)
         return {}
 

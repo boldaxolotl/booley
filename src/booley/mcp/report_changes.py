@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 from booley.runtime.git import git_run
-from booley.ticket_board.acceptance_basis import AcceptanceBasis
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError, ticket_repositories
 
 
@@ -22,7 +22,7 @@ def changed_ticket_paths(worktree: Path) -> list[str]:
     basis = None
     if ticket_file:
         fields, _ = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-        basis = AcceptanceBasis.from_mapping(fields.get("acceptance_basis"))
+        basis = ticket_baseline_from_machine(fields.get("machine"))
     paths: set[str] = set()
     repositories = ticket_repositories(
         worktree, require_paired=os.environ.get("BOOLEY_PAIRED_PROJECT_REPOSITORY") == "1"
@@ -32,7 +32,7 @@ def changed_ticket_paths(worktree: Path) -> list[str]:
         if basis is not None:
             base = basis.project_sha if repository.path_prefix else basis.outer_sha
             if not base:
-                raise TicketWorkspaceError("No Acceptance Basis for paired repository")
+                raise TicketWorkspaceError("No Ticket baseline for paired repository")
         result = git_run(
             repository.worktree,
             ["diff", "--no-renames", "--name-only", "-z", base, "HEAD"],

@@ -15,8 +15,8 @@ import pytest
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -26,8 +26,8 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
     return env
 
 
-def _flow_acceptance_basis() -> AcceptanceBasis:
-    return AcceptanceBasis(
+def _flow_acceptance_basis() -> TicketBaseline:
+    return TicketBaseline(
         participants=(
             BasisParticipant(
                 "outer",
@@ -36,7 +36,8 @@ def _flow_acceptance_basis() -> AcceptanceBasis:
                 "refs/heads/main",
                 "b" * 40,
             ),
-        )
+        ),
+        machine={"generation": "1" * 32},
     )
 
 
@@ -171,13 +172,13 @@ class TestBooleyFlowExecution:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import runtime_context
-        from booley.ticket_board.acceptance_basis import AcceptanceBasisError
         from booley.ticket_board.frontmatter import format_frontmatter
+        from booley.ticket_board.ticket_baseline import TicketBaselineError
 
         basis = _flow_acceptance_basis()
         ticket = tmp_path / "ticket.md"
         ticket.write_text(
-            format_frontmatter({"acceptance_basis": basis.as_dict()}, "ticket"),
+            format_frontmatter({"machine": basis.ticket_identity()}, "ticket"),
             encoding="utf-8",
         )
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
@@ -210,7 +211,7 @@ class TestBooleyFlowExecution:
         assert loaded_slugs == ["actual-ticket"]
 
         def reject_change(*_args, **_kwargs):
-            raise AcceptanceBasisError("acceptance-input-change-required: protected path changed")
+            raise TicketBaselineError("acceptance-input-change-required: protected path changed")
 
         monkeypatch.setattr(
             "booley.ticket_board.flow_execution.assert_ticket_worktree_inputs_unchanged",

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
 from booley.ticket_board.acceptance_journal import (
     AcceptanceOperationError,
     AcceptanceOutcome,
@@ -24,6 +23,7 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
+from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 from tests.ticket_board.test_completion import (
     _contract,
     _git,
@@ -61,8 +61,8 @@ def _single_repository_acceptance(
     return root, tio, request, base
 
 
-def _composite_basis() -> AcceptanceBasis:
-    return AcceptanceBasis(
+def _composite_basis() -> TicketBaseline:
+    return TicketBaseline(
         (
             BasisParticipant("outer", "a" * 40, "outer-src", "outer-dst", "b" * 40),
             BasisParticipant("project", "c" * 40, "project-src", "project-dst", "d" * 40),

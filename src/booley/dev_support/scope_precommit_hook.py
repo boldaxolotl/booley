@@ -136,7 +136,7 @@ def _matches_scope(filepath: str, scope: list[str]) -> bool:
 def _reject_forbidden(forbidden: list[str]) -> int:
     """Print the hard-block diagnostic for harness-owned paths."""
     print(
-        "ERROR: Commit blocked — these files belong to the harness or Acceptance Basis.",
+        "ERROR: Commit blocked — these files belong to the harness or Ticket baseline.",
         file=sys.stderr,
     )
     for f in forbidden:
@@ -145,7 +145,7 @@ def _reject_forbidden(forbidden: list[str]) -> int:
     print(
         "Development state, criteria, ticket files, and Target/control-plane inputs are "
         "the record your run is graded against. Unstage these and commit the rest; "
-        "return the Ticket to draft when Acceptance Basis inputs must change.",
+        "return the Ticket to draft when Ticket baseline inputs must change.",
         file=sys.stderr,
     )
     return 1

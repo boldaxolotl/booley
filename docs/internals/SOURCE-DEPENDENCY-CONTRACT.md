@@ -184,7 +184,7 @@ scanning or execution responsibility out of Flows.
 `evidence.acceptance` owns storage-independent resolved acceptance inputs.
 `flows.execution_persistence` defines the execution and recording interface;
 `ticket_board.flow_execution` supplies the Ticket Board adapter. This keeps
-Acceptance Basis lookup and ledger writes outside deterministic Flow execution
+Ticket baseline lookup and ledger writes outside deterministic Flow execution
 under D17.
 
 Coverage Campaign persistence and queries remain Simulation Flow responsibilities.

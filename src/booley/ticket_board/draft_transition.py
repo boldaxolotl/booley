@@ -1,4 +1,4 @@
-"""Recoverable blocked-to-draft transition for Acceptance Basis Tickets."""
+"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline."""
 
 from __future__ import annotations
 
@@ -37,9 +37,14 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
-from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis
 from .frontmatter import format_frontmatter, parse_frontmatter
 from .persistence import atomic_replace_bytes
+from .ticket_baseline import (
+    TicketBaseline,
+    TicketBaselineError,
+    load_ticket_baseline,
+    ticket_baseline_from_machine,
+)
 from .workspace_ops import (
     AuthoringWorkspace,
     _generation_branch,
@@ -64,8 +69,7 @@ class DraftTransitionJournal:
     operation_id: str
     slug: str
     state: Literal["initializing", "prepared", "cutover-ready", "published"]
-    basis: dict[str, Any]
-    basis_id: str
+    machine: dict[str, Any]
     blocked_ticket: str
     blocked_sha256: str
     draft_ticket: str
@@ -131,8 +135,7 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
         operation_id=require_str(mapping, "operation_id"),
         slug=require_str(mapping, "slug"),
         state=cast(Literal["initializing", "prepared", "cutover-ready", "published"], state),
-        basis=require_dict(mapping.get("basis"), field="return-to-draft journal basis"),
-        basis_id=require_str(mapping, "basis_id"),
+        machine=require_dict(mapping.get("machine"), field="return-to-draft journal machine"),
         blocked_ticket=require_str(mapping, "blocked_ticket"),
         blocked_sha256=require_str(mapping, "blocked_sha256"),
         draft_ticket=require_str(mapping, "draft_ticket"),
@@ -157,11 +160,9 @@ def _validate_journal(
     if not _OPERATION_RE.fullmatch(journal.operation_id):
         raise DraftTransitionError("return-to-draft journal operation ID is invalid")
     try:
-        basis = AcceptanceBasis.from_mapping(journal.basis)
-    except AcceptanceBasisError as exc:
+        ticket_baseline_from_machine(journal.machine)
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
-    if journal.basis_id != basis.basis_id:
-        raise DraftTransitionError("return-to-draft journal basis identity changed")
     board = resolve_checkout_project_dir(root) / "tickets" / "board"
     draft = Path(journal.draft_ticket).resolve()
     if draft != (board / "drafts" / f"{slug}.md").resolve():
@@ -197,6 +198,7 @@ def _draft_content(ticket: Path) -> tuple[dict[str, Any], str, bytes]:
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     draft = dict(fields)
     for field in (
+        "machine",
         "acceptance_basis",
         "acceptance_amendment",
         "created",
@@ -219,8 +221,8 @@ def _new_journal(
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
     fields, body, draft_content = _draft_content(ticket)
     try:
-        basis = load_acceptance_basis(root, slug, fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, slug, fields, body)
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     operation_id = uuid.uuid4().hex
     operation = _operation_dir(root, operation_id)
@@ -235,8 +237,7 @@ def _new_journal(
         operation_id,
         slug,
         "initializing",
-        basis.as_dict(),
-        basis.basis_id,
+        basis.ticket_identity(),
         str(ticket.resolve()),
         _digest(ticket.read_bytes()),
         str(draft_destination.resolve()),
@@ -276,15 +277,15 @@ def _require_file(path: Path, digest: str, label: str) -> None:
         raise DraftTransitionError(f"{label} changed unexpectedly: {path}")
 
 
-def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> AcceptanceBasis:
+def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBaseline:
     blocked = Path(journal.blocked_ticket)
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     fields, body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
     try:
-        basis = load_acceptance_basis(root, journal.slug, fields, body)
-    except AcceptanceBasisError as exc:
+        basis = load_ticket_baseline(root, journal.slug, fields, body)
+    except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     errors = validate_basis_refs(
         root,
@@ -293,7 +294,7 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> Acceptance
         destination_branch=str(fields.get("branch", "")),
     )
     if errors:
-        raise DraftTransitionError("old Acceptance Basis is invalid: " + "; ".join(errors))
+        raise DraftTransitionError("old Ticket baseline is invalid: " + "; ".join(errors))
     return basis
 
 
@@ -349,7 +350,7 @@ def _move_worktree_if_present(repository: Path, ref: str, destination: Path) -> 
 
 
 def _preflight_relocation(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> None:
     operation = _operation_dir(root, journal.operation_id)
     canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
@@ -395,7 +396,7 @@ def _preflight_relocation(
 
 
 def _relocate_worktrees(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     operation = _operation_dir(root, journal.operation_id)
     canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
@@ -429,7 +430,7 @@ def _relocate_worktrees(
 
 
 def _published_worktrees(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project = ticket_project_worktree(outer) if journal.has_project else None
@@ -444,7 +445,7 @@ def _published_worktrees(
 
 
 def _finish_published_transition(
-    root: Path, journal: DraftTransitionJournal, basis: AcceptanceBasis
+    root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     """Confirm published identities, then retire the slug-level recovery journal."""
     draft = Path(journal.draft_ticket)
@@ -545,7 +546,7 @@ def return_to_draft(
         journal = _new_journal(root, Path(ticket_path), slug, status, logs)
     if journal.state == "initializing":
         journal = _prepare_generation(root, journal)
-    basis = AcceptanceBasis.from_mapping(journal.basis)
+    basis = ticket_baseline_from_machine(journal.machine)
     if journal.state == "prepared":
         basis = _validate_cutover(root, journal)
         journal = journal.with_state("cutover-ready")
@@ -558,7 +559,8 @@ def return_to_draft(
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
         _publish_board(root, journal)
         append_transition(
-            f"old basis {journal.basis_id}; new draft identity {journal.generation}; "
+            f"old Ticket generation {journal.machine['generation']}; "
+            f"new draft identity {journal.generation}; "
             f"{journal.operation_id}"
         )
         journal = journal.with_state("published")

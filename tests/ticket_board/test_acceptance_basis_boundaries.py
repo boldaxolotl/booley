@@ -1,4 +1,4 @@
-"""Public Acceptance Basis contracts plus deterministic Git fault injection.
+"""Public Ticket baseline contracts plus deterministic Git fault injection.
 
 Direct private-helper tests are limited to worktree identity, materialization, and
 generated-file comparisons whose failure states cannot be injected through a stable
@@ -15,13 +15,17 @@ import pytest
 
 from booley.fusesoc import core_projection
 from booley.ticket_board import (
-    acceptance_basis,
     acceptance_validation,
 )
-from booley.ticket_board.acceptance_basis import (
-    AcceptanceBasis,
-    AcceptanceBasisError,
+from booley.ticket_board import (
+    ticket_baseline as acceptance_basis,
+)
+from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketBaseline,
+    TicketBaselineError,
+    ticket_baseline_from_machine,
+    ticket_machine_from_participants,
 )
 
 
@@ -44,26 +48,56 @@ def _participant(role: str = "outer") -> BasisParticipant:
     )
 
 
-def _record() -> dict[str, object]:
-    return acceptance_basis.authored_ticket_record(
-        {
-            "summary": "Ticket",
-            "type": "feature",
-            "branch": "main",
-            "scope": [],
-            "criteria": {"mandatory": {"review_rtl_bugs": True}},
-        },
-        "## Description\n\nTest.\n",
-        (),
+@pytest.mark.parametrize(
+    ("amendment_patch", "message"),
+    [
+        ({"reason": None}, "reason"),
+        ({"actor": ""}, "actor must be a non-empty string"),
+        ({"operation_id": "b" * 32}, "generation identity is invalid"),
+        ({"changes": []}, "has no changes"),
+        ({"changes": [{"criterion": "review_rtl_bugs_clean"}]}, "Criterion change is invalid"),
+        (
+            {
+                "changes": [
+                    {
+                        "criterion": 4,
+                        "before_mandatory": True,
+                        "after_mandatory": False,
+                        "thresholds": {},
+                    }
+                ]
+            },
+            "Criterion values are invalid",
+        ),
+        (
+            {
+                "changes": [
+                    {
+                        "criterion": "review_rtl_bugs_clean",
+                        "before_mandatory": 1,
+                        "after_mandatory": False,
+                        "thresholds": {},
+                    }
+                ]
+            },
+            "mandatory values are invalid",
+        ),
+        ({"optional_conversions": [3]}, "Scope or optional conversions are invalid"),
+    ],
+)
+def test_ticket_machine_rejects_malformed_amendment_metadata(
+    amendment_patch: dict[str, object], message: str
+) -> None:
+    generation = "a" * 32
+    machine = ticket_machine_from_participants(
+        (_participant(),), authored_sha256="c" * 64, generation=generation
     )
-
-
-def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
-    valid = {
-        "old_basis": AcceptanceBasis((_participant(),)).as_dict(),
-        "operation_id": "a" * 32,
-        "actor": "QA Human",
-        "reason": "Approve revised requirement",
+    amendment = {
+        "slug": "blocked-ticket",
+        "operation_id": generation,
+        "previous_generation": "d" * 32,
+        "actor": "maintainer",
+        "reason": "approved relaxation",
         "changes": [
             {
                 "criterion": "review_rtl_bugs_clean",
@@ -73,48 +107,22 @@ def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
             }
         ],
         "scope_added": [],
-        "optional_conversions": ["review_rtl_bugs_clean"],
+        "optional_conversions": [],
     }
-    record = {**_record(), "schema": 3, "amendment": valid}
-    acceptance_basis._validate_record_schema(record)
-    for replacement in (
-        {**valid, "actor": " "},
-        {**valid, "operation_id": "short"},
-        {**valid, "changes": [], "scope_added": []},
-        {**valid, "changes": ["review_rtl_bugs_clean"]},
-        {**valid, "scope_added": [12]},
-        {**valid, "optional_conversions": [""]},
-        {**valid, "reason": 12},
-    ):
-        with pytest.raises(AcceptanceBasisError):
-            acceptance_basis._validate_record_schema({**record, "amendment": replacement})
+    amendment.update(amendment_patch)
+    machine["amendment"] = amendment
+
+    with pytest.raises(TicketBaselineError, match=message):
+        ticket_baseline_from_machine(machine)
 
 
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:
-    with pytest.raises(AcceptanceBasisError, match="unsupported Acceptance Path Policy"):
+    with pytest.raises(TicketBaselineError, match="unsupported Acceptance Path Policy"):
         acceptance_basis.AcceptancePathPolicy(schema=2).discover(Path.cwd())
-    with pytest.raises(AcceptanceBasisError, match="requires an outer"):
-        AcceptanceBasis((_participant("project"),))
-    with pytest.raises(AcceptanceBasisError, match="participants must be a list"):
-        AcceptanceBasis.from_mapping({"schema": 1, "participants": {}})
-
-
-def test_basis_participant_lookup_and_record_routing_fail_loudly() -> None:
-    basis = AcceptanceBasis((_participant(),))
-    with pytest.raises(AcceptanceBasisError, match="no 'project'"):
-        basis.participant("project")
-    with pytest.raises(AcceptanceBasisError, match="frontmatter is invalid"):
-        basis.with_record({"bindings": [], "ticket": {"frontmatter": []}})
-    record = _record()
-    record["ticket"]["frontmatter"]["branch"] = "release"  # type: ignore[index]
-    with pytest.raises(AcceptanceBasisError, match="outer destination disagrees"):
-        basis.with_record(record)
-    record = _record()
-    record["ticket"]["frontmatter"]["project_destination_ref"] = (  # type: ignore[index]
-        "refs/heads/main"
-    )
-    with pytest.raises(AcceptanceBasisError, match="without a participant"):
-        basis.with_record(record)
+    with pytest.raises(TicketBaselineError, match="requires an outer"):
+        TicketBaseline((_participant("project"),))
+    with pytest.raises(TicketBaselineError, match="participants must be a list"):
+        TicketBaseline.from_mapping({"schema": 1, "participants": {}})
 
 
 @pytest.mark.parametrize(
@@ -139,225 +147,8 @@ def test_basis_participant_lookup_and_record_routing_fail_loudly() -> None:
     ],
 )
 def test_participant_parser_rejects_malformed_rows(row: object, message: str) -> None:
-    with pytest.raises(AcceptanceBasisError, match=message):
-        AcceptanceBasis.from_mapping({"schema": 1, "participants": [row]})
-
-
-def test_authored_record_rejects_unknown_field_and_invalid_on_success() -> None:
-    fields = {"branch": "main", "unknown": True}
-    with pytest.raises(AcceptanceBasisError, match="unknown authored"):
-        acceptance_basis.authored_ticket_record(fields, "body", ())
-    with pytest.raises(AcceptanceBasisError, match="on_success must be a mapping"):
-        acceptance_basis.authored_ticket_record({"branch": "main", "on_success": []}, "body", ())
-
-
-def test_binding_record_parser_rejects_invalid_schema() -> None:
-    record = _record()
-    record["bindings"] = [{"flow": "sim"}]
-    with pytest.raises(AcceptanceBasisError, match="invalid schema"):
-        AcceptanceBasis((_participant(),)).with_record(record)
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda record: record.update(extra=True), "invalid top-level"),
-        (lambda record: record.update(schema=4), "unsupported schema"),
-        (lambda record: record["ticket"].update(extra=True), "ticket has an invalid schema"),
-        (
-            lambda record: record["ticket"]["frontmatter"].update(extra=True),
-            "unknown authored field",
-        ),
-        (
-            lambda record: record["ticket"]["frontmatter"].pop("scope"),
-            "authored defaults are not canonical",
-        ),
-        (
-            lambda record: record["ticket"]["frontmatter"].update(on_success="bad"),
-            "on_success must be a mapping",
-        ),
-    ],
-)
-def test_record_validation_rejects_noncanonical_shapes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mutate: object,
-    message: str,
-) -> None:
-    record = _record()
-    mutate(record)  # type: ignore[operator]
-    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(
-        acceptance_basis.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ["git"], 0, acceptance_basis.canonical_json(record), b""
-        ),
-    )
-    with pytest.raises(AcceptanceBasisError, match=message):
-        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
-
-
-@pytest.mark.parametrize(
-    ("result", "message"),
-    [
-        (subprocess.CompletedProcess(["git"], 1, b"", b"missing"), "record is unavailable"),
-        (subprocess.CompletedProcess(["git"], 0, b"not json", b""), "invalid JSON"),
-        (subprocess.CompletedProcess(["git"], 0, b'{"schema":1}\n', b""), "record.ticket"),
-    ],
-)
-def test_load_basis_record_reports_git_and_payload_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    result: subprocess.CompletedProcess[str],
-    message: str,
-) -> None:
-    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(acceptance_basis.subprocess, "run", lambda *_args, **_kwargs: result)
-    with pytest.raises(AcceptanceBasisError, match=message):
-        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
-
-
-def test_load_basis_record_rejects_noncanonical_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record = _record()
-    payload = (" " + acceptance_basis.canonical_json(record).decode()).encode()
-    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(
-        acceptance_basis.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(["git"], 0, payload, b""),
-    )
-    with pytest.raises(AcceptanceBasisError, match="not canonical JSON"):
-        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
-
-
-def test_record_validation_rejects_invalid_on_success_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record = _record()
-    record["ticket"]["frontmatter"]["on_success"] = {  # type: ignore[index]
-        "destination": "invalid",
-        "merge": True,
-        "cleanup": True,
-        "triage_report": True,
-    }
-    monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(
-        acceptance_basis.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ["git"], 0, acceptance_basis.canonical_json(record), b""
-        ),
-    )
-    with pytest.raises(AcceptanceBasisError, match="destination"):
-        acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
-
-
-def test_receipt_validation_reports_missing_and_mismatched_receipts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    record = _record()
-    monkeypatch.setattr(
-        acceptance_basis,
-        "_receipt_path",
-        lambda *_args: tmp_path / "receipt.json",
-    )
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
-    with pytest.raises(AcceptanceBasisError, match="receipt is unavailable"):
-        acceptance_basis.load_basis_receipt(tmp_path, "ticket", basis.as_dict())
-    receipt = acceptance_basis.write_basis_receipt(
-        tmp_path,
-        "ticket",
-        basis,
-        source_sha256="1" * 64,
-        operation_id="2" * 32,
-    )
-    path = tmp_path / "receipt.json"
-    path.write_bytes(acceptance_basis.canonical_json({**receipt, "schema": 2}))
-    with pytest.raises(AcceptanceBasisError, match="receipt mismatch"):
-        acceptance_basis.load_basis_receipt(tmp_path, "ticket", basis.as_dict())
-
-
-def test_receipt_path_uses_explicit_control_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    control_root = tmp_path / "control"
-    control_project = control_root / ".booley_project"
-    authored_project = control_project / "worktrees" / "ticket" / ".booley_project"
-    control_project.mkdir(parents=True)
-    authored_project.mkdir(parents=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(authored_project))
-
-    path = acceptance_basis._receipt_path(
-        control_root,
-        "ticket",
-        AcceptanceBasis((_participant(),)),
-    )
-
-    assert path.is_relative_to(control_project / ".runtime")
-
-
-def test_write_basis_receipt_rejects_source_drift_and_write_once_conflict(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    record = _record()
-    path = tmp_path / "receipt.json"
-    path.write_text("present", encoding="utf-8")
-    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
-    monkeypatch.setattr(acceptance_basis, "_receipt_path", lambda *_args: path)
-    monkeypatch.setattr(
-        acceptance_basis,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
-    monkeypatch.setattr(
-        acceptance_basis,
-        "_validate_receipt",
-        lambda *_args: {"source_sha256": "old"},
-    )
-    with pytest.raises(AcceptanceBasisError, match="different source"):
-        acceptance_basis.write_basis_receipt(
-            tmp_path, "ticket", basis, source_sha256="new", operation_id="2" * 32
-        )
-    path.unlink()
-    monkeypatch.setattr(
-        acceptance_basis,
-        "atomic_write_once",
-        lambda *_args: (_ for _ in ()).throw(acceptance_basis.WriteOnceConflictError("race")),
-    )
-    with pytest.raises(AcceptanceBasisError, match="conflicting Acceptance Basis receipt"):
-        acceptance_basis.write_basis_receipt(
-            tmp_path, "ticket", basis, source_sha256="1" * 64, operation_id="2" * 32
-        )
+    with pytest.raises(TicketBaselineError, match=message):
+        TicketBaseline.from_mapping({"schema": 1, "participants": [row]})
 
 
 def test_git_path_and_worktree_command_fail_closed(
@@ -373,7 +164,7 @@ def test_git_path_and_worktree_command_fail_closed(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="bad worktree"),
     )
-    with pytest.raises(AcceptanceBasisError, match="bad worktree"):
+    with pytest.raises(TicketBaselineError, match="bad worktree"):
         acceptance_basis._git_paths(tmp_path, "status")
 
     dot_git = tmp_path / ".git"
@@ -405,14 +196,14 @@ def test_worktree_command_remaps_inaccessible_admin_path(
 def test_destination_and_ticket_commit_inputs_require_complete_full_sha_maps(
     tmp_path: Path,
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    with pytest.raises(AcceptanceBasisError, match="cover every participant"):
+    basis = TicketBaseline((_participant(),))
+    with pytest.raises(TicketBaselineError, match="cover every participant"):
         acceptance_basis.validate_destination_refs(tmp_path, basis, {})
-    with pytest.raises(AcceptanceBasisError, match="must be a full Git SHA"):
+    with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
         acceptance_basis.validate_destination_refs(tmp_path, basis, {"outer": "bad"})
-    with pytest.raises(AcceptanceBasisError, match="cover every Basis participant"):
+    with pytest.raises(TicketBaselineError, match="cover every Basis participant"):
         acceptance_basis.materialize_ticket_commits(tmp_path, basis, tmp_path / "out", {})
-    with pytest.raises(AcceptanceBasisError, match="must be a full Git SHA"):
+    with pytest.raises(TicketBaselineError, match="must be a full Git SHA"):
         acceptance_basis.materialize_ticket_commits(
             tmp_path, basis, tmp_path / "out", {"outer": "bad"}
         )
@@ -427,7 +218,7 @@ def test_prepare_acceptance_checkout_wraps_generated_projection_failure(
         "reconcile_projected_cores",
         lambda *_args: (_ for _ in ()).throw(core_projection.CoreProjectionError("broken")),
     )
-    with pytest.raises(AcceptanceBasisError, match="acceptance-input-change-required: broken"):
+    with pytest.raises(TicketBaselineError, match="acceptance-input-change-required: broken"):
         acceptance_validation.prepare_acceptance_checkout(
             tmp_path,
             tmp_path,
@@ -448,7 +239,7 @@ def test_worktree_mapping_and_identity_failures_are_explicit(
             (recorded, _participant().ticket_ref),
         ),
     )
-    with pytest.raises(AcceptanceBasisError, match="could not be identified"):
+    with pytest.raises(TicketBaselineError, match="could not be identified"):
         acceptance_basis.worktree_for_ref(tmp_path, _participant().ticket_ref)
 
     responses = iter(
@@ -483,9 +274,9 @@ def test_descendant_and_project_repository_failures_are_explicit(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
-    with pytest.raises(AcceptanceBasisError, match="ref is unavailable"):
-        acceptance_basis.validate_current_basis_refs(tmp_path, AcceptanceBasis((_participant(),)))
-    paired = AcceptanceBasis((_participant(), _participant("project")))
+    with pytest.raises(TicketBaselineError, match="ref is unavailable"):
+        acceptance_basis.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
+    paired = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr(acceptance_basis, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(
@@ -493,7 +284,7 @@ def test_descendant_and_project_repository_failures_are_explicit(
         "_descendant_ref_commit",
         lambda *_args, **_kwargs: "a" * 40,
     )
-    with pytest.raises(AcceptanceBasisError, match="paired project repository"):
+    with pytest.raises(TicketBaselineError, match="paired project repository"):
         acceptance_basis.validate_current_basis_refs(tmp_path, paired)
 
 
@@ -506,12 +297,12 @@ def test_clone_commit_reports_clone_and_checkout_failures(
         "run",
         lambda *_args, **_kwargs: next(responses),
     )
-    with pytest.raises(AcceptanceBasisError, match="clone failed"):
+    with pytest.raises(TicketBaselineError, match="clone failed"):
         acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
     responses = iter(
         [_completed("git"), _completed("git", returncode=1, stderr="checkout failed")]
     )
-    with pytest.raises(AcceptanceBasisError, match="checkout failed"):
+    with pytest.raises(TicketBaselineError, match="checkout failed"):
         acceptance_basis._clone_commit(tmp_path, tmp_path / "clone", "a" * 40)
 
 
@@ -544,31 +335,206 @@ def test_generated_path_equivalence_handles_symlinks_and_mode_mismatch(tmp_path:
         ("base_sha", None),
     ],
 )
-def test_load_acceptance_basis_rejects_every_retired_field(
+def test_load_ticket_baseline_rejects_every_retired_field(
     tmp_path: Path,
     retired_field: str,
     value: object,
 ) -> None:
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
-        acceptance_basis.load_acceptance_basis(
+    with pytest.raises(TicketBaselineError, match="hard cutoff"):
+        acceptance_basis.load_ticket_baseline(
             tmp_path,
             "ticket",
             {retired_field: value},
         )
 
 
-def test_load_acceptance_basis_rejects_authored_drift(
+def test_ticket_machine_rejects_authored_drift() -> None:
+    basis = TicketBaseline((_participant(),))
+    fields = {"summary": "Ticket", "branch": "main"}
+    body = "## Description\n\nTest."
+    fields["machine"] = acceptance_basis.ticket_machine_fields(
+        basis, fields=fields, body=body, generation="1" * 32
+    )
+    fields["summary"] = "Changed"
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        acceptance_basis.ticket_baseline_from_fields(fields, body)
+    fields["summary"] = "Ticket"
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        acceptance_basis.ticket_baseline_from_fields(fields, "different")
+
+
+@pytest.mark.parametrize("retired", ["acceptance_basis", "base_sha", "target_contract"])
+def test_ticket_baseline_rejects_retired_fields_even_when_null(retired: str) -> None:
+    with pytest.raises(TicketBaselineError, match=r"unsupported|hard cutoff"):
+        acceptance_basis.ticket_baseline_from_fields({retired: None}, "")
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda machine: machine.update(authored_sha256="short"), "authored_sha256"),
+        (lambda machine: machine.update(baseline={"project": {}}), "requires outer"),
+        (lambda machine: machine["baseline"].update(outer=[]), "must be a mapping"),
+        (lambda machine: machine["baseline"]["outer"].update(extra="x"), "invalid fields"),
+        (lambda machine: machine.update(providers={}), "providers must be a list"),
+        (
+            lambda machine: machine.update(
+                providers=[
+                    {
+                        "provider": "dependency",
+                        "ticket_generation": "2" * 32,
+                        "target": "acme:lib:toy:1.0#future",
+                        "role": "persistent",
+                        "surface_sha256": "3" * 64,
+                    }
+                ]
+                * 2
+            ),
+            "sorted and unique",
+        ),
+    ],
+)
+def test_machine_metadata_rejects_malformed_authority(change, message: str) -> None:
+    basis = TicketBaseline((_participant(),))
+    machine = acceptance_basis.ticket_machine_fields(
+        basis, fields={"summary": "ticket"}, body="body", generation="1" * 32
+    )
+    change(machine)
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.ticket_baseline_from_machine(machine)
+
+
+def test_machine_metadata_rejects_non_mapping_and_unavailable_identity() -> None:
+    with pytest.raises(TicketBaselineError, match="must be a mapping"):
+        acceptance_basis.ticket_baseline_from_machine(None)
+    with pytest.raises(TicketBaselineError, match="metadata is unavailable"):
+        TicketBaseline((_participant(),)).ticket_identity()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda row: row.update(extra="x"), "invalid schema"),
+        (lambda row: row.update(provider=" "), "names must be non-empty"),
+        (lambda row: row.update(role="other"), "role is not exportable"),
+        (lambda row: row.update(ticket_generation="short"), "ticket_generation is invalid"),
+        (lambda row: row.update(surface_sha256="short"), "surface_sha256 is invalid"),
+    ],
+)
+def test_provider_binding_rejects_malformed_identity(change, message: str) -> None:
+    row = {
+        "provider": "dependency",
+        "ticket_generation": "2" * 32,
+        "target": "acme:lib:toy:1.0#future",
+        "role": "persistent",
+        "surface_sha256": "3" * 64,
+    }
+    change(row)
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.provider_binding_from_mapping(row)
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (None, "must be a mapping"),
+        ({"schema": 1}, "exactly schema and participants"),
+        ({"schema": True, "participants": []}, "must be an integer"),
+        ({"schema": 2, "participants": []}, "schema must be"),
+    ],
+)
+def test_baseline_parser_rejects_noncanonical_container(row: object, message: str) -> None:
+    with pytest.raises(TicketBaselineError, match=message):
+        TicketBaseline.from_mapping(row)
+
+
+def test_ticket_routing_rejects_unpinned_destinations() -> None:
+    outer = _participant()
+    project = BasisParticipant(
+        "project",
+        "a" * 40,
+        _participant("project").ticket_ref,
+        "refs/heads/project-main",
+        "b" * 40,
+    )
+    with pytest.raises(TicketBaselineError, match="outer destination"):
+        acceptance_basis._validate_ticket_routing(TicketBaseline((outer,)), {"branch": "other"})
+    with pytest.raises(TicketBaselineError, match="without a baseline participant"):
+        acceptance_basis._validate_ticket_routing(
+            TicketBaseline((outer,)),
+            {"branch": "main", "project_destination_ref": "refs/heads/project-main"},
+        )
+    with pytest.raises(TicketBaselineError, match="project destination"):
+        acceptance_basis._validate_ticket_routing(
+            TicketBaseline((outer, project)),
+            {"branch": "main", "project_destination_ref": "refs/heads/other"},
+        )
+    assert TicketBaseline((outer, project)).participant("project") == project
+    with pytest.raises(TicketBaselineError, match="no 'project' participant"):
+        TicketBaseline((outer,)).participant("project")
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"on_success": []}, "on_success must be a mapping"),
+        ({"on_success": {"destination": "unknown"}}, "destination"),
+        ({"target_plan": {"unexpected": "shape"}}, "Target Plan|target_plan"),
+    ],
+)
+def test_authored_digest_rejects_invalid_human_fields(fields: dict, message: str) -> None:
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.authored_ticket_digest(fields, "body")
+
+
+def test_ticket_commit_trailers_fail_when_authoring_commit_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    record = _record()
-    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
-    monkeypatch.setattr(acceptance_basis, "_validate_receipt", lambda *_args: {})
-    fields = dict(record["ticket"]["frontmatter"])  # type: ignore[index]
-    fields["acceptance_basis"] = basis.as_dict()
-    fields["summary"] = "Changed"
-    with pytest.raises(AcceptanceBasisError, match="frontmatter changed"):
-        acceptance_basis.load_acceptance_basis(tmp_path, "ticket", fields)
-    fields["summary"] = "Ticket"
-    with pytest.raises(AcceptanceBasisError, match="body changed"):
-        acceptance_basis.load_acceptance_basis(tmp_path, "ticket", fields, "different")
+    monkeypatch.setattr(
+        acceptance_basis.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed("git", returncode=128),
+    )
+    with pytest.raises(TicketBaselineError, match="authoring commit is unavailable"):
+        acceptance_basis.validate_ticket_commit_trailers(
+            tmp_path, "ticket", TicketBaseline((_participant(),)), {}
+        )
+
+
+def test_executable_ticket_requires_human_body(tmp_path: Path) -> None:
+    with pytest.raises(TicketBaselineError, match="body is required"):
+        acceptance_basis.load_ticket_baseline(tmp_path, "ticket", {})
+
+
+def test_live_basis_rejects_disappearing_registered_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    monkeypatch.setattr(
+        acceptance_basis, "_partition_protected_inputs", lambda *_args: ("project", set(), set())
+    )
+    monkeypatch.setattr(acceptance_basis, "worktree_for_ref", lambda *_args: tmp_path)
+    monkeypatch.setattr(acceptance_basis, "_recorded_worktree_path", lambda *_args: None)
+    with pytest.raises(TicketBaselineError, match="disappeared during validation"):
+        acceptance_basis.assert_live_inputs_unchanged(basis, tmp_path, tmp_path)
+
+
+def test_control_discovery_reports_failure_in_current_and_baseline_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    with pytest.raises(TicketBaselineError, match="protected-input discovery failed"):
+        acceptance_basis._basis_control_paths(
+            tmp_path, basis, lambda *_args: (_ for _ in ()).throw(OSError("unreadable"))
+        )
+    monkeypatch.setattr(acceptance_basis, "materialize_basis_checkout", lambda *_args: None)
+    calls = iter([set(), OSError("baseline unreadable")])
+
+    def discover(_root: Path) -> set[str]:
+        value = next(calls)
+        if isinstance(value, OSError):
+            raise value
+        return value
+
+    with pytest.raises(TicketBaselineError, match="baseline unreadable"):
+        acceptance_basis._basis_control_paths(tmp_path, basis, discover)

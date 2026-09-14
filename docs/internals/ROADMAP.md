@@ -100,7 +100,7 @@ and candidate synthesis breakdowns. It may find the evidence insufficient. Its
 advice cannot change the verdict, edit code, or push changes.
 
 Ticket Mode and CI call the same Criterion evaluator but keep separate
-orchestration. Ticket Mode passes a recorded Acceptance Basis and owns its lifecycle. CI
+orchestration. Ticket Mode passes a recorded Ticket baseline and owns its lifecycle. CI
 passes Criteria, reports the verdict, and may start the investigator without
 depending on the Ticket Board or Harness lifecycle.
 
@@ -117,8 +117,8 @@ limits stay the same.
 local Markdown Ticket Board. Ticket creation, queue selection, execution, and
 triage should work through either surface. Booley should discover eligible
 issues from configured repositories and labels, claim each issue for exactly
-one active `booley run` invocation, publish the normal executable Ticket
-Acceptance Basis, and report
+one active `booley run` invocation, record the baseline commits in the
+executable Ticket, and report
 blocked, review, and done transitions back through labels and comments. Issue
 references should be usable for dependencies, while local Tickets retain the
 complete offline workflow.
