@@ -91,16 +91,61 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
-        "D23",
+        "D26",
         (prefix("booley.targets"),),
         (prefix("booley.flows"), prefix("booley.runtime")),
         "Target inspection uses shared build identity without Flow execution or Runtime",
     ),
     DirectionRule(
-        "D24",
+        "D27",
         (prefix("booley.fusesoc"),),
         (prefix("booley.runtime"),),
         "FuseSoC provenance consumes pure Scope matching without Runtime or Git execution",
+    ),
+    DirectionRule(
+        "D23",
+        (prefix("booley.config"),),
+        (prefix("booley.eda"),),
+        "Config owns declarative requests without depending on EDA provisioning policy",
+    ),
+    DirectionRule(
+        "D24",
+        (prefix("booley.eda"),),
+        (prefix("booley.runtime"),),
+        "EDA uses neutral host mechanisms without depending on Runtime execution or issuance",
+    ),
+    DirectionRule(
+        "D25",
+        tuple(
+            exact(f"booley.core.{name}") for name in ("private_store", "file_lock", "resources")
+        ),
+        tuple(
+            prefix(f"booley.{name}")
+            for name in (
+                "agent_workspace",
+                "audit",
+                "bwave",
+                "config",
+                "criteria",
+                "dev_support",
+                "docker",
+                "eda",
+                "evidence",
+                "feedback",
+                "flows",
+                "fusesoc",
+                "harness",
+                "mcp",
+                "presentation",
+                "projects",
+                "review",
+                "runtime",
+                "specialists",
+                "targets",
+                "ticket_board",
+            )
+        ),
+        "Shared private storage, locking, and package resources do not own caller policy",
     ),
     DirectionRule(
         "D22",
@@ -311,23 +356,20 @@ COMPOSITION_PERMISSIONS = (
 
 LEGACY_WAIVERS = ()
 
+# Measured after integrating #530 and #531. The production SCC metadata test
+# requires tightening on every split.
 APPROVED_LEGACY_SCCS = (
     frozenset(
         f"booley.{name}"
         for name in (
             "agent_workspace",
-            "audit",
             "bwave",
-            "config",
             "criteria",
             "dev_support",
-            "eda",
             "feedback",
             "flows",
             "harness",
             "mcp",
-            "projects",
-            "review",
             "runtime",
             "specialists",
             "ticket_board",

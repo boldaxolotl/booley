@@ -94,7 +94,7 @@ def test_load_eda_config_uses_external_project_data_dir(
         encoding="utf-8",
     )
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
-    monkeypatch.setattr("booley.eda.config.sys.platform", "linux")
+    monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
     reset_cache()
     try:
         assert load_eda_config(project) == {"vivado": EdaConfig("vivado", "host")}

@@ -5,8 +5,8 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Current measurements were verified on 14 SEP 2026 at implementation revision
-`1a98ec85`, compared with `main` at `35062dda`. Historical snapshots retain their
+Current measurements were verified on 14 SEP 2026 after integrating #530 and
+#531. Exact source/analyzer revisions are recorded in the snapshots below. Historical snapshots retain their
 own dates and revisions. Direction rules are normative; graph snapshots are
 diagnostic evidence.
 
@@ -88,9 +88,16 @@ installation and License Profile registration, exact Project grants, Vivado
 policy, and resolution of immutable requirements supplied to Runtime. Project
 Initialization and Harness grant coordination compose those two contexts.
 
+Config owns declarative EDA requests in `booley.config.eda`, including parsing,
+configuration errors, and Project document loading. EDA owns host-platform
+validation and composed loading in `eda.provisioning.configuration`; registration
+name validation remains with authority. Retired configuration checks stay in
+`config.flow_enablement`. The `eda.config` compatibility exports only point to
+these canonical owners, and Config never imports them through EDA.
+
 EDA reads declarative Flow enablement from `booley.config.flow_enablement`; it
 must not import Flow execution, even from deferred or type-only imports. It also
-must not import Runtime issuance or invalidation modules. D19 and D20 have no
+must not import any Runtime module. D19, D20, D23, and D24 have no
 waiver or composition exception. The dependency and hotspot measurements for
 [#487](https://github.com/boldaxolotl/booley/issues/487) are recorded in
 [the implementation evidence](../research/session-runtime-issuance-487-evidence.md).
@@ -101,12 +108,21 @@ values retain the enabled default. This narrow boundary intentionally differs
 from fail-closed authority and Runtime configuration because legacy Projects
 must not silently lose execution when the declarative reader is unavailable.
 
+EDA and Runtime share `core.private_store`, whose full locking dependency lives
+in `core.file_lock`, and use `core.user_paths.config_dir` for the existing host
+configuration location. Callers retain ownership of store roots, anchors,
+diagnostics, schemas, and lifecycle ordering. `core.resources.package_data_dir`
+owns installed-resource lookup and shadow-package fallback; Runtime still owns
+native executable discovery. The Runtime storage/locking modules and
+`runtime.paths.package_data_dir` remain downward compatibility exports. D25
+prevents these three shared mechanisms from acquiring caller policy.
+
 ## Target/FuseSoC and execution separation
 
 Target inspection owns selection and presentation; FuseSoC owns design resolution
 and core provenance checks. Neither needs Runtime execution to calculate shared
-paths or compare Scope entries. D23 forbids Targets from importing Flows or
-Runtime. D24 forbids FuseSoC from importing Runtime. These rules include deferred
+paths or compare Scope entries. D26 forbids Targets from importing Flows or
+Runtime. D27 forbids FuseSoC from importing Runtime. These rules include deferred
 and type-only imports and have no waiver or composition exception.
 
 - `core.build_paths.work_root_for` owns the canonical checkout-local Edalize
@@ -125,7 +141,7 @@ and type-only imports and have no waiver or composition exception.
   its existing owner; this extraction introduces no new execution authority.
 
 The measured Target/FuseSoC pair is approved separately from the remaining
-16-package cyclic group. A regression using the checked-in SCC metadata rejects
+11-package cyclic group. A regression using the checked-in SCC metadata rejects
 recombination even independently of the direction rules. See
 [the #530 evidence](../research/target-fusesoc-530-evidence.md) for exact revisions,
 full reports, migration fan-out, and verification.
@@ -182,8 +198,11 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D20 | Prefix `booley.eda` | Exact modules `booley.runtime.session_issuance`, `booley.runtime.issuance_invalidation` | Forbid | EDA supplies provisioning facts without knowing Runtime issuance, persistence, or invalidation. |
 | D21 | Prefix `booley.review` | Prefixes `booley.ticket_board`, `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Ticket Board lifecycle or Harness orchestration. |
 | D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
-| D23 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
-| D24 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
+| D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
+| D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
+| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D26 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
+| D27 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 
 ## Ticket review lifecycle boundary
 
@@ -421,7 +440,36 @@ When one of these modules changes, record before-and-after output in
 [#279](https://github.com/boldaxolotl/booley/issues/279). This lets later fan-out
 work distinguish legitimate composition from unjustified knowledge growth.
 
-## Current snapshot: 14 SEP 2026
+## Historical snapshot: 14 SEP 2026 — Config/EDA/Runtime separation
+
+[#531](https://github.com/boldaxolotl/booley/issues/531) removes both Config→EDA
+edges and all four EDA→Runtime edges. Its original source/analyzer comparison is:
+
+| Diagnostic | Before `90c27b43` | After `8efb7c56` |
+| --- | ---: | ---: |
+| Python modules | 492 | 497 |
+| Located dependency facts | 2,424 | 2,438 |
+| Unique normalized edges | 1,989 | 2,002 |
+| Mutual package pairs | 13 | 11 |
+| Largest cyclic package group | 18 | 18 |
+
+The Config↔EDA and EDA↔Runtime mutual pairs disappear. The exact 18-member SCC
+remains: #530's Target→Flows and FuseSoC→Runtime paths have not been removed on
+this branch. The 12-member/9-pair cumulative projection is not an achieved result.
+After integration with main for its existing CI author-allowlist repair, the
+final source/analyzer `8f7d1479` has 499 modules, 2,472 facts, and 2,030 edges;
+the integration base `35062dda` has 494 modules, 2,458 facts, and 2,017 edges.
+The 13→11 mutual-pair reduction and exact 18-member SCC are unchanged.
+
+At that revision the exact SCC metadata was retained; the new production metadata test requires
+it to equal the measured nontrivial groups, forcing tightening when a split lands.
+Separate seeded tests prove neutral packages cannot join the remaining group.
+
+Full ownership, edge inventories, affected caller fan-out, compatibility behavior,
+and reproduction commands are in the
+[#531 follow-up evidence](../research/session-runtime-issuance-487-evidence.md#follow-up-531--complete-configedaruntime-source-directions).
+
+## Historical snapshot: 14 SEP 2026 — Target/FuseSoC separation
 
 Compared the source and analyzer at `35062dda` with implementation revision
 `1a98ec85` for [#530](https://github.com/boldaxolotl/booley/issues/530).
@@ -441,7 +489,7 @@ unchanged.
 | Exact composition permissions | 4 | 4 |
 | Live legacy waivers | 0 | 0 |
 
-The approved groups now match the measured split (all names prefixed `booley.`):
+At that revision the approved groups matched the measured split (all names prefixed `booley.`):
 
 ```text
 agent_workspace, audit, bwave, config, criteria, dev_support, eda, feedback,
@@ -496,6 +544,27 @@ knowledge; the Scope matcher has no in-repository dependencies. All other named
 composition hotspots are unchanged. Full named-hotspot and top-30 reports are in
 [the implementation evidence](../research/target-fusesoc-530-evidence.md).
 
+## Current snapshot: 14 SEP 2026 — combined separation
+
+Integration of #530 with #531 removes the remaining return paths. The measured
+cyclic groups now contain 11 members and the separate Target/FuseSoC pair, with
+nine direct mutual pairs. Config, EDA, Audit, Review, and Projects all leave the
+execution group; the original 12-member projection predates the Ticket changes.
+The integrated source has 501 modules, 2,481 dependency facts, and 2,039 unique
+edges. Approved SCC metadata is tightened to these exact groups:
+
+```text
+agent_workspace, bwave, criteria, dev_support, feedback, flows, harness, mcp,
+runtime, specialists, ticket_board
+
+fusesoc, targets
+```
+
+D23–D25 retain the Config/EDA/shared-mechanism rules landed by #531. The
+Target/FuseSoC rules are numbered D26 and D27 to preserve those rule identities.
+Full before-and-after reports and exact revisions are recorded in
+[the #530 integration evidence](../research/target-fusesoc-530-evidence.md).
+
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction
@@ -505,11 +574,11 @@ rejects any current multi-package SCC that is not a subset of an approved legacy
 member set. Approved groups may split; new acyclic singletons need no baseline
 entry.
 
-The approved SCC sets are fixed metadata, not a record of the smallest groups
-ever observed. New cycles entirely within an approved set can pass this check,
-and a split can recombine until the approved sets are explicitly tightened.
-For #530 the old combined approval has been replaced by two disjoint sets, so
-Target/FuseSoC cannot rejoin the execution group under the remaining metadata.
+The approved SCC sets are explicit metadata. In addition to the subset gate,
+`test_approved_cyclic_groups_are_tightened_to_actual_groups` requires production
+metadata to equal the currently measured nontrivial groups. A split therefore
+requires tightening in the same change, after which a recombination fails the
+subset gate. New cycles entirely within one remaining approved set can still pass.
 Direction rules still apply to every edge. Package projection also combines
 distinct modules: a package SCC does not establish a module-level import cycle.
 A passing gate therefore proves the stated source rules, not complete separation,

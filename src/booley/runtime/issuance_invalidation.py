@@ -17,8 +17,8 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
-from booley.runtime.auth_token import config_dir
-from booley.runtime.private_store import PrivateStore
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 
 _SCHEMA_VERSION = 1
 _SUFFIX = ".json"

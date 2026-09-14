@@ -30,11 +30,11 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
-        ("D23", "booley.targets", "booley.flows", "targets/__init__.py"),
-        ("D23", "booley.targets.target_surface", "booley.flows.edam", "seed.py"),
-        ("D23", "booley.targets.catalog", "booley.runtime.git", "seed.py"),
-        ("D24", "booley.fusesoc", "booley.runtime", "fusesoc/__init__.py"),
-        ("D24", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
+        ("D26", "booley.targets", "booley.flows", "targets/__init__.py"),
+        ("D26", "booley.targets.target_surface", "booley.flows.edam", "seed.py"),
+        ("D26", "booley.targets.catalog", "booley.runtime.git", "seed.py"),
+        ("D27", "booley.fusesoc", "booley.runtime", "fusesoc/__init__.py"),
+        ("D27", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
         ("D18", "booley.config.agent", "booley.runtime.agent_backend", "seed.py"),
         ("D21", "booley.review.generation", "booley.ticket_board.io", "seed.py"),
         ("D21", "booley.review.generation", "booley.harness.booley", "seed.py"),
@@ -153,9 +153,9 @@ def _directions_only() -> ArchitectureContract:
 @pytest.mark.parametrize(
     ("source", "target", "rule"),
     [
-        ("targets/probe.py", "flows/edam.py", "D23"),
-        ("targets/__init__.py", "runtime/git.py", "D23"),
-        ("fusesoc/core_security.py", "runtime/git.py", "D24"),
+        ("targets/probe.py", "flows/edam.py", "D26"),
+        ("targets/__init__.py", "runtime/git.py", "D26"),
+        ("fusesoc/core_security.py", "runtime/git.py", "D27"),
     ],
 )
 @pytest.mark.parametrize(

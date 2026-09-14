@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import private_store
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import Inspection
 from booley.projects import inventory as project_inventory
-from booley.runtime import private_store
 
 
 def test_remembered_initialized_project_is_listed_as_present(tmp_path: Path, monkeypatch) -> None:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.eda import config as eda_config
+from booley.eda.provisioning import configuration as eda_config
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime.project_dir import reset_cache

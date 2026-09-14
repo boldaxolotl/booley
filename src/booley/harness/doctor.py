@@ -2727,7 +2727,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-close
     _fail: Fail,
 ) -> None:
     """Enforce the immutable host issuance and mounted-Vivado runtime contract."""
-    from booley.eda.config import PROVISIONING_HOST, EdaConfigError, parse_eda_config
+    from booley.config.eda import PROVISIONING_HOST, EdaConfigError, parse_eda_config
 
     try:
         eda = parse_eda_config(project.booley_toml.get("eda"))
