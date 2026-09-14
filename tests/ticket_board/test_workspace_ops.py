@@ -1089,3 +1089,370 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
     assert request.operation_id == "new-operation"
     assert request.bindings == ("binding",)
     assert request.removal_targets == ("old",)
+
+
+def test_branch_preflight_rejects_git_failure_and_conflicting_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="locked"),
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="locked"):
+        workspace_ops._strict_branch_sha(tmp_path, "ticket")
+
+    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "b" * 40)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="already points"):
+        workspace_ops._attach_worktree(tmp_path, tmp_path / "new", "ticket", "main")
+    monkeypatch.setattr(workspace_ops, "_branch_sha", lambda *_args: "a" * 40)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="path already exists"):
+        workspace_ops._attach_worktree(tmp_path, tmp_path, "ticket", "main")
+
+
+def test_open_preflight_rejects_moved_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "changed")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
+        workspace_ops._validate_open_bases(tmp_path, "main", "original", None)
+    project = workspace_ops._ProjectOpenPlan(tmp_path / "project", "main", "original")
+    monkeypatch.setattr(
+        workspace_ops,
+        "_full_commit",
+        lambda repository, _ref: "original" if repository == tmp_path else "changed",
+    )
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="paired project destination"
+    ):
+        workspace_ops._validate_open_bases(tmp_path, "main", "original", project)
+
+
+@pytest.mark.parametrize("content", ["not JSON", '{"generation": "short"}'])
+def test_draft_generation_rejects_corrupt_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    descriptor = tmp_path / "generation.json"
+    descriptor.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(workspace_ops, "_generation_file", lambda *_args: descriptor)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="invalid draft"):
+        workspace_ops._draft_generation(tmp_path, "ticket")
+
+
+def test_open_authoring_requires_destination_branch(tmp_path: Path) -> None:
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
+        workspace_ops.open_authoring_generation(
+            tmp_path, tmp_path / "ticket.md", "ticket", {}, "1" * 16, tmp_path / "outer"
+        )
+
+
+def test_refresh_materialization_failure_remains_actionable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
+
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(workspace_ops, "_require_unexecuted_refresh_refs", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops,
+        "materialize_basis_checkout",
+        lambda *_args: (_ for _ in ()).throw(TicketBaselineError("commit unavailable")),
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="commit unavailable"):
+        workspace_ops.load_refresh_source_workspace(
+            tmp_path, TicketBaseline((_participant(),)), "ticket", tmp_path / "operation"
+        )
+
+
+@pytest.mark.parametrize("returncode", [1, 2])
+def test_ancestor_check_rejects_non_ancestor_and_git_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args: _completed("git", returncode=returncode, stderr="git failed"),
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match=r"moved|git failed"):
+        workspace_ops._require_ancestor(tmp_path, "old", "new", "destination moved")
+
+
+def test_baseline_preparation_requires_open_workspace_and_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not open"):
+        workspace_ops._prepare_basis(tmp_path, ticket, "ticket")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
+        workspace_ops._pin_authoring_bases(tmp_path, tmp_path, None, {})
+
+
+def test_attachment_rollback_reports_registration_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "_registered_worktree",
+        lambda *_args: (_ for _ in ()).throw(
+            workspace_ops.TicketBaselineOperationError("worktree list failed")
+        ),
+    )
+    failures, clear = workspace_ops._remove_attachment_worktree(_attachment(tmp_path))
+    assert failures == ["worktree list failed"]
+    assert clear is False
+
+
+def test_resume_rejects_wrong_paired_repository_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paired = SimpleNamespace(worktree=tmp_path / "paired")
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda *_args: paired)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="unexpected paired"):
+        workspace_ops._resume_project_attachment(
+            tmp_path, tmp_path / "ticket.md", "ticket", tmp_path, "ticket-ref", None
+        )
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
+    project = workspace_ops._ProjectOpenPlan(tmp_path / "repository", "main", "a" * 40)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="wrong branch"):
+        workspace_ops._resume_project_attachment(
+            tmp_path, tmp_path / "ticket.md", "ticket", tmp_path, "ticket-ref", project
+        )
+
+
+def test_resume_reports_incomplete_project_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = workspace_ops._ProjectOpenPlan(tmp_path / "repository", "main", "a" * 40)
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops, "_project_open_attachment", lambda *_args: _attachment(tmp_path)
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_create_attachment",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("attach failed")),
+    )
+    monkeypatch.setattr(
+        workspace_ops, "_rollback_attachment", lambda *_args: (["remove failed"], False)
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="rollback incomplete"):
+        workspace_ops._resume_project_attachment(
+            tmp_path, tmp_path / "ticket.md", "ticket", tmp_path, "ticket-ref", project
+        )
+
+
+def test_refresh_relocation_rejects_missing_checkout_and_repository_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    operation = tmp_path / "operation"
+    workspace = workspace_ops.AuthoringWorkspace(
+        tmp_path / "missing", None, "a" * 40, "", "1" * 32
+    )
+    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda *_args: tmp_path)
+    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_stage_refresh_project", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda *_args: None)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="disappeared"):
+        workspace_ops.relocate_refresh_workspace(
+            root, "ticket", "1" * 32, operation, workspace, has_project=False
+        )
+    workspace.outer.mkdir()
+    monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args: "")
+    monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="paired project workspace"
+    ):
+        workspace_ops.relocate_refresh_workspace(
+            root, "ticket", "1" * 32, operation, workspace, has_project=True
+        )
+
+
+def test_pinning_rejects_repository_roles_and_destination_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda *_args: None)
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="participants do not match"
+    ):
+        workspace_ops.pin_basis_refs(
+            tmp_path,
+            TicketBaseline((_participant(), _participant("project"))),
+            slug="ticket",
+            destination_branch="main",
+        )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="outer destination"):
+        workspace_ops._validate_basis_participant(
+            tmp_path,
+            _participant(),
+            slug="ticket",
+            destination_branch="other",
+            exact_ticket_head=False,
+            exact_destination_head=False,
+        )
+
+
+def test_reset_rejects_stale_plan_and_wrong_worktree_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    plan = _reset_plan(tmp_path, basis, tmp_path / "destination")
+    plan.basis_id = "stale"
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="does not match"):
+        workspace_ops.reset_basis_worktrees(tmp_path, "ticket", basis, "main", plan=plan)
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="does not own"):
+        workspace_ops._validate_reset_worktrees(tmp_path, None, outer, None, basis)
+    paired = SimpleNamespace(worktree=tmp_path / "paired")
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="project repository is unavailable"
+    ):
+        workspace_ops._validate_reset_worktrees(tmp_path, None, tmp_path / "absent", paired, basis)
+
+
+def test_reset_rejects_missing_project_repository(tmp_path: Path) -> None:
+    basis = TicketBaseline((_participant(), _participant("project")))
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="project repository is unavailable"
+    ):
+        workspace_ops._reset_participants(tmp_path, None, basis, {"outer": "a" * 40})
+
+
+def test_pinning_rejects_uncommitted_paired_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_ops, "_full_commit", lambda repository, ref: "a" * 40)
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="project_destination_ref"
+    ):
+        workspace_ops._pin_authoring_bases(
+            tmp_path, tmp_path / "outer", tmp_path / "project", {"branch": "main"}
+        )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_full_commit",
+        lambda repository, ref: (
+            "b" * 40 if repository == tmp_path / "project" and ref == "HEAD" else "a" * 40
+        ),
+    )
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="contains commits beyond"
+    ):
+        workspace_ops._pin_authoring_bases(
+            tmp_path,
+            tmp_path / "outer",
+            tmp_path / "project",
+            {"branch": "main", "project_destination_ref": "refs/heads/project-main"},
+        )
+
+
+def test_surface_baseline_read_reports_git_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops, "_git", lambda *_args: _completed("git", returncode=128, stderr="tree gone")
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="tree gone"):
+        workspace_ops._baseline_surface_file(tmp_path, "a" * 40, "core/toy.core")
+    monkeypatch.setattr(
+        workspace_ops, "_git", lambda *_args: _completed("git", stdout="core/toy.core\n")
+    )
+    monkeypatch.setattr(
+        workspace_ops.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["git"], 128, b"", b"blob gone"),
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="blob gone"):
+        workspace_ops._baseline_surface_file(tmp_path, "a" * 40, "core/toy.core")
+
+
+def test_publication_preparation_requires_destinations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = SimpleNamespace(project=tmp_path / "project")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
+        workspace_ops._participant_preparations("ticket", {}, prepared)
+    monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: "a" * 40)
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="project_destination_ref"
+    ):
+        workspace_ops._project_participant_preparation(
+            "ticket",
+            {},
+            SimpleNamespace(project=tmp_path, project_changes=[], project_base_sha="a" * 40),
+        )
+
+
+def test_reset_reports_failed_postcondition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    plan = _reset_plan(tmp_path, basis, tmp_path / "outer")
+    monkeypatch.setattr(workspace_ops, "_remove_authoring_worktrees", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_attach_worktree", lambda *_args: None)
+    monkeypatch.setattr(workspace_ops, "_restore_project_workspace", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops, "validate_basis_refs", lambda *_args, **_kwargs: ["head moved"]
+    )
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="head moved"):
+        workspace_ops._apply_basis_reset(plan, basis, "ticket")
+
+
+def test_reset_rejects_wrong_paired_worktree_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(), _participant("project")))
+    monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
+    paired = SimpleNamespace(worktree=tmp_path / "paired")
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="paired Ticket Workspace"
+    ):
+        workspace_ops._validate_reset_worktrees(
+            tmp_path, tmp_path / "project", tmp_path / "absent", paired, basis
+        )
+
+
+def test_git_transport_failure_is_reported_as_baseline_operation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("git executable unavailable")),
+    )
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="git executable unavailable"
+    ):
+        workspace_ops._git(tmp_path, "status")
+
+
+def test_project_preparation_reports_offline_submodule_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import submodule_materialization
+
+    monkeypatch.setattr(
+        submodule_materialization,
+        "materialize_project_submodules",
+        lambda *_args: (_ for _ in ()).throw(
+            submodule_materialization.SubmoduleMaterializationError("object missing")
+        ),
+    )
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="Submodule setup failed offline"
+    ):
+        workspace_ops._prepare_workspace_project(
+            tmp_path, tmp_path / "outer", tmp_path / "ticket.md", "ticket"
+        )
+
+
+def test_paired_publication_requires_attached_project_workspace() -> None:
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="paired Ticket Workspace"
+    ):
+        workspace_ops._project_participant_preparation("ticket", {}, SimpleNamespace(project=None))

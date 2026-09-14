@@ -495,6 +495,40 @@ def _prepared_refresh_fixture(
     return basis, journal, journal_path, operation
 
 
+def test_refresh_rejects_stale_waiting_ticket_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis, journal, _path, _operation = _prepared_refresh_fixture(tmp_path)
+    stale = replace(journal, old_ticket_generation="f" * 32)
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: stale)
+    with pytest.raises(BasisRefreshError, match="waiting Ticket changed"):
+        basis_refresh._new_journal(tmp_path, "ticket", basis)
+
+
+def test_refresh_rejects_invalid_prepared_machine_and_ticket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
+
+    _basis, journal, _path, _operation = _prepared_refresh_fixture(tmp_path)
+    with pytest.raises(BasisRefreshError, match="invalid new basis"):
+        basis_refresh._validate_journal(
+            replace(journal, machine={}), "ticket", tmp_path / "refresh.json"
+        )
+    monkeypatch.setattr(
+        basis_refresh,
+        "load_ticket_baseline",
+        lambda *_args: (_ for _ in ()).throw(TicketBaselineError("Ticket changed")),
+    )
+    with pytest.raises(BasisRefreshError, match="Ticket changed"):
+        basis_refresh._resume_prepared_refresh(tmp_path, "ticket", {}, "body", journal)
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: None)
+    with pytest.raises(BasisRefreshError, match="Ticket changed"):
+        prepare_waiting_basis_refresh(tmp_path, ticket, "ticket")
+
+
 def test_finish_refresh_validates_identity_and_cleans_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

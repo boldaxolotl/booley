@@ -98,6 +98,7 @@ def test_basis_publication_parsers_reject_invalid_rows(
         lambda value: value.update(schema=2),
         lambda value: value.update(source_sha256="bad"),
         lambda value: value.update(participants=[{}]),
+        lambda value: value.update(providers=[{"bad": "row"}]),
         lambda value: value.update(removal_targets=[3]),
         lambda value: value.update(prepared={"outer": "bad"}),
     ):
@@ -264,6 +265,54 @@ def test_basis_publication_rejects_mismatched_commit_and_ticket_ref(
     monkeypatch.setattr(basis_publication, "_require_git", lambda *_args: "e" * 40)
     with pytest.raises(basis_publication.BasisPublicationError, match="changed during"):
         basis_publication._publish_ticket_ref(tmp_path, plan, "d" * 40)
+
+
+def test_publication_recovery_rejects_changed_authorship_and_providers() -> None:
+    journal = _publication_journal()
+    request = basis_publication.TicketPublicationRequest(
+        journal.slug,
+        journal.source_sha256,
+        journal.effective_sha256,
+        "changed",
+        {"outer": Path()},
+    )
+    with pytest.raises(basis_publication.BasisPublicationError, match="authored Ticket"):
+        basis_publication._validate_resume(journal, request)
+    request = replace(
+        request,
+        authored_sha256=journal.authored_sha256,
+        providers=(
+            basis_publication.ProviderTargetBinding(
+                "dependency", "2" * 32, "acme:lib:toy:1.0#future", "persistent", "3" * 64
+            ),
+        ),
+    )
+    with pytest.raises(basis_publication.BasisPublicationError, match="provider bindings"):
+        basis_publication._validate_resume(journal, request)
+
+
+def test_outer_commit_requires_project_commit_and_exact_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = _publication_participant()
+    project = _publication_participant("project")
+    journal = replace(_publication_journal(), participants=(outer, project))
+    with pytest.raises(basis_publication.BasisPublicationError, match="project commit"):
+        basis_publication._commit_message(journal, outer)
+    journal = replace(journal, prepared={"project": "d" * 40})
+    monkeypatch.setattr(
+        basis_publication,
+        "_require_git",
+        lambda _repo, *args: (
+            f"{outer.tree_sha}\n{outer.expected_old_sha}"
+            if "--format=%T%n%P" in args
+            else "wrong message"
+        ),
+    )
+    with pytest.raises(basis_publication.BasisPublicationError, match="another message"):
+        basis_publication._validate_prepared_commit(
+            tmp_path, "refs/temp", outer, "e" * 40, journal
+        )
 
 
 def test_basis_keepalives_reject_changed_and_uninspectable_refs(

@@ -297,3 +297,174 @@ def test_ticket_machine_rejects_authored_drift() -> None:
 def test_ticket_baseline_rejects_retired_fields_even_when_null(retired: str) -> None:
     with pytest.raises(TicketBaselineError, match=r"unsupported|hard cutoff"):
         acceptance_basis.ticket_baseline_from_fields({retired: None}, "")
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda machine: machine.update(authored_sha256="short"), "authored_sha256"),
+        (lambda machine: machine.update(baseline={"project": {}}), "requires outer"),
+        (lambda machine: machine["baseline"].update(outer=[]), "must be a mapping"),
+        (lambda machine: machine["baseline"]["outer"].update(extra="x"), "invalid fields"),
+        (lambda machine: machine.update(providers={}), "providers must be a list"),
+        (
+            lambda machine: machine.update(
+                providers=[
+                    {
+                        "provider": "dependency",
+                        "ticket_generation": "2" * 32,
+                        "target": "acme:lib:toy:1.0#future",
+                        "role": "persistent",
+                        "surface_sha256": "3" * 64,
+                    }
+                ]
+                * 2
+            ),
+            "sorted and unique",
+        ),
+    ],
+)
+def test_machine_metadata_rejects_malformed_authority(change, message: str) -> None:
+    basis = TicketBaseline((_participant(),))
+    machine = acceptance_basis.ticket_machine_fields(
+        basis, fields={"summary": "ticket"}, body="body", generation="1" * 32
+    )
+    change(machine)
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.ticket_baseline_from_machine(machine)
+
+
+def test_machine_metadata_rejects_non_mapping_and_unavailable_identity() -> None:
+    with pytest.raises(TicketBaselineError, match="must be a mapping"):
+        acceptance_basis.ticket_baseline_from_machine(None)
+    with pytest.raises(TicketBaselineError, match="metadata is unavailable"):
+        TicketBaseline((_participant(),)).ticket_identity()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda row: row.update(extra="x"), "invalid schema"),
+        (lambda row: row.update(provider=" "), "names must be non-empty"),
+        (lambda row: row.update(role="other"), "role is not exportable"),
+        (lambda row: row.update(ticket_generation="short"), "ticket_generation is invalid"),
+        (lambda row: row.update(surface_sha256="short"), "surface_sha256 is invalid"),
+    ],
+)
+def test_provider_binding_rejects_malformed_identity(change, message: str) -> None:
+    row = {
+        "provider": "dependency",
+        "ticket_generation": "2" * 32,
+        "target": "acme:lib:toy:1.0#future",
+        "role": "persistent",
+        "surface_sha256": "3" * 64,
+    }
+    change(row)
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.provider_binding_from_mapping(row)
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (None, "must be a mapping"),
+        ({"schema": 1}, "exactly schema and participants"),
+        ({"schema": True, "participants": []}, "must be an integer"),
+        ({"schema": 2, "participants": []}, "schema must be"),
+    ],
+)
+def test_baseline_parser_rejects_noncanonical_container(row: object, message: str) -> None:
+    with pytest.raises(TicketBaselineError, match=message):
+        TicketBaseline.from_mapping(row)
+
+
+def test_ticket_routing_rejects_unpinned_destinations() -> None:
+    outer = _participant()
+    project = BasisParticipant(
+        "project",
+        "a" * 40,
+        _participant("project").ticket_ref,
+        "refs/heads/project-main",
+        "b" * 40,
+    )
+    with pytest.raises(TicketBaselineError, match="outer destination"):
+        acceptance_basis._validate_ticket_routing(TicketBaseline((outer,)), {"branch": "other"})
+    with pytest.raises(TicketBaselineError, match="without a baseline participant"):
+        acceptance_basis._validate_ticket_routing(
+            TicketBaseline((outer,)),
+            {"branch": "main", "project_destination_ref": "refs/heads/project-main"},
+        )
+    with pytest.raises(TicketBaselineError, match="project destination"):
+        acceptance_basis._validate_ticket_routing(
+            TicketBaseline((outer, project)),
+            {"branch": "main", "project_destination_ref": "refs/heads/other"},
+        )
+    assert TicketBaseline((outer, project)).participant("project") == project
+    with pytest.raises(TicketBaselineError, match="no 'project' participant"):
+        TicketBaseline((outer,)).participant("project")
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"on_success": []}, "on_success must be a mapping"),
+        ({"on_success": {"destination": "unknown"}}, "destination"),
+        ({"target_plan": {"unexpected": "shape"}}, "Target Plan|target_plan"),
+    ],
+)
+def test_authored_digest_rejects_invalid_human_fields(fields: dict, message: str) -> None:
+    with pytest.raises(TicketBaselineError, match=message):
+        acceptance_basis.authored_ticket_digest(fields, "body")
+
+
+def test_ticket_commit_trailers_fail_when_authoring_commit_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        acceptance_basis.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed("git", returncode=128),
+    )
+    with pytest.raises(TicketBaselineError, match="authoring commit is unavailable"):
+        acceptance_basis.validate_ticket_commit_trailers(
+            tmp_path, "ticket", TicketBaseline((_participant(),)), {}
+        )
+
+
+def test_executable_ticket_requires_human_body(tmp_path: Path) -> None:
+    with pytest.raises(TicketBaselineError, match="body is required"):
+        acceptance_basis.load_ticket_baseline(tmp_path, "ticket", {})
+
+
+def test_live_basis_rejects_disappearing_registered_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    monkeypatch.setattr(
+        acceptance_basis, "_partition_protected_inputs", lambda *_args: ("project", set(), set())
+    )
+    monkeypatch.setattr(acceptance_basis, "worktree_for_ref", lambda *_args: tmp_path)
+    monkeypatch.setattr(acceptance_basis, "_recorded_worktree_path", lambda *_args: None)
+    with pytest.raises(TicketBaselineError, match="disappeared during validation"):
+        acceptance_basis.assert_live_inputs_unchanged(basis, tmp_path, tmp_path)
+
+
+def test_control_discovery_reports_failure_in_current_and_baseline_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    basis = TicketBaseline((_participant(),))
+    with pytest.raises(TicketBaselineError, match="protected-input discovery failed"):
+        acceptance_basis._basis_control_paths(
+            tmp_path, basis, lambda *_args: (_ for _ in ()).throw(OSError("unreadable"))
+        )
+    monkeypatch.setattr(acceptance_basis, "materialize_basis_checkout", lambda *_args: None)
+    calls = iter([set(), OSError("baseline unreadable")])
+
+    def discover(_root: Path) -> set[str]:
+        value = next(calls)
+        if isinstance(value, OSError):
+            raise value
+        return value
+
+    with pytest.raises(TicketBaselineError, match="baseline unreadable"):
+        acceptance_basis._basis_control_paths(tmp_path, basis, discover)
