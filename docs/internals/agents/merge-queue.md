@@ -11,7 +11,9 @@ reruns those checks in the queue before merging. The authenticated GitHub
 identity must have write permission.
 
 ```bash
-gh pr comment <number> --body '@mergifyio queue default'
+printf '%s' '@mergifyio queue default' > /tmp/booley-mergify-queue.txt
+python3 .github/scripts/confidential_content_guard.py --repo . publish-pr comment \
+  --pr <number> --body-file /tmp/booley-mergify-queue.txt
 ```
 
 Confirm that the `Mergify Merge Queue` check or status comment says queued.
@@ -60,7 +62,9 @@ that PR's owner handles recovery.
 Never change a queued branch. To add a commit, dequeue first:
 
 ```bash
-gh pr comment <number> --body '@mergifyio dequeue'
+printf '%s' '@mergifyio dequeue' > /tmp/booley-mergify-dequeue.txt
+python3 .github/scripts/confidential_content_guard.py --repo . publish-pr comment \
+  --pr <number> --body-file /tmp/booley-mergify-dequeue.txt
 ```
 
 After Mergify confirms the dequeue, push the change, wait for ordinary PR CI to

@@ -13,6 +13,12 @@ simulation, synthesis, linting, and ticket-based workflows.
   request to create or update a pull request authorizes its required branch
   push. A request to implement, edit, or commit does not authorize a push or
   pull request.
+- For every agent-authored PR creation, title/body edit, comment, or review,
+  write the public text to local draft files and submit it through
+  `python3 .github/scripts/confidential_content_guard.py --repo . publish-pr`.
+  The command scans and sends the same text in one operation; see
+  `docs/internals/agents/confidential-content.md` for each action. Review links
+  and attachments for confidential facts the vocabulary cannot match.
 - `main` is protected. Queue or merge a pull request only when the user
   explicitly asks to merge it. Use the Mergify queue workflow for that merge;
   read `docs/internals/agents/merge-queue.md` before queueing, dequeueing,
@@ -28,6 +34,8 @@ simulation, synthesis, linting, and ticket-based workflows.
 
 ## Agent skills
 
+- **Confidential vocabulary:** When changing banned terms or their CI
+  configuration, follow `docs/internals/agents/confidential-content.md`.
 - **Issue tracker:** GitHub Issues stores issues and specs. See
   `docs/internals/agents/issue-tracker.md`.
 - **Triage labels:** Use the standard Matt Pocock labels. See

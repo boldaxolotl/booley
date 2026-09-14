@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Fail-closed confidential-content guard for Git hooks and CI.
+"""Fail-closed confidential-content guard for Git hooks, PR drafts, and CI.
 
-The vocabulary is deliberately not stored in this repository.  Local hooks
-load TOML from ``.git/booley-leak-guard.toml`` (or the path named by the
-repo-local ``booley.leakGuardConfig`` setting).  CI receives the same TOML as
-base64 in ``BOOLEY_LEAK_GUARD_CONFIG_B64``.  Diagnostics identify matched
-terms by a one-way digest and never echo the confidential text.
+The tracked encrypted vocabulary is the single source of truth. Local checks
+decrypt it with a key outside the repository; CI uses the same encrypted file
+and a GitHub Actions key secret. Plaintext TOML is a local edit draft only.
+Diagnostics identify matched terms by a one-way digest and never echo them.
 
-This file is stdlib-only because CI executes the trusted default-branch copy
-against an untrusted pull-request checkout without importing candidate code.
+CI executes the trusted default-branch scanner and encryption module against
+an untrusted pull-request checkout without importing candidate code.
 
 Local pre-push wrappers should pass Git's remote name and location arguments
 after the ``pre-push`` command. Without them, the guard can exclude only the
@@ -30,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from collections.abc import Iterable
@@ -37,12 +37,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
-_CONFIG_B64_ENV = "BOOLEY_LEAK_GUARD_CONFIG_B64"
+from confidential_vocabulary import (
+    SealedVocabularyError,
+    key_id,
+    seal_vocabulary,
+    sealed_key_id,
+    unseal_vocabulary,
+)
+
 _CONFIG_PATH_ENV = "BOOLEY_LEAK_GUARD_CONFIG"
+_KEY_B64_ENV = "BOOLEY_LEAK_GUARD_KEY_B64"
+_KEY_DIR_ENV = "BOOLEY_LEAK_GUARD_KEY_DIR"
 _ALLOWED_AUTHORS_ENV = "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS"
 _LOCAL_CONFIG_NAME = "booley-leak-guard.toml"
+_SEALED_CONFIG_NAME = ".github/confidential-vocabulary.enc"
 _MAX_BLOB_BYTES = 256 * 1024 * 1024
 _MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_PR_TEXT_BYTES = 1024 * 1024
 _MAX_FINDINGS = 100
 _BINARY_RUN_RE = re.compile(rb"[\t\x20-\x7e]{6,}")
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
@@ -64,7 +75,6 @@ class TermPattern:
 class GuardConfig:
     patterns: tuple[TermPattern, ...]
     matcher: re.Pattern[str]
-    term_lookup: dict[str, TermPattern]
     allowed_authors: tuple[str, ...]
     ignored_paths: tuple[str, ...]
 
@@ -140,6 +150,11 @@ def _optional_git_values(repo: Path, key: str) -> list[str]:
 
 
 def _common_git_config(repo: Path) -> Path | None:
+    candidate = _default_private_config_path(repo)
+    return candidate if candidate is not None and candidate.is_file() else None
+
+
+def _default_private_config_path(repo: Path) -> Path | None:
     try:
         raw = _run_git(repo, ["rev-parse", "--git-common-dir"]).decode().strip()
     except (GuardError, UnicodeDecodeError):
@@ -147,8 +162,7 @@ def _common_git_config(repo: Path) -> Path | None:
     common = Path(raw)
     if not common.is_absolute():
         common = repo / common
-    candidate = common.resolve() / _LOCAL_CONFIG_NAME
-    return candidate if candidate.is_file() else None
+    return common.resolve() / _LOCAL_CONFIG_NAME
 
 
 def _configured_path(repo: Path) -> Path | None:
@@ -163,20 +177,73 @@ def _configured_path(repo: Path) -> Path | None:
     return _common_git_config(repo)
 
 
-def _config_bytes(repo: Path) -> bytes:
-    encoded = os.environ.get(_CONFIG_B64_ENV, "").strip()
-    if encoded:
-        try:
-            return base64.b64decode(encoded, validate=True)
-        except (ValueError, binascii.Error) as exc:
-            raise GuardError("the CI confidential configuration is not valid base64") from exc
-    path = _configured_path(repo)
+def _read_local_config(path: Path | None) -> bytes:
     if path is None:
         raise GuardError("the confidential vocabulary is required but not configured")
     try:
         return path.read_bytes()
     except OSError as exc:
         raise GuardError("the configured confidential vocabulary cannot be read") from exc
+
+
+def _local_config_bytes(repo: Path) -> bytes:
+    return _read_local_config(_configured_path(repo))
+
+
+def _sealed_config_bytes(repo: Path) -> bytes:
+    try:
+        with (repo / _SEALED_CONFIG_NAME).open("rb") as stream:
+            sealed = stream.read(2 * 1024 * 1024 + 1)
+    except OSError as exc:
+        raise GuardError("the encrypted confidential vocabulary cannot be read") from exc
+    if len(sealed) > 2 * 1024 * 1024:
+        raise GuardError("the encrypted confidential vocabulary exceeds the size limit")
+    return sealed
+
+
+def _key_path(identifier: str) -> Path:
+    explicit = os.environ.get(_KEY_DIR_ENV, "").strip()
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", ""))
+    if not config_home.is_absolute():
+        config_home = Path.home() / ".config"
+    key_dir = Path(explicit).expanduser() if explicit else config_home / "booley/leak-guard"
+    return key_dir / f"{identifier}.key"
+
+
+def _decode_key(encoded: bytes, identifier: str) -> bytes:
+    try:
+        key = base64.b64decode(encoded.strip(), validate=True)
+        if key_id(key) != identifier:
+            raise GuardError("the confidential vocabulary key does not match the encrypted file")
+    except (ValueError, binascii.Error, SealedVocabularyError) as exc:
+        raise GuardError("the confidential vocabulary key is invalid") from exc
+    return key
+
+
+def _vocabulary_key(identifier: str, *, local_only: bool = False) -> bytes:
+    path = _key_path(identifier)
+    if path.is_file():
+        try:
+            if os.name == "posix" and path.stat().st_mode & 0o077:
+                raise GuardError("the local confidential vocabulary key must be owner-only")
+            return _decode_key(path.read_bytes(), identifier)
+        except OSError as exc:
+            raise GuardError("the local confidential vocabulary key cannot be read") from exc
+    if local_only:
+        raise GuardError("the local confidential vocabulary key is missing")
+    encoded = os.environ.get(_KEY_B64_ENV, "").encode("ascii", errors="ignore")
+    if not encoded:
+        raise GuardError("the confidential vocabulary key is required but not configured")
+    return _decode_key(encoded, identifier)
+
+
+def _config_bytes(repo: Path) -> bytes:
+    sealed = _sealed_config_bytes(repo)
+    try:
+        identifier = sealed_key_id(sealed)
+        return unseal_vocabulary(sealed, _vocabulary_key(identifier))
+    except SealedVocabularyError as exc:
+        raise GuardError(str(exc)) from exc
 
 
 def _string_list(value: object, field: str) -> list[str]:
@@ -222,20 +289,24 @@ def _compile_term(term: str, key: bytes) -> TermPattern:
 
 
 def _combined_matcher(patterns: tuple[TermPattern, ...]) -> re.Pattern[str]:
-    alternatives = (re.escape(pattern.literal) for pattern in patterns)
+    ordered = sorted(enumerate(patterns), key=lambda item: len(item[1].literal), reverse=True)
+    alternatives = (f"(?P<term_{index}>{pattern.regex.pattern})" for index, pattern in ordered)
     return re.compile("|".join(alternatives), re.IGNORECASE)
 
 
 def load_config(repo: Path | str | None = None) -> GuardConfig:
     """Load and validate the explicit confidential guard configuration."""
     root = Path(repo or Path.cwd()).resolve()
+    return _parse_config(_config_bytes(root), root)
+
+
+def _parse_config(raw_config: bytes, repo: Path) -> GuardConfig:
     try:
-        raw_config = _config_bytes(root)
         document = tomllib.loads(raw_config.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise GuardError("the confidential configuration is not valid UTF-8 TOML") from exc
     terms, authors, ignored = _config_lists(document)
-    authors.extend(_extra_authors(root))
+    authors.extend(_extra_authors(repo))
     terms = list(dict.fromkeys(terms))
     authors = list(dict.fromkeys(authors))
     if not terms:
@@ -247,7 +318,6 @@ def load_config(repo: Path | str | None = None) -> GuardConfig:
     return GuardConfig(
         patterns,
         _combined_matcher(patterns),
-        {pattern.literal.casefold(): pattern for pattern in patterns},
         tuple(authors),
         tuple(dict.fromkeys(ignored)),
     )
@@ -270,9 +340,8 @@ def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
     safe_location = _redact_location(location, config)
     found_ids: set[str] = set()
     for match in config.matcher.finditer(text):
-        pattern = config.term_lookup.get(match.group().casefold())
-        if pattern is None or not _valid_boundaries(text, match, pattern):
-            continue
+        assert match.lastgroup is not None
+        pattern = config.patterns[int(match.lastgroup.removeprefix("term_"))]
         if pattern.term_id in found_ids:
             continue
         found_ids.add(pattern.term_id)
@@ -281,21 +350,6 @@ def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
         if len(findings) >= _MAX_FINDINGS:
             break
     return findings
-
-
-def _valid_boundaries(text: str, match: re.Match[str], pattern: TermPattern) -> bool:
-    left_ok = match.start() == 0 or not _ascii_alphanumeric(text[match.start() - 1])
-    if not left_ok:
-        return False
-    if pattern.literal.endswith("__"):
-        return match.end() < len(text) and (
-            text[match.end()].isalnum() or text[match.end()] == "_"
-        )
-    return match.end() == len(text) or not _ascii_alphanumeric(text[match.end()])
-
-
-def _ascii_alphanumeric(character: str) -> bool:
-    return character.isascii() and character.isalnum()
 
 
 def _gunzip_bounded(data: bytes) -> bytes:
@@ -742,6 +796,272 @@ def pull_request_main(repo: Path | str, event_path: Path) -> int:
     return 0
 
 
+def _read_pr_text(stream: BinaryIO) -> str:
+    data = stream.read(_MAX_PR_TEXT_BYTES + 1)
+    if len(data) > _MAX_PR_TEXT_BYTES:
+        raise GuardError("proposed PR text exceeds the inspection size limit")
+    return data.decode("utf-8")
+
+
+def pr_text_main(repo: Path | str, files: list[Path], *, read_stdin: bool = False) -> int:
+    """Inspect proposed PR text before a GitHub write publishes it."""
+    root = Path(repo).resolve()
+    try:
+        if not files and not read_stdin:
+            raise GuardError("at least one proposed PR text input is required")
+        config = load_config(root)
+        findings: list[Finding] = []
+        for index, path in enumerate(files, start=1):
+            with path.open("rb") as stream:
+                text = _read_pr_text(stream)
+            _add_limited(findings, _scan_text(text, f"proposed PR text {index}", config))
+        if read_stdin:
+            text = _read_pr_text(sys.stdin.buffer)
+            _add_limited(findings, _scan_text(text, "proposed PR stdin text", config))
+    except (GuardError, OSError, UnicodeError) as exc:
+        error = (
+            exc if isinstance(exc, GuardError) else GuardError("proposed PR text cannot be read")
+        )
+        return _guard_failure(error, sys.stderr)
+    if findings:
+        _print_findings(findings, config, sys.stderr)
+        return 1
+    print("Confidential-content proposed PR text guard: clean.")
+    return 0
+
+
+def _publish_pr_command(
+    args: argparse.Namespace, title: str | None, body: str | None
+) -> list[str]:
+    command = ["gh", "pr", args.pr_action]
+    if args.pr_action == "create":
+        command.extend(("--base", args.base, "--head", args.head, "--title", title))
+        if args.draft:
+            command.append("--draft")
+    else:
+        command.append(args.pr)
+        if title is not None:
+            command.extend(("--title", title))
+        if args.pr_action == "review":
+            command.append(f"--{args.verdict}")
+        if args.pr_action == "comment" and args.edit_last:
+            command.append("--edit-last")
+    if body is not None:
+        command.extend(("--body-file", "-"))
+    if args.repo_name:
+        command.extend(("--repo", args.repo_name))
+    return command
+
+
+def publish_pr_main(repo: Path | str, args: argparse.Namespace) -> int:
+    """Scan private TOML, then send the same text in one PR write operation."""
+    root = Path(repo).resolve()
+    try:
+        title_file = getattr(args, "title_file", None)
+        if args.pr_action == "edit" and title_file is None and args.body_file is None:
+            raise GuardError("a PR edit requires a title or body draft")
+        config = load_config(root)
+        title = None
+        if title_file is not None:
+            with title_file.open("rb") as stream:
+                title = _read_pr_text(stream).rstrip("\r\n")
+            if not title or "\n" in title or "\r" in title or "\x00" in title:
+                raise GuardError("the proposed PR title is invalid")
+        body = None
+        if args.body_file is not None:
+            with args.body_file.open("rb") as stream:
+                body = _read_pr_text(stream)
+        findings: list[Finding] = []
+        if title is not None:
+            _add_limited(findings, _scan_text(title, "proposed PR title", config))
+        if body is not None:
+            _add_limited(findings, _scan_text(body, "proposed PR body", config))
+        if args.pr_action == "create":
+            _add_limited(findings, _scan_text(args.head, "proposed PR head", config))
+        if findings:
+            _print_findings(findings, config, sys.stderr)
+            return 1
+        env = os.environ.copy()
+        env["GH_PROMPT_DISABLED"] = "1"
+        env.pop("GH_REPO", None)
+        result = subprocess.run(
+            _publish_pr_command(args, title, body),
+            input=body.encode("utf-8") if body is not None else b"",
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise GuardError("the GitHub pull-request write failed")
+    except (OSError, UnicodeError, subprocess.SubprocessError, GuardError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("the PR write could not run")
+        return _guard_failure(error, sys.stderr)
+    print("GitHub pull-request write completed after confidential-content scan.")
+    return 0
+
+
+def _create_local_key() -> bytes:
+    key = os.urandom(32)
+    path = _key_path(key_id(key))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(base64.b64encode(key) + b"\n")
+    return key
+
+
+def _write_sealed_config(repo: Path, sealed: bytes) -> None:
+    path = repo / _SEALED_CONFIG_NAME
+    with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(sealed)
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def seal_config_main(repo: Path | str) -> int:
+    """Encrypt a local edit draft into the tracked source of truth."""
+    root = Path(repo).resolve()
+    try:
+        raw_config = _local_config_bytes(root)
+        _parse_config(raw_config, root)
+        path = root / _SEALED_CONFIG_NAME
+        if path.exists():
+            previous = _sealed_config_bytes(root)
+            identifier = sealed_key_id(previous)
+            key = _vocabulary_key(identifier, local_only=True)
+            if unseal_vocabulary(previous, key) == raw_config:
+                print("Encrypted confidential vocabulary is already current.")
+                return 0
+        else:
+            key = _create_local_key()
+        sealed = seal_vocabulary(raw_config, key)
+        if unseal_vocabulary(sealed, key) != raw_config:
+            raise GuardError("the encrypted vocabulary could not be verified")
+        _write_sealed_config(root, sealed)
+    except (OSError, SealedVocabularyError, GuardError) as exc:
+        error = (
+            exc
+            if isinstance(exc, GuardError)
+            else GuardError("the vocabulary could not be sealed")
+        )
+        return _guard_failure(error, sys.stderr)
+    print("Encrypted confidential vocabulary updated; back up the separate key file.")
+    return 0
+
+
+def key_path_main(repo: Path | str) -> int:
+    root = Path(repo).resolve()
+    try:
+        identifier = sealed_key_id(_sealed_config_bytes(root))
+    except (SealedVocabularyError, GuardError) as exc:
+        error = (
+            exc if isinstance(exc, GuardError) else GuardError("the key path cannot be resolved")
+        )
+        return _guard_failure(error, sys.stderr)
+    print(_key_path(identifier))
+    return 0
+
+
+def restore_draft_main(repo: Path | str) -> int:
+    """Recreate a private edit draft after cloning and restoring the key."""
+    root = Path(repo).resolve()
+    try:
+        default_path = _default_private_config_path(root)
+        if default_path is None:
+            raise GuardError("the private draft location cannot be resolved")
+        path = _configured_path(root) or default_path
+        resolved_path = path.resolve()
+        if resolved_path.is_relative_to(root) and not resolved_path.is_relative_to(
+            default_path.parent
+        ):
+            raise GuardError("the private draft destination must be outside the worktree")
+        raw_config = _config_bytes(root)
+        _parse_config(raw_config, root)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+            stream.write(raw_config)
+    except FileExistsError:
+        return _guard_failure(GuardError("the private edit draft already exists"), sys.stderr)
+    except (OSError, GuardError) as exc:
+        error = (
+            exc
+            if isinstance(exc, GuardError)
+            else GuardError("the private draft could not be restored")
+        )
+        return _guard_failure(error, sys.stderr)
+    print("Private edit draft restored.")
+    return 0
+
+
+def verify_candidate_main(repo: Path | str, revision: str, base: str, event_path: Path) -> int:
+    """Validate and scan a proposed vocabulary using the trusted current key."""
+    root = Path(repo).resolve()
+    try:
+        if _OID_RE.fullmatch(revision) is None or _OID_RE.fullmatch(base) is None:
+            raise GuardError("the candidate or base revision is invalid")
+        trusted = _sealed_config_bytes(root)
+        identifier = sealed_key_id(trusted)
+        key = _vocabulary_key(identifier)
+        _parse_config(unseal_vocabulary(trusted, key), root)
+        spec = f"{revision}:{_SEALED_CONFIG_NAME}"
+        size = int(_run_git(root, ["cat-file", "-s", spec]).strip())
+        if size > 2 * 1024 * 1024:
+            raise GuardError("the proposed encrypted vocabulary exceeds the size limit")
+        proposed = _run_git(root, ["cat-file", "blob", spec])
+        if sealed_key_id(proposed) != identifier:
+            raise GuardError("the proposed encrypted vocabulary uses a different key")
+        candidate_config = _parse_config(unseal_vocabulary(proposed, key), root)
+        commits = outgoing_commits(root, revision, base)
+        findings = inspect_commits(root, commits, candidate_config)
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        _add_limited(findings, inspect_pull_request_event(event, candidate_config))
+    except (ValueError, OSError, json.JSONDecodeError, SealedVocabularyError, GuardError) as exc:
+        error = (
+            exc
+            if isinstance(exc, GuardError)
+            else GuardError("the proposed vocabulary is invalid")
+        )
+        return _guard_failure(error, sys.stderr)
+    if findings:
+        _print_findings(findings, candidate_config, sys.stderr)
+        return 1
+    print("Proposed encrypted vocabulary: valid.")
+    return 0
+
+
+def sync_ci_key_main(repo: Path | str) -> int:
+    """Publish only the decryption key; the vocabulary stays in Git."""
+    root = Path(repo).resolve()
+    try:
+        sealed = _sealed_config_bytes(root)
+        identifier = sealed_key_id(sealed)
+        key = _vocabulary_key(identifier, local_only=True)
+        _parse_config(unseal_vocabulary(sealed, key), root)
+        env = os.environ.copy()
+        env["GH_PROMPT_DISABLED"] = "1"
+        env.pop(_KEY_B64_ENV, None)
+        env.pop("GH_REPO", None)
+        result = subprocess.run(
+            ["gh", "secret", "set", _KEY_B64_ENV, "--app", "actions"],
+            input=base64.b64encode(key),
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise GuardError("the GitHub Actions decryption key could not be updated")
+    except (OSError, subprocess.SubprocessError, SealedVocabularyError, GuardError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("gh secret set could not run")
+        return _guard_failure(error, sys.stderr)
+    print("GitHub Actions confidential vocabulary key synchronized.")
+    return 0
+
+
 def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool = False) -> int:
     root = Path(repo).resolve()
     try:
@@ -761,6 +1081,37 @@ def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool
     return 0
 
 
+def _add_pr_publish_parser(subparsers: argparse._SubParsersAction) -> None:
+    publish_parser = subparsers.add_parser(
+        "publish-pr", help="scan and submit PR text in one operation"
+    )
+    publish_actions = publish_parser.add_subparsers(dest="pr_action", required=True)
+    for action in ("create", "edit", "comment", "review"):
+        action_parser = publish_actions.add_parser(action)
+        action_parser.add_argument("--repo", dest="repo_name")
+        if action == "create":
+            action_parser.add_argument("--title-file", required=True, type=Path)
+            action_parser.add_argument("--body-file", required=True, type=Path)
+            action_parser.add_argument("--base", required=True)
+            action_parser.add_argument("--head", required=True)
+            action_parser.add_argument("--draft", action="store_true")
+        else:
+            action_parser.add_argument("--pr", required=True)
+            if action == "edit":
+                action_parser.add_argument("--title-file", type=Path)
+                action_parser.add_argument("--body-file", type=Path)
+            else:
+                action_parser.add_argument("--body-file", required=True, type=Path)
+                if action == "review":
+                    action_parser.add_argument(
+                        "--verdict",
+                        required=True,
+                        choices=("approve", "comment", "request-changes"),
+                    )
+                else:
+                    action_parser.add_argument("--edit-last", action="store_true")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository to inspect")
@@ -778,12 +1129,50 @@ def _parser() -> argparse.ArgumentParser:
         "pull-request", help="inspect GitHub pull-request metadata"
     )
     pull_request_parser.add_argument("--event", required=True, type=Path)
+    pr_text_parser = subparsers.add_parser(
+        "pr-text", help="inspect proposed PR text before publishing it"
+    )
+    pr_text_parser.add_argument("--file", action="append", default=[], type=Path)
+    pr_text_parser.add_argument("--stdin", action="store_true")
+    _add_pr_publish_parser(subparsers)
+    subparsers.add_parser("seal-config", help="encrypt the private TOML into the tracked file")
+    subparsers.add_parser("key-path", help="show the local key path for secure backup")
+    subparsers.add_parser(
+        "restore-draft", help="restore a private edit draft from the encrypted file"
+    )
+    verify_parser = subparsers.add_parser(
+        "verify-candidate", help="validate proposed encrypted vocabulary"
+    )
+    verify_parser.add_argument("--rev", required=True)
+    verify_parser.add_argument("--base", required=True)
+    verify_parser.add_argument("--event", required=True, type=Path)
+    subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
     audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
     audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
     audit_parser.add_argument(
         "--worktree", action="store_true", help="also inspect tracked and untracked checkout files"
     )
     return parser
+
+
+def _pr_command_main(parsed: argparse.Namespace) -> int:
+    if parsed.command == "pull-request":
+        return pull_request_main(parsed.repo, parsed.event)
+    if parsed.command == "pr-text":
+        return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
+    return publish_pr_main(parsed.repo, parsed)
+
+
+def _vocabulary_command_main(parsed: argparse.Namespace) -> int:
+    if parsed.command == "seal-config":
+        return seal_config_main(parsed.repo)
+    if parsed.command == "key-path":
+        return key_path_main(parsed.repo)
+    if parsed.command == "restore-draft":
+        return restore_draft_main(parsed.repo)
+    if parsed.command == "verify-candidate":
+        return verify_candidate_main(parsed.repo, parsed.rev, parsed.base, parsed.event)
+    return sync_ci_key_main(parsed.repo)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -796,8 +1185,16 @@ def main(argv: list[str] | None = None) -> int:
             remote_name=parsed.remote_name,
             remote_location=parsed.remote_location,
         )
-    if parsed.command == "pull-request":
-        return pull_request_main(parsed.repo, parsed.event)
+    if parsed.command in {"pull-request", "pr-text", "publish-pr"}:
+        return _pr_command_main(parsed)
+    if parsed.command in {
+        "seal-config",
+        "key-path",
+        "restore-draft",
+        "verify-candidate",
+        "sync-ci-key",
+    }:
+        return _vocabulary_command_main(parsed)
     revisions = parsed.rev or ["HEAD"]
     return audit_main(parsed.repo, revisions, include_worktree=parsed.worktree)
 
