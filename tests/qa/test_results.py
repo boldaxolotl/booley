@@ -89,20 +89,24 @@ def test_tracked_results_are_valid():
 
 
 def test_sealed_attempts_preserve_uncorrected_failure(tmp_path):
-    snapshot = results.from_sealed_run(sealed_run(tmp_path))
+    run = sealed_run(tmp_path)
+    run.state["completed_at"] = "2026-09-14T14:00:00.500+04:00"
+    snapshot = results.from_sealed_run(run)
     assert snapshot["checks"] == {"first": "fail", "second": "pass", "third": "blocked"}
     assert snapshot["run_manifest_sha256"] == "c" * 64
+    assert snapshot["completed_at"] == "2026-09-14T10:00:00Z"
 
 
-def test_report_shows_trend_and_latest_and_ever_exercised(tmp_path):
-    scenarios = tmp_path / "scenarios" / "sample"
-    scenarios.mkdir(parents=True)
-    (scenarios / "scenario.yaml").write_text(
-        "scenario_id: sample\n"
-        "check_sets:\n- id: core\n  checks: [first, second, third]\n"
-        "configured_scenarios:\n- id: sample-linux-cli\n  check_sets: [core]\n",
-        encoding="utf-8",
-    )
+def test_report_shows_scenario_trend_and_latest_and_ever_exercised(tmp_path, monkeypatch):
+    scenario = {
+        "scenario_id": "sample",
+        "check_sets": [{"id": "core", "checks": ["first", "second", "third"]}],
+        "configured_scenarios": [
+            {"id": "sample-linux-cli", "check_sets": ["core"]},
+            {"id": "sample-windows-cli", "check_sets": ["core"]},
+        ],
+    }
+    monkeypatch.setattr(results, "load_scenarios", lambda _root: {"sample": scenario})
     first = sample_result(
         "run-1",
         "2026-09-14T10:00:00Z",
@@ -113,7 +117,18 @@ def test_report_shows_trend_and_latest_and_ever_exercised(tmp_path):
         "2026-09-14T11:00:00Z",
         {"first": "pass", "second": "blocked", "third": "unavailable"},
     )
-    text = results.report([first, second], tmp_path / "scenarios", "sample-linux-cli")
+    third = dict(
+        sample_result(
+            "run-3",
+            "2026-09-14T12:00:00Z",
+            {"first": "fail", "second": "pass", "third": "unavailable"},
+        ),
+        configured_scenario_id="sample-windows-cli",
+    )
+    text = results.report([first, second, third], tmp_path / "scenarios", None)
+    assert "## Scenario: sample" in text
+    assert "| 0 | -1 |" in text
+    assert "sample-windows-cli" in text
     assert "| 0 | 1 | 1 | 1 |" in text
     assert "| 1 | 0 | 1 | 1 |" in text
     assert "| `first` | pass | yes | yes |" in text

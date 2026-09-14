@@ -9,7 +9,8 @@ determined later by Human Maintainer triage.
 
 The path is `qa/results/<scenario-id>/<run-id>.json`. The `add` command derives it
 from a valid version-2 run seal. It records the run and Configured Scenario IDs,
-product and suite revisions, completion and cleanup statuses, the run-manifest
+product and suite revisions, normalized UTC completion time, execution and cleanup
+statuses, the run-manifest
 SHA-256, and one observed status per selected Check. Corrected attempts do not count;
 an uncorrected failure remains `fail` after a later successful attempt. A Check
 that could not be exercised has `blocked` or `unavailable`, not a missing entry.
@@ -28,8 +29,10 @@ git commit -m "qa: record SCENARIO_ID RUN_ID observations"
 ```
 
 The local commit records the snapshot in Git. Pushing the branch or opening a pull
-request requires a separate request. `report` shows pass/fail/blocked/unavailable
-counts in completion order, then every currently selected Check's status in the
+request requires a separate request. `report` shows failing-Check counts for every
+Scenario and the change from the prior run of the same Configured Scenario. It then
+shows pass/fail/blocked/unavailable counts per configuration in completion order,
+followed by every currently selected Check's status in the
 latest recorded run and whether it has ever been exercised. `pass` and `fail` mean
 exercised; `blocked`, `unavailable`, and `not exercised` do not. Each latest status
 is tied to the displayed product and suite revisions. Compare those revisions

@@ -6,11 +6,12 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 from qa.triage import RunRecords, validate_run
-from qa.validate import read_yaml, resolved_configured_checks
+from qa.validate import load_scenarios, resolved_configured_checks
+
+from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 RESULTS = Path(__file__).with_name("results")
 SCENARIOS = Path(__file__).with_name("scenarios")
@@ -30,6 +31,16 @@ FIELDS = {
     "cleanup_status",
     "checks",
 }
+
+
+def canonical_time(stamp: str) -> str:
+    """Normalize a sealed RFC 3339 timestamp to Booley's UTC seconds."""
+    if not isinstance(stamp, str):
+        raise ValueError("invalid completed_at")
+    try:
+        return rfc3339_from_epoch(parse_timestamp(stamp).timestamp())
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("invalid completed_at") from exc
 
 
 def check_status(results: list[dict]) -> str:
@@ -55,7 +66,7 @@ def from_sealed_run(run: RunRecords) -> dict:
             "run_id": run.run_id,
             "scenario_id": run.run["scenario_id"],
             "configured_scenario_id": run.run["configured_scenario_id"],
-            "completed_at": run.state["completed_at"],
+            "completed_at": canonical_time(run.state["completed_at"]),
             "product_revision": run.run["product_revision"],
             "suite_revision": run.run["suite_revision"],
             "run_manifest_sha256": run.manifest_hash,
@@ -91,14 +102,8 @@ def validate_metadata(value: dict) -> None:
         value["run_manifest_sha256"]
     ):
         raise ValueError("invalid run_manifest_sha256")
-    if not isinstance(value["completed_at"], str) or not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value["completed_at"]
-    ):
+    if canonical_time(value["completed_at"]) != value["completed_at"]:
         raise ValueError("completed_at must be second-resolution UTC RFC 3339")
-    try:
-        datetime.strptime(value["completed_at"], "%Y-%m-%dT%H:%M:%SZ")
-    except ValueError as exc:
-        raise ValueError("invalid completed_at") from exc
     if value["execution_status"] not in ("completed", "deadline-reached", "operator-error"):
         raise ValueError("invalid execution_status")
     if value["cleanup_status"] not in ("complete", "failed"):
@@ -180,14 +185,37 @@ def load_history(root: Path) -> list[dict]:
 def current_checks(scenarios_root: Path) -> dict[str, tuple[str, list[str]]]:
     """Resolve currently selected Checks for each Configured Scenario."""
     configured = {}
-    for path in sorted(scenarios_root.glob("*/scenario.yaml")):
-        scenario = read_yaml(path)
+    for scenario in load_scenarios(scenarios_root.parent).values():
+        path = scenarios_root / scenario["scenario_id"] / "scenario.yaml"
         for item in scenario["configured_scenarios"]:
             configured[item["id"]] = (
                 scenario["scenario_id"],
                 resolved_configured_checks(scenario, item, path),
             )
     return configured
+
+
+def render_scenario(scenario_id: str, runs: list[dict]) -> list[str]:
+    """Show every run of a Scenario with comparable per-configuration deltas."""
+    lines = [
+        f"## Scenario: {scenario_id}",
+        "",
+        "| Completed (UTC) | Configured Scenario | Product | Suite | Failing Checks | Change from prior same configuration |",
+        "|---|---|---|---|---:|---:|",
+    ]
+    previous: dict[str, int] = {}
+    for run in runs:
+        configured = run["configured_scenario_id"]
+        failing = list(run["checks"].values()).count("fail")
+        change = failing - previous[configured] if configured in previous else None
+        lines.append(
+            f"| {run['completed_at']} | {configured} | `{run['product_revision']}` "
+            f"| `{run['suite_revision']}` | {failing} | {change if change is not None else '—'} |"
+        )
+        previous[configured] = failing
+    if not runs:
+        lines.append("| No recorded runs | — | — | — | 0 | — |")
+    return [*lines, ""]
 
 
 def render_configured(identifier: str, checks: list[str], runs: list[dict]) -> list[str]:
@@ -235,6 +263,16 @@ def report(history: list[dict], scenarios_root: Path, configured_id: str | None)
     if configured_id and configured_id not in selections:
         raise ValueError(f"unknown Configured Scenario: {configured_id}")
     lines = ["# Public QA observed Check history", ""]
+    allowed = {configured_id} if configured_id else set(selections)
+    history = sorted(history, key=lambda item: (item["completed_at"], item["run_id"]))
+    scenarios = {entry[0] for key, entry in selections.items() if key in allowed}
+    for scenario_id in sorted(scenarios):
+        runs = [
+            item
+            for item in history
+            if item["scenario_id"] == scenario_id and item["configured_scenario_id"] in allowed
+        ]
+        lines.extend(render_scenario(scenario_id, runs))
     for identifier, (scenario_id, checks) in sorted(selections.items()):
         if configured_id and identifier != configured_id:
             continue
