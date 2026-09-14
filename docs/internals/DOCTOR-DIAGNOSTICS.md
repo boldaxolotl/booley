@@ -97,14 +97,14 @@ metadata was not tightened.
 
 Measured on 14 SEP 2026 using each revision's `tests/architecture` analyzer:
 
-- Before: `90c27b43d000f157dc967640434132aa71100fa9` (`origin/main` at implementation start).
-- After: `5874e7cf884fdc0ca1f53cac5bd4676d6e6115ac` (production and analyzer implementation).
+- Before: `35062ddae5a60656dcd1b982904c214c74a7bca2` (`origin/main` at the merge-readiness rebase).
+- After: `28b9997722f8b1c151d4e8b135972bd228e971aa` (rebased implementation with Windows fixture fix).
 
 | Diagnostic | Before | After |
 | --- | ---: | ---: |
-| Python modules | 492 | 496 |
-| Located dependency facts | 2,424 | 2,448 |
-| Unique module edges | 1,989 | 2,014 |
+| Python modules | 494 | 498 |
+| Located dependency facts | 2,458 | 2,482 |
+| Unique module edges | 2,017 | 2,042 |
 | Direct mutual package pairs | 13 | 13 |
 | Largest cyclic package group | 18 | 18 |
 
@@ -161,3 +161,10 @@ Independent Standards and Spec reviews found no outstanding issues after review
 fixes: JSON boundaries use `core.boundary.require_dict`, and the shared image
 observation forwards its executable consistently. Retained-resource tests isolate
 both inventories at the production interface, avoiding host Docker state.
+
+The merge-readiness follow-up rebased onto current `main`, which includes the
+updated confidential identity policy. The five branch commits passed a scan
+against the sealed policy without local allowed-identity additions. The Runtime
+filesystem fixture now compares `Path` objects, so its required and forbidden
+paths match on Windows and POSIX. Runtime inspection and architecture tests
+passed 192 tests after this change; Windows CI verifies the affected host path.
