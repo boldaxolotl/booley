@@ -213,6 +213,7 @@ def _scan_pr_text(
         check=False,
         env=env,
         text=True,
+        encoding="utf-8",
         timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
