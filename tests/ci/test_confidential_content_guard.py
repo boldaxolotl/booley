@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 
@@ -926,6 +927,74 @@ def test_proposed_pr_text_accepts_clean_title_and_body(tmp_path: Path) -> None:
     result = _scan_pr_text(repo, files=(draft,), stdin="public title", config=_encoded_config())
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("prefix", ["", "prefixsynthetic-term-000suffix"])
+def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -> None:
+    repo, _base = _repository(tmp_path)
+    words = ", ".join(f'"synthetic-term-{index:03d}"' for index in range(128))
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = [{words}]\n'.encode()
+    ).decode()
+    env = _sealed_fixture(repo, config)
+    start = perf_counter()
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
+        input=prefix + "~" * 1_000_000,
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    elapsed = perf_counter() - start
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 3.0, f"nonmatching scan took {elapsed:.2f} seconds"
+
+
+@pytest.mark.parametrize("text", ["f\u0130le", "f\u0131le", "\u017fecret", "\u212aey"])
+def test_ascii_prefilter_preserves_unicode_ignorecase_matches(tmp_path: Path, text: str) -> None:
+    repo, _base = _repository(tmp_path)
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
+        '[private]\nwords = ["file", "secret", "key"]\n'.encode()
+    ).decode()
+
+    result = _scan_pr_text(repo, stdin=text, config=config)
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+    assert text not in result.stderr
+
+
+def test_prefilter_detects_term_across_large_blob_chunk_boundary(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    marker = "boundary-marker-321"
+    boundary = 1024 * 1024
+    (repo / "large.txt").write_text("~" * (boundary - 3) + marker, encoding="utf-8")
+    head = _commit(repo, "add large fixture")
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["{marker}"]\n'.encode()
+    ).decode()
+
+    result = _scan(repo, base, head, config=config)
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+    assert marker not in result.stderr
+
+
+def test_non_ascii_vocabulary_still_uses_full_unicode_matching(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["caf\u00e9"]\n'.encode()
+    ).decode()
+
+    result = _scan_pr_text(repo, stdin="CAF\u00c9", config=config)
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
 
 
 def test_proposed_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(
