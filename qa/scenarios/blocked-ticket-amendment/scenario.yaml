@@ -17,12 +17,15 @@ check_sets:
 - id: amendment-boundaries
   checks:
   - reject.tightening
-  - reject.identity
+  - reject.criterion-removal
+  - reject.target-change
+  - reject.build-control-change
   - scope.protected
   - optional.last
   - scope.existing
   - scope.new
-  - optional.justification
+  - optional.missing-explanation
+  - optional.explained-finalization
 - id: amendment-finish
   checks:
   - final.records
@@ -149,7 +152,7 @@ inputs:
 - id: amendment-requests
   kind: literal
   value: |-
-    Threshold request has nonblank reason `438 cycles meets the revised budget`, feedback `Continue from the preserved implementation`, and one exact expanded cycle_count Criterion with `thresholds: {cycle_count_max: 450}`. Separate requests use `make_optional: true` for the sole mandatory instance and `scope_add: ["tb/amend_tb.sv", "rtl/amend_extra.sv [new]"]`. Only the live Human's approval of a displayed exact preview authorizes apply.
+    Threshold request has the live approving Human's actor identity, nonblank reason `438 cycles meets the revised budget`, feedback `Continue from the preserved implementation`, and one exact expanded cycle_count Criterion with `thresholds: {cycle_count_max: 450}`. Separate requests use `make_optional: true` for the sole mandatory instance and `scope_add: ["tb/amend_tb.sv", "rtl/amend_extra.sv [new]"]`. Only the live Human's approval of a displayed exact preview authorizes apply.
   source: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
   verification: Preserve exact request files, preview output/digest and live Human approval; derived path and Criterion names must match the frozen disposable fixture.
 authority:
@@ -211,7 +214,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
     evidence: Request bytes, preview stdout/exit, digest, before/after Board and source/ref/log hashes.
     capture: evidence/blocked-ticket-amendment.preview.readonly
-  timeout_minutes: 15
+  timeout_minutes: 10
 - id: preview.stale
   phase: preview
   requires: [preview.readonly]
@@ -224,7 +227,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
     evidence: Saved baseline, edit diff, stale digest, CLI rejection, before/after Board/basis/ref/history hashes.
     capture: evidence/blocked-ticket-amendment.preview.stale
-  timeout_minutes: 10
+  timeout_minutes: 8
 - id: preview.restore
   phase: preview
   requires: [preview.readonly]
@@ -241,7 +244,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
     evidence: Restoration diff and hash, fresh preview/digest, unchanged Board and basis records.
     capture: evidence/blocked-ticket-amendment.preview.restore
-  timeout_minutes: 10
+  timeout_minutes: 8
 - id: reject.tightening
   phase: preview
   requires: [ticket.blocked]
@@ -254,20 +257,46 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
     evidence: Exact negative request, CLI diagnostic, Board/basis/ref hashes before and after.
     capture: evidence/blocked-ticket-amendment.reject.tightening
-  timeout_minutes: 10
-- id: reject.identity
+  timeout_minutes: 5
+- id: reject.criterion-removal
   phase: preview
   requires: [ticket.blocked]
-  action: Submit separate requests attempting Criterion removal and Target/build-control replacement; keep the baseline Ticket unchanged between attempts.
+  action: Submit a request attempting to remove an existing Criterion; keep the blocked Ticket unchanged.
   checks:
-  - id: reject.identity
+  - id: reject.criterion-removal
     capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
-    stimulus: Preview each unsupported acceptance-identity edit on a blocked Ticket.
-    expected: Each request is rejected; all existing Criteria, Target/control identities and basis records remain unchanged.
+    stimulus: Preview a Criterion removal request on a blocked Ticket.
+    expected: The request is rejected; all existing Criteria and basis records remain unchanged.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
-    evidence: Both request files and diagnostics, Criterion and Target/control snapshots, pre/post hashes and refs.
-    capture: evidence/blocked-ticket-amendment.reject.identity
-  timeout_minutes: 10
+    evidence: Exact removal request and diagnostic, Criteria and basis snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.criterion-removal
+  timeout_minutes: 5
+- id: reject.target-change
+  phase: preview
+  requires: [ticket.blocked]
+  action: Submit a request attempting to replace the Ticket's Target binding; keep the blocked Ticket unchanged.
+  checks:
+  - id: reject.target-change
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Preview a Target change request on a blocked Ticket.
+    expected: The request is rejected; Target identity, Criteria and basis records remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact Target request and diagnostic, Target/basis snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.target-change
+  timeout_minutes: 5
+- id: reject.build-control-change
+  phase: preview
+  requires: [ticket.blocked]
+  action: Submit a request attempting to replace a prepared build-control input; keep the blocked Ticket unchanged.
+  checks:
+  - id: reject.build-control-change
+    capabilities: [TICKET-AMENDMENT, TICKET-ACCEPTANCE-BASIS]
+    stimulus: Preview a build-control change request on a blocked Ticket.
+    expected: The request is rejected; build-control identity, Criteria and basis records remain unchanged.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/src/booley/data/skills/booley-ticket-triage/steps/02-blocked.md
+    evidence: Exact build-control request and diagnostic, control/basis snapshots, pre/post hashes and refs.
+    capture: evidence/blocked-ticket-amendment.reject.build-control-change
+  timeout_minutes: 5
 - id: scope.protected
   phase: preview
   requires: [ticket.blocked]
@@ -280,7 +309,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#scope
     evidence: Exact protected path and request, rejection, Scope and protected-input hashes, Board/basis/ref comparison.
     capture: evidence/blocked-ticket-amendment.scope.protected
-  timeout_minutes: 10
+  timeout_minutes: 8
 - id: apply.threshold
   phase: amend
   requires: [preview.restore]
@@ -352,7 +381,7 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#creating-tickets
     evidence: Run/execution IDs, Developer prompt excerpt, source diff/ancestry, old/new Criteria state, retained historical reports and Board log.
     capture: evidence/blocked-ticket-amendment.resume.continuity
-  timeout_minutes: 50
+  timeout_minutes: 40
 - id: resume.acceptance
   phase: resume
   requires: [resume.continuity]
@@ -365,20 +394,33 @@ steps:
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
     evidence: Original and new Criterion evaluations, producer status and fingerprints, 438/450 operands, final report, review package and Board disposition.
     capture: evidence/blocked-ticket-amendment.resume.acceptance
-  timeout_minutes: 35
-- id: optional.justification
+  timeout_minutes: 30
+- id: optional.missing-explanation
   phase: resume
   requires: [optional.last]
-  action: Resume the optional Ticket, inspect its unmet optional Criterion and finish through the normal reporting/review policy with an explicit current explanation.
+  action: Resume the optional Ticket and attempt finalization while its unmet optional Criterion lacks an explanation. Preserve the rejection before supplying an explanation.
   checks:
-  - id: optional.justification
+  - id: optional.missing-explanation
     capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY]
-    stimulus: Attempt finalization first without, then with, the required explanation for the unmet optional Criterion.
-    expected: Missing explanation cannot silently pass; with an explanation and intact evidence/report policy, normal review or completion is possible despite zero mandatory Criteria.
+    stimulus: Attempt finalization without an explanation for the unmet optional Criterion.
+    expected: Missing explanation cannot silently pass; the Ticket remains unaccepted with its evidence and zero-mandatory state intact.
     authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
-    evidence: Both finalization attempts, optional Criterion/evidence state, explanation, final report and Board disposition.
-    capture: evidence/blocked-ticket-amendment.optional.justification
-  timeout_minutes: 35
+    evidence: Rejected finalization result, optional Criterion/evidence state, zero-mandatory basis and Board disposition.
+    capture: evidence/blocked-ticket-amendment.optional.missing-explanation
+  timeout_minutes: 10
+- id: optional.explained-finalization
+  phase: resume
+  requires: [optional.last]
+  action: Supply a current explanation for the unmet optional Criterion and finish through the normal evidence, report and review policy, regardless of the prior rejection Check result.
+  checks:
+  - id: optional.explained-finalization
+    capabilities: [TICKET-AMENDMENT, CRITERION-ACCEPTANCE-POLICY]
+    stimulus: Finalize the amended all-optional Ticket with a current explanation.
+    expected: With an explanation and intact evidence/report policy, normal review or completion is possible despite zero mandatory Criteria.
+    authority_ref: https://github.com/boldaxolotl/booley/blob/main/docs/user/USAGE.md#acceptance-criteria
+    evidence: Explanation, finalization result, optional Criterion/evidence state, final report and Board disposition.
+    capture: evidence/blocked-ticket-amendment.optional.explained-finalization
+  timeout_minutes: 20
 - id: final.records
   phase: final
   action: Freeze all three Tickets' final source, basis, Board and evidence identities; complete Check Results, deviations and run records before cleanup.

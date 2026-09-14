@@ -168,7 +168,8 @@ For an unblock retry:
 ## 7. Execute
 
 - **Unblock (retry with feedback)**: `python -m booley.ticket_board unblock $SLUG --feedback "..."` — then print: `Unblocked -> queued. Run ticket execution to resume.`
-- **Amend**: Write a JSON change request with nonblank `reason`, optional
+- **Amend**: Write a JSON change request with the approving Human's `actor`
+  identity, nonblank `reason`, optional
   `feedback`, and `criteria` and/or `scope_add`. Address each edit by its exact
   expanded Criterion name; `thresholds` maps existing parameter names to relaxed
   values, and `make_optional: true` moves that instance to optional. Scope

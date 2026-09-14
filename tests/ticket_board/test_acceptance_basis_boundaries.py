@@ -58,6 +58,38 @@ def _record() -> dict[str, object]:
     )
 
 
+def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
+    valid = {
+        "old_basis": AcceptanceBasis((_participant(),)).as_dict(),
+        "operation_id": "a" * 32,
+        "actor": "QA Human",
+        "reason": "Approve revised requirement",
+        "changes": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "before_mandatory": True,
+                "after_mandatory": False,
+                "thresholds": {},
+            }
+        ],
+        "scope_added": [],
+        "optional_conversions": ["review_rtl_bugs_clean"],
+    }
+    record = {**_record(), "schema": 3, "amendment": valid}
+    acceptance_basis._validate_record_schema(record)
+    for replacement in (
+        {**valid, "actor": " "},
+        {**valid, "operation_id": "short"},
+        {**valid, "changes": [], "scope_added": []},
+        {**valid, "changes": ["review_rtl_bugs_clean"]},
+        {**valid, "scope_added": [12]},
+        {**valid, "optional_conversions": [""]},
+        {**valid, "reason": 12},
+    ):
+        with pytest.raises(AcceptanceBasisError):
+            acceptance_basis._validate_record_schema({**record, "amendment": replacement})
+
+
 def test_path_policy_and_basis_require_supported_schema_and_outer_participant() -> None:
     with pytest.raises(AcceptanceBasisError, match="unsupported Acceptance Path Policy"):
         acceptance_basis.AcceptancePathPolicy(schema=2).discover(Path.cwd())

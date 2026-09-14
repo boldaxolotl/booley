@@ -576,6 +576,7 @@ def _validate_amendment_record(value: Any) -> None:
         if set(row) != {
             "old_basis",
             "operation_id",
+            "actor",
             "reason",
             "changes",
             "scope_added",
@@ -584,6 +585,7 @@ def _validate_amendment_record(value: Any) -> None:
             raise AcceptanceBasisError("Acceptance Basis amendment has invalid fields")
         AcceptanceBasis.from_mapping(row["old_basis"])
         operation = require_str(row, "operation_id")
+        actor = require_str(row, "actor")
         reason = require_str(row, "reason")
         changes = require_list(row.get("changes"), field="amendment.changes")
         scope = require_list(row.get("scope_added"), field="amendment.scope_added")
@@ -592,8 +594,10 @@ def _validate_amendment_record(value: Any) -> None:
         )
     except BoundaryError as exc:
         raise AcceptanceBasisError(str(exc)) from exc
-    if not re.fullmatch(r"[0-9a-f]{32}", operation) or not reason.strip():
-        raise AcceptanceBasisError("Acceptance Basis amendment identity or reason is invalid")
+    if not re.fullmatch(r"[0-9a-f]{32}", operation) or not actor.strip() or not reason.strip():
+        raise AcceptanceBasisError(
+            "Acceptance Basis amendment identity, actor or reason is invalid"
+        )
     if not changes and not scope:
         raise AcceptanceBasisError("Acceptance Basis amendment has no changes")
     for item in changes:

@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 from copy import deepcopy
 from dataclasses import asdict
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +40,7 @@ from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .scanner import find_ticket_file
+from .validation import _scope_contains_path, _validate_amendment_candidate
 
 
 class AmendmentError(RuntimeError):
@@ -117,16 +117,6 @@ def _repositories(root: Path, basis: AcceptanceBasis) -> dict[str, tuple[Path, P
     return result
 
 
-def _scope_covers(scope: list[str], path: str) -> bool:
-    for entry in scope:
-        name = entry.removesuffix(" [new]")
-        if name in {"*", path} or path.startswith(name.rstrip("/") + "/"):
-            return True
-        if any(token in name for token in "*?[") and fnmatchcase(path, name):
-            return True
-    return False
-
-
 def _status_snapshot(
     root: Path,
     basis: AcceptanceBasis,
@@ -167,7 +157,7 @@ def _check_checkpoint_path(
             continue
         composite = f".booley_project/{local}" if role == "project" else local
         if (
-            not _scope_covers(scope, composite)
+            not _scope_contains_path({"scope": scope}, composite)
             or is_static_acceptance_path(composite)
             or composite in protected
             or any(composite.startswith(path.rstrip("/") + "/") for path in protected)
@@ -186,16 +176,15 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     fields, body = parse_frontmatter(source.decode("utf-8"))
     basis = load_acceptance_basis(root, slug, fields, body)
     heads = validate_current_basis_refs(root, basis)
-    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
-        reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
-        assert_live_inputs_unchanged(basis, root, reference)
-    proposal = build_amendment_proposal(fields, request, root)
+    proposal = _validated_proposal(root, basis, fields, body, request)
     rendered_fields, rendered_body = parse_frontmatter(format_frontmatter(proposal.fields, body))
     repositories = _repositories(root, basis)
-    source_state = _status_snapshot(root, basis, rendered_fields.get("scope", []), repositories)
+    prior_scope = fields.get("scope", [])
+    source_state = _status_snapshot(root, basis, prior_scope, repositories)
     if {role: value["head"] for role, value in source_state.items()} != heads:
         raise AmendmentError("Ticket refs changed during amendment preview")
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    _preflight_state(state_path, proposal)
     state_digest = (
         hashlib.sha256(state_path.read_bytes()).hexdigest() if state_path.exists() else ""
     )
@@ -206,10 +195,12 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         "ticket_sha256": hashlib.sha256(source).hexdigest(),
         "basis": basis.as_dict(),
         "source_state": source_state,
+        "prior_scope": prior_scope,
         "state_sha256": state_digest,
         "revised_fields": rendered_fields,
         "body": rendered_body,
         "reason": proposal.reason,
+        "actor": proposal.actor,
         "feedback": proposal.feedback,
         "changes": [asdict(item) for item in proposal.changes],
         "scope_added": list(proposal.scope_added),
@@ -220,6 +211,44 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
     }
     preview["digest"] = hashlib.sha256(canonical_json(preview)).hexdigest()
     return preview, proposal
+
+
+def _validated_proposal(
+    root: Path, basis: AcceptanceBasis, fields: dict[str, Any], body: str, request: Any
+) -> AmendmentProposal:
+    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
+        reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
+        assert_live_inputs_unchanged(basis, root, reference)
+        proposal = build_amendment_proposal(fields, request, root)
+        newly_optional = {
+            change.criterion
+            for change in proposal.changes
+            if change.before_mandatory and not change.after_mandatory
+        }
+        errors = _validate_amendment_candidate(
+            fields, proposal.fields, body, reference, root, newly_optional
+        )
+        if errors:
+            raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
+        return proposal
+
+
+def _preflight_state(path: Path, proposal: AmendmentProposal) -> None:
+    from booley.criteria.state import DevelopmentState
+
+    if not path.is_file():
+        raise AmendmentError("blocked Ticket has no current Criteria state; rerun intake first")
+    try:
+        state = DevelopmentState.load(path)
+    except (OSError, ValueError) as exc:
+        raise AmendmentError(
+            "blocked Ticket Criteria state is unreadable; rerun intake first"
+        ) from exc
+    missing = [
+        change.criterion for change in proposal.changes if change.criterion not in state.criteria
+    ]
+    if missing:
+        raise AmendmentError(f"current state has no Criteria {missing!r}; rerun intake first")
 
 
 def _preview_evidence(
@@ -301,6 +330,32 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
     root = Path(tio._project_root).resolve()
     old = AcceptanceBasis.from_mapping(journal["basis"])
     repositories = _repositories(root, old)
+    _prepare_amendment_participants(root, journal, old, repositories)
+    _publish_refs(root, journal, old, repositories)
+    new_basis = AcceptanceBasis.from_mapping(journal["new_basis"])
+    write_basis_receipt(
+        root,
+        journal["slug"],
+        new_basis,
+        source_sha256=journal["ticket_sha256"],
+        operation_id=journal["operation_id"],
+    )
+    _publish_board_and_state(tio, journal, new_basis, repositories)
+    _publish_handoff_and_queue(tio, journal, new_basis)
+    return {
+        "slug": journal["slug"],
+        "basis_id": new_basis.basis_id,
+        "operation_id": journal["operation_id"],
+        "status": "queued",
+    }
+
+
+def _prepare_amendment_participants(
+    root: Path,
+    journal: dict[str, Any],
+    old: AcceptanceBasis,
+    repositories: dict[str, tuple[Path, Path]],
+) -> None:
     record = _amended_record(root, journal, old)
     for participant in old.participants:
         role = participant.role
@@ -308,9 +363,9 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
             continue
         owner, checkout = repositories[role]
         expected = journal["source_state"][role]
-        actual = _status_snapshot(
-            root, old, journal["revised_fields"]["scope"], {role: (owner, checkout)}
-        )[role]
+        actual = _status_snapshot(root, old, journal["prior_scope"], {role: (owner, checkout)})[
+            role
+        ]
         if actual != expected:
             raise AmendmentError(f"{role} source changed after the approved preview")
         commits = _prepare_participant(
@@ -337,23 +392,6 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
         journal["new_basis"] = AcceptanceBasis(participants).as_dict()
         journal["phase"] = "prepared"
         _write_journal(root, journal)
-    _publish_refs(root, journal, old, repositories)
-    new_basis = AcceptanceBasis.from_mapping(journal["new_basis"])
-    write_basis_receipt(
-        root,
-        journal["slug"],
-        new_basis,
-        source_sha256=journal["ticket_sha256"],
-        operation_id=journal["operation_id"],
-    )
-    _publish_board_and_state(tio, journal, new_basis, repositories)
-    _publish_handoff_and_queue(tio, journal, new_basis)
-    return {
-        "slug": journal["slug"],
-        "basis_id": new_basis.basis_id,
-        "operation_id": journal["operation_id"],
-        "status": "queued",
-    }
 
 
 def _record_owner(basis: AcceptanceBasis) -> str:
@@ -383,6 +421,7 @@ def _amended_record(root: Path, journal: dict[str, Any], old: AcceptanceBasis) -
     payload["amendment"] = {
         "old_basis": old.as_dict(),
         "operation_id": journal["operation_id"],
+        "actor": journal["actor"],
         "reason": journal["reason"],
         "changes": journal["changes"],
         "scope_added": journal["scope_added"],
@@ -657,33 +696,64 @@ def _reevaluate_changed_entry(
         "old_basis_id": AcceptanceBasis.from_mapping(journal["basis"]).basis_id,
         "new_basis_id": basis.basis_id,
         "source_evidence_sha256": hashlib.sha256(canonical_json(stamp or {})).hexdigest(),
-        "reused": bool(reusable and entry.met),
+        "reused": bool(reusable),
     }
     entry.detail = detail
+
+
+def _amendment_outcomes(tio: Any, journal: dict[str, Any]) -> dict[str, dict[str, str]]:
+    from booley.criteria.state import DevelopmentState
+
+    path = existing_runtime_file(tio.logs_dir, journal["slug"], "booley_state.json")
+    state = DevelopmentState.load(path)
+    outcomes: dict[str, dict[str, str]] = {}
+    changed = {change["criterion"]: change for change in journal["changes"]}
+    for name, entry in state.criteria.items():
+        if name.startswith("_"):
+            continue
+        detail = entry.detail if isinstance(entry.detail, dict) else {}
+        evaluation = detail.get("amendment_evaluation", {})
+        evidence = "unchanged"
+        if changed.get(name, {}).get("thresholds"):
+            evidence = "reuse" if evaluation.get("reused") else "rerun"
+        outcomes[name] = {
+            "result": "met" if entry.met else "unmet",
+            "evidence": evidence,
+        }
+    return outcomes
+
+
+def _amendment_summary(journal: dict[str, Any], record: dict[str, Any]) -> str:
+    lines = [
+        f"\n## Amendment {journal['operation_id']}",
+        f"Actor: {journal['actor']}",
+        f"Reason: {journal['reason']}",
+    ]
+    for change in journal["changes"]:
+        name = change["criterion"]
+        for param, (before, after) in change["thresholds"].items():
+            lines.append(f"- {name}.{param}: {before} -> {after}")
+        if change["before_mandatory"] and not change["after_mandatory"]:
+            lines.append(f"- {name}: mandatory -> optional")
+    for path in journal["scope_added"]:
+        lines.append(f"- Scope added: {path}")
+    for name, outcome in record["evidence_outcomes"].items():
+        lines.append(f"- {name}: {outcome['result']} ({outcome['evidence']})")
+    lines.extend([f"Next: {record['next_action']}", journal["feedback"]])
+    return "\n".join(lines) + "\n"
 
 
 def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: AcceptanceBasis) -> None:
     root = Path(tio._project_root).resolve()
     slug = journal["slug"]
     history = ticket_log_dir(tio.logs_dir, slug) / "amendments" / f"{journal['operation_id']}.json"
-    record = {
-        "schema": 1,
-        "operation_id": journal["operation_id"],
-        "old_basis_id": AcceptanceBasis.from_mapping(journal["basis"]).basis_id,
-        "new_basis_id": basis.basis_id,
-        "reason": journal["reason"],
-        "feedback": journal["feedback"],
-        "changes": journal["changes"],
-        "scope_added": journal["scope_added"],
-        "checkpoint": {role: row["checkpoint"] for role, row in journal["prepared"].items()},
-        "prior_state": f"{journal['operation_id']}.prior-state.json",
-    }
+    record = _handoff_record(tio, journal, basis)
     atomic_write_once(history, canonical_json(record))
     blocked = human_log_file(tio.logs_dir, slug, "blocked.md")
     marker = f"Amendment {journal['operation_id']}"
     content = blocked.read_text(encoding="utf-8") if blocked.exists() else "# Escalation History\n"
     if marker not in content:
-        addition = f"\n### {marker}\n\nReason: {journal['reason']}\n\n{journal['feedback']}\n"
+        addition = _amendment_summary(journal, record)
         atomic_replace_bytes(blocked, (content + addition).encode(), mode=0o644)
     progress = load_progress(tio.logs_dir, slug) or dict(PROGRESS_DEFAULTS)
     progress.update(
@@ -711,3 +781,32 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: Accepta
     journal["phase"] = "queued"
     _write_journal(root, journal)
     _journal_path(root, slug).unlink()
+
+
+def _handoff_record(tio: Any, journal: dict[str, Any], basis: AcceptanceBasis) -> dict[str, Any]:
+    outcomes = _amendment_outcomes(tio, journal)
+    rerun = [name for name, outcome in outcomes.items() if outcome["evidence"] == "rerun"]
+    next_action = "Resume Ticket Mode under the revised Acceptance Basis"
+    if rerun:
+        next_action += "; rerun stale Criteria: " + ", ".join(sorted(rerun))
+    return {
+        "schema": 1,
+        "operation_id": journal["operation_id"],
+        "old_basis_id": AcceptanceBasis.from_mapping(journal["basis"]).basis_id,
+        "new_basis_id": basis.basis_id,
+        "reason": journal["reason"],
+        "actor": journal["actor"],
+        "feedback": journal["feedback"],
+        "changes": journal["changes"],
+        "scope_added": journal["scope_added"],
+        "checkpoint": {role: row["checkpoint"] for role, row in journal["prepared"].items()},
+        "participant_heads_before": {
+            role: row["head"] for role, row in journal["source_state"].items()
+        },
+        "participant_heads_after": {
+            role: row["joined"] for role, row in journal["prepared"].items()
+        },
+        "evidence_outcomes": outcomes,
+        "next_action": next_action,
+        "prior_state": f"{journal['operation_id']}.prior-state.json",
+    }

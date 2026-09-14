@@ -41,6 +41,7 @@ class AmendmentProposal:
     """Validated authored fields and the exact human-visible delta."""
 
     fields: dict[str, Any]
+    actor: str
     reason: str
     feedback: str
     changes: tuple[CriterionChange, ...]
@@ -65,12 +66,15 @@ def build_amendment_proposal(
     """Validate supported edits and return a complete, unpersisted proposal."""
     try:
         data = require_dict(request, field="amendment")
-        if set(data) - {"reason", "feedback", "criteria", "scope_add"}:
+        if set(data) - {"actor", "reason", "feedback", "criteria", "scope_add"}:
             raise AmendmentProposalError("amendment has unknown fields")
+        actor = require_str(data, "actor").strip()
         reason = require_str(data, "reason").strip()
         feedback = data.get("feedback", "")
         if not isinstance(feedback, str):
             raise AmendmentProposalError("feedback must be a string")
+        if not actor or len(actor) > 200 or any(char in actor for char in "\r\n"):
+            raise AmendmentProposalError("amendment actor must name one Human on one line")
         if not reason:
             raise AmendmentProposalError("amendment reason must be nonblank")
         raw_edits = data.get("criteria", [])
@@ -85,7 +89,9 @@ def build_amendment_proposal(
         if not changes and not scope_added:
             raise AmendmentProposalError("no acceptance change; use ordinary unblock for feedback")
         CriteriaTemplate.from_yaml(revised["criteria"])
-        return AmendmentProposal(revised, reason, feedback, tuple(changes), tuple(scope_added))
+        return AmendmentProposal(
+            revised, actor, reason, feedback, tuple(changes), tuple(scope_added)
+        )
     except (BoundaryError, TypeError, KeyError, ValueError) as exc:
         if isinstance(exc, AmendmentProposalError):
             raise

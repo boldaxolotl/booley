@@ -1256,6 +1256,33 @@ def _approved_optional_conversions(
     return set(amendment.get("optional_conversions", []))
 
 
+def _validate_amendment_candidate(
+    original: dict[str, Any],
+    revised: dict[str, Any],
+    body: str,
+    project_root: Path,
+    provenance_root: Path,
+    newly_optional: set[str],
+) -> list[str]:
+    """Preflight changed Scope/Criteria before amendment provenance is committed."""
+    approved = _approved_optional_conversions(original, provenance_root) | newly_optional
+    scope_errors, scope = _validate_scope(revised, True, project_root)
+    errors = [*scope_errors]
+    errors.extend(
+        _validate_sim_shape_for_rtl_tb_scope(
+            revised, scope, project_root, check_files=True, approved_optional=approved
+        )
+    )
+    criteria_errors, _warnings = _validate_criteria(
+        revised, body, str(revised.get("type", "")), True, project_root, approved
+    )
+    errors.extend(criteria_errors)
+    criteria = revised.get("criteria")
+    if isinstance(criteria, dict):
+        errors.extend(_validate_sim_targets(criteria, revised, body, project_root))
+    return errors
+
+
 def validate_ticket_fields(
     fields: dict[str, Any],
     body: str,
