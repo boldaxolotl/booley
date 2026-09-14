@@ -979,7 +979,16 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bwave",
         "description": (
-            "RTL debug helper for simulation traces. Works with .fst "
+            "RTL debug helper for simulation traces. Use B-Wave to diagnose "
+            "signal values, state transitions, handshakes, latency, and "
+            "datapath divergence instead of adding temporary $display/debug "
+            "prints. Reuse a trace from the current design and failing case, "
+            "or rerun the sim MCP tool with trace=true; register the trace "
+            "and query a bounded signal/time window. Queries need no GUI. "
+            "Use temporary prints only if B-Wave is unavailable or the needed "
+            "evidence cannot be captured or queried, and explain the limitation. "
+            "Diagnose compile/elaboration failures from compiler output. "
+            "Works with .fst "
             "waveform stores and raw .vcd traces. Registering a sim "
             "directory auto-builds an .fst store; a .vcd passed directly "
             "is recorded as-is and must be "
