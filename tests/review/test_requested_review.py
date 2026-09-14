@@ -317,6 +317,7 @@ def test_model_cannot_approve_unaccepted_work(blocked, monkeypatch):
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
 @pytest.mark.parametrize("interrupt", [False, True])
+@pytest.mark.timeout(180)
 def test_scoped_endpoint_records_real_evidence_then_requires_run_report(
     blocked, monkeypatch, interrupt
 ):
