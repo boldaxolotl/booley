@@ -171,7 +171,10 @@ For an unblock retry:
 - **Amend**: Write a JSON change request with nonblank `reason`, optional
   `feedback`, and `criteria` and/or `scope_add`. Address each edit by its exact
   expanded Criterion name; `thresholds` maps existing parameter names to relaxed
-  values, and `make_optional: true` moves that instance to optional. Then run:
+  values, and `make_optional: true` moves that instance to optional. Scope
+  additions use the normal Scope syntax, including `[new]` for a new file.
+  Do not include Criterion removal, Target or build-control changes, or a
+  tightening. Then run:
 
   ```bash
   booley board amend "$SLUG" --changes-file "$FILE" --preview
@@ -179,7 +182,11 @@ For an unblock retry:
   ```
 
   Show the preview before apply, including the zero-mandatory outcome when
-  applicable. Report `Amended -> queued. Run ticket execution to resume.`
+  applicable. Apply only the exact proposal the Human approved. If apply
+  rejects a stale digest, inspect what changed, obtain and show a fresh preview,
+  and seek approval for any changed proposal; never apply the old digest by
+  substituting a newly computed one silently. Report
+  `Amended -> queued. Run ticket execution to resume.`
 - **Requested review**: Commit intended Ticket source changes, then run
   `booley board request-review "$SLUG" --reason "<Human intent>"` and present
   its unaccepted review package.
