@@ -854,9 +854,10 @@ def test_tampered_encrypted_vocabulary_fails_closed(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     env = _sealed_fixture(repo, _encoded_config())
     encrypted = repo / ".github/confidential-vocabulary.enc"
-    contents = bytearray(encrypted.read_bytes())
-    contents[-3] = ord("A") if contents[-3] != ord("A") else ord("B")
-    encrypted.write_bytes(contents)
+    header, locator, encoded = encrypted.read_bytes().splitlines()
+    payload = bytearray(base64.b64decode(encoded, validate=True))
+    payload[-1] ^= 1
+    encrypted.write_bytes(b"\n".join((header, locator, base64.b64encode(payload), b"")))
 
     result = subprocess.run(
         [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
