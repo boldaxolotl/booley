@@ -104,10 +104,10 @@ def test_readiness_checkout_boundary_and_preparation_failures(
     assert "legacy Target Contract" in readiness.check_ticket_ready(root, "ticket").errors[0]
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     assert readiness.check_ticket_ready(root, "ticket").errors == (
-        "executable Ticket has no Acceptance Basis",
+        "unsupported Ticket format: executable Ticket needs machine metadata",
     )
     basis = AcceptanceBasis((_participant(),))
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr("booley.ticket_board.io.TicketIO.load_basis", lambda *_args: basis)
     monkeypatch.setattr(readiness, "resolve_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(
@@ -164,7 +164,7 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     monkeypatch.setattr(readiness, "resolve_inner_project_repo", lambda _root: None)
     ticket = tickets / "board/queue/ticket.md"
     ticket.parent.mkdir(parents=True)
-    ticket.write_text("---\nacceptance_basis: {}\n---\nbody\n", encoding="utf-8")
+    ticket.write_text("---\nmachine: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )

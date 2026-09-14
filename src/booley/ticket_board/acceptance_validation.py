@@ -55,7 +55,7 @@ def prepare_acceptance_checkout(
     slug: str,
     ticket_path: Path | str,
 ) -> PreparationResult:
-    """Apply the deterministic Acceptance Basis preparation contract."""
+    """Apply the deterministic Ticket baseline preparation contract."""
     root = Path(project_root).resolve()
     prepared = Path(checkout).resolve()
     try:
@@ -113,7 +113,7 @@ def _require_contained_project_directory(reference: Path) -> None:
         project_dir = resolve_checkout_project_dir(reference).resolve()
     except (FileNotFoundError, ValueError) as exc:
         raise AcceptanceBasisError(
-            f"cannot prepare materialized Acceptance Basis at {reference}: {exc}"
+            f"cannot prepare materialized Ticket baseline at {reference}: {exc}"
         ) from exc
     try:
         project_dir.relative_to(reference.resolve())

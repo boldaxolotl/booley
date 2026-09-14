@@ -79,8 +79,8 @@ def _validate_checkout_basis(
         return []
     if fields.get("target_contract") is not None:
         return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
-    if fields.get("acceptance_basis") is None:
-        return ["executable Ticket has no Acceptance Basis"]
+    if "acceptance_basis" in fields or fields.get("machine") is None:
+        return ["unsupported Ticket format: executable Ticket needs machine metadata"]
     try:
         from .io import TicketIO
 
@@ -90,7 +90,7 @@ def _validate_checkout_basis(
             project_repository = resolve_inner_project_repo(root)
             if project_repository is None:
                 raise AcceptanceBasisError(
-                    "Acceptance Basis project participant repository is missing"
+                    "Ticket baseline project participant repository is missing"
                 )
             resolve_commit(project_repository, basis.project_sha)
         ticket, _status = find_ticket_file(tickets_dir, slug)

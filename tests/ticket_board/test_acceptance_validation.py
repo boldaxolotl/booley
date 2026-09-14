@@ -1,4 +1,4 @@
-"""Regression coverage for live Acceptance Basis validation."""
+"""Regression coverage for live Ticket baseline validation."""
 
 from __future__ import annotations
 

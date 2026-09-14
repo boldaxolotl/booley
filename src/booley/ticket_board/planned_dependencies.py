@@ -161,13 +161,15 @@ def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
     if status not in _PROVIDER_STATES:
         return None
     fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
-    if fields.get("acceptance_basis") is None:
-        return None
+    if fields.get("machine") is None:
+        raise PlannedDependencyError(
+            f"provider {slug!r} has an unsupported Ticket format; recreate the Ticket"
+        )
     try:
         basis = load_acceptance_basis(root, slug, fields, body)
     except AcceptanceBasisError as exc:
         raise PlannedDependencyError(
-            f"provider {slug!r} has an invalid Acceptance Basis: {exc}"
+            f"provider {slug!r} has invalid Ticket baseline metadata: {exc}"
         ) from exc
     if basis.target_plan is None:
         return None
@@ -395,7 +397,7 @@ def _materialize_provider(
             bindings.append(
                 ProviderTargetBinding(
                     provider.slug,
-                    provider.basis.basis_id,
+                    provider.basis.ticket_identity()["generation"],
                     entry.target,
                     entry.role.value,
                     digest,
@@ -801,7 +803,10 @@ def validate_planned_dependencies(
             raise PlannedDependencyError(
                 f"planned provider {slug_key!r} is no longer basis-published"
             )
-        if any(binding.basis_id != provider.basis.basis_id for binding in bindings):
+        if any(
+            binding.ticket_generation != provider.basis.ticket_identity()["generation"]
+            for binding in bindings
+        ):
             _validate_refreshed_provider(root, provider, bindings)
     return materialization
 

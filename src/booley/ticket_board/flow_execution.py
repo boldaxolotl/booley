@@ -35,25 +35,25 @@ class TicketAcceptanceRecorder:
         *,
         log_dir: Path | None = None,
         execution_id: str | None = None,
-        acceptance_basis: dict[str, Any] | None = None,
+        ticket_identity: dict[str, Any] | None = None,
     ) -> None:
         self._log_dir = log_dir
         self._execution_id = execution_id
-        self._basis_record = acceptance_basis
+        self._ticket_identity = ticket_identity
 
-    def _acceptance_basis_record(self) -> dict[str, Any]:
-        if self._basis_record is not None:
-            return self._basis_record
+    def _validated_ticket_identity(self) -> dict[str, Any]:
+        if self._ticket_identity is not None:
+            return self._ticket_identity
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file or not Path(ticket_file).is_file():
             return {}
-        fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-        raw_basis = fields.get("acceptance_basis")
-        if raw_basis is None:
-            return {}
+        fields, body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
         try:
-            return require_dict(raw_basis, field="acceptance_basis")
-        except BoundaryError as exc:
+            from .acceptance_basis import ticket_baseline_from_fields
+
+            ticket_baseline_from_fields(fields, body)
+            return require_dict(fields["machine"], field="machine")
+        except (BoundaryError, AcceptanceBasisError) as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError
 
             raise AcceptanceRecordingError(str(exc)) from exc
@@ -91,7 +91,7 @@ class TicketAcceptanceRecorder:
                     if self._execution_id is not None
                     else os.environ.get("BOOLEY_EXECUTION_ID", "")
                 ),
-                acceptance_basis=self._acceptance_basis_record(),
+                ticket_identity=self._validated_ticket_identity(),
                 transaction_id=transaction_id,
             )
         except acceptance_ledger.AcceptanceLedgerError as exc:
@@ -137,7 +137,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             resolve_checkout_project_dir(project_root) / "tickets",
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
-        self._basis_record = basis.as_dict()
+        self._ticket_identity = basis.ticket_identity()
         return basis, project_root, slug, ticket_path
 
     @staticmethod
@@ -147,13 +147,13 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             return PairedProjectBaseline.absent()
         if not project_sha:
             raise AcceptanceBasisError(
-                "paired Project Ticket execution requires a pinned Acceptance Basis commit"
+                "paired Project Ticket execution requires a pinned Ticket baseline commit"
             )
         try:
             sha = resolve_commit(repository.worktree, project_sha)
         except ValueError as exc:
             raise AcceptanceBasisError(
-                f"recorded paired Project Acceptance Basis cannot be resolved: {exc}"
+                f"recorded paired Project Ticket baseline cannot be resolved: {exc}"
             ) from exc
         return PairedProjectBaseline.ticket_pinned(sha)
 

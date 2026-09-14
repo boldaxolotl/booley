@@ -74,9 +74,9 @@ class TicketContext:
         """Return the complete Ticket projection used for basis validation."""
         basis = self.acceptance_basis
         if basis is None:
-            raise ValueError("Ticket has no Acceptance Basis")
+            raise ValueError("Ticket has no machine metadata")
         return {
-            "acceptance_basis": basis.as_dict(),
+            "machine": basis.ticket_identity(),
             "criteria": self.criteria,
             "scope": self.scope_raw,
             "on_success": {

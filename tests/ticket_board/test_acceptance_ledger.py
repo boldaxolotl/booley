@@ -48,7 +48,7 @@ def test_accepted_snapshot_survives_live_state_removal(tmp_path):
         log_dir,
         state,
         execution_id="resume-generation",
-        acceptance_basis={"schema": 1, "participants": []},
+        ticket_identity={"schema": 1, "participants": []},
         participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
@@ -115,7 +115,7 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
         log_dir,
         state,
         execution_id="generation-2",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
     )
 
@@ -147,7 +147,7 @@ def test_freeze_rejects_mutable_state_that_disagrees_with_latest_evidence(tmp_pa
             log_dir,
             state,
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
 
@@ -192,7 +192,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
         log_dir,
         state,
         execution_id="generation-1",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
         accepted_at="2026-08-28T12:00:00Z",
     )
@@ -204,7 +204,7 @@ def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
             log_dir,
             state,
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
             accepted_at="2026-08-28T12:00:00Z",
         )
@@ -224,7 +224,7 @@ def test_freeze_rejects_evidence_whose_sequence_disagrees_with_its_directory(tmp
             log_dir,
             _accepted_state(),
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
 
@@ -261,7 +261,7 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
         log_dir,
         _accepted_state(),
         execution_id="generation-1",
-        acceptance_basis=None,
+        ticket_identity=None,
         participant_heads={"outer": "a" * 40},
     )
 
@@ -278,12 +278,12 @@ def test_review_package_binding_handles_missing_and_unready_manifests(tmp_path):
 
 def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_path):
     log_dir = tmp_path / "logs" / "fix-uart"
-    basis_id = "f" * 64
+    generation = "f" * 32
     snapshot = freeze_acceptance(
         log_dir,
         _accepted_state(),
         execution_id="generation-1",
-        acceptance_basis={"basis_id": basis_id},
+        ticket_identity={"generation": generation},
         participant_heads={"outer": "a" * 40},
     )
     prep_dir = log_dir / ".runtime" / "triage-prep"
@@ -294,7 +294,7 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
     manifest = {
         "status": "ready",
         "briefing_path": str(briefing),
-        "acceptance_basis_id": basis_id,
+        "ticket_generation": generation,
         "head_sha": "b" * 40,
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -303,12 +303,12 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
         bind_review_package(log_dir, snapshot)
 
     manifest["head_sha"] = "a" * 40
-    manifest["acceptance_basis_id"] = "e" * 64
+    manifest["ticket_generation"] = "e" * 32
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(AcceptanceLedgerError, match="different Acceptance Basis"):
+    with pytest.raises(AcceptanceLedgerError, match="different Ticket generation"):
         bind_review_package(log_dir, snapshot)
 
-    manifest["acceptance_basis_id"] = basis_id
+    manifest["ticket_generation"] = generation
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert bind_review_package(log_dir, snapshot) is True
     validate_review_package_binding(log_dir, snapshot)

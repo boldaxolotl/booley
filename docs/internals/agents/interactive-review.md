@@ -31,7 +31,7 @@ A legacy Ticket mechanically moved into review without acceptance can use:
 booley board request-review SLUG --repair --reason "Recover unaccepted review"
 ```
 
-Repair still requires a valid retained Acceptance Basis and worktree. Corrupt
+Repair still requires a valid retained Ticket baseline and worktree. Corrupt
 acceptance or missing generation identity is an error, not permission to
 manufacture a Criteria Satisfaction Record.
 

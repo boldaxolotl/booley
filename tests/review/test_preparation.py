@@ -84,7 +84,7 @@ def _basis(
                 destination_sha="d" * 40,
             )
         )
-    return AcceptanceBasis(tuple(participants))
+    return AcceptanceBasis(tuple(participants), machine={"generation": "e" * 32, "schema": 1, "authored_sha256": "f" * 64, "baseline": {}})
 
 
 def _git_evidence(path: Path) -> dict[str, Path]:
@@ -322,20 +322,19 @@ def test_review_snapshot_heads_requires_frozen_exact_participants(tmp_path: Path
     with pytest.raises(rp.ReviewPrepError, match="participants disagree"):
         rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
 
-    receipt = {"basis_id": basis.basis_id}
+    identity = basis.ticket_identity()
     snapshot = SimpleNamespace(
         participant_heads={"outer": "c" * 40, "project": "d" * 40},
-        acceptance_basis={"basis_id": "f" * 64},
+        ticket_identity={**identity, "generation": "f" * 32},
     )
     monkeypatch.setattr(
         rp,
         "read_acceptance",
         lambda _log_dir: SimpleNamespace(kind="accepted", snapshot=snapshot, reason=""),
     )
-    monkeypatch.setattr(rp, "load_basis_receipt", lambda *_args: receipt)
-    with pytest.raises(rp.ReviewPrepError, match="different Acceptance Basis"):
+    with pytest.raises(rp.ReviewPrepError, match="different Ticket"):
         rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis)
-    snapshot.acceptance_basis = receipt
+    snapshot.ticket_identity = identity
     assert rp._review_snapshot_heads(tmp_path, tmp_path, "demo", "review", basis) == {
         "outer": "c" * 40,
         "project": "d" * 40,
@@ -429,7 +428,7 @@ def test_fresh_outcome_requires_matching_identity_and_files(tmp_path: Path):
         "status": "ready",
         "version": rp._PROMPT_VERSION,
         "prompt_sha256": "prompt",
-        "acceptance_basis_id": ctx.acceptance_basis_id,
+        "ticket_generation": ctx.ticket_generation,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "source_sha256": "source",

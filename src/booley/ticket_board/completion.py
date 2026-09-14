@@ -1,4 +1,4 @@
-"""Ticket Board policy for accepting review Tickets with an Acceptance Basis."""
+"""Ticket Board policy for accepting review Tickets with an Ticket baseline."""
 
 from __future__ import annotations
 

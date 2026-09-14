@@ -384,7 +384,7 @@ def test_basis_rejects_resumed_state_that_disagrees_with_record(
     params = {} if baseline is None else {BASELINE_TARGET_PARAM: baseline}
     criteria = {"synthesis_ok_synth_after": SimpleNamespace(params=params)}
 
-    with pytest.raises(ImplementationComparisonError, match="does not match the Acceptance Basis"):
+    with pytest.raises(ImplementationComparisonError, match="does not match the Ticket baseline"):
         target_pairs_for_candidates(
             criteria,
             "synthesis_ok_",

@@ -1,4 +1,4 @@
-"""Acceptance Basis Target bindings and protected-input discovery.
+"""Ticket baseline Target bindings and protected-input discovery.
 
 The module is deliberately below the harness and Flows. It owns Target/control
 path discovery, criterion-to-Target bindings, and their boundary validation.

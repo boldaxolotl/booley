@@ -18,7 +18,11 @@ import pytest
 from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
+    BasisParticipant,
+    ticket_machine_fields,
+)
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
@@ -230,7 +234,7 @@ def _mock_cli_defaults(mock_cli, *, action="fresh", stage="", fields=None):
     """Set up mock_cli with common defaults."""
     mock_cli.validate_ticket.return_value = {"valid": True}
     effective_fields = dict(_MINIMAL_FIELDS if fields is None else fields)
-    effective_fields.setdefault("acceptance_basis", _TEST_BASIS.as_dict())
+    effective_fields.setdefault("machine", ticket_machine_fields(_TEST_BASIS, fields=effective_fields, body="", generation="f" * 32))
     mock_cli.parse_ticket.return_value = {
         "fields": effective_fields,
         "body": "",
@@ -368,7 +372,7 @@ def test_filesystem_ticket_without_basis_is_not_executable(tmp_path: Path) -> No
         project_root=tmp_path,
     )
 
-    with pytest.raises(FatalError, match="acceptance_basis is required"):
+    with pytest.raises(FatalError, match="machine metadata is required"):
         _verify_acceptance_basis(ctx, "fresh")
 
 
@@ -412,7 +416,6 @@ async def test_basis_intake_defers_criteria_until_workspace_materialization(
     )
     fields = {
         **_MINIMAL_FIELDS,
-        "acceptance_basis": basis.as_dict(),
     }
     _mock_cli_defaults(mock_cli, fields=fields)
     from booley.harness.setup.intake import run

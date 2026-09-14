@@ -122,13 +122,13 @@ Three distinct recovery paths — do NOT conflate them:
 
 - **Unblock (default retry)**: `unblock` moves the ticket blocked→queue, **preserves** the worktree/branch/logs, and appends your feedback to `blocked.md` so the developer reads it on resume. This is the retry-with-feedback path — use it whenever you have diagnosis or answers to pass forward.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
-  recreates the worktree and branch from the same immutable Acceptance Basis,
+  recreates the worktree and branch from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
   execution against the original basis is required.
 - **Return to draft (fresh Ticket authoring)**: this is required when
   `blocked_reason` is `acceptance-input-change-required`, or whenever the
-  Acceptance Basis inputs must change. It preserves the old Acceptance Basis
+  Ticket baseline inputs must change. It preserves the old Ticket baseline
   and worktrees for audit, archives the current run history under
   `logs/<slug>/runs/<NNN>/`, and opens a new generation-qualified authoring
   workspace from the committed destination refs. Correct the authoring inputs,
@@ -143,7 +143,7 @@ Notes:
 - Feedback lives in `blocked.md`; `unblock --feedback` appends to it. A `reset`
   marks earlier entries as prior-run history.
 - `return-to-draft` archives `blocked.md`, human logs, and runtime evidence with
-  the previous run. It strips the prior `acceptance_basis`, `created`,
+  the previous run. It strips the prior `machine`, `created`,
   `feature_branch`, `steps_completed`, and `stage` fields from the editable
   draft; it does not mutate the archived Ticket or old basis.
 
@@ -165,7 +165,7 @@ For an unblock retry:
   with the user, then perform this sequence in order:
 
   1. Run `python -m booley.ticket_board return-to-draft "$SLUG"`.
-  2. Correct the authoring filesets and any other Acceptance Basis inputs in
+  2. Correct the authoring filesets and any other Ticket baseline inputs in
      the returned `outer_worktree` and `project_worktree` (when present), and
      update the draft Ticket when its authored fields must change.
   3. Resolve the moved Ticket's absolute path under the Project's
@@ -173,7 +173,7 @@ For an unblock retry:
      `python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git`
      and fix every error before continuing.
   4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
-     Acceptance Basis, then print:
+     Ticket baseline, then print:
      `Returned to draft -> corrected Ticket published and enqueued.`
 
   Do not use the main checkout for the authoring corrections: use the worktree

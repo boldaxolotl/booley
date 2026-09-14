@@ -48,7 +48,6 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
-    load_basis_receipt,
     validate_current_basis_refs,
 )
 from booley.ticket_board.acceptance_ledger import read_acceptance
@@ -164,7 +163,7 @@ class ReviewPrepContext:
     base_sha: str
     head_sha: str
     feature_branch: str
-    acceptance_basis_id: str = ""
+    ticket_generation: str = ""
     triage_report_enabled: bool = True
     project_repository: ProjectReviewRepository | None = None
     inspection: ReviewInspection | None = None
@@ -263,7 +262,7 @@ def _load_review_basis(tio: TicketIO, slug: str) -> AcceptanceBasis:
     try:
         return tio.load_basis(slug)
     except AcceptanceBasisError as exc:
-        raise ReviewPrepError(f"ticket '{slug}' has no valid Acceptance Basis: {exc}") from exc
+        raise ReviewPrepError(f"ticket '{slug}' has no valid Ticket baseline: {exc}") from exc
 
 
 def _resolve_outer_review_repository(
@@ -272,7 +271,7 @@ def _resolve_outer_review_repository(
     checkout = _find_checkout(project_root, participant.ticket_ref)
     if not checkout:
         raise ReviewPrepError(
-            f"no worktree has Acceptance Basis ref '{participant.ticket_ref}' checked out"
+            f"no worktree has Ticket baseline ref '{participant.ticket_ref}' checked out"
         )
     worktree = checkout.resolve()
     checked_out_ref = _git(worktree, "symbolic-ref", "HEAD").strip()
@@ -302,14 +301,10 @@ def _review_snapshot_heads(
     expected_roles = {participant.role for participant in basis.participants}
     if set(accepted.snapshot.participant_heads) != expected_roles:
         raise ReviewPrepError(
-            "Criteria Satisfaction Record participants disagree with Acceptance Basis"
+            "Criteria Satisfaction Record participants disagree with Ticket baseline"
         )
-    try:
-        receipt = load_basis_receipt(project_root, slug, basis.as_dict())
-    except AcceptanceBasisError as exc:
-        raise ReviewPrepError(f"Acceptance Basis receipt is invalid: {exc}") from exc
-    if accepted.snapshot.acceptance_basis != receipt:
-        raise ReviewPrepError("Criteria Satisfaction Record names a different Acceptance Basis")
+    if accepted.snapshot.ticket_identity != basis.ticket_identity():
+        raise ReviewPrepError("Criteria Satisfaction Record names a different Ticket generation")
     return accepted.snapshot.participant_heads
 
 
@@ -339,7 +334,7 @@ def _resolve_review_repositories(
     try:
         current_heads = validate_current_basis_refs(project_root, basis)
     except AcceptanceBasisError as exc:
-        raise ReviewPrepError(f"Acceptance Basis refs are invalid: {exc}") from exc
+        raise ReviewPrepError(f"Ticket baseline refs are invalid: {exc}") from exc
     outer = basis.participant("outer")
     worktree, head_sha = _resolve_outer_review_repository(project_root, outer)
     project = next((row for row in basis.participants if row.role == "project"), None)
@@ -348,7 +343,7 @@ def _resolve_review_repositories(
     if repository is not None:
         actual_heads["project"] = repository.head_sha
     if actual_heads != current_heads:
-        raise ReviewPrepError("live review checkouts disagree with Acceptance Basis refs")
+        raise ReviewPrepError("live review checkouts disagree with Ticket baseline refs")
     if expected_heads is not None and actual_heads != expected_heads:
         raise ReviewPrepError("live review heads disagree with the Criteria Satisfaction Record")
     return worktree, head_sha, repository
@@ -393,8 +388,8 @@ def _resolve_context(
         basis,
     )
     if inspection is not None:
-        if inspection["basis_id"] != basis.basis_id:
-            raise ReviewPrepError("review entry belongs to a different Acceptance Basis")
+        if inspection["ticket_generation"] != basis.ticket_identity()["generation"]:
+            raise ReviewPrepError("review entry belongs to a different Ticket generation")
         expected_heads = inspection["heads"]
     worktree, head_sha, project_repository = _resolve_review_repositories(
         project_root, basis, expected_heads
@@ -411,7 +406,7 @@ def _resolve_context(
         base_sha=outer.authoring_sha,
         head_sha=head_sha,
         feature_branch=feature_branch,
-        acceptance_basis_id=basis.basis_id,
+        ticket_generation=basis.ticket_identity()["generation"],
         triage_report_enabled=report_enabled,
         project_repository=project_repository,
         inspection=inspection,
@@ -437,7 +432,7 @@ def _resolve_project_review_repository(
         return None
     if participant is None:
         raise ReviewPrepError(
-            "paired project checkout exists without a project Acceptance Basis participant"
+            "paired project checkout exists without a project Ticket baseline participant"
         )
     ticket_ref = _git(repository.worktree, "symbolic-ref", "HEAD").strip()
     if ticket_ref != participant.ticket_ref:
@@ -546,7 +541,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         require_clean(ctx)
         semantic = {
             key: ctx.inspection[key]
-            for key in ("basis_id", "basis_receipt", "disposition", "reason", "heads")
+            for key in ("ticket_generation", "ticket_identity", "disposition", "reason", "heads")
         }
         digest.update(json.dumps(semantic, sort_keys=True).encode())
     digest.update(_git(ctx.worktree, "rev-parse", "HEAD").strip().encode("ascii"))
@@ -611,7 +606,7 @@ def _fresh_outcome(
     expected = {
         "version": _PROMPT_VERSION,
         "prompt_sha256": prompt_sha,
-        "acceptance_basis_id": ctx.acceptance_basis_id,
+        "ticket_generation": ctx.ticket_generation,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "source_sha256": source_sha,
@@ -642,7 +637,7 @@ def _base_manifest(
         "status": status,
         "slug": ctx.slug,
         "feature_branch": ctx.feature_branch,
-        "acceptance_basis_id": ctx.acceptance_basis_id,
+        "ticket_generation": ctx.ticket_generation,
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "prompt_sha256": prompt_sha,

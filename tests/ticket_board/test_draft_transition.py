@@ -22,6 +22,7 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
+    ticket_machine_fields,
 )
 
 
@@ -45,14 +46,14 @@ def _participant(role: str = "outer") -> BasisParticipant:
 
 
 def _draft_journal(tmp_path: Path) -> draft_transition.DraftTransitionJournal:
-    basis = AcceptanceBasis((_participant(),)).as_dict()
+    basis = AcceptanceBasis((_participant(),))
+    machine = ticket_machine_fields(basis, fields={}, body="", generation="e" * 32)
     return draft_transition.DraftTransitionJournal(
         1,
         "0" * 32,
         "ticket",
         "initializing",
-        basis,
-        AcceptanceBasis.from_mapping(basis).basis_id,
+        machine,
         str(tmp_path / "tickets/board/blocked/ticket.md"),
         "1" * 64,
         str(tmp_path / "tickets/board/drafts/ticket.md"),
@@ -105,8 +106,8 @@ def test_draft_journal_validation_rejects_noncanonical_state(
     for changed in (
         replace(journal, schema=2),
         replace(journal, operation_id="bad"),
-        replace(journal, basis={}),
-        replace(journal, basis_id="wrong"),
+        replace(journal, machine={}),
+        replace(journal, machine={**journal.machine, "generation": "wrong"}),
         replace(journal, draft_ticket="wrong"),
         replace(journal, generation="wrong"),
         replace(journal, blocked_sha256="wrong"),

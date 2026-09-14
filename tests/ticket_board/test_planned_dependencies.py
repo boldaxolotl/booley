@@ -511,7 +511,7 @@ def _ordered_chain_providers() -> tuple[_Provider, _Provider]:
         "first",
         {},
         SimpleNamespace(
-            basis_id="a" * 64,
+            ticket_identity=lambda: {"generation": "a" * 32},
             target_plan=TargetPlan.from_value(
                 [{"target": "acme:lib:toy:1.0#middle", "role": "persistent"}]
             ),
@@ -522,7 +522,7 @@ def _ordered_chain_providers() -> tuple[_Provider, _Provider]:
         "second",
         {"dependencies": ["first"]},
         SimpleNamespace(
-            basis_id="b" * 64,
+            ticket_identity=lambda: {"generation": "b" * 32},
             target_plan=TargetPlan.from_value(
                 [
                     {
@@ -554,7 +554,7 @@ def test_public_materialization_skips_superseded_ordered_export(
         if provider.slug == "first":
             return ProviderMaterialization()
         binding = ProviderTargetBinding(
-            "second", "b" * 64, "acme:lib:toy:1.0#latest", "replacement", "c" * 64
+            "second", "b" * 32, "acme:lib:toy:1.0#latest", "replacement", "c" * 64
         )
         return ProviderMaterialization(
             bindings=(binding,),
@@ -581,7 +581,7 @@ def test_provider_basis_refresh_with_unchanged_surface_remains_valid(
     source = tmp_path / "provider"
     _core(source / "toy.core", "  future:\n    filesets: []\n")
     digest = target_surface_sha256(source, "future")
-    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", digest)
+    binding = ProviderTargetBinding("provider", "a" * 32, "future", "persistent", digest)
     materialization = ProviderMaterialization(
         bindings=(binding,),
         materialized_targets=frozenset({"future"}),
@@ -593,7 +593,7 @@ def test_provider_basis_refresh_with_unchanged_surface_remains_valid(
         "provider",
         {},
         SimpleNamespace(
-            basis_id="b" * 64,
+            ticket_identity=lambda: {"generation": "b" * 32},
             target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}]),
             removal_targets=(),
         ),
@@ -628,7 +628,7 @@ def test_public_marker_load_rejects_misaligned_target_sets(tmp_path: Path, monke
 def test_public_marker_load_rejects_binding_outside_dependencies(
     tmp_path: Path, monkeypatch
 ) -> None:
-    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    binding = ProviderTargetBinding("provider", "a" * 32, "future", "persistent", "b" * 64)
     marker = tmp_path / "marker.json"
     marker.write_bytes(
         planned_dependencies._serialize(
@@ -664,7 +664,7 @@ def test_public_marker_load_rejects_non_exportable_binding_role(
     marker = tmp_path / "marker.json"
     binding = {
         "provider": "provider",
-        "basis_id": "a" * 64,
+        "ticket_generation": "a" * 32,
         "target": "future",
         "role": "ephemeral",
         "surface_sha256": "b" * 64,
@@ -698,7 +698,7 @@ def test_public_materialization_retries_after_atomic_surface_write_failure(
     _core(source / "toy.core", "  future:\n    filesets: []\n")
     plan = TargetPlan.from_value([{"target": "future", "role": "persistent"}])
     provider = _Provider(
-        "provider", {}, SimpleNamespace(target_plan=plan, basis_id="a" * 64, removal_targets=())
+        "provider", {}, SimpleNamespace(target_plan=plan, ticket_identity=lambda: {"generation": "a" * 32}, removal_targets=())
     )
     monkeypatch.setattr(planned_dependencies, "_active_providers", lambda *_args: [])
     monkeypatch.setattr(planned_dependencies, "_provider", lambda *_args: provider)
@@ -743,7 +743,7 @@ def test_provider_materialization_uses_published_basis_surface(
         {},
         SimpleNamespace(
             target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}]),
-            basis_id="a" * 64,
+            ticket_identity=lambda: {"generation": "a" * 32},
         ),
     )
     monkeypatch.setattr(planned_dependencies, "materialize_basis_checkout", lambda *_: published)
@@ -771,7 +771,7 @@ def _materialize_placeholder_provider(tmp_path: Path, monkeypatch):
         {"scope": ["rtl/future.sv [new]"]},
         SimpleNamespace(
             target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}]),
-            basis_id="a" * 64,
+            ticket_identity=lambda: {"generation": "a" * 32},
         ),
     )
     target_input = SimpleNamespace(path="rtl/future.sv", file_type="systemVerilogSource", tags=())
@@ -836,7 +836,7 @@ def test_existing_marker_restores_surfaces_into_recreated_workspace(
         {},
         SimpleNamespace(
             target_plan=TargetPlan.from_value([{"target": "future", "role": "persistent"}]),
-            basis_id="a" * 64,
+            ticket_identity=lambda: {"generation": "a" * 32},
             removal_targets=(),
         ),
     )
@@ -918,7 +918,7 @@ def test_existing_marker_rechecks_new_ambiguous_provider(tmp_path: Path, monkeyp
         _Provider(
             slug,
             {},
-            SimpleNamespace(target_plan=plan, removal_targets=(), basis_id="a" * 64),
+            SimpleNamespace(target_plan=plan, removal_targets=(), ticket_identity=lambda: {"generation": "a" * 32}),
         )
         for slug in ("first", "second")
     ]
@@ -942,7 +942,7 @@ def test_materialization_classifies_already_merged_provider_surface(
     provider = _Provider(
         "provider",
         {},
-        SimpleNamespace(target_plan=plan, basis_id="a" * 64),
+        SimpleNamespace(target_plan=plan, ticket_identity=lambda: {"generation": "a" * 32}),
     )
     monkeypatch.setattr(
         planned_dependencies,
@@ -1023,7 +1023,7 @@ def test_public_materialization_pins_every_exported_provider_target(
         SimpleNamespace(target_plan=plan, removal_targets=()),
     )
     binding = ProviderTargetBinding(
-        "provider", "a" * 64, "acme:lib:toy:1.0#future", "persistent", "b" * 64
+        "provider", "a" * 32, "acme:lib:toy:1.0#future", "persistent", "b" * 64
     )
     materialized = ProviderMaterialization(
         bindings=(binding,),
@@ -1055,7 +1055,7 @@ def test_public_materialization_retries_after_marker_write_failure(
         {"dependencies": []},
         SimpleNamespace(target_plan=plan, removal_targets=()),
     )
-    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    binding = ProviderTargetBinding("provider", "a" * 32, "future", "persistent", "b" * 64)
     materialized = ProviderMaterialization(
         bindings=(binding,),
         exported_targets=frozenset({"future"}),
@@ -1131,7 +1131,7 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ticket = tmp_path / "provider.md"
-    ticket.write_text("---\nacceptance_basis: {}\n---\n", encoding="utf-8")
+    ticket.write_text("---\nmachine:\n  generation: bad\n---\n", encoding="utf-8")
     monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "done"))
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
     monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "draft"))
@@ -1144,7 +1144,7 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
         "load_acceptance_basis",
         lambda *_args: (_ for _ in ()).throw(acceptance_basis.AcceptanceBasisError("bad basis")),
     )
-    with pytest.raises(PlannedDependencyError, match="invalid Acceptance Basis"):
+    with pytest.raises(PlannedDependencyError, match="invalid Ticket baseline"):
         planned_dependencies._provider(tmp_path, tmp_path, "provider")
 
     monkeypatch.setattr(
@@ -1158,7 +1158,7 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
     )
     monkeypatch.setattr(planned_dependencies, "load_acceptance_basis", lambda *_args: basis)
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") == _Provider(
-        "provider", {"acceptance_basis": {}}, basis
+        "provider", {"machine": {"generation": "bad"}}, basis
     )
 
 
@@ -1198,7 +1198,7 @@ def test_provider_merge_wraps_disappeared_target_and_table_errors(
 
 
 def test_materialization_validation_rejects_each_inconsistent_boundary() -> None:
-    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    binding = ProviderTargetBinding("provider", "a" * 32, "future", "persistent", "b" * 64)
     duplicate = ProviderMaterialization(
         bindings=(binding, binding),
         materialized_targets=frozenset({"future"}),
@@ -1287,7 +1287,7 @@ def test_refreshed_provider_binding_rejects_removed_and_changed_exports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _Provider("provider", {}, SimpleNamespace())
-    binding = ProviderTargetBinding("provider", "a" * 64, "future", "persistent", "b" * 64)
+    binding = ProviderTargetBinding("provider", "a" * 32, "future", "persistent", "b" * 64)
     with pytest.raises(PlannedDependencyError, match="no longer exports"):
         planned_dependencies._validate_refreshed_bindings(provider, [binding], set(), tmp_path)
 

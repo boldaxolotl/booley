@@ -321,7 +321,7 @@ def _validate_source_surface(
             selector_errors = validate_binding_selectors(temporary, basis.bindings)
             if selector_errors:
                 raise AcceptanceBasisError(
-                    "Acceptance Basis selectors changed: " + "; ".join(selector_errors)
+                    "Ticket baseline selectors changed: " + "; ".join(selector_errors)
                 )
         except AcceptanceBasisError as exc:
             raise AcceptanceOperationError(str(exc)) from exc
@@ -1396,7 +1396,7 @@ class _AcceptanceTransaction:
         return {item.role: item for item in self.basis.participants}
 
     def repository(self, participant: BasisParticipant) -> Path:
-        """Resolve one Acceptance Basis participant to its local repository."""
+        """Resolve one Ticket baseline participant to its local repository."""
         return _repository_for(self.root, self.project_repository, participant)
 
     def persist(
@@ -1461,7 +1461,7 @@ def _destination_branch(basis: AcceptanceBasis) -> str:
     outer = next(item for item in basis.participants if item.role == "outer")
     prefix = "refs/heads/"
     if not outer.destination_ref.startswith(prefix):
-        raise AcceptanceOperationError("outer Acceptance Basis destination must be a branch ref")
+        raise AcceptanceOperationError("outer Ticket baseline destination must be a branch ref")
     return outer.destination_ref.removeprefix(prefix)
 
 

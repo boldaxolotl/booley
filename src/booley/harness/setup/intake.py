@@ -142,6 +142,11 @@ def _reject_retired_ticket_fields(fields: dict[str, Any], slug: str) -> None:
             "recreate the Ticket.",
             slug=slug,
         )
+    if "acceptance_basis" in fields:
+        raise FatalError(
+            "unsupported Ticket format: recreate this Ticket without acceptance_basis",
+            slug=slug,
+        )
 
 
 def _load_context_basis(
@@ -150,7 +155,7 @@ def _load_context_basis(
     slug: str,
     fields: dict[str, Any],
 ) -> AcceptanceBasis | None:
-    raw_basis = fields.get("acceptance_basis")
+    raw_basis = fields.get("machine")
     try:
         return (
             TicketIO(
@@ -161,7 +166,7 @@ def _load_context_basis(
             else None
         )
     except AcceptanceBasisError as exc:
-        raise FatalError(f"Invalid Acceptance Basis: {exc}", slug=slug) from exc
+        raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
 
 def _check_dependencies(ctx: TicketContext) -> None:
@@ -369,7 +374,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
     fields = parsed.get("fields", {})
     if requires_return_to_draft(fields):
         raise FatalError(
-            f"Ticket '{slug}' has changed Acceptance Basis inputs; use return-to-draft"
+            f"Ticket '{slug}' has changed Ticket baseline inputs; use return-to-draft"
         )
 
     ctx = _build_context(project_root, ticket_path, slug, fields)
@@ -422,11 +427,11 @@ def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str
 
 
 def _verify_acceptance_basis(ctx: TicketContext, action: str) -> None:
-    """Verify durable Acceptance Basis refs before criteria state can be initialized."""
+    """Verify durable Ticket baseline refs before criteria state can be initialized."""
     del action
     basis = ctx.acceptance_basis
     if basis is None:
-        raise FatalError("acceptance_basis is required for executable Tickets", slug=ctx.slug)
+        raise FatalError("machine metadata is required for executable Tickets", slug=ctx.slug)
     from booley.ticket_board.workspace_ops import validate_basis_refs
 
     try:

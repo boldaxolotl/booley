@@ -284,7 +284,7 @@ async def _run_setup_step(ctx: TicketContext, project_root: Path) -> bool:
 
 
 def _resumed_basis_failure(ctx: TicketContext) -> str | None:
-    """Return a setup-blocking error when a reused Acceptance Basis view is invalid."""
+    """Return a setup-blocking error when a reused Ticket baseline view is invalid."""
     if ctx.acceptance_basis is None:
         return None
     if ctx.worktree_path is None:
@@ -1476,10 +1476,10 @@ async def _resolve_ticket_disposition(
 
 
 def _block_changed_acceptance_basis(ctx: TicketContext, run_index: int) -> bool:
-    """Fail closed before review handoff when Acceptance Basis inputs changed."""
+    """Fail closed before review handoff when Ticket baseline inputs changed."""
     basis = ctx.acceptance_basis
     if basis is None:
-        logger.warning("Ticket %s reaches handoff without an Acceptance Basis", ctx.slug)
+        logger.warning("Ticket %s reaches handoff without an Ticket baseline", ctx.slug)
         return False
     from booley.ticket_board.acceptance_basis import AcceptanceBasisError
     from booley.ticket_board.acceptance_validation import (

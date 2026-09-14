@@ -85,11 +85,6 @@ def _authoring_workspace(
         lambda *_args: None,
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
-    monkeypatch.setattr(
-        workspace_ops,
-        "record_relative_path",
-        lambda *_args, **_kwargs: Path(".booley_project/acceptance/bases"),
-    )
     return root, ticket, outer
 
 
@@ -1073,7 +1068,10 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
             tmp_path, ticket, "ticket", workspace, (), operation_id="other"
         )
 
-    prepared = SimpleNamespace(target_plan=SimpleNamespace(removal_targets=("old",)))
+    prepared = SimpleNamespace(
+        target_plan=SimpleNamespace(removal_targets=("old",)),
+        providers=SimpleNamespace(bindings=()),
+    )
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
     monkeypatch.setattr(

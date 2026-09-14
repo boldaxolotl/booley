@@ -1,11 +1,11 @@
-"""Recoverable publication of Acceptance Basis repository participants."""
+"""Recoverable publication of Ticket baseline repository participants."""
 
 from __future__ import annotations
 
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -14,7 +14,12 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
-from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+from booley.ticket_board.acceptance_basis import (
+    AcceptanceBasis,
+    BasisParticipant,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
+)
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._repository import (
     FaultingAcceptanceRepositories,
@@ -107,6 +112,11 @@ class _TicketIO:
     _bases: dict[Path, AcceptanceBasis]
 
     def __init__(self, root: Path, basis: AcceptanceBasis) -> None:
+        if basis.machine is None:
+            basis = replace(
+                basis,
+                machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
+            )
         self._bases = {root.resolve(): basis}
         self._project_root = root
         self.tickets_dir = root / ".booley_project" / "tickets"
@@ -115,7 +125,7 @@ class _TicketIO:
             "file": "board/review/change-target.md",
             "status": "review",
             "branch": "main",
-            "acceptance_basis": {"schema": 1, "participants": []},
+            "machine": basis.ticket_identity(),
         }
         ticket = self.tickets_dir / str(self.entry["file"])
         ticket.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +133,7 @@ class _TicketIO:
             format_frontmatter(
                 {
                     "branch": "main",
-                    "acceptance_basis": self.entry["acceptance_basis"],
+                    "machine": self.entry["machine"],
                 },
                 "## Description\n\nTest completion.\n",
             ),
@@ -153,7 +163,8 @@ class _BoundaryTicketIO:
         return self.entry
 
     def load_basis(self, _slug: str) -> AcceptanceBasis:
-        return AcceptanceBasis.from_mapping((self.entry or {}).get("acceptance_basis"))
+        machine = (self.entry or {}).get("machine")
+        return replace(ticket_baseline_from_machine(machine), machine=machine)
 
 
 def _contract(
@@ -161,8 +172,10 @@ def _contract(
     participants: tuple[BasisParticipant, ...],
 ) -> AcceptanceBasis:
     del root
-    return AcceptanceBasis(
-        participants=participants,
+    basis = AcceptanceBasis(participants=participants)
+    return replace(
+        basis,
+        machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
     )
 
 
@@ -443,7 +456,7 @@ def test_complete_rejects_retired_integration_metadata(
     assert complete_review_ticket(tio, "ambiguous", _Policy()) is False
     error = capsys.readouterr().err
     assert "integration_base" in error
-    assert "Acceptance Basis Tickets" in error
+    assert "Tickets with a recorded baseline" in error
 
 
 def test_complete_rejects_destination_ref_as_cleanup_target(
@@ -599,7 +612,6 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.ticket_board import acceptance_basis as basis_module
     from booley.ticket_board import acceptance_ledger, operations
 
     root = tmp_path / "rtl"
@@ -621,16 +633,15 @@ def test_completion_snapshot_retry_uses_journal_sources_after_ref_cleanup(
     tio = _TicketIO(root, basis)
     assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
     assert acceptance_impl._ref_commit(root, "refs/heads/change-target") is None
-    receipt = {"basis_id": basis.basis_id}
+    identity = basis.ticket_identity()
     monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
-    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
 
     operations._validate_accepted_snapshot(
         tio,
         "change-target",
         tmp_path / "logs",
         SimpleNamespace(
-            acceptance_basis=receipt,
+            ticket_identity=identity,
             participant_heads={"outer": ticket_sha},
         ),
     )
@@ -650,7 +661,7 @@ def test_materialized_basis_requires_project_owned_by_checkout(tmp_path: Path) -
 
     with pytest.raises(
         AcceptanceBasisError,
-        match="cannot prepare materialized Acceptance Basis",
+        match="cannot prepare materialized Ticket baseline",
     ):
         operations._prepare_materialized_basis_view(tio, "change-target", checkout, basis)
 
@@ -659,7 +670,6 @@ def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.ticket_board import acceptance_basis as basis_module
     from booley.ticket_board import acceptance_ledger, operations
 
     root = tmp_path / "rtl"
@@ -684,9 +694,8 @@ def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
     _git(root, "add", "design.txt")
     _git(root, "commit", "-m", "late change")
     _git(root, "switch", "main")
-    receipt = {"basis_id": basis.basis_id}
+    identity = basis.ticket_identity()
     monkeypatch.setattr(acceptance_ledger, "validate_review_package_binding", lambda *_: None)
-    monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_: receipt)
 
     with pytest.raises(acceptance_ledger.AcceptanceLedgerError, match="Ticket heads changed"):
         operations._validate_accepted_snapshot(
@@ -694,7 +703,7 @@ def test_completion_snapshot_rejects_advanced_ticket_ref_before_publication(
             "change-target",
             tmp_path / "logs",
             SimpleNamespace(
-                acceptance_basis=receipt,
+                ticket_identity=identity,
                 participant_heads={"outer": ticket_sha},
             ),
         )

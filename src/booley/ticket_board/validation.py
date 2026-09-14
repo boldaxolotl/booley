@@ -571,7 +571,7 @@ def _validate_criteria(
     # setup materializes their Ticket Workspace; project_root is the destination
     # checkout here and must not substitute for that immutable view.
     errors.extend(_validate_sim_entries(criteria))
-    if project_root and fields.get("acceptance_basis") is None:
+    if project_root and fields.get("machine") is None:
         errors.extend(_validate_sim_targets(criteria, fields, body, project_root))
 
     # Type-specific criteria rules (warnings only, no structural errors)
@@ -1197,13 +1197,15 @@ def validate_git_state(
 
 
 def _validate_acceptance_basis_field(fields: dict[str, Any]) -> list[str]:
-    raw_basis = fields.get("acceptance_basis")
-    if raw_basis is None:
+    if "acceptance_basis" in fields:
+        return ["unsupported Ticket format: recreate this Ticket without acceptance_basis"]
+    raw_machine = fields.get("machine")
+    if raw_machine is None:
         return []
-    from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+    from .acceptance_basis import AcceptanceBasisError, ticket_baseline_from_machine
 
     try:
-        AcceptanceBasis.from_mapping(raw_basis)
+        ticket_baseline_from_machine(raw_machine)
     except AcceptanceBasisError as exc:
         return [str(exc)]
     return []

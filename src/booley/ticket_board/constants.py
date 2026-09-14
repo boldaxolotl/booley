@@ -88,6 +88,7 @@ KNOWN_FIELDS = REQUIRED_FIELDS | {
     "base_sha",
     "project_destination_ref",
     "acceptance_basis",
+    "machine",
     "target_plan",
     "target_contract",  # recognized only to produce the hard-cutoff diagnostic
     "target_contract_history",  # recognized only to produce the hard-cutoff diagnostic
@@ -96,11 +97,11 @@ KNOWN_FIELDS = REQUIRED_FIELDS | {
 
 # Deprecated fields that must not appear in new tickets.
 DEPRECATED_FIELDS = {
-    "base_sha": "removed by the Acceptance Basis hard cutoff; recreate the Ticket",
+    "base_sha": "removed by the Ticket baseline hard cutoff; recreate the Ticket",
     "target_contract": "legacy Target Contract tickets are unsupported; recreate the Ticket",
     "target_contract_history": "legacy Target Contract history is unsupported",
     "integration_base": (
-        "Acceptance Basis Tickets publish their recorded refs directly to destination refs"
+        "Tickets with a recorded baseline publish their recorded refs directly to destination refs"
     ),
     "test": "use 'criteria' instead",
     "plan_file": "removed — the planner specialists were pruned; put the plan in the ticket body",

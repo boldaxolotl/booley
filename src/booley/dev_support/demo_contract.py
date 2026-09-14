@@ -24,7 +24,7 @@ from booley.runtime.git import scope_matches_file
 from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
-from booley.ticket_board.acceptance_basis import AcceptanceBasisError, authored_ticket_record
+from booley.ticket_board.acceptance_basis import AcceptanceBasisError, authored_ticket_digest
 from booley.ticket_board.acceptance_targets import criterion_targets
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.readiness import check_ticket_ready
@@ -99,11 +99,11 @@ def _validate_ticket_fixture(contract_path: Path, fixture: str, ticket: Path) ->
     try:
         fixture_fields, fixture_body = parse_frontmatter(fixture_path.read_text(encoding="utf-8"))
         ticket_fields, ticket_body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-        fixture_record = authored_ticket_record(fixture_fields, fixture_body, ())
-        ticket_record = authored_ticket_record(ticket_fields, ticket_body, ())
+        fixture_digest = authored_ticket_digest(fixture_fields, fixture_body)
+        ticket_digest = authored_ticket_digest(ticket_fields, ticket_body)
     except (AcceptanceBasisError, OSError, ValueError) as exc:
         return [f"cannot compare CI-owned ticket fixture {fixture}: {exc}"]
-    if fixture_record["ticket"] != ticket_record["ticket"]:
+    if fixture_digest != ticket_digest:
         return [f"injected ticket does not match CI-owned fixture: {fixture}"]
     return []
 

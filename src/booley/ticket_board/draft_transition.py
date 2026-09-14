@@ -1,4 +1,4 @@
-"""Recoverable blocked-to-draft transition for Acceptance Basis Tickets."""
+"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline."""
 
 from __future__ import annotations
 
@@ -37,7 +37,12 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
-from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError, load_acceptance_basis
+from .acceptance_basis import (
+    AcceptanceBasis,
+    AcceptanceBasisError,
+    load_acceptance_basis,
+    ticket_baseline_from_machine,
+)
 from .frontmatter import format_frontmatter, parse_frontmatter
 from .persistence import atomic_replace_bytes
 from .workspace_ops import (
@@ -64,8 +69,7 @@ class DraftTransitionJournal:
     operation_id: str
     slug: str
     state: Literal["initializing", "prepared", "cutover-ready", "published"]
-    basis: dict[str, Any]
-    basis_id: str
+    machine: dict[str, Any]
     blocked_ticket: str
     blocked_sha256: str
     draft_ticket: str
@@ -131,8 +135,7 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
         operation_id=require_str(mapping, "operation_id"),
         slug=require_str(mapping, "slug"),
         state=cast(Literal["initializing", "prepared", "cutover-ready", "published"], state),
-        basis=require_dict(mapping.get("basis"), field="return-to-draft journal basis"),
-        basis_id=require_str(mapping, "basis_id"),
+        machine=require_dict(mapping.get("machine"), field="return-to-draft journal machine"),
         blocked_ticket=require_str(mapping, "blocked_ticket"),
         blocked_sha256=require_str(mapping, "blocked_sha256"),
         draft_ticket=require_str(mapping, "draft_ticket"),
@@ -157,11 +160,9 @@ def _validate_journal(
     if not _OPERATION_RE.fullmatch(journal.operation_id):
         raise DraftTransitionError("return-to-draft journal operation ID is invalid")
     try:
-        basis = AcceptanceBasis.from_mapping(journal.basis)
+        ticket_baseline_from_machine(journal.machine)
     except AcceptanceBasisError as exc:
         raise DraftTransitionError(str(exc)) from exc
-    if journal.basis_id != basis.basis_id:
-        raise DraftTransitionError("return-to-draft journal basis identity changed")
     board = resolve_checkout_project_dir(root) / "tickets" / "board"
     draft = Path(journal.draft_ticket).resolve()
     if draft != (board / "drafts" / f"{slug}.md").resolve():
@@ -196,7 +197,7 @@ def _next_archive(log_dir: Path) -> Path:
 def _draft_content(ticket: Path) -> tuple[dict[str, Any], str, bytes]:
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     draft = dict(fields)
-    for field in ("acceptance_basis", "created", "feature_branch", "steps_completed", "stage"):
+    for field in ("machine", "created", "feature_branch", "steps_completed", "stage"):
         draft.pop(field, None)
     return fields, body, format_frontmatter(draft, body).encode()
 
@@ -228,8 +229,7 @@ def _new_journal(
         operation_id,
         slug,
         "initializing",
-        basis.as_dict(),
-        basis.basis_id,
+        basis.ticket_identity(),
         str(ticket.resolve()),
         _digest(ticket.read_bytes()),
         str(draft_destination.resolve()),
@@ -286,7 +286,7 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> Acceptance
         destination_branch=str(fields.get("branch", "")),
     )
     if errors:
-        raise DraftTransitionError("old Acceptance Basis is invalid: " + "; ".join(errors))
+        raise DraftTransitionError("old Ticket baseline is invalid: " + "; ".join(errors))
     return basis
 
 
@@ -538,7 +538,7 @@ def return_to_draft(
         journal = _new_journal(root, Path(ticket_path), slug, status, logs)
     if journal.state == "initializing":
         journal = _prepare_generation(root, journal)
-    basis = AcceptanceBasis.from_mapping(journal.basis)
+    basis = ticket_baseline_from_machine(journal.machine)
     if journal.state == "prepared":
         basis = _validate_cutover(root, journal)
         journal = journal.with_state("cutover-ready")
@@ -551,7 +551,8 @@ def return_to_draft(
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
         _publish_board(root, journal)
         append_transition(
-            f"old basis {journal.basis_id}; new draft identity {journal.generation}; "
+            f"old Ticket generation {journal.machine['generation']}; "
+            f"new draft identity {journal.generation}; "
             f"{journal.operation_id}"
         )
         journal = journal.with_state("published")

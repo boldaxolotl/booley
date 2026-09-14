@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import hashlib
 import logging
 import os
 import shutil
@@ -243,9 +242,9 @@ class TicketIO:
             snapshot_fields,
             snapshot_body,
         )
-        if snapshot.as_dict() != basis.as_dict():
+        if snapshot.ticket_identity() != basis.ticket_identity():
             raise AcceptanceBasisError(
-                "acceptance-input-change-required: runtime Ticket snapshot names another basis"
+                "acceptance-input-change-required: runtime Ticket names another generation"
             )
         return basis
 
@@ -583,12 +582,12 @@ class TicketIO:
         # Canonical slug = filename stem (immutable after creation).
         slug = ticket_path.stem
         with ticket_path.open(encoding="utf-8") as stream:
-            fields, _body = parse_frontmatter(stream.read())
-        basis_errors = self._validate_enqueue_basis(slug, fields)
+            fields, body = parse_frontmatter(stream.read())
+        basis_errors = self._validate_enqueue_basis(slug, fields, body)
         if basis_errors:
             print(
                 "Error: acceptance-input-change-required: ticket must have a published "
-                "Acceptance Basis before fresh execution:",
+                "Ticket baseline before fresh execution:",
                 file=sys.stderr,
             )
             for error in basis_errors:
@@ -807,13 +806,18 @@ class TicketIO:
 
     def _validate_enqueue_journal_basis(self, journal) -> None:
         """Revalidate immutable basis evidence before resuming publication."""
-        from .acceptance_basis import AcceptanceBasis, load_basis_receipt
+        from .acceptance_basis import ticket_baseline_from_fields, validate_ticket_commit_trailers
+        from .frontmatter import parse_frontmatter
         from .workspace_ops import validate_basis_refs
 
-        basis = AcceptanceBasis.from_mapping(journal.basis)
-        receipt = load_basis_receipt(self._project_root, journal.slug, journal.basis)
-        if receipt != journal.receipt:
-            raise RuntimeError("enqueue journal receipt differs from write-once evidence")
+        path = Path(journal.candidate)
+        if not path.is_file():
+            path = Path(journal.destination)
+        fields, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if fields.get("machine") != journal.machine:
+            raise RuntimeError("enqueue journal Ticket machine metadata changed")
+        basis = ticket_baseline_from_fields(fields, body)
+        validate_ticket_commit_trailers(self._project_root, journal.slug, basis, journal.machine)
         outer = basis.participant("outer")
         errors = validate_basis_refs(
             self._project_root,
@@ -824,7 +828,7 @@ class TicketIO:
             exact_destination_heads=True,
         )
         if errors:
-            raise RuntimeError("enqueue journal Acceptance Basis is invalid: " + "; ".join(errors))
+            raise RuntimeError("enqueue journal Ticket baseline is invalid: " + "; ".join(errors))
 
     def _append_enqueue_transition_once(self, journal) -> None:
         marker = f"enqueue operation {journal.operation_id}"
@@ -864,12 +868,12 @@ class TicketIO:
             prepared = self._prepare_enqueue_fields(slug, ticket_path, on_success)
             if prepared is None:
                 return False
-            fields, body, receipt = prepared
+            fields, body, machine = prepared
             has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
             if dep_error:
                 return False
             journal = self._prepare_enqueue_publication(
-                slug, ticket_path, fields, body, has_unmet, receipt
+                slug, ticket_path, fields, body, has_unmet, machine
             )
             return self._finish_enqueue_publication(journal)
 
@@ -878,7 +882,7 @@ class TicketIO:
         if not integration_base:
             return False
         print(
-            "Error: --integration-base is retired; Acceptance Basis Tickets publish "
+            "Error: --integration-base is retired; Tickets with a recorded baseline publish "
             "their recorded refs directly to destination refs",
             file=sys.stderr,
         )
@@ -894,7 +898,7 @@ class TicketIO:
         if not self._validate_authored_enqueue(slug, ticket_path, effective_fields, body):
             return None
         try:
-            from .acceptance_basis import write_basis_receipt
+            from .acceptance_basis import ticket_machine_fields
             from .workspace_ops import prepare_acceptance_basis
 
             basis, operation_id = prepare_acceptance_basis(
@@ -903,22 +907,18 @@ class TicketIO:
                 slug,
                 effective_fields=effective_fields,
             )
-            receipt = write_basis_receipt(
-                self._project_root,
-                slug,
-                basis,
-                source_sha256=hashlib.sha256(ticket_path.read_bytes()).hexdigest(),
-                operation_id=operation_id,
+            machine = ticket_machine_fields(
+                basis, fields=effective_fields, body=body, generation=operation_id
             )
-            effective_fields["acceptance_basis"] = basis.as_dict()
+            effective_fields["machine"] = machine
         except (RuntimeError, ValueError, OSError) as exc:
-            self._print_enqueue_errors("Acceptance Basis publication failed", [str(exc)])
+            self._print_enqueue_errors("Ticket baseline publication failed", [str(exc)])
             return None
-        basis_errors = self._validate_enqueue_basis(slug, effective_fields)
+        basis_errors = self._validate_enqueue_basis(slug, effective_fields, body)
         if basis_errors:
-            self._print_enqueue_errors("ticket Acceptance Basis is invalid", basis_errors)
+            self._print_enqueue_errors("ticket Ticket baseline is invalid", basis_errors)
             return None
-        return effective_fields, body, receipt
+        return effective_fields, body, machine
 
     def _draft_enqueue_fields(
         self, ticket_path: Path, on_success: dict[str, Any] | None
@@ -939,12 +939,15 @@ class TicketIO:
             return None
         if effective_fields.get("acceptance_basis") is not None:
             self._print_enqueue_errors(
-                "invalid draft", ["draft Tickets cannot contain an Acceptance Basis"]
+                "unsupported Ticket format", ["recreate this Ticket without acceptance_basis"]
             )
+            return None
+        if effective_fields.get("machine") is not None:
+            self._print_enqueue_errors("invalid draft", ["draft Tickets cannot contain machine metadata"])
             return None
         if not (self._project_root / ".git").exists():
             self._print_enqueue_errors(
-                "Acceptance Basis publication failed",
+                "Ticket baseline publication failed",
                 ["enqueue requires a Git-backed Project; the draft was left unchanged"],
             )
             return None
@@ -989,12 +992,10 @@ class TicketIO:
         fields: dict[str, Any],
         body: str,
         has_unmet: bool,
-        receipt: dict[str, Any],
+        machine: dict[str, Any],
     ):
-        from .acceptance_basis import AcceptanceBasis
         from .enqueue_publication import prepare_enqueue
 
-        basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
         created = now_iso()
         candidate_fields = {**fields, "created": created}
         destination_dir = "waiting" if has_unmet else "queue"
@@ -1008,8 +1009,7 @@ class TicketIO:
             content,
             has_unmet=has_unmet,
             created=created,
-            basis=basis.as_dict(),
-            receipt=receipt,
+            machine=machine,
         )
 
     @staticmethod
@@ -1026,20 +1026,22 @@ class TicketIO:
 
         return resolve_project_dir(self._project_root) / "worktrees" / slug
 
-    def _validate_enqueue_basis(self, slug: str, fields: dict[str, Any]) -> list[str]:
+    def _validate_enqueue_basis(self, slug: str, fields: dict[str, Any], body: str) -> list[str]:
         """Require durable basis refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities
-        from .acceptance_basis import AcceptanceBasis, AcceptanceBasisError
+        from .acceptance_basis import (
+            AcceptanceBasisError,
+            ticket_baseline_from_fields,
+            validate_ticket_commit_trailers,
+        )
         from .workspace_ops import validate_basis_refs
 
         if fields.get("target_contract") is not None:
             return ["legacy Target Contract tickets are unsupported after the hard cutoff"]
-        raw = fields.get("acceptance_basis")
-        if raw is None:
-            return ["acceptance_basis is required for executable Tickets"]
         try:
-            basis = AcceptanceBasis.from_mapping(raw)
+            basis = ticket_baseline_from_fields(fields, body)
+            validate_ticket_commit_trailers(self._project_root, slug, basis, fields["machine"])
         except AcceptanceBasisError as exc:
             return [str(exc)]
         try:

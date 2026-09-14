@@ -1,8 +1,7 @@
-"""Acceptance Basis schema and hard-cutoff behavior."""
+"""Ticket baseline schema and hard-cutoff behavior."""
 
 from __future__ import annotations
 
-import json
 import stat
 import subprocess
 from dataclasses import replace
@@ -11,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.core.models import TargetPlan
 from booley.harness.models import TicketContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
 from booley.runtime import worktree_relocation
@@ -37,11 +35,11 @@ from booley.ticket_board.acceptance_basis import (
     ProviderTargetBinding,
     assert_inputs_unchanged,
     assert_live_inputs_unchanged,
-    authored_ticket_record,
+    authored_ticket_digest,
     load_acceptance_basis,
-    load_basis_receipt,
-    load_basis_record,
     materialize_current_ticket_checkout,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
     validate_current_basis_refs,
     validate_ticket_view,
     worktree_for_ref,
@@ -138,17 +136,26 @@ def _replace_gitdir_marker(dot_git: Path, content: str) -> None:
     dot_git.write_text(content, encoding="utf-8")
 
 
-def test_minimal_basis_round_trips_through_ticket_frontmatter() -> None:
-    basis = AcceptanceBasis((_participant(),))
+def test_machine_metadata_round_trips_through_ticket_frontmatter() -> None:
+    provider = ProviderTargetBinding(
+        "dependency", "2" * 32, "acme:lib:toy:1.0#future", "persistent", "3" * 64
+    )
+    basis = AcceptanceBasis((_participant(),), providers=(provider,))
+    body = "## Description\n\nDemo."
+    machine = ticket_machine_fields(
+        basis, fields={"summary": "demo"}, body=body, generation="1" * 32
+    )
     text = format_frontmatter(
-        {"summary": "demo", "acceptance_basis": basis.as_dict()},
-        "## Description\n\nDemo.\n",
+        {"summary": "demo", "machine": machine},
+        body,
     )
 
-    fields, _body = parse_frontmatter(text)
+    fields, parsed_body = parse_frontmatter(text)
 
-    assert AcceptanceBasis.from_mapping(fields["acceptance_basis"]) == basis
-    assert set(fields["acceptance_basis"]) == {"schema", "participants"}
+    parsed = ticket_baseline_from_machine(fields["machine"])
+    assert parsed.participants == basis.participants
+    assert parsed.providers == (provider,)
+    assert fields["machine"]["authored_sha256"] == authored_ticket_digest(fields, parsed_body)
 
 
 @pytest.mark.parametrize("schema", [True, 1.0])
@@ -220,190 +227,6 @@ def test_canonical_binding_preserves_full_criterion_path(
 def test_basis_rejects_noncanonical_frontmatter(mapping: object, message: str) -> None:
     with pytest.raises(AcceptanceBasisError, match=message):
         AcceptanceBasis.from_mapping(mapping)
-
-
-def test_authored_record_rejects_legacy_target_contract() -> None:
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
-        authored_ticket_record(
-            {"summary": "old", "target_contract": {"schema": 4}},
-            "body",
-            (),
-        )
-
-
-def test_authored_record_pins_complete_ticket_projection() -> None:
-    fields = {
-        "summary": "demo",
-        "type": "feature",
-        "branch": "main",
-        "scope": ["rtl/demo.sv"],
-        "criteria": {"mandatory": {"review_rtl_bugs": True}},
-        "on_success": {"destination": "review"},
-        "priority": "medium",
-    }
-
-    record = authored_ticket_record(fields, "exact body", ())
-
-    assert record["schema"] == 2
-    pinned = record["ticket"]["frontmatter"]
-    assert pinned["summary"] == fields["summary"]
-    assert pinned["criteria"] == fields["criteria"]
-    assert pinned["dependencies"] == []
-    assert pinned["spec"] == ""
-    assert pinned["on_success"]["merge"] is True
-    assert record["ticket"]["body"] == "exact body"
-
-
-def test_authored_record_keeps_target_plan_in_record_not_basis_frontmatter() -> None:
-    raw_plan = [
-        {
-            "target": "acme:lib:toy:1.0#candidate",
-            "role": "replacement",
-            "replaces": "acme:lib:toy:1.0#baseline",
-        }
-    ]
-    plan = TargetPlan.from_value(raw_plan)
-    record = authored_ticket_record(
-        {
-            "summary": "demo",
-            "type": "feature",
-            "branch": "main",
-            "target_plan": raw_plan,
-        },
-        "body",
-        (),
-        target_plan=plan,
-        removal_targets=("acme:lib:toy:1.0#baseline",),
-    )
-    pointer = AcceptanceBasis((_participant(),))
-
-    hydrated = pointer.with_record(record)
-
-    assert set(pointer.as_dict()) == {"schema", "participants"}
-    assert hydrated.target_plan == plan
-    assert hydrated.removal_targets == ("acme:lib:toy:1.0#baseline",)
-
-
-def test_record_accepts_normalized_plan_with_authored_shorthand() -> None:
-    record = authored_ticket_record(
-        {
-            "summary": "demo",
-            "type": "feature",
-            "branch": "main",
-            "target_plan": [
-                {"target": "candidate", "role": "replacement", "replaces": "baseline"}
-            ],
-        },
-        "body",
-        (),
-        target_plan=TargetPlan.from_value(
-            [
-                {
-                    "target": "acme:lib:toy:1.0#candidate",
-                    "role": "replacement",
-                    "replaces": "acme:lib:toy:1.0#baseline",
-                }
-            ]
-        ),
-        removal_targets=("acme:lib:toy:1.0#baseline",),
-    )
-
-    acceptance_basis_module._validate_record(record)
-
-
-def test_record_rejects_normalized_plan_for_different_authored_selector() -> None:
-    record = authored_ticket_record(
-        {
-            "summary": "demo",
-            "type": "feature",
-            "branch": "main",
-            "target_plan": [{"target": "candidate", "role": "persistent"}],
-        },
-        "body",
-        (),
-        target_plan=TargetPlan.from_value(
-            [{"target": "acme:lib:toy:1.0#different", "role": "persistent"}]
-        ),
-    )
-
-    with pytest.raises(AcceptanceBasisError, match="differs from authored"):
-        acceptance_basis_module._validate_record(record)
-
-
-def test_record_pins_internal_provider_binding() -> None:
-    provider = ProviderTargetBinding(
-        "provider-ticket",
-        "a" * 64,
-        "acme:lib:toy:1.0#future",
-        "persistent",
-        "b" * 64,
-    )
-    record = authored_ticket_record(
-        {"summary": "consumer", "type": "feature", "branch": "main"},
-        "body",
-        (),
-        providers=(provider,),
-    )
-
-    acceptance_basis_module._validate_record(record)
-    hydrated = AcceptanceBasis((_participant(),)).with_record(record)
-    assert hydrated.providers == (provider,)
-
-
-def test_authored_record_rejects_retired_remove_targets() -> None:
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
-        authored_ticket_record(
-            {
-                "summary": "demo",
-                "type": "feature",
-                "branch": "main",
-                "on_success": {"remove_targets": []},
-            },
-            "body",
-            (),
-        )
-
-
-def test_record_rejects_boolean_schema_and_empty_binding() -> None:
-    record = authored_ticket_record(
-        {"summary": "demo", "type": "feature", "branch": "main"},
-        "body",
-        (),
-    )
-    record["schema"] = True
-    with pytest.raises(AcceptanceBasisError, match="must be an integer"):
-        acceptance_basis_module._validate_record(record)
-
-    record["schema"] = 2
-    record["bindings"] = [
-        {
-            "flow": "",
-            "criterion": "criteria.mandatory.synthesis_ok",
-            "baseline_identity": "acme:lib:toy#synth",
-            "baseline_selector": "synth",
-            "candidate_identity": "acme:lib:toy#synth",
-            "candidate_selector": "synth",
-        }
-    ]
-    with pytest.raises(AcceptanceBasisError, match="flow must be a non-empty string"):
-        acceptance_basis_module._validate_record(record)
-
-
-def test_committed_record_must_match_project_participant_destination() -> None:
-    basis = AcceptanceBasis((_participant("outer"), _participant("project")))
-    record = {
-        "ticket": {
-            "frontmatter": {
-                "branch": "main",
-                "project_destination_ref": "refs/heads/alternate",
-                "on_success": {},
-            }
-        },
-        "bindings": [],
-    }
-
-    with pytest.raises(AcceptanceBasisError, match="project destination disagrees"):
-        basis.with_record(record)
 
 
 def test_no_manual_contract_commands_remain() -> None:
@@ -577,7 +400,7 @@ def test_create_persists_inferred_paired_destination_ref(tmp_path: Path) -> None
     assert fields["project_destination_ref"] == "refs/heads/main"
 
 
-def test_paired_record_load_ignores_authored_project_override(
+def test_paired_ticket_load_ignores_authored_project_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _project_dir, tio = _paired_basis_project(tmp_path)
@@ -600,9 +423,11 @@ def test_paired_record_load_ignores_authored_project_override(
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(authored))
     reset_cache()
 
-    record = load_basis_record(root, "control-record", basis)
-
-    assert record["ticket"]["frontmatter"]["summary"] == "Read the control-plane record"
+    queued = tio.tickets_dir / "board" / "queue" / "control-record.md"
+    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    assert load_acceptance_basis(root, "control-record", fields, body).ticket_identity() == (
+        basis.ticket_identity()
+    )
 
 
 def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Path) -> None:
@@ -623,7 +448,7 @@ def test_create_rejects_missing_inferred_paired_destination_branch(tmp_path: Pat
     assert not (project_dir / "tickets/board/drafts/missing-paired-destination.md").exists()
 
 
-def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path) -> None:
+def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(tmp_path: Path) -> None:
     root, project_dir, tio = _basis_project(tmp_path)
 
     ticket = tio.create_ticket_file(
@@ -644,25 +469,22 @@ def test_enqueue_automatically_publishes_basis_record_and_receipt(tmp_path: Path
 
     queued = project_dir / "tickets" / "board" / "queue" / "automatic-basis.md"
     fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    basis = ticket_baseline_from_machine(fields["machine"])
+    assert "acceptance_basis" not in fields
     assert "target_contract" not in fields
     assert "base_sha" not in fields
     assert basis.participant("outer").ticket_ref.startswith("refs/heads/booley-generation/")
     record = project_dir / "worktrees" / "automatic-basis" / ".booley_project"
     record = record / "acceptance" / "bases" / "automatic-basis.json"
-    assert record.is_file()
+    assert not record.exists()
     receipt = project_dir / ".runtime" / "acceptance" / "bases" / "automatic-basis"
-    assert (receipt / f"{basis.basis_id}.json").is_file()
-    keepalive = f"refs/booley/bases/{basis.basis_id}/outer"
+    assert not receipt.exists()
+    keepalive = f"refs/booley/tickets/{fields['machine']['generation']}/outer"
     assert _git(root, "rev-parse", keepalive) == basis.outer_sha
     loaded = load_acceptance_basis(root, "automatic-basis", fields, body)
     assert loaded.basis_id == basis.basis_id
 
-    evidence = load_basis_receipt(root, "automatic-basis", basis.as_dict())
-    assert evidence["basis_id"] == basis.basis_id
-    assert evidence["record"]["sha256"]
-    assert len(evidence["source_sha256"]) == 64
-    assert len(evidence["operation_id"]) == 32
+    assert loaded.ticket_identity() == fields["machine"]
 
 
 @pytest.mark.asyncio
@@ -1114,7 +936,7 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     (tio.logs_dir / "new-generation/.runtime/ticket.lock").unlink(missing_ok=True)
     queued = project_dir / "tickets" / "board" / "queue" / "new-generation.md"
     fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    old_basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    old_basis = ticket_baseline_from_machine(fields["machine"])
     blocked = queued.parent.parent / "blocked" / queued.name
     blocked.parent.mkdir(parents=True)
     queued.rename(blocked)
@@ -1123,11 +945,11 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
 
     draft = project_dir / "tickets" / "board" / "drafts" / "new-generation.md"
     draft_fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
-    assert "acceptance_basis" not in draft_fields
+    assert "machine" not in draft_fields
     assert "created" not in draft_fields
     assert reopened["generation"] not in old_basis.participant("outer").ticket_ref
     assert _git(root, "rev-parse", old_basis.participant("outer").ticket_ref)
-    keepalive = f"refs/booley/bases/{old_basis.basis_id}/outer"
+    keepalive = f"refs/booley/tickets/{fields['machine']['generation']}/outer"
     assert _git(root, "rev-parse", keepalive) == old_basis.outer_sha
     archived_worktree = _git(root, "worktree", "list", "--porcelain")
     assert old_basis.participant("outer").ticket_ref in archived_worktree
@@ -1185,7 +1007,6 @@ def _blocked_ticket(tmp_path: Path, slug: str = "blocked-again") -> tuple[Path, 
 def test_return_to_draft_discards_failed_building_basis_refresh(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path)
     fields, _body = parse_frontmatter(blocked.read_text(encoding="utf-8"))
-    old_basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
     operation_id = "c" * 32
     generation = "d" * 16
     operation = basis_refresh._operation_path(root, operation_id)
@@ -1198,7 +1019,7 @@ def test_return_to_draft_discards_failed_building_basis_refresh(tmp_path: Path) 
         operation_id,
         generation,
         "blocked-again",
-        old_basis.basis_id,
+        fields["machine"]["generation"],
         "building",
         {},
     )
@@ -1226,7 +1047,7 @@ def test_invalid_enqueue_does_not_publish_basis_artifacts(tmp_path: Path) -> Non
     record = project_dir / "worktrees/transaction/.booley_project/acceptance/bases"
     assert not (record / "transaction.json").exists()
     assert not (project_dir / ".runtime/acceptance/bases/transaction").exists()
-    assert "refs/booley/bases/" not in _git(root, "for-each-ref", "--format=%(refname)")
+    assert "refs/booley/tickets/" not in _git(root, "for-each-ref", "--format=%(refname)")
     assert (project_dir / "tickets/board/drafts/transaction.md").exists()
 
 
@@ -1301,87 +1122,6 @@ def test_enqueue_retry_rolls_forward_after_ticket_ref_publication(
     assert basis_publication.load_basis_publication(root, "transaction") is None
 
 
-def test_enqueue_retry_tolerates_retired_temporary_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, _project_dir, tio = _prepared_ticket(tmp_path)
-    write_receipt = acceptance_basis_module.write_basis_receipt
-    interrupted = False
-
-    def interrupt_receipt(*args, **kwargs):
-        nonlocal interrupted
-        if not interrupted:
-            interrupted = True
-            raise OSError("after basis commit publication")
-        return write_receipt(*args, **kwargs)
-
-    monkeypatch.setattr(acceptance_basis_module, "write_basis_receipt", interrupt_receipt)
-    assert tio.enqueue_ticket("transaction") is False
-    assert basis_publication.load_basis_publication(root, "transaction") is not None
-
-    monkeypatch.setattr(acceptance_basis_module, "write_basis_receipt", write_receipt)
-    assert tio.enqueue_ticket("transaction") is True
-    assert basis_publication.load_basis_publication(root, "transaction") is None
-
-
-def test_basis_publication_journal_rejects_boolean_schema(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, project_dir, tio = _prepared_ticket(tmp_path)
-    monkeypatch.setattr(
-        acceptance_basis_module,
-        "write_basis_receipt",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after basis publication")),
-    )
-    assert tio.enqueue_ticket("transaction") is False
-    path = project_dir / ".runtime/acceptance/basis-publication/transaction.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["schema"] = True
-    path.write_text(json.dumps(value), encoding="utf-8")
-
-    with pytest.raises(basis_publication.BasisPublicationError, match="must be an integer"):
-        basis_publication.load_basis_publication(root, "transaction")
-
-
-def test_basis_receipt_rejects_boolean_schema(tmp_path: Path) -> None:
-    _root, project_dir, tio = _prepared_ticket(tmp_path)
-    assert tio.enqueue_ticket("transaction") is True
-    queued = project_dir / "tickets/board/queue/transaction.md"
-    fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
-    path = project_dir / f".runtime/acceptance/bases/transaction/{basis.basis_id}.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["schema"] = True
-    path.write_bytes(acceptance_basis_module.canonical_json(value))
-
-    with pytest.raises(AcceptanceBasisError, match="receipt mismatch"):
-        tio.load_basis("transaction")
-
-
-def test_enqueue_retry_rejects_changed_effective_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _root, project_dir, tio = _prepared_ticket(tmp_path)
-    first_policy = {
-        "destination": "review",
-        "merge": True,
-        "cleanup": True,
-        "triage_report": True,
-    }
-    second_policy = {**first_policy, "cleanup": False}
-
-    monkeypatch.setattr(
-        acceptance_basis_module,
-        "write_basis_receipt",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after basis publication")),
-    )
-    assert tio.enqueue_ticket("transaction", on_success=first_policy) is False
-
-    assert tio.enqueue_ticket("transaction", on_success=second_policy) is False
-    assert "effective Ticket fields changed" in capsys.readouterr().err
-    assert (project_dir / "tickets/board/drafts/transaction.md").exists()
-
-
 def test_enqueue_retry_recovers_matching_orphan_record_without_staged_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1435,7 +1175,7 @@ def test_basis_reset_uses_preflighted_expected_head_cas(tmp_path: Path) -> None:
     assert tio.enqueue_ticket("transaction") is True
     queued = project_dir / "tickets/board/queue/transaction.md"
     fields, _body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    basis = AcceptanceBasis.from_mapping(fields["acceptance_basis"])
+    basis = ticket_baseline_from_machine(fields["machine"])
     workspace = project_dir / "worktrees/transaction"
     (workspace / "implementation.txt").write_text("work\n", encoding="utf-8")
     _git(workspace, "add", "implementation.txt")
@@ -1462,13 +1202,54 @@ def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> No
     assert tio.enqueue_ticket("transaction")
     queued = project_dir / "tickets/board/queue/transaction.md"
     fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
-    fields.pop("acceptance_basis")
+    fields.pop("machine")
     runtime_ticket = project_dir / "tickets/logs/transaction/ticket.md"
     runtime_ticket.parent.mkdir(parents=True, exist_ok=True)
     runtime_ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
 
-    with pytest.raises(AcceptanceBasisError, match="acceptance_basis"):
+    with pytest.raises(AcceptanceBasisError, match="machine"):
         tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
+
+
+@pytest.mark.parametrize(
+    "board_dir", ["queue", "waiting", "active", "blocked", "review", "done", "archived"]
+)
+def test_legacy_executable_ticket_is_rejected_in_every_state(
+    tmp_path: Path, board_dir: str
+) -> None:
+    tickets = tmp_path / "tickets"
+    path = tickets / "board" / board_dir / "old.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        format_frontmatter({"summary": "Old", "acceptance_basis": {"schema": 1}}, ""),
+        encoding="utf-8",
+    )
+    tio = TicketIO(tickets, project_root=tmp_path)
+
+    with pytest.raises(AcceptanceBasisError, match="unsupported Ticket format"):
+        tio.load_basis("old")
+
+
+@pytest.mark.parametrize("change", ["generation", "baseline_ref", "extra_field"])
+def test_published_ticket_rejects_machine_or_unrecognized_field_edits(
+    tmp_path: Path, change: str
+) -> None:
+    _root, project_dir, tio = _prepared_ticket(tmp_path)
+    assert tio.enqueue_ticket("transaction")
+    queued = project_dir / "tickets/board/queue/transaction.md"
+    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    if change == "generation":
+        fields["machine"]["generation"] = "f" * 32
+    elif change == "baseline_ref":
+        fields["machine"]["baseline"]["outer"]["ticket_ref"] = (
+            "refs/heads/booley-generation/ffffffffffffffff/outer"
+        )
+    else:
+        fields["unrecognized"] = "changed"
+    queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
+
+    with pytest.raises(AcceptanceBasisError, match=r"Ticket|unsupported"):
+        tio.load_basis("transaction")
 
 
 def test_enqueue_recovery_rejects_advanced_ticket_ref(
@@ -1569,43 +1350,15 @@ def test_partial_keepalive_creation_rolls_forward_on_retry(
 
     repositories = {"outer": outer, "project": project}
     with pytest.raises(basis_publication.BasisPublicationError, match="project ref failed"):
-        basis_publication._publish_basis_keepalives(repositories, basis)
+        basis_publication._publish_ticket_keepalives(repositories, basis, "0" * 32)
 
-    outer_ref = f"refs/booley/bases/{basis.basis_id}/outer"
+    outer_ref = f"refs/booley/tickets/{'0' * 32}/outer"
     assert refs[(outer, outer_ref)] == basis.participant("outer").authoring_sha
 
-    basis_publication._publish_basis_keepalives(repositories, basis)
+    basis_publication._publish_ticket_keepalives(repositories, basis, "0" * 32)
 
-    project_ref = f"refs/booley/bases/{basis.basis_id}/project"
+    project_ref = f"refs/booley/tickets/{'0' * 32}/project"
     assert refs[(project, project_ref)] == basis.participant("project").authoring_sha
-
-
-def test_malformed_committed_record_fails_with_basis_error(tmp_path: Path) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    record = root / ".booley_project/acceptance/bases/malformed.json"
-    record.parent.mkdir(parents=True)
-    record.write_text('{"bindings":[],"schema":1,"ticket":{}}\n', encoding="utf-8")
-    _git(root, "add", "-f", ".booley_project")
-    _git(root, "commit", "-m", "malformed record")
-    sha = _git(root, "rev-parse", "HEAD")
-    basis = AcceptanceBasis(
-        (
-            BasisParticipant(
-                "outer",
-                sha,
-                "refs/heads/booley-generation/0123456789abcdef/malformed",
-                "refs/heads/main",
-                sha,
-            ),
-        )
-    )
-
-    with pytest.raises(AcceptanceBasisError, match=r"record\.ticket"):
-        load_basis_record(root, "malformed", basis)
 
 
 def test_protected_parent_symlink_change_is_rejected(tmp_path: Path) -> None:

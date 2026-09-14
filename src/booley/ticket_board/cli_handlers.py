@@ -133,7 +133,7 @@ def _cmd_show(tio, args):
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
     worktree_root = (
         resolve_project_dir(tio._project_root)
-        if entry.get("acceptance_basis") is not None
+        if entry.get("machine") is not None
         else tio._project_root / ".booley_project"
     )
     worktree = worktree_root / "worktrees" / slug
@@ -195,7 +195,7 @@ def _validation_context(
     tio, path: Path, fields: dict[str, Any], project_root: Path
 ) -> tuple[Path, Path | None, tuple[Path, ...]]:
     allowed_dirty_paths = owned_draft_dirty_paths(path, tio.tickets_dir)
-    if not (project_root / ".git").exists() or fields.get("acceptance_basis") is not None:
+    if not (project_root / ".git").exists() or fields.get("machine") is not None:
         return project_root, None, allowed_dirty_paths
     from booley.ticket_board.workspace_ops import ensure_ticket_workspace
 

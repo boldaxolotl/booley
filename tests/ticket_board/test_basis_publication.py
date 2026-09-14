@@ -56,16 +56,18 @@ def _publication_participant(role: str = "outer") -> basis_publication.Participa
 
 def _publication_journal() -> basis_publication.BasisPublicationJournal:
     return basis_publication.BasisPublicationJournal(
-        1,
-        "0" * 32,
-        "ticket",
-        "1" * 64,
-        "2" * 64,
-        (_publication_participant(),),
-        (),
-        (),
-        {},
-        (),
+        schema=1,
+        operation_id="0" * 32,
+        slug="ticket",
+        source_sha256="1" * 64,
+        effective_sha256="2" * 64,
+        authored_sha256="3" * 64,
+        participants=(_publication_participant(),),
+        bindings=(),
+        removal_targets=(),
+        providers=(),
+        prepared={},
+        published=(),
     )
 
 
@@ -79,9 +81,11 @@ def test_basis_publication_parsers_reject_invalid_rows(
         "slug": journal.slug,
         "source_sha256": journal.source_sha256,
         "effective_sha256": journal.effective_sha256,
+        "authored_sha256": journal.authored_sha256,
         "participants": [vars(journal.participants[0])],
         "bindings": [],
         "removal_targets": [],
+        "providers": [],
         "prepared": {},
         "published": [],
     }
@@ -142,10 +146,12 @@ def test_new_basis_publication_requires_complete_inputs(
             "ticket",
             "1" * 64,
             "2" * 64,
+            "3" * 64,
             {},
             participants=(participant,),
             bindings=(),
             removal_targets=(),
+            providers=(),
         )
     with pytest.raises(basis_publication.BasisPublicationError, match="missing prepared"):
         basis_publication.publish_basis_commits(
@@ -153,11 +159,13 @@ def test_new_basis_publication_requires_complete_inputs(
             "ticket",
             "1" * 64,
             "2" * 64,
+            "3" * 64,
             {},
             operation_id="0" * 32,
             participants=None,
             bindings=(),
             removal_targets=(),
+            providers=(),
         )
 
 
@@ -193,10 +201,12 @@ def test_basis_publication_resume_and_repository_inputs_are_immutable(
                 "ticket",
                 values["source_sha256"],
                 values["effective_sha256"],
+                journal.authored_sha256,
                 {"outer": tmp_path},
                 participants=values["participants"],
                 bindings=values["bindings"],
                 removal_targets=values["removal_targets"],
+                providers=(),
             )
     with pytest.raises(basis_publication.BasisPublicationError, match="repositories"):
         basis_publication.publish_basis_commits(
@@ -204,10 +214,12 @@ def test_basis_publication_resume_and_repository_inputs_are_immutable(
             "ticket",
             journal.source_sha256,
             journal.effective_sha256,
+            journal.authored_sha256,
             {},
             participants=journal.participants,
             bindings=(),
             removal_targets=(),
+            providers=(),
         )
 
 
@@ -221,14 +233,15 @@ def test_basis_publication_recovers_existing_commit_and_rejects_inspection_failu
         lambda *_args: _completed("git", stdout="d" * 40),
     )
     monkeypatch.setattr(basis_publication, "_validate_prepared_commit", lambda *_args: None)
-    assert basis_publication._recover_or_create_commit(tmp_path, "0" * 32, plan) == "d" * 40
+    journal = _publication_journal()
+    assert basis_publication._recover_or_create_commit(tmp_path, journal, plan) == "d" * 40
     monkeypatch.setattr(
         basis_publication,
         "_git",
         lambda *_args: _completed("git", returncode=2, stderr="ref locked"),
     )
     with pytest.raises(basis_publication.BasisPublicationError, match="ref locked"):
-        basis_publication._recover_or_create_commit(tmp_path, "0" * 32, plan)
+        basis_publication._recover_or_create_commit(tmp_path, journal, plan)
 
 
 def test_basis_publication_rejects_mismatched_commit_and_ticket_ref(
@@ -237,7 +250,9 @@ def test_basis_publication_rejects_mismatched_commit_and_ticket_ref(
     plan = _publication_participant()
     monkeypatch.setattr(basis_publication, "_require_git", lambda *_args: "wrong\nparent")
     with pytest.raises(basis_publication.BasisPublicationError, match="tree and parent"):
-        basis_publication._validate_prepared_commit(tmp_path, "refs/temp", plan, "d" * 40)
+        basis_publication._validate_prepared_commit(
+            tmp_path, "refs/temp", plan, "d" * 40, _publication_journal()
+        )
     monkeypatch.setattr(basis_publication, "_require_git", lambda *_args: "e" * 40)
     with pytest.raises(basis_publication.BasisPublicationError, match="changed during"):
         basis_publication._publish_ticket_ref(tmp_path, plan, "d" * 40)
@@ -253,14 +268,14 @@ def test_basis_keepalives_reject_changed_and_uninspectable_refs(
         lambda *_args: _completed("git", stdout="c" * 40),
     )
     with pytest.raises(basis_publication.BasisPublicationError, match=r"keepalive .* changed"):
-        basis_publication._publish_basis_keepalives({"outer": tmp_path}, basis)
+        basis_publication._publish_ticket_keepalives({"outer": tmp_path}, basis, "0" * 32)
     monkeypatch.setattr(
         basis_publication,
         "_git",
         lambda *_args: _completed("git", returncode=2, stderr="unavailable"),
     )
     with pytest.raises(basis_publication.BasisPublicationError, match="could not inspect"):
-        basis_publication._publish_basis_keepalives({"outer": tmp_path}, basis)
+        basis_publication._publish_ticket_keepalives({"outer": tmp_path}, basis, "0" * 32)
 
 
 def test_temporary_keepalive_and_finish_validation_fail_closed(
@@ -316,7 +331,10 @@ def test_abandon_basis_publication_deletes_owned_refs_and_journal(
             {journal.participants[0].expected_old_sha, "d" * 40},
         ),
         (basis_publication._temporary_ref(journal.operation_id, "outer"), {"d" * 40}),
-        (f"refs/booley/bases/{basis.basis_id}/outer", {basis.participant("outer").authoring_sha}),
+        (
+            f"refs/booley/tickets/{journal.operation_id}/outer",
+            {basis.participant("outer").authoring_sha},
+        ),
     ]
     assert not journal_path.exists()
 

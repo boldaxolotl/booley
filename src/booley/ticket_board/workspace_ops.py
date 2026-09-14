@@ -1,4 +1,4 @@
-"""Private authoring worktrees and Acceptance Basis publication helpers."""
+"""Private authoring worktrees and Ticket baseline publication helpers."""
 
 from __future__ import annotations
 
@@ -31,10 +31,9 @@ from .acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
-    authored_ticket_record,
+    authored_ticket_digest,
     canonical_json,
     materialize_basis_checkout,
-    record_relative_path,
 )
 from .acceptance_targets import (
     acceptance_control_paths,
@@ -73,7 +72,7 @@ _GENERATION_PREFIX = "booley-generation"
 
 
 class AcceptanceBasisOperationError(RuntimeError):
-    """A Ticket Workspace or Acceptance Basis transaction could not complete."""
+    """A Ticket Workspace or Ticket baseline transaction could not complete."""
 
 
 @dataclass(frozen=True)
@@ -1058,7 +1057,7 @@ def validate_acceptance_basis_inputs(
     *,
     workspace: Path | None = None,
 ) -> None:
-    """Run enqueue's semantic Acceptance Basis preflight without publishing it."""
+    """Run enqueue's semantic Ticket baseline preflight without publishing it."""
     _prepare_basis(project_root, ticket_path, slug, workspace=workspace)
 
 
@@ -1078,7 +1077,7 @@ def _require_basis_validation(
     )
     if errors:
         raise AcceptanceBasisOperationError(
-            "Acceptance Basis validation failed: " + "; ".join(errors)
+            "Ticket baseline validation failed: " + "; ".join(errors)
         )
 
 
@@ -1089,16 +1088,11 @@ def _authoring_changes(
     paired = paired_project_repository(outer)
     project = paired.worktree if paired is not None else None
     outer_base, project_base = _pin_authoring_bases(root, outer, project, fields)
-    record_path = (
-        record_relative_path(outer, project_participant=project is not None) / f"{slug}.json"
-    ).as_posix()
-    outer_recovery = {record_path} if project is None else set()
-    project_recovery = {record_path} if project is not None else set()
     outer_changes = _validate_authoring_changes(
         outer,
         outer,
         project_repository=False,
-        recovery_paths=outer_recovery,
+        recovery_paths=set(),
         scope=fields.get("scope"),
     )
     project_changes = (
@@ -1106,7 +1100,7 @@ def _authoring_changes(
             project,
             outer,
             True,
-            recovery_paths=project_recovery,
+            recovery_paths=set(),
             scope=fields.get("scope"),
         )
         if project is not None
@@ -1173,7 +1167,7 @@ def _analyze_basis_targets(
             provider_test_tables=providers.test_tables,
         )
     except (PlannedDependencyError, TargetPlanValidationError) as exc:
-        raise AcceptanceBasisOperationError(f"Acceptance Basis validation failed: {exc}") from exc
+        raise AcceptanceBasisOperationError(f"Ticket baseline validation failed: {exc}") from exc
     return providers, target_plan
 
 
@@ -1234,7 +1228,7 @@ def _participant_preparations(
             destination_sha=prepared.outer_base_sha,
             expected_old_sha=prepared.outer_base_sha,
             tree_sha=outer_tree,
-            message=f"chore({slug}): publish Acceptance Basis",
+        message=f"chore({slug}): publish Ticket baseline",
         )
     ]
     if prepared.project is not None:
@@ -1268,55 +1262,8 @@ def _project_participant_preparation(
         destination_sha=prepared.project_base_sha,
         expected_old_sha=prepared.project_base_sha,
         tree_sha=project_tree,
-        message=f"chore({slug}): publish project Acceptance Basis",
+        message=f"chore({slug}): publish project Ticket baseline",
     )
-
-
-def _record_path(prepared: _BasisPreparation, slug: str) -> tuple[Path, bool]:
-    project_owner = prepared.project is not None
-    owner = prepared.project if project_owner else prepared.outer
-    if owner is None:
-        raise AcceptanceBasisOperationError("Acceptance Basis record has no repository owner")
-    relative_dir = record_relative_path(prepared.outer, project_participant=project_owner)
-    return owner / relative_dir / f"{slug}.json", project_owner
-
-
-def _write_authored_record(
-    prepared: _BasisPreparation,
-    slug: str,
-    fields: dict[str, object],
-    body: str,
-) -> tuple:
-    binding_specs = criterion_targets(fields.get("criteria"))
-    bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
-    try:
-        payload = canonical_json(
-            authored_ticket_record(
-                fields,
-                body,
-                bindings,
-                target_plan=prepared.target_plan.plan,
-                removal_targets=prepared.target_plan.removal_targets,
-                providers=prepared.providers.bindings,
-            )
-        )
-    except AcceptanceBasisError as exc:
-        raise AcceptanceBasisOperationError(str(exc)) from exc
-    path, project_owner = _record_path(prepared, slug)
-    try:
-        atomic_write_once(path, payload, mode=0o644)
-    except WriteOnceConflictError as exc:
-        raise AcceptanceBasisOperationError(
-            f"Acceptance Basis record already exists: {path}"
-        ) from exc
-    repository = prepared.project if project_owner else prepared.outer
-    changes = prepared.project_changes if project_owner else prepared.outer_changes
-    if repository is None:
-        raise AcceptanceBasisOperationError("Acceptance Basis record owner disappeared")
-    relative = path.relative_to(repository).as_posix()
-    if relative not in changes:
-        changes.append(relative)
-    return bindings
 
 
 def prepare_acceptance_basis(
@@ -1334,6 +1281,7 @@ def prepare_acceptance_basis(
     if effective_fields is not None:
         fields = effective_fields
     effective_sha256 = hashlib.sha256(canonical_json({"fields": fields, "body": body})).hexdigest()
+    authored_sha256 = authored_ticket_digest(fields, body)
     existing = load_basis_publication(root, slug)
     if existing is not None:
         return publish_basis_commits(
@@ -1341,6 +1289,7 @@ def prepare_acceptance_basis(
             slug,
             source_sha256,
             effective_sha256,
+            authored_sha256,
             _authoring_repositories(root, slug),
         )
     prepared = _prepare_basis(
@@ -1349,7 +1298,7 @@ def prepare_acceptance_basis(
         slug,
         effective_fields=fields,
     )
-    basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
+    basis_inputs = _prepare_basis_inputs(prepared, fields)
     bindings, removals = basis_inputs
     participants = _participant_preparations(slug, fields, prepared)
     return publish_basis_commits(
@@ -1357,11 +1306,13 @@ def prepare_acceptance_basis(
         slug,
         source_sha256,
         effective_sha256,
+        authored_sha256,
         _authoring_repositories(root, slug),
         operation_id=secrets.token_hex(16),
         participants=participants,
         bindings=bindings,
         removal_targets=removals,
+        providers=prepared.providers.bindings,
     )
 
 
@@ -1378,6 +1329,7 @@ def prepare_replacement_acceptance_basis(
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, body, source_sha256, effective_sha256 = _replacement_inputs(ticket)
+    authored_sha256 = authored_ticket_digest(fields, body)
     repositories = _workspace_repositories(workspace)
     existing = load_basis_publication(root, slug)
     if existing is not None:
@@ -1390,6 +1342,7 @@ def prepare_replacement_acceptance_basis(
             slug,
             source_sha256,
             effective_sha256,
+            authored_sha256,
             repositories,
         )
     providers = ProviderMaterialization(bindings=provider_bindings)
@@ -1402,18 +1355,20 @@ def prepare_replacement_acceptance_basis(
         generation=workspace.generation,
         provider_materialization=providers,
     )
-    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, body)
+    bindings, removals = _prepare_basis_inputs(prepared, fields)
     participants = _participant_preparations(slug, fields, prepared)
     return publish_basis_commits(
         root,
         slug,
         source_sha256,
         effective_sha256,
+        authored_sha256,
         repositories,
         operation_id=operation_id,
         participants=participants,
         bindings=bindings,
         removal_targets=removals,
+        providers=prepared.providers.bindings,
     )
 
 
@@ -1421,7 +1376,7 @@ def _replacement_inputs(ticket: Path) -> tuple[dict, str, str, str]:
     source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     fields = dict(fields)
-    fields.pop("acceptance_basis", None)
+    fields.pop("machine", None)
     effective = canonical_json({"fields": fields, "body": body})
     return fields, body, source_sha256, hashlib.sha256(effective).hexdigest()
 
@@ -1435,12 +1390,11 @@ def _workspace_repositories(workspace: AuthoringWorkspace) -> dict[str, Path]:
 
 def _prepare_basis_inputs(
     prepared: _BasisPreparation,
-    slug: str,
     fields: dict[str, object],
-    body: str,
 ) -> tuple[tuple, tuple[str, ...]]:
     removals = prepared.target_plan.removal_targets
-    bindings = tuple(_write_authored_record(prepared, slug, fields, body))
+    binding_specs = criterion_targets(fields.get("criteria"))
+    bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
     return bindings, removals
 
 
@@ -1481,14 +1435,14 @@ def pin_basis_refs(
     expected_roles = {"outer", "project"} if source is not None else {"outer"}
     if set(participants) != expected_roles:
         raise AcceptanceBasisOperationError(
-            "Acceptance Basis participants do not match this project"
+            "Ticket baseline participants do not match this project"
         )
     sources: dict[str, str] = {}
     for role, participant in participants.items():
         repository = root if role == "outer" else source
         if repository is None:
             raise AcceptanceBasisOperationError(
-                f"Acceptance Basis {role} repository is unavailable"
+                f"Ticket baseline {role} repository is unavailable"
             )
         sources[role] = _validate_basis_participant(
             repository,
@@ -1515,7 +1469,7 @@ def _validate_basis_participant(
     destination_ref = participant.destination_ref
     if role == "outer" and destination_ref != f"refs/heads/{destination_branch}":
         raise AcceptanceBasisOperationError(
-            f"Acceptance Basis outer destination does not match Ticket {slug!r}"
+            f"Ticket baseline outer destination does not match Ticket {slug!r}"
         )
     authoring = _full_commit(repository, participant.authoring_sha)
     destination_identity = _full_commit(repository, participant.destination_sha)
@@ -1559,7 +1513,7 @@ def validate_basis_refs(
     exact_ticket_heads: bool = False,
     exact_destination_heads: bool = False,
 ) -> list[str]:
-    """Verify canonical Acceptance Basis refs without materialized worktrees."""
+    """Verify canonical Ticket baseline refs without materialized worktrees."""
     try:
         pin_basis_refs(
             project_root,
@@ -1591,7 +1545,7 @@ def reset_basis_worktrees(
         or current_plan.requested_branch != requested_branch
     ):
         raise AcceptanceBasisOperationError(
-            "Acceptance Basis reset plan does not match this request"
+            "Ticket baseline reset plan does not match this request"
         )
     _apply_basis_reset(current_plan, basis, slug)
 
@@ -1636,7 +1590,7 @@ def _apply_basis_reset(
     )
     if errors:
         raise AcceptanceBasisOperationError(
-            "could not restore the Acceptance Basis: " + "; ".join(errors)
+            "could not restore the Ticket baseline: " + "; ".join(errors)
         )
 
 
@@ -1687,7 +1641,7 @@ def _validate_reset_worktrees(
     if paired is not None:
         if source is None:
             raise AcceptanceBasisOperationError(
-                "Acceptance Basis project repository is unavailable"
+                "Ticket baseline project repository is unavailable"
             )
         project_participant = basis.participant("project")
         branch = project_participant.ticket_ref.removeprefix("refs/heads/")
@@ -1709,7 +1663,7 @@ def _reset_participants(
         repository = root if participant.role == "outer" else source
         if repository is None:
             raise AcceptanceBasisOperationError(
-                f"Acceptance Basis {participant.role} repository is unavailable"
+                f"Ticket baseline {participant.role} repository is unavailable"
             )
         reset_participants.append(
             _ResetParticipant(repository, participant, heads[participant.role])
@@ -1719,9 +1673,9 @@ def _reset_participants(
 
 def _validate_reset_project_source(source: Path | None, basis: AcceptanceBasis) -> None:
     if basis.project_sha and source is None:
-        raise AcceptanceBasisOperationError("Acceptance Basis project repository is unavailable")
+        raise AcceptanceBasisOperationError("Ticket baseline project repository is unavailable")
     if source is not None and not basis.project_sha:
-        raise AcceptanceBasisOperationError("Acceptance Basis has no project repository commit")
+        raise AcceptanceBasisOperationError("Ticket baseline has no project repository commit")
     if source is not None:
         _full_commit(source, basis.project_sha)
 

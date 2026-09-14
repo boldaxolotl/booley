@@ -10,7 +10,7 @@ from typing import Any, Literal, TypedDict, cast
 
 from booley.core.boundary import require_bool, require_dict, require_int, require_list, require_str
 from booley.runtime.pid import is_pid_alive
-from booley.ticket_board.acceptance_basis import AcceptanceBasis
+from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.paths import ticket_runtime_dir
 
@@ -24,8 +24,8 @@ class ReviewInspection(TypedDict):
 
     schema: int
     generation: str
-    basis_id: str
-    basis_receipt: dict[str, Any]
+    ticket_generation: str
+    ticket_identity: dict[str, Any]
     execution_id: str
     source_status: Literal["blocked", "review"]
     heads: dict[str, str]
@@ -65,7 +65,7 @@ def parse_inspection(value: Any) -> ReviewInspection:
         row = require_dict(value, field="review entry")
         if require_int(row.get("schema"), field="review schema") != 1:
             raise ReviewEntryError("unsupported review schema")
-        for key in ("generation", "basis_id", "reason", "created_at", "capture_sha"):
+        for key in ("generation", "ticket_generation", "reason", "created_at", "capture_sha"):
             require_str(row, key)
         for key in ("execution_id", "blocked_reason"):
             if not isinstance(row.get(key), str):
@@ -83,29 +83,18 @@ def parse_inspection(value: Any) -> ReviewInspection:
             raise ReviewEntryError("invalid review participant roles")
         for role in heads:
             require_str(heads, role)
-        _validate_receipt(row.get("basis_receipt"), row["basis_id"])
+        _validate_ticket_identity(row.get("ticket_identity"), row["ticket_generation"])
         _validate_state(row.get("state"))
         return cast(ReviewInspection, row)
     except (ValueError, TypeError) as exc:
         raise ReviewEntryError(f"invalid review entry: {exc}") from exc
 
 
-def _validate_receipt(value: Any, basis_id: str) -> None:
-    receipt = require_dict(value, field="review Basis receipt")
-    if require_int(receipt.get("schema"), field="receipt schema") != 1:
-        raise ReviewEntryError("invalid Basis receipt schema")
-    if require_str(receipt, "basis_id") != basis_id:
-        raise ReviewEntryError("review receipt names another Basis")
-    for key in ("source_sha256", "operation_id"):
-        require_str(receipt, key)
-    record = require_dict(receipt.get("record"), field="receipt record")
-    for key in ("role", "locator", "sha256"):
-        require_str(record, key)
-    basis = AcceptanceBasis.from_mapping(
-        {"schema": receipt["schema"], "participants": receipt.get("participants")}
-    )
-    if basis.basis_id != basis_id:
-        raise ReviewEntryError("review receipt participant identity mismatch")
+def _validate_ticket_identity(value: Any, generation: str) -> None:
+    machine = require_dict(value, field="review Ticket identity")
+    ticket_baseline_from_machine(machine)
+    if machine["generation"] != generation:
+        raise ReviewEntryError("review entry names another Ticket generation")
 
 
 def digest(value: Any) -> str:

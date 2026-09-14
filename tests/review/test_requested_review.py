@@ -464,7 +464,7 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
             tio,
             "demo",
             lease_id="fixture",
-            basis_id=entry["basis_id"],
+            ticket_generation=entry["ticket_generation"],
             review_ticket=tio.tickets_dir / board["file"],
         )
         operation = lease.operation_record(owner_pid=os.getpid())
@@ -488,12 +488,12 @@ def test_review_exec_rejects_preexisting_basis_drift(blocked):
     assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
     board = tio.find_ticket("demo")
 
-    with pytest.raises(ReviewEntryError, match="Acceptance Basis"):
+    with pytest.raises(ReviewEntryError, match="Ticket generation"):
         interactive._environment(
             tio,
             "demo",
             lease_id="fixture",
-            basis_id="stale-basis",
+            ticket_generation="stale-generation",
             review_ticket=tio.tickets_dir / board["file"],
         )
 
@@ -501,7 +501,7 @@ def test_review_exec_rejects_preexisting_basis_drift(blocked):
 @pytest.mark.parametrize(
     ("drift", "message"),
     [
-        ("basis", "Acceptance Basis runtime Ticket"),
+        ("basis", "runtime Ticket"),
         ("status", "Ticket Board review Ticket"),
         ("acceptance", "accepted Criteria Satisfaction Record"),
         ("job", "matching detached job"),
@@ -524,7 +524,7 @@ def test_review_exec_lease_rejects_lifecycle_drift(blocked, monkeypatch, drift, 
             tio,
             "demo",
             lease_id="fixture",
-            basis_id=entry["basis_id"],
+            ticket_generation=entry["ticket_generation"],
             review_ticket=tio.tickets_dir / board["file"],
         )
         requests._write(
@@ -737,7 +737,7 @@ def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
     assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
 
 
-@pytest.mark.parametrize("field", ["state", "heads", "basis_id", "basis_receipt", "execution_id"])
+@pytest.mark.parametrize("field", ["state", "heads", "ticket_generation", "ticket_identity", "execution_id"])
 def test_review_entry_rejects_missing_required_fields(blocked, field):
     from booley.ticket_board.review_records import (
         ReviewEntryError,
@@ -807,8 +807,8 @@ def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
         (("generation",), "../../invalid"),
         (("capture_sha",), "invalid"),
         (("heads",), {"project": "abc"}),
-        (("basis_receipt", "schema"), 2),
-        (("basis_receipt", "basis_id"), "wrong-basis"),
+        (("ticket_identity", "schema"), 2),
+        (("ticket_identity", "generation"), "wrong-generation"),
         (("state", "criteria", "review_rtl_bugs_done", "availability"), "unknown"),
         (("state", "criteria", "review_rtl_bugs_done", "transition_evidence"), ["invalid"]),
     ],

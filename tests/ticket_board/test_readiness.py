@@ -216,18 +216,18 @@ def test_executable_readiness_uses_authoritative_basis_reader(
     (root / ".git").mkdir(parents=True)
     tickets = root / ".booley_project/tickets"
 
-    def reject_missing_receipt(*_args: object, **_kwargs: object) -> None:
+    def reject_invalid_machine(*_args: object, **_kwargs: object) -> None:
         from booley.ticket_board.acceptance_basis import AcceptanceBasisError
 
-        raise AcceptanceBasisError("Acceptance Basis receipt mismatch")
+        raise AcceptanceBasisError("Ticket machine identity mismatch")
 
-    monkeypatch.setattr(TicketIO, "load_basis", reject_missing_receipt)
+    monkeypatch.setattr(TicketIO, "load_basis", reject_invalid_machine)
     errors = readiness_module._validate_checkout_basis(
         root,
         tickets,
         "demo",
-        {"acceptance_basis": {"schema": 1}},
+        {"machine": {"schema": 1}},
         "",
     )
 
-    assert errors == ["Acceptance Basis receipt mismatch"]
+    assert errors == ["Ticket machine identity mismatch"]

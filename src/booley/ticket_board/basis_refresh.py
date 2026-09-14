@@ -1,8 +1,7 @@
-"""Recoverable pre-execution Acceptance Basis refresh for waiting Tickets."""
+"""Recoverable pre-execution Ticket baseline refresh for waiting Tickets."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import secrets
@@ -28,7 +27,8 @@ from .acceptance_basis import (
     AcceptanceBasisError,
     ProviderTargetBinding,
     load_acceptance_basis,
-    write_basis_receipt,
+    ticket_baseline_from_machine,
+    ticket_machine_fields,
 )
 from .basis_publication import BasisPublicationError
 from .frontmatter import parse_frontmatter
@@ -68,12 +68,12 @@ class BasisRefreshJournal:
     operation_id: str
     generation: str
     slug: str
-    old_basis_id: str
+    old_ticket_generation: str
     state: str
-    new_basis: dict[str, Any]
+    machine: dict[str, Any]
 
-    def prepared(self, basis: AcceptanceBasis) -> BasisRefreshJournal:
-        return replace(self, state="prepared", new_basis=basis.as_dict())
+    def prepared(self, machine: dict[str, Any]) -> BasisRefreshJournal:
+        return replace(self, state="prepared", machine=machine)
 
 
 @dataclass(frozen=True)
@@ -129,9 +129,9 @@ def _parse_journal(value: dict[str, Any]) -> BasisRefreshJournal:
         require_str(value, "operation_id"),
         require_str(value, "generation"),
         require_str(value, "slug"),
-        require_str(value, "old_basis_id"),
+        require_str(value, "old_ticket_generation"),
         require_str(value, "state"),
-        require_dict(value.get("new_basis"), field="Basis Refresh journal.new_basis"),
+        require_dict(value.get("machine"), field="Basis Refresh journal.machine"),
     )
 
 
@@ -142,22 +142,22 @@ def _validate_journal(journal: BasisRefreshJournal, slug: str, path: Path) -> No
         or journal.state not in {"building", "prepared"}
         or not _OPERATION_RE.fullmatch(journal.operation_id)
         or not _GENERATION_RE.fullmatch(journal.generation)
-        or not re.fullmatch(r"[0-9a-f]{64}", journal.old_basis_id)
+        or not re.fullmatch(r"[0-9a-f]{32}", journal.old_ticket_generation)
     ):
         raise BasisRefreshError(f"Basis Refresh journal identity is invalid: {path}")
     if journal.state == "prepared":
         try:
-            AcceptanceBasis.from_mapping(journal.new_basis)
+            ticket_baseline_from_machine(journal.machine)
         except AcceptanceBasisError as exc:
             raise BasisRefreshError("Basis Refresh journal has an invalid new basis") from exc
-    elif journal.new_basis:
+    elif journal.machine:
         raise BasisRefreshError("building Basis Refresh journal contains published output")
 
 
 def _new_journal(root: Path, slug: str, old_basis: AcceptanceBasis) -> BasisRefreshJournal:
     existing = load_basis_refresh(root, slug)
     if existing is not None:
-        if existing.old_basis_id != old_basis.basis_id:
+        if existing.old_ticket_generation != old_basis.ticket_identity()["generation"]:
             raise BasisRefreshError("waiting Ticket changed during Basis Refresh")
         return existing
     journal = BasisRefreshJournal(
@@ -165,7 +165,7 @@ def _new_journal(root: Path, slug: str, old_basis: AcceptanceBasis) -> BasisRefr
         secrets.token_hex(16),
         secrets.token_hex(8),
         slug,
-        old_basis.basis_id,
+        old_basis.ticket_identity()["generation"],
         "building",
         {},
     )
@@ -257,8 +257,6 @@ def _reapply_placeholders(
             source = source_root / path
             if source.suffix.casefold() == ".core" or source.name == "tests.toml":
                 continue
-            if path.replace("\\", "/").endswith(f"acceptance/bases/{slug}.json"):
-                continue
             if not source.is_file() or source.stat().st_size != 0:
                 raise BasisRefreshError(
                     f"approved authoring contains non-placeholder content at {path}"
@@ -307,7 +305,9 @@ def _verify_providers(
             raise BasisRefreshError(
                 f"provider Target {binding.target!r} changed after it was pinned"
             )
-        refreshed.append(replace(binding, basis_id=provider_basis.basis_id))
+        refreshed.append(
+            replace(binding, ticket_generation=provider_basis.ticket_identity()["generation"])
+        )
     return tuple(sorted(refreshed))
 
 
@@ -318,7 +318,7 @@ def _resume_prepared_refresh(
     body: str,
     journal: BasisRefreshJournal,
 ) -> tuple[AcceptanceBasis, str]:
-    candidate_fields = {**fields, "acceptance_basis": journal.new_basis}
+    candidate_fields = {**fields, "machine": journal.machine}
     try:
         basis = load_acceptance_basis(root, slug, candidate_fields, body)
     except AcceptanceBasisError as exc:
@@ -378,7 +378,7 @@ def _prepare_waiting_basis_refresh(
     journal = _new_journal(root, slug, old_basis)
     operation = _operation_path(root, journal.operation_id)
     effective_fields = dict(fields)
-    effective_fields.pop("acceptance_basis", None)
+    effective_fields.pop("machine", None)
     old = load_refresh_source_workspace(root, old_basis, slug, operation)
     workspace, provider_bindings = _build_refresh_workspace(
         _RefreshBuild(root, ticket_path, slug, effective_fields, old_basis, old, journal)
@@ -424,18 +424,13 @@ def _publish_refresh_basis(
     journal: BasisRefreshJournal,
 ) -> tuple[AcceptanceBasis, BasisRefreshJournal]:
     if journal.state != "building":
-        return AcceptanceBasis.from_mapping(journal.new_basis), journal
-    basis, operation_id = prepare_replacement_acceptance_basis(
+        return ticket_baseline_from_machine(journal.machine), journal
+    basis, _operation_id = prepare_replacement_acceptance_basis(
         root, ticket, slug, workspace, providers, operation_id=journal.operation_id
     )
-    write_basis_receipt(
-        root,
-        slug,
-        basis,
-        source_sha256=hashlib.sha256(ticket.read_bytes()).hexdigest(),
-        operation_id=operation_id,
-    )
-    prepared = journal.prepared(basis)
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    machine = ticket_machine_fields(basis, fields=fields, body=body, generation=journal.operation_id)
+    prepared = journal.prepared(machine)
     _write_journal(root, prepared)
     return basis, prepared
 
@@ -483,7 +478,7 @@ def recover_published_basis_refreshes(root: Path, tickets: list[dict[str, Any]])
         journal = load_basis_refresh(root, slug)
         if journal is None:
             continue
-        if ticket.get("acceptance_basis") != journal.new_basis:
+        if ticket.get("machine") != journal.machine:
             raise BasisRefreshError(
                 f"queued Ticket {slug!r} disagrees with its Basis Refresh journal"
             )

@@ -260,7 +260,7 @@ def _has_matching_failing_evidence(entry) -> bool:
 
 
 def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
-    """Fail closed on evidence that cannot satisfy the recorded Acceptance Basis."""
+    """Fail closed on evidence that cannot satisfy the recorded Ticket baseline."""
     if not getattr(state, "strict_criteria", False):
         return []
     registry, registry_error = _load_test_registry(work_dir)

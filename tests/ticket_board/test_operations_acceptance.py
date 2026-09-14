@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from booley.ticket_board import (
 from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     BasisParticipant,
+    ticket_machine_fields,
 )
 
 
@@ -52,11 +54,15 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
 
 def _review_tio(tmp_path: Path) -> SimpleNamespace:
     basis = AcceptanceBasis((_participant(),))
+    basis = replace(
+        basis,
+        machine=ticket_machine_fields(basis, fields={}, body="", generation="0" * 32),
+    )
     entry = {
         "status": "review",
         "step": "summary",
         "file": str(tmp_path / "ticket.md"),
-        "acceptance_basis": basis.as_dict(),
+        "machine": basis.ticket_identity(),
         "on_success": {},
     }
     return SimpleNamespace(
@@ -94,8 +100,10 @@ def test_reset_helpers_report_missing_basis_and_preflight_failure(
         "booley.ticket_board.io.find_ticket_file", lambda *_args: (ticket, "blocked")
     )
     assert operations.op_reset(tio, "ticket") is False
-    assert "authoritative Acceptance Basis is unavailable" in capsys.readouterr().err
+    assert "unsupported Ticket format" in capsys.readouterr().err
 
+    entry.pop("acceptance_basis")
+    entry["machine"] = {"generation": "0" * 32}
     basis = AcceptanceBasis((_participant(),))
     tio._load_basis_unlocked = lambda _slug: basis
     monkeypatch.setattr(
@@ -178,7 +186,7 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
 ) -> None:
     tio = _review_tio(tmp_path)
     snapshot = SimpleNamespace(
-        acceptance_basis={"different": True}, participant_heads={"outer": "a" * 40}
+        ticket_identity={"different": True}, participant_heads={"outer": "a" * 40}
     )
     monkeypatch.setattr(
         "booley.ticket_board.acceptance_ledger.read_acceptance",
@@ -188,13 +196,8 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
         "booley.ticket_board.acceptance_ledger.validate_review_package_binding",
         lambda *_args: None,
     )
-    monkeypatch.setattr(
-        acceptance_basis,
-        "load_basis_receipt",
-        lambda *_args: {"current": True},
-    )
     assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
-    assert "different Board Acceptance Basis" in capsys.readouterr().err
+    assert "different Board Ticket generation" in capsys.readouterr().err
 
 
 def test_handoff_basis_heads_validates_materialized_composite(

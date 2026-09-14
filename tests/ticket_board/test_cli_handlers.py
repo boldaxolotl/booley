@@ -316,7 +316,7 @@ class TestCmdShow:
             tio.logs_dir / "completed",
             state,
             execution_id="run-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()

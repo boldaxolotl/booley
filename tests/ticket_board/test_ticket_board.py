@@ -600,7 +600,7 @@ class TestValidateTicketFields:
         errors = validate_ticket_fields(fields, "## Description\nSome text")
 
         assert errors == [
-            "Deprecated field 'integration_base': Acceptance Basis Tickets publish their "
+            "Deprecated field 'integration_base': Tickets with a recorded baseline publish their "
             "recorded refs directly to destination refs"
         ]
 
@@ -1292,7 +1292,7 @@ class TestScanAllTickets:
             tio.logs_dir / "t1",
             state,
             execution_id="generation-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
         state_path.unlink()
@@ -1495,7 +1495,13 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
 
 
 def _handoff_basis_receipt():
-    from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+    from dataclasses import replace
+
+    from booley.ticket_board.acceptance_basis import (
+        AcceptanceBasis,
+        BasisParticipant,
+        ticket_machine_fields,
+    )
 
     basis = AcceptanceBasis(
         (
@@ -1508,15 +1514,8 @@ def _handoff_basis_receipt():
             ),
         )
     )
-    receipt = {
-        "schema": 1,
-        "basis_id": basis.basis_id,
-        "participants": [basis.participant("outer").as_dict()],
-        "record": {"role": "outer", "locator": "record.json", "sha256": "c" * 64},
-        "source_sha256": "d" * 64,
-        "operation_id": "e" * 32,
-    }
-    return basis, receipt
+    identity = ticket_machine_fields(basis, fields={}, body="", generation="e" * 32)
+    return replace(basis, machine=identity), identity
 
 
 def _write_ready_acceptance_state(tio: TicketIO) -> None:
@@ -1539,7 +1538,7 @@ def _write_ready_acceptance_state(tio: TicketIO) -> None:
             {
                 "status": "ready",
                 "briefing_path": str(briefing),
-                "acceptance_basis_id": basis.basis_id,
+                "ticket_generation": basis.ticket_identity()["generation"],
                 "head_sha": "a" * 40,
             }
         ),
@@ -1549,14 +1548,12 @@ def _write_ready_acceptance_state(tio: TicketIO) -> None:
 
 class TestOpHandoff:
     def test_freezes_live_acceptance_before_review(self, tmp_path, monkeypatch):
-        from booley.ticket_board import acceptance_basis as basis_module
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
         basis, receipt = _handoff_basis_receipt()
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
-        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
         monkeypatch.setattr(
             "booley.ticket_board.operations._handoff_basis_heads",
             lambda *_args: {"outer": "a" * 40},
@@ -1569,7 +1566,7 @@ class TestOpHandoff:
         assert accepted.kind == "accepted"
         assert accepted.snapshot is not None
         assert accepted.snapshot.criteria["sim_pass"]["met"] is True
-        assert accepted.snapshot.acceptance_basis == receipt
+        assert accepted.snapshot.ticket_identity == receipt
         assert accepted.snapshot.participant_heads == {"outer": "a" * 40}
         binding = json.loads(
             (tio.logs_dir / "t1" / "acceptance" / "review-package.json").read_text(
@@ -1601,14 +1598,12 @@ class TestOpHandoff:
     def test_rejects_existing_snapshot_after_ticket_ref_advances(
         self, tmp_path, monkeypatch, capsys
     ):
-        from booley.ticket_board import acceptance_basis as basis_module
         from booley.ticket_board import operations
 
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        basis, receipt = _handoff_basis_receipt()
+        basis, _receipt = _handoff_basis_receipt()
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args, **_kwargs: basis)
-        monkeypatch.setattr(basis_module, "load_basis_receipt", lambda *_args: receipt)
         monkeypatch.setattr(
             operations,
             "_handoff_basis_heads",
@@ -2539,10 +2534,7 @@ class TestOpPromoteWaiting:
             "child",
             extra_fields={
                 "dependencies": ["dep-a"],
-                "acceptance_basis": {
-                    "schema": 1,
-                    "participants": [],
-                },
+                "machine": {"generation": "0" * 32},
             },
         )
         provider = SimpleNamespace(provider="dep-a")
@@ -2576,18 +2568,22 @@ class TestOpPromoteWaiting:
             "child",
             extra_fields={
                 "dependencies": ["dep-a"],
-                "acceptance_basis": {"schema": 1, "participants": []},
+                "machine": {"generation": "0" * 32},
             },
         )
         refreshed = MagicMock()
-        refreshed.as_dict.return_value = {
-            "schema": 1,
-            "participants": [{"role": "outer"}],
-        }
+        refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(
             basis_refresh,
             "prepare_waiting_basis_refresh",
             lambda *_args: (refreshed, "a" * 32),
+        )
+        monkeypatch.setattr(
+            basis_refresh,
+            "load_basis_refresh",
+            lambda *_args: SimpleNamespace(
+                state="prepared", machine=refreshed.ticket_identity()
+            ),
         )
         finished = []
         monkeypatch.setattr(
@@ -2600,7 +2596,7 @@ class TestOpPromoteWaiting:
         path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "queued"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["acceptance_basis"] == refreshed.as_dict()
+        assert fields["machine"] == refreshed.ticket_identity()
         assert finished == [(Path(tio._project_root), "child", "a" * 32)]
 
     def test_failed_refresh_blocks_waiting_ticket(self, tmp_path, monkeypatch, capsys):
@@ -2614,7 +2610,7 @@ class TestOpPromoteWaiting:
             "child",
             extra_fields={
                 "dependencies": ["dep-a"],
-                "acceptance_basis": {"schema": 1, "participants": []},
+                "machine": {"generation": "0" * 32},
             },
         )
 
@@ -2639,15 +2635,22 @@ class TestOpPromoteWaiting:
             "child",
             extra_fields={
                 "dependencies": ["dep-a"],
-                "acceptance_basis": {"schema": 1, "participants": []},
+                "machine": {"generation": "0" * 32},
             },
         )
         refreshed = MagicMock()
-        refreshed.as_dict.return_value = {"schema": 1, "participants": [{"role": "outer"}]}
+        refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(
             basis_refresh,
             "prepare_waiting_basis_refresh",
             lambda *_args: (refreshed, "a" * 32),
+        )
+        monkeypatch.setattr(
+            basis_refresh,
+            "load_basis_refresh",
+            lambda *_args: SimpleNamespace(
+                state="prepared", machine=refreshed.ticket_identity()
+            ),
         )
         recovered = []
         monkeypatch.setattr(
@@ -2720,6 +2723,23 @@ class TestHarnessTransitionGuard:
 class TestOpReset:
     """Test op_reset: move to queue, clear state, wipe logs."""
 
+    @pytest.fixture(autouse=True)
+    def _exercise_reset_after_schema_validation(self, monkeypatch):
+        from booley.ticket_board import operations as operations_module
+
+        original = operations_module._validated_reset_context
+
+        def validated(tio, slug):
+            if slug == "legacy-queue":
+                return original(tio, slug)
+            current = tio.find_ticket(slug)
+            if current is not None and "acceptance_basis" not in current and "machine" not in current:
+                path = operations_module._locked_reset_candidate(tio, slug)
+                return (path, current, None) if path is not None else None
+            return original(tio, slug)
+
+        monkeypatch.setattr(operations_module, "_validated_reset_context", validated)
+
     def test_reset_from_failed(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "archived", "my-ticket")
@@ -2775,7 +2795,7 @@ class TestOpReset:
 
         assert op_reset(tio, "legacy-queue") is False
         assert queue.exists()
-        assert "has no Acceptance Basis" in capsys.readouterr().err
+        assert "unsupported Ticket format" in capsys.readouterr().err
 
     def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
         from booley.ticket_board import operations as operations_module
@@ -2786,13 +2806,13 @@ class TestOpReset:
             tio,
             "blocked",
             "my-ticket",
-            extra_fields={"acceptance_basis": {"schema": 1}},
+            extra_fields={"machine": {"generation": "0" * 32}},
         )
         monkeypatch.setattr(
             tio,
             "_load_basis_unlocked",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AcceptanceBasisError("receipt mismatch")
+                AcceptanceBasisError("Ticket identity mismatch")
             ),
         )
         monkeypatch.setattr(
@@ -2813,7 +2833,7 @@ class TestOpReset:
             tio,
             "blocked",
             "my-ticket",
-            extra_fields={"acceptance_basis": {"schema": 1}},
+            extra_fields={"machine": {"generation": "0" * 32}},
         )
         basis = object()
         monkeypatch.setattr(tio, "_load_basis_unlocked", lambda *_args: basis)
@@ -4507,7 +4527,7 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            acceptance_basis=None,
+            ticket_identity=None,
             participant_heads={"outer": "a" * 40},
         )
         snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
@@ -4534,7 +4554,7 @@ class TestOpReturnValues:
             tio.logs_dir / "t1",
             state,
             execution_id="run-1",
-            acceptance_basis={"basis_id": "f" * 64},
+            ticket_identity={"generation": "f" * 32},
             participant_heads={"outer": "a" * 40},
         )
         prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
@@ -4546,7 +4566,7 @@ class TestOpReturnValues:
                 {
                     "status": "ready",
                     "briefing_path": str(briefing),
-                    "acceptance_basis_id": "f" * 64,
+                    "ticket_generation": "f" * 32,
                     "head_sha": "a" * 40,
                 }
             ),
@@ -5808,6 +5828,19 @@ class TestClearFromStage:
         ]
 
 
+@pytest.fixture
+def _reset_context_for_log_cleanup(monkeypatch):
+    """Exercise log cleanup with the Ticket baseline preflight already satisfied."""
+    from booley.ticket_board import operations
+
+    def context(tio, slug):
+        path, _status = find_ticket_file(tio.tickets_dir, slug)
+        return path, tio.find_ticket(slug), None
+
+    monkeypatch.setattr(operations, "_validated_reset_context", context)
+
+
+@pytest.mark.usefixtures("_reset_context_for_log_cleanup")
 class TestOpResetPreservesTicketMd:
     def test_ticket_md_survives_reset(self, tmp_path):
         """op_reset should preserve ticket.md in logs dir."""
@@ -5827,6 +5860,7 @@ class TestOpResetPreservesTicketMd:
         assert not _test_step_dir(tio.logs_dir, "my-ticket", "planning").exists()
 
 
+@pytest.mark.usefixtures("_reset_context_for_log_cleanup")
 class TestOpResetPreservesBlockedMd:
     def test_blocked_md_survives_reset(self, tmp_path):
         """op_reset should preserve blocked.md in logs dir (append-only log)."""
@@ -5963,7 +5997,9 @@ class TestBoardMoveTerminalActionOverrides:
 
     @pytest.fixture(autouse=True)
     def _accepted_snapshot(self, monkeypatch):
-        from booley.ticket_board.acceptance_basis import AcceptanceBasis
+        from dataclasses import replace
+
+        from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 
         monkeypatch.setattr(
             "booley.ticket_board.operations._completion_acceptance_valid",
@@ -5972,8 +6008,9 @@ class TestBoardMoveTerminalActionOverrides:
         monkeypatch.setattr(
             TicketIO,
             "load_basis",
-            lambda tio, slug: AcceptanceBasis.from_mapping(
-                tio.find_ticket(slug)["acceptance_basis"]
+            lambda tio, slug: replace(
+                ticket_baseline_from_machine(tio.find_ticket(slug)["machine"]),
+                machine=tio.find_ticket(slug)["machine"],
             ),
         )
 
@@ -5981,15 +6018,16 @@ class TestBoardMoveTerminalActionOverrides:
     def _acceptance_basis():
         return {
             "schema": 1,
-            "participants": [
-                {
-                    "role": "outer",
-                    "authoring_sha": "a" * 40,
+            "authored_sha256": "b" * 64,
+            "generation": "0" * 32,
+            "baseline": {
+                "outer": {
+                    "commit": "a" * 40,
                     "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/my-ticket",
                     "destination_ref": "refs/heads/main",
-                    "destination_sha": "c" * 40,
+                    "destination_commit": "c" * 40,
                 }
-            ],
+            },
         }
 
     @staticmethod
@@ -6002,7 +6040,7 @@ class TestBoardMoveTerminalActionOverrides:
             extra_fields={
                 "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
                 "feature_branch": "feat/my-ticket",
-                "acceptance_basis": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
+                "machine": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
@@ -6027,8 +6065,10 @@ class TestBoardMoveTerminalActionOverrides:
         ],
     )
     def test_no_merge_rejects_target_plan(self, tmp_path, monkeypatch, capsys, entry):
+        from dataclasses import replace
+
         from booley.core.models import TargetPlan
-        from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
+        from booley.ticket_board.acceptance_basis import ticket_baseline_from_machine
 
         tio = make_tio(tmp_path)
         make_ticket_in_dir(
@@ -6037,13 +6077,14 @@ class TestBoardMoveTerminalActionOverrides:
             "my-ticket",
             extra_fields={
                 "on_success": {"destination": "review", "merge": True, "cleanup": False},
-                "acceptance_basis": self._acceptance_basis(),
+                "machine": self._acceptance_basis(),
             },
         )
         pointer = self._acceptance_basis()
-        hydrated = AcceptanceBasis(
-            (BasisParticipant(**pointer["participants"][0]),),
+        hydrated = replace(
+            ticket_baseline_from_machine(pointer),
             target_plan=TargetPlan.from_value([entry]),
+            machine=pointer,
         )
         monkeypatch.setattr(tio, "load_basis", lambda _slug: hydrated)
 
