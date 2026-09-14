@@ -136,7 +136,7 @@ approval of those exact edits authorizes applying them; do not ask again.
   recreates the worktree and branch from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
-  execution against the original basis is required.
+  execution against the original Ticket baseline is required.
 - **Return to draft (fresh Ticket authoring)**: this is required when
   `blocked_reason` is `acceptance-input-change-required`, or when the required
   change is outside amendment's narrow operations. It preserves the old Ticket baseline

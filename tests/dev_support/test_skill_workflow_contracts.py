@@ -84,7 +84,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     assert positions == sorted(positions)
     assert "acceptance-input-change-required" in blocked
     assert "logs/<slug>/runs/<NNN>/" in blocked
-    assert "retain the original basis" in blocked
+    assert "preserves the old Ticket baseline" in blocked
     assert "fresh Ticket authoring" in blocked
     assert "`outer_worktree` and `project_worktree`" in blocked
     assert "`booley board return-to-draft" not in blocked
