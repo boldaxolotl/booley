@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.evidence.acceptance import (
     PairedProjectBaseline,
@@ -21,7 +20,6 @@ from . import acceptance_ledger
 from .acceptance_basis import BLOCK_REASON, AcceptanceBasis, AcceptanceBasisError
 from .acceptance_targets import resolve_commit
 from .acceptance_validation import assert_ticket_worktree_inputs_unchanged
-from .frontmatter import parse_frontmatter
 from .helpers import TicketSlugError, detect_project_root, resolve_runtime_ticket_slug
 from .io import TicketIO
 from .paths import ticket_runtime_dir
@@ -47,13 +45,14 @@ class TicketAcceptanceRecorder:
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file or not Path(ticket_file).is_file():
             return {}
-        fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-        raw_basis = fields.get("acceptance_basis")
-        if raw_basis is None:
-            return {}
         try:
-            return require_dict(raw_basis, field="acceptance_basis")
-        except BoundaryError as exc:
+            root = detect_project_root()
+            slug = resolve_runtime_ticket_slug(Path(ticket_file))
+            basis = TicketIO(
+                resolve_checkout_project_dir(root) / "tickets", project_root=root
+            ).load_basis(slug, runtime_ticket_path=Path(ticket_file))
+            return basis.as_dict()
+        except (AcceptanceBasisError, TicketSlugError, OSError, ValueError) as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError
 
             raise AcceptanceRecordingError(str(exc)) from exc

@@ -8,7 +8,10 @@ from pathlib import Path
 
 from booley.runtime.git import git_run
 from booley.ticket_board.acceptance_basis import AcceptanceBasis
-from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.ticket_document import (
+    convert_ticket_document,
+    ticket_conversion_context,
+)
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError, ticket_repositories
 
 
@@ -21,8 +24,13 @@ def changed_ticket_paths(worktree: Path) -> list[str]:
     ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
     basis = None
     if ticket_file:
-        fields, _ = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
-        basis = AcceptanceBasis.from_mapping(fields.get("acceptance_basis"))
+        path = Path(ticket_file)
+        with ticket_conversion_context(worktree, path.stem, "executable") as context:
+            converted = convert_ticket_document(path.read_text(encoding="utf-8"), context)
+        if converted.document is None:
+            detail = "; ".join(item.message for item in converted.diagnostics)
+            raise TicketWorkspaceError(f"Ticket document is invalid: {detail}")
+        basis = AcceptanceBasis.from_mapping(converted.document.generated.get("acceptance_basis"))
     paths: set[str] = set()
     repositories = ticket_repositories(
         worktree, require_paired=os.environ.get("BOOLEY_PAIRED_PROJECT_REPOSITORY") == "1"

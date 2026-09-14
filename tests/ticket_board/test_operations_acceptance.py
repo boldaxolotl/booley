@@ -32,7 +32,12 @@ def _participant(role: str = "outer") -> BasisParticipant:
 def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     run_log = tmp_path / "run.log"
     run_log.write_text("done\n", encoding="utf-8")
-    entry = {"status": "running", "step": "summary", "on_success": {}}
+    entry = {
+        "status": "running",
+        "step": "summary",
+        "file": str(tmp_path / "ticket.md"),
+        "on_success": {"destination": "review", "merge": False, "cleanup": False},
+    }
     tio = SimpleNamespace(
         logs_dir=tmp_path,
         tickets_dir=tmp_path,
@@ -193,7 +198,7 @@ def test_completion_snapshot_rejects_basis_and_selector_drift(
         "load_basis_receipt",
         lambda *_args: {"current": True},
     )
-    assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
+    assert operations.op_complete(tio, "ticket") is False
     assert "different Board Acceptance Basis" in capsys.readouterr().err
 
 
@@ -256,8 +261,8 @@ def test_completion_acceptance_reports_unreadable_corrupt_and_valid_snapshots(
     monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_args, **_kwargs: None)
     tio = _review_tio(tmp_path)
 
-    assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
+    assert operations.op_complete(tio, "ticket") is False
     assert "unreadable" in capsys.readouterr().err
-    assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is False
+    assert operations.op_complete(tio, "ticket") is False
     assert "broken binding" in capsys.readouterr().err
-    assert operations.op_complete(tio, "ticket", no_merge=True, no_cleanup=True) is True
+    assert operations.op_complete(tio, "ticket") is True

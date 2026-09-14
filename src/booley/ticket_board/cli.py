@@ -45,7 +45,6 @@ from .cli_handlers import (
 )
 from .constants import (
     TICKET_DIRS,
-    VALID_TYPES,
 )
 from .helpers import (
     detect_tickets_dir,
@@ -106,7 +105,9 @@ def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--detail", required=True, help="Transition detail")
 
     # parse-ticket
-    p = sub.add_parser("parse-ticket", help="Parse ticket YAML frontmatter -> JSON")
+    p = sub.add_parser(
+        "parse-ticket", help="Convert a v2 ticket document to its normalized JSON spec"
+    )
     p.add_argument("path", help="Path to ticket .md file")
 
     # validate-ticket
@@ -200,67 +201,13 @@ def _add_planning_subcommands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_create_file_args(p: argparse.ArgumentParser) -> None:
-    """Register arguments for the create-file subcommand."""
+    """Require a complete human-readable Ticket document for creation."""
     p.add_argument("slug", help="Ticket slug")
-    p.add_argument("--summary", required=True, help="Ticket summary")
     p.add_argument(
-        "--type",
+        "--document-file",
         required=True,
-        dest="ticket_type",
-        choices=sorted(VALID_TYPES),
-        help="Ticket type",
+        help="Read the complete human-readable Ticket Markdown file",
     )
-    p.add_argument("--branch", required=True, help="Base branch")
-    p.add_argument(
-        "--project-destination-ref",
-        default="",
-        help="Paired repository destination as a full refs/heads/... name",
-    )
-    p.add_argument(
-        "--scope",
-        nargs="*",
-        default=[],
-        help="Files in scope (append ' [new]' suffix for new files)",
-    )
-    p.add_argument("--spec", default="", help="Path to architecture spec")
-    p.add_argument("--dependencies", nargs="*", default=[], help="Dependency slugs")
-    p.add_argument(
-        "--priority", default="medium", choices=["low", "medium", "high"], help="Priority"
-    )
-    _add_create_file_content_args(p)
-
-
-def _add_create_file_content_args(p: argparse.ArgumentParser) -> None:
-    """Register structured content inputs for create-file."""
-    p.add_argument(
-        "--criteria",
-        default=None,
-        help="JSON dict: {mandatory: {...}, optional: {...}} — criteria",
-    )
-    p.add_argument(
-        "--criteria-file",
-        default="",
-        help="Read criteria JSON/YAML from file instead of --criteria",
-    )
-    p.add_argument(
-        "--on-success",
-        default=None,
-        help=(
-            "JSON dict: {destination, merge, cleanup, triage_report} — successful-run disposition"
-        ),
-    )
-    p.add_argument(
-        "--target-plan",
-        default=None,
-        help="JSON list of persistent, replacement, and ephemeral Target entries",
-    )
-    p.add_argument(
-        "--target-plan-file",
-        default="",
-        help="Read Target Plan JSON from a file instead of --target-plan",
-    )
-    p.add_argument("--body", default="", help="Ticket body (markdown)")
-    p.add_argument("--body-file", default="", help="Read ticket body from file instead of --body")
 
 
 def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
@@ -273,67 +220,8 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("slug", help="Blocked ticket slug")
 
     # enqueue
-    p = sub.add_parser("enqueue", help="Enqueue a ticket (stamp frontmatter + log)")
+    p = sub.add_parser("enqueue", help="Enqueue the authored Ticket document")
     p.add_argument("slug", help="Ticket slug")
-    p.add_argument("--summary", default=None, help="Ticket summary (reads from file if omitted)")
-    p.add_argument(
-        "--type",
-        default=None,
-        dest="ticket_type",
-        choices=sorted(VALID_TYPES),
-        help="Ticket type (reads from file if omitted)",
-    )
-    p.add_argument("--branch", default=None, help="Base branch (reads from file if omitted)")
-    p.add_argument(
-        "--destination",
-        choices=["review", "done"],
-        default=None,
-        help="Where ticket goes after success (review or done)",
-    )
-    p.add_argument(
-        "--merge",
-        action="store_true",
-        default=None,
-        dest="merge",
-        help="Merge feature branch on completion",
-    )
-    p.add_argument(
-        "--no-merge",
-        action="store_false",
-        dest="merge",
-        help="Skip merge on completion (also use --no-cleanup when cleanup is configured)",
-    )
-    p.add_argument(
-        "--cleanup",
-        action="store_true",
-        default=None,
-        dest="cleanup",
-        help="Delete worktree/branch on completion",
-    )
-    p.add_argument(
-        "--no-cleanup",
-        action="store_false",
-        dest="cleanup",
-        help="Keep worktree/branch on completion",
-    )
-    p.add_argument(
-        "--triage-report",
-        action="store_true",
-        default=None,
-        dest="triage_report",
-        help="Prepare the rich HTML change explanation before handoff",
-    )
-    p.add_argument(
-        "--no-triage-report",
-        action="store_false",
-        dest="triage_report",
-        help="Skip the agent-prepared HTML explanation",
-    )
-    p.add_argument(
-        "--integration-base",
-        default="",
-        help="Original dev branch (for integration branch tickets)",
-    )
 
     # activate
     p = sub.add_parser("activate", help="Activate a ticket for execution (move to active/)")

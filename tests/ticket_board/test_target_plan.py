@@ -9,8 +9,21 @@ import pytest
 
 from booley.core.models import TargetPlanRole
 from booley.ticket_board import target_plan
-from booley.ticket_board.target_plan import TargetPlanValidationError, analyze_target_plan
-from booley.ticket_board.workspace_ops import target_surface_files
+from booley.ticket_board.target_plan import (
+    TargetPlanValidationError,
+    analyze_target_plan,
+    analyze_ticket_spec_target_plan,
+)
+from booley.ticket_board.ticket_document import (
+    TicketConversionContext,
+    convert_ticket_document,
+    ticket_authoring_view,
+)
+from booley.ticket_board.workspace_ops import (
+    AcceptanceBasisOperationError,
+    target_surface_files,
+    validate_ticket_spec_authoring_inputs,
+)
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -107,6 +120,71 @@ def test_replacement_plan_canonicalizes_and_derives_baseline_removal(repository:
     assert analysis.removal_targets == ("acme:lib:toy:1.0#lint_old",)
     assert analysis.plan is not None
     assert analysis.plan.entries[0].role is TargetPlanRole.REPLACEMENT
+
+
+def test_v2_replacement_plan_needs_no_predecessor_criterion(repository: Path) -> None:
+    _add_candidate(repository)
+    text = (
+        "---\nsummary: Replace lint Target\ntype: refactor\nbranch: main\n"
+        "scope: [toy.core]\non_success: [merge]\nCRITERIA_MANDATORY:\n"
+        "  LINT: {lint_new (replaces lint_old): clean}\n"
+        "---\n\n## Description\n\nReplace the old recipe.\n"
+    )
+    view = ticket_authoring_view(repository)
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.diagnostics == ()
+    assert converted.document is not None
+    surfaces = target_surface_files(
+        ((repository, ("toy.core",), _git(repository, "rev-parse", "HEAD")),)
+    )
+
+    analysis = analyze_ticket_spec_target_plan(converted.document.spec, repository, surfaces)
+
+    assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
+    assert analysis.removal_targets == ("acme:lib:toy:1.0#lint_old",)
+
+
+def test_v2_authoring_preflight_accepts_matching_target_delta(repository: Path) -> None:
+    _add_candidate(repository)
+    branch = _git(repository, "branch", "--show-current")
+    text = (
+        f"---\nsummary: Add lint Target\ntype: feature\nbranch: {branch}\n"
+        "scope: [toy.core]\non_success: [merge]\nCRITERIA_MANDATORY:\n"
+        "  LINT: {lint_new (new): clean}\n"
+        "---\n\n## Description\n\nAdd another recipe.\n"
+    )
+    converted = convert_ticket_document(
+        text,
+        TicketConversionContext("draft", lambda _generated: ticket_authoring_view(repository)),
+    )
+    assert converted.document is not None
+
+    analysis = validate_ticket_spec_authoring_inputs(
+        repository, repository, converted.document.spec
+    )
+
+    assert analysis.authored_targets == ("acme:lib:toy:1.0#lint_new",)
+
+
+def test_v2_authoring_preflight_rejects_unannotated_target_delta(repository: Path) -> None:
+    _add_candidate(repository)
+    branch = _git(repository, "branch", "--show-current")
+    text = (
+        f"---\nsummary: Check lint Target\ntype: feature\nbranch: {branch}\n"
+        "scope: [toy.core]\non_success: [merge]\nCRITERIA_MANDATORY:\n"
+        "  LINT: {lint_old: clean}\n"
+        "---\n\n## Description\n\nCheck the recipe.\n"
+    )
+    converted = convert_ticket_document(
+        text,
+        TicketConversionContext("draft", lambda _generated: ticket_authoring_view(repository)),
+    )
+    assert converted.document is not None
+
+    with pytest.raises(AcceptanceBasisOperationError, match=r"unplanned|Target Plan"):
+        validate_ticket_spec_authoring_inputs(repository, repository, converted.document.spec)
 
 
 def test_source_boundary_compares_worktree_filtered_baseline(repository: Path) -> None:

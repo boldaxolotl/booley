@@ -27,7 +27,6 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.ticket_board import review_preparation as prep
-from booley.ticket_board.io import TicketFileSpec
 from booley.ticket_board.logs import save_progress
 from booley.ticket_board.review_lifecycle import request_review_command
 from booley.ticket_board.review_records import read_entry
@@ -71,16 +70,24 @@ if __name__ == "__main__":
 """)
         _git(root, "add", "-f", ".booley_project/criteria.toml", ".booley_project/mcp_tools")
         _git(root, "commit", "-m", "Register fixture criterion")
-    path = tio.create_ticket_file(
+    criterion = (
+        "IMPLEMENTATION_DONE: true"
+        if declared == "implementation_done"
+        else "REVIEW: {rtl: {bugs: done}}"
+    )
+    actions = "[review, triage_report]" if options.get("model", False) else "[review]"
+    project_ref = "project_destination_ref: refs/heads/main\n" if options.get("paired") else ""
+    path = tio.create_ticket_document(
         "demo",
-        TicketFileSpec(
-            summary="Inspect incomplete work",
-            ticket_type="feature",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {declared: True}},
-            on_success={"triage_report": options.get("model", False)},
-        ),
+        "---\n"
+        "summary: Inspect incomplete work\n"
+        "type: feature\n"
+        "branch: main\n"
+        f"{project_ref}"
+        "scope: [README.md]\n"
+        f"on_success: {actions}\n"
+        f"CRITERIA_MANDATORY: {{{criterion}}}\n"
+        "---\n\n## Description\nInspect incomplete work.\n",
     )
     assert path is not None
     assert tio.enqueue_ticket("demo")
@@ -710,7 +717,7 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     assert read_entry(log_dir)["disposition"] == "accepted"
     from booley.ticket_board.operations import op_complete
 
-    assert op_complete(tio, "demo", no_merge=True, no_cleanup=True)
+    assert op_complete(tio, "demo")
     assert tio.find_ticket("demo")["status"] == "done"
 
 

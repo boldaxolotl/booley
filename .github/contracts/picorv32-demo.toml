@@ -17,23 +17,23 @@ required_targets = [
 ]
 
 [[required_binding]]
-criterion = "criteria.mandatory.lint_clean"
+criterion = "CRITERIA_MANDATORY.LINT"
 target = "lint_core"
 
 [[required_binding]]
-criterion = "criteria.mandatory.sim_pass"
+criterion = "CRITERIA_MANDATORY.SIM"
 target = "sim_core"
 
 [[required_binding]]
-criterion = "criteria.mandatory.sim_pass"
+criterion = "CRITERIA_MANDATORY.SIM"
 target = "sim_wb"
 
 [[required_binding]]
-criterion = "criteria.mandatory.synthesis_ok"
+criterion = "CRITERIA_MANDATORY.SYNTH"
 target = "synth_core"
 
 [[required_binding]]
-criterion = "criteria.optional.mutation_score"
+criterion = "CRITERIA_OPTIONAL.MUTATION"
 target = "sim_core"
 
 [[generated_input]]

@@ -21,6 +21,22 @@ from booley.ticket_board.acceptance_basis import (
 )
 
 
+def _write_v2_ticket(ticket: Path, *, branch: str = "main", extra: str = "") -> None:
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_text(
+        "---\n"
+        "summary: Ticket\n"
+        "type: feature\n"
+        f"branch: {branch}\n"
+        "scope: []\n"
+        "on_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+        f"{extra}"
+        "---\n\n## Description\nWork.\n",
+        encoding="utf-8",
+    )
+
+
 def _completed(
     *args: str,
     returncode: int = 0,
@@ -68,9 +84,8 @@ def _authoring_workspace(
     project_data = tmp_path / "project-data"
     outer = project_data / "worktrees/ticket"
     outer.mkdir(parents=True)
-    ticket = root / "ticket.md"
-    ticket.parent.mkdir(parents=True)
-    ticket.write_text("---\nbranch: main\nscope: []\ncriteria: {}\n---\nbody\n", encoding="utf-8")
+    ticket = root / "drafts/ticket.md"
+    _write_v2_ticket(ticket)
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
@@ -149,7 +164,7 @@ def test_authoring_change_validation_rejects_non_acceptance_paths(
         lambda _surface, _project_repository: set(),
     )
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring changes"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_authoring_change_validation_rejects_modified_protected_source(
@@ -168,7 +183,7 @@ def test_authoring_change_validation_rejects_modified_protected_source(
     monkeypatch.setattr(workspace_ops, "_git", lambda *_args, **_kwargs: _completed("git"))
 
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_authoring_change_validation_rejects_unscoped_empty_placeholder(
@@ -191,7 +206,7 @@ def test_authoring_change_validation_rejects_unscoped_empty_placeholder(
     )
 
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="non-authoring"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_authoring_path_allows_untracked_scoped_empty_placeholder(
@@ -278,11 +293,11 @@ def test_changed_core_targets_report_shape_and_identity_errors(
     )
     monkeypatch.setattr(workspace_ops, "_baseline_surface_file", lambda *_args: None)
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="is not a mapping"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
     core.write_text("targets: {}\n", encoding="utf-8")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="no valid name"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_attachment_rollback_helpers_surface_git_inspection_failures(
@@ -330,7 +345,7 @@ def test_public_basis_preparation_reports_git_process_failure(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("git missing")),
     )
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="git missing"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_strict_branch_lookup_distinguishes_missing_and_inspection_failure(
@@ -357,7 +372,7 @@ def test_ensure_workspace_rejects_moved_branch_and_existing_path(
     root = tmp_path / "root"
     ticket = root / "ticket.md"
     ticket.parent.mkdir()
-    ticket.write_text("---\nbranch: main\n---\n", encoding="utf-8")
+    _write_v2_ticket(ticket)
     project_data = tmp_path / "project-data"
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
@@ -417,7 +432,7 @@ def test_current_and_project_branch_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
+    _write_v2_ticket(ticket)
     prepared = SimpleNamespace(
         outer=tmp_path,
         project=None,
@@ -425,15 +440,19 @@ def test_current_and_project_branch_validation(
         project_changes=[],
         outer_base_sha="a" * 40,
         project_base_sha="",
+        fields={"branch": "main"},
+        spec=SimpleNamespace(body="## Description\nWork.\n"),
     )
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        workspace_ops, "_prepare_converted_basis", lambda *_args, **_kwargs: prepared
+    )
     monkeypatch.setattr(workspace_ops, "_prepare_basis_inputs", lambda *_args: ((), ()))
     monkeypatch.setattr(workspace_ops, "_staged_tree", lambda *_args: "b" * 40)
     monkeypatch.setattr(workspace_ops, "_full_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args, **_kwargs: "")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="detached"):
-        workspace_ops.prepare_acceptance_basis(tmp_path, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(tmp_path, ticket, "ticket")
 
     project = tmp_path / "project"
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
@@ -449,11 +468,11 @@ def test_preflight_project_repository_validates_destination_ref(
 ) -> None:
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: main\nproject_destination_ref: 3\n---\n", encoding="utf-8")
+    _write_v2_ticket(ticket, extra="project_destination_ref: 3\n")
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: tmp_path)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="full refs/heads"):
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="must be a string"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -653,7 +672,7 @@ def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
 ) -> None:
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: main\n---\n", encoding="utf-8")
+    _write_v2_ticket(ticket)
     path = tmp_path / ".runtime/acceptance/drafts/ticket.json"
     path.parent.mkdir(parents=True)
     path.write_text("{}", encoding="utf-8")
@@ -674,7 +693,7 @@ def test_draft_generation_reuses_valid_descriptor(
 ) -> None:
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: main\n---\n", encoding="utf-8")
+    _write_v2_ticket(ticket)
     path = tmp_path / ".runtime/acceptance/drafts/ticket.json"
     path.parent.mkdir(parents=True)
     path.write_text('{"generation": "0123456789abcdef"}\n', encoding="utf-8")
@@ -690,11 +709,11 @@ def test_ensure_ticket_workspace_rejects_bad_slug_and_branch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nbranch: ''\n---\n", encoding="utf-8")
+    _write_v2_ticket(ticket, branch="''")
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="unsafe"):
         workspace_ops.ensure_ticket_workspace(tmp_path, "missing", "bad/slug")
     monkeypatch.setattr(workspace_ops, "_draft_generation", lambda *_args: "0" * 16)
-    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="destination branch"):
+    with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="nonempty string"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
 
 
@@ -709,7 +728,7 @@ def test_workspace_preparation_and_status_fail_loudly(
     )
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: True)
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="hook failed"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
     monkeypatch.setattr(
         workspace_ops,
         "prepare_project",
@@ -721,7 +740,7 @@ def test_workspace_preparation_and_status_fail_loudly(
         lambda *_args, **_kwargs: _completed("git", returncode=2, stderr="status failed"),
     )
     with pytest.raises(workspace_ops.AcceptanceBasisOperationError, match="status failed"):
-        workspace_ops.prepare_acceptance_basis(root, ticket, "ticket")
+        workspace_ops.prepare_converted_acceptance_basis(root, ticket, "ticket")
 
 
 def test_reset_project_source_validation_rejects_repository_mismatches(
@@ -1049,6 +1068,16 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\nacceptance_basis: old\n---\nbody\n", encoding="utf-8")
+    spec = SimpleNamespace(
+        fields={"branch": "main"},
+        body="## Description\nWork.\n",
+        semantic_digest=lambda: "d" * 64,
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_replacement_inputs",
+        lambda *_args: (SimpleNamespace(spec=spec), "e" * 64),
+    )
     workspace = workspace_ops.AuthoringWorkspace(tmp_path / "outer", None, "a" * 40, "", "0" * 16)
     publication = SimpleNamespace(operation_id="operation")
     published: list[tuple[object, ...]] = []
@@ -1073,9 +1102,14 @@ def test_prepare_replacement_basis_resumes_or_starts_publication(
             tmp_path, ticket, "ticket", workspace, (), operation_id="other"
         )
 
-    prepared = SimpleNamespace(target_plan=SimpleNamespace(removal_targets=("old",)))
+    prepared = SimpleNamespace(
+        target_plan=SimpleNamespace(removal_targets=("old",)),
+        spec=spec,
+    )
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "_prepare_basis", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        workspace_ops, "_prepare_converted_basis", lambda *_args, **_kwargs: prepared
+    )
     monkeypatch.setattr(
         workspace_ops, "_prepare_basis_inputs", lambda *_args: (("binding",), ("old",))
     )

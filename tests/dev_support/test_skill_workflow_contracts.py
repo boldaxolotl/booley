@@ -182,25 +182,11 @@ def test_ticket_create_defaults_every_review_to_corrective_mode():
     template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
     contract = " ".join(skill.split())
 
-    for criterion in (
-        "review_rtl_bugs",
-        "review_tb_quality",
-        "review_rtl_spec",
-    ):
-        assert criterion in skill
-    for criterion in (
-        "review_rtl_bugs",
-        "review_tb_quality",
-        "review_rtl_spec",
-        "review_rtl_protocol",
-        "review_rtl_security",
-        "review_rtl_optimization",
-        "review_rtl_code_style",
-    ):
-        assert f"{criterion}: true" in template
-    assert "expands to corrective `_clean`" in contract
-    assert "Use explicit `_done` only for" in contract
-    assert "Every `_clean` waiver includes a justification" in contract
+    assert "RTL bugs REVIEW" in skill
+    assert "TB quality REVIEW" in skill
+    assert "rtl: {bugs: clean}" in template
+    assert "tb: {quality: clean}" in template
+    assert "`REVIEW.done` and `REVIEW.clean` are separate outcomes" in contract
 
 
 def test_ticket_create_hands_human_off_to_booley_run():
@@ -218,9 +204,10 @@ def test_ticket_create_companions_cover_target_plan_decisions():
     for required in (
         "New Target lifecycle",
         "coexist",
-        "replace a runnable baseline",
+        "replace a runnable predecessor",
         "evidence-only",
-        "persistent / replacement / ephemeral",
+        "(new)",
+        "(temp)",
     ):
         assert required in grilling
 
@@ -239,8 +226,8 @@ def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
         "approved planned Target definitions and owned test tables",
         "create only empty placeholders for `[new]` Scope paths",
         "do not implement any part of the Ticket",
-        "report the blocker instead of",
-        "creating code to make the Target runnable",
+        "stop and report the blocker",
+        "creating that code is outside this skill",
     ):
         assert required in contract
     for retired in (
@@ -267,7 +254,7 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
         "single post-grill review artifact",
         "MANDATORY TICKET APPROVAL",
         "Target Plan",
-        "persistent and ephemeral entries",
+        "New and Temporal Target entries",
         "complete Target definition",
         "Target Plan: none",
         "Create this ticket and Target Plan? (yes / edit / cancel)",
@@ -308,10 +295,10 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "disregard the old scaffold's instructions about YAML activation",
         "An untouched, comment-only legacy scaffold adds no guidance",
         "validation never does",
-        '--on-success "$ON_SUCCESS_JSON"',
+        '--document-file "$TICKET_PATH"',
     ):
         assert required in contract
-    assert "optional `target_plan`, and `on_success`" in contract
+    assert "Target annotations, and `on_success`" in contract
     for retired in (
         "All five blocks must then be present",
         "An active file fully replaces",
@@ -319,7 +306,7 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "merge, add/remove, or inheritance syntax",
     ):
         assert retired not in contract
-    assert "all four on_success fields" in contract
+    assert "`on_success` values" in contract
     assert "remove_targets" not in contract
 
 
@@ -329,13 +316,13 @@ def test_ticket_create_fixes_target_plan_at_creation_time():
     contract = " ".join(skill.split())
 
     for required in (
-        "Decide the Target Plan during Ticket creation",
-        "Every selector resolves uniquely",
-        "`replacement` retains its candidate and removes its runnable baseline",
-        "Acceptance removes only the derived Target definitions",
+        "The Target Plan is derived",
+        "Use exact registered Target and test selectors",
+        "(replaces <existing Target>)",
+        "An annotated Target requires `merge`",
     ):
         assert required in contract
-    assert "target_plan:" in template
+    assert "do not author target_plan" in template
 
 
 def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
@@ -346,9 +333,9 @@ def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
         "ordinary scope-overlap and interface-dependency inference",
         "add that provider to `dependencies` in human mode",
         "reject the request and name every missing provider dependency",
-        "After Criteria and the Target Plan are fully resolved, rerun §A",
+        "After Criteria and the derived Target Plan are fully resolved, rerun §A",
         "mandatory in both lightweight and detailed modes",
-        "After all inferred Criteria and Target Plan values are resolved, rerun §A",
+        "reconcile the final `dependencies`",
     ):
         assert required in contract
 

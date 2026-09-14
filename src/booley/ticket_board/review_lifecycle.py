@@ -11,7 +11,6 @@ from typing import Any, Literal
 
 from booley.core.boundary import require_dict
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import CriteriaTemplate, extract_sim_targets
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -74,15 +73,10 @@ def _quiescent(tio: TicketIO, slug: str) -> None:
 
 def _capture_state(ctx: prep.ReviewPrepContext, basis: Any) -> dict[str, Any]:
     record = load_basis_record(ctx.project_root, ctx.slug, basis)
-    declarations = record["ticket"]["frontmatter"]["criteria"]
-    template = (
-        CriteriaTemplate.from_yaml(declarations)
-        if declarations
-        else CriteriaTemplate.for_ticket_type(record["ticket"]["frontmatter"]["type"])
-    )
+    declarations = record["ticket"]["spec"]["criteria"]
     state = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
-    expected = template.expand(extract_sim_targets(declarations))
+    expected = {row["identity"]: row["mandatory"] for row in declarations}
     from booley.config.project_config import is_run_report_enabled
 
     if is_run_report_enabled():

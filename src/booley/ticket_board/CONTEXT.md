@@ -22,7 +22,7 @@ _Avoid_: task, issue, story
 ### Authoring
 
 **Ticket Creation Guidance**:
-Project-authored policy that guides the Criteria, optional Target Plan, and
+Project-authored policy that guides the Criteria, Target lifecycle, and
 successful-run disposition chosen while drafting a Ticket.
 _Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defaults
 
@@ -31,23 +31,23 @@ The files a Ticket plans to change.
 _Avoid_: allowlist
 
 **Target Plan**:
-An optional list of new Targets authored by a Ticket, classifying each as
-Persistent, Replacement, or Ephemeral.
+A Ticket's intended acceptance disposition for its authored Targets:
+New, Replacement, or Temporal.
 _Avoid_: Target removal list, Target metadata, build migration
 
-**Persistent Target**:
-A Target Plan addition intended to remain independently selectable after
+**New Target**:
+A Ticket-authored Target intended to remain independently selectable after
 Ticket acceptance.
-_Avoid_: permanent Target, default Target
+_Avoid_: Persistent Target, permanent Target, default Target
 
 **Replacement Target**:
-A Target Plan addition intended to supersede one runnable baseline Target at
+A Ticket-authored Target intended to supersede one runnable baseline Target at
 acceptance.
 _Avoid_: modified Target, in-place Target edit, temporary Target
 
-**Ephemeral Target**:
-A Target Plan addition that exists only to collect one Ticket's evidence.
-_Avoid_: disposable config, temporary persistent Target
+**Temporal Target**:
+A Ticket-authored Target that exists only to collect one Ticket's evidence.
+_Avoid_: Ephemeral Target, disposable config, temporary persistent Target
 
 **Ticket Workspace**:
 The disposable checkout set used for Ticket authoring or Developer Agent
@@ -72,13 +72,13 @@ _Avoid_: Ticket editing, reset, fresh authoring
 ### Execution and evidence
 
 **Criterion**:
-A named boolean condition required for Ticket completion, bound either to one
-Target or to baseline and candidate Targets for a relative comparison.
+A named boolean condition in a Ticket's acceptance state, bound to the
+evidence and subject it evaluates.
 _Avoid_: check, gate, acceptance test
 
 **Cycle Count Criterion**:
 A Criterion requiring one named test to pass on one Target and its reported
-cycle count to meet every declared threshold.
+cycle count to meet one declared threshold.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
 
 **Escalation**:

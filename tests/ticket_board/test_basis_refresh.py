@@ -200,7 +200,10 @@ def test_provider_basis_refresh_is_allowed_when_pinned_export_is_unchanged(
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\n---\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: refreshed_provider)
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: object())
+    monkeypatch.setattr(
+        basis_refresh, "load_acceptance_basis_from_document", lambda *_args: refreshed_provider
+    )
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "b" * 64)
 
     refreshed = _verify_providers(tmp_path, tmp_path, consumer)
@@ -257,9 +260,18 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda root: root)
     monkeypatch.setattr(
         basis_refresh,
-        "load_acceptance_basis",
-        lambda _root, _slug, fields, _body: (
-            new_basis if fields.get("acceptance_basis") not in ({}, None) else old_basis
+        "_converted_ticket",
+        lambda *_args: SimpleNamespace(
+            spec=SimpleNamespace(fields={}), generated={"acceptance_basis": {}}
+        ),
+    )
+    monkeypatch.setattr(
+        basis_refresh,
+        "load_acceptance_basis_from_document",
+        lambda _root, _slug, document: (
+            new_basis
+            if document.generated.get("acceptance_basis") not in ({}, None)
+            else old_basis
         ),
     )
 
@@ -367,16 +379,19 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\n---\n", encoding="utf-8")
     monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
+    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: object())
     monkeypatch.setattr(
         basis_refresh,
-        "load_acceptance_basis",
+        "load_acceptance_basis_from_document",
         lambda *_args: (_ for _ in ()).throw(basis_refresh.AcceptanceBasisError("bad basis")),
     )
     with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
     provider_basis = AcceptanceBasis((_participant(),))
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    monkeypatch.setattr(
+        basis_refresh, "load_acceptance_basis_from_document", lambda *_args: provider_basis
+    )
     with pytest.raises(BasisRefreshError, match="no longer exports"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
@@ -384,7 +399,9 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
         (_participant(),),
         target_plan=TargetPlan.from_value([{"target": binding.target, "role": "persistent"}]),
     )
-    monkeypatch.setattr(basis_refresh, "load_acceptance_basis", lambda *_args: provider_basis)
+    monkeypatch.setattr(
+        basis_refresh, "load_acceptance_basis_from_document", lambda *_args: provider_basis
+    )
     monkeypatch.setattr(basis_refresh, "target_surface_sha256", lambda *_args: "c" * 64)
     with pytest.raises(BasisRefreshError, match="changed after it was pinned"):
         _verify_providers(tmp_path, tmp_path, consumer)

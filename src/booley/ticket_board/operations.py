@@ -801,7 +801,7 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
-    tickets = scan_all_tickets(tio.tickets_dir)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
     from .basis_refresh import recover_published_basis_refreshes
 
     recover_published_basis_refreshes(Path(tio._project_root), tickets)
@@ -928,25 +928,11 @@ def _block_failed_basis_refresh(tio: Any, slug: str) -> None:
     )
 
 
-def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> OnSuccess:
-    """The ticket's ``on_success`` with the per-invocation overrides applied.
-
-    The overrides are subtractive only: they can turn a configured action OFF,
-    never on. Every downstream decision must read the effective values.
-    Destructive cleanup is valid only with journaled merge publication, so
-    ``--no-merge`` must be paired with ``--no-cleanup`` when cleanup was
-    configured.
-    """
-    from dataclasses import replace
-
+def _effective_on_success(entry: dict) -> OnSuccess:
+    """Read only the completion policy derived from the authored Ticket."""
     from booley.core.models import OnSuccess
 
-    configured = OnSuccess.from_dict(entry.get("on_success"))
-    return replace(
-        configured,
-        merge=configured.merge and not no_merge,
-        cleanup=configured.cleanup and not no_cleanup,
-    )
+    return OnSuccess.from_dict(entry.get("on_success"))
 
 
 def _acceptance_failure_detail(tio: Any, slug: str) -> str:
@@ -968,6 +954,7 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
     )
     from .acceptance_journal import completion_basis_sources
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+    from .cleanup_only import cleanup_only_sources
 
     validate_review_package_binding(log_dir, snapshot)
     basis = tio.load_basis(slug)
@@ -984,6 +971,10 @@ def _validate_accepted_snapshot(tio: Any, slug: str, log_dir: Path, snapshot: An
             basis,
             expected_sources=snapshot_sources,
         )
+        if sources is None:
+            sources = cleanup_only_sources(
+                Path(tio._project_root).resolve(), slug, basis, snapshot_sources
+            )
         if sources is None:
             current_sources = validate_current_basis_refs(tio._project_root, basis)
             if current_sources != snapshot_sources:
@@ -1026,7 +1017,7 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
             return None
         try:
             _validate_accepted_snapshot(tio, slug, log_dir, accepted.snapshot)
-        except (AcceptanceLedgerError, ValueError, OSError) as exc:
+        except (AcceptanceLedgerError, RuntimeError, ValueError, OSError) as exc:
             print(
                 f"Error: review package binding for '{slug}' is corrupt: {exc}",
                 file=sys.stderr,
@@ -1043,39 +1034,33 @@ def _completion_acceptance_valid(tio: Any, slug: str) -> AcceptanceSnapshot | No
     return None
 
 
-def op_complete(
-    tio: Any,
-    slug: str,
-    *,
-    no_merge: bool = False,
-    no_cleanup: bool = False,
-) -> bool:
-    """Complete a ticket: approve, merge/cleanup based on on_success.
-
-    *no_merge* / *no_cleanup* are per-invocation opt-outs of the ticket's
-    configured terminal actions (``booley board move <slug> done
-    --no-merge``) — useful when a ticket's branch must survive for inspection,
-    or when the merge is being done by hand. They never enable an action the
-    ticket did not ask for.
-
-    Returns True on success, False on failure.
-    """
-    request = _prepare_completion_request(tio, slug, no_merge, no_cleanup)
+def op_complete(tio: Any, slug: str) -> bool:
+    """Complete a ticket using its authored, frozen completion policy."""
+    request = _prepare_completion_request(tio, slug)
     if request is None:
         return False
     slug, on_success, accepted_snapshot = request
     if on_success.merge:
         return _complete_with_merge(tio, slug, on_success, accepted_snapshot)
+    if on_success.cleanup:
+        from .cleanup_only import CleanupOnlyError, advance_cleanup_only
+
+        try:
+            basis = tio.load_basis(slug)
+            advance_cleanup_only(tio, slug, basis, accepted_snapshot.participant_heads)
+        except (CleanupOnlyError, OSError, ValueError) as exc:
+            print(f"Error: cleanup-only completion failed for '{slug}': {exc}", file=sys.stderr)
+            return False
+        _finish_completed_ticket(tio, slug, cleanup=True)
+        return True
     if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
     _finish_completed_ticket(tio, slug, cleanup=False)
     return True
 
 
-def _prepare_completion_request(
-    tio: Any, slug: str, no_merge: bool, no_cleanup: bool
-) -> tuple[str, Any, Any] | None:
-    context = _completion_context(tio, slug, no_merge, no_cleanup)
+def _prepare_completion_request(tio: Any, slug: str) -> tuple[str, Any, Any] | None:
+    context = _completion_context(tio, slug)
     if context is None:
         return None
     slug, on_success = context
@@ -1098,9 +1083,7 @@ def _prepare_completion_request(
     return slug, on_success, accepted_snapshot
 
 
-def _completion_context(
-    tio: Any, slug: str, no_merge: bool, no_cleanup: bool
-) -> tuple[str, Any] | None:
+def _completion_context(tio: Any, slug: str) -> tuple[str, Any] | None:
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -1109,14 +1092,13 @@ def _completion_context(
     # paired repository branches are keyed by the ticket filename stem.
     slug = Path(str(entry["file"])).stem
 
-    on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
+    on_success = _effective_on_success(entry)
     policy_errors = on_success.validate()
     if policy_errors:
         print(f"Error: cannot complete '{slug}': {policy_errors[0]}", file=sys.stderr)
         return None
-
     status = entry.get("status", "")
-    if status != "review" and not (status == "done" and on_success.merge):
+    if status != "review" and not (status == "done" and (on_success.merge or on_success.cleanup)):
         print(
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
@@ -1163,8 +1145,6 @@ def op_board_move(
     slug: str,
     target: str,
     feedback: str = "",
-    no_merge: bool = False,
-    no_cleanup: bool = False,
 ) -> bool:
     """User-facing state transition, validated against the lifecycle graph.
 
@@ -1173,9 +1153,6 @@ def op_board_move(
     matrix and the help text below are both derived from it, so they cannot
     drift apart. Returns True on success, False on invalid transition or error.
 
-    *no_merge* / *no_cleanup* opt out of the ticket's configured terminal
-    actions. Only the review->done edge runs any, so they are announced as
-    ignored on the others rather than silently dropped.
     """
     entry = tio.find_ticket(slug)
     if not entry:
@@ -1193,13 +1170,7 @@ def op_board_move(
 
     # Route the validated move to its operation (handlers differ per edge).
     if src is TicketState.REVIEW:
-        return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
-    if no_merge or no_cleanup:
-        print(
-            f"Note: --no-merge/--no-cleanup apply to the review->done move only; "
-            f"ignored for '{status}' -> '{target}'",
-            file=sys.stderr,
-        )
+        return op_complete(tio, slug)
     if src is TicketState.DRAFT:
         return tio.enqueue_ticket(slug)
     if src is TicketState.BLOCKED:
@@ -1574,7 +1545,11 @@ def op_reset(
     The queue move is the final publication step: a queued ticket therefore
     never advertises stale active-run evidence, even if cleanup fails.
     """
-    entry = tio.find_ticket(slug)
+    try:
+        entry = tio.find_ticket(slug)
+    except ValueError as exc:
+        print(f"Error: cannot reset '{slug}': {exc}", file=sys.stderr)
+        return False
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False

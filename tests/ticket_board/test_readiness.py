@@ -11,7 +11,7 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_basis as acceptance_basis_module
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board.acceptance_basis import AcceptanceBasisError
-from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.io import TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 
 
@@ -84,22 +84,25 @@ targets:
     (project / "booley.toml").write_text(
         "[flows.sim]\ndefault_target = 'sim_toy'\n", encoding="utf-8"
     )
+    (project / "tests.toml").write_text("[sim_toy]\ntests = ['smoke']\n", encoding="utf-8")
     (project / "tickets" / "board" / "queue").mkdir(parents=True)
     _git(root, "add", "-A")
-    _git(root, "add", "-f", ".booley_project/booley.toml", ".booley_project/hooks")
+    _git(
+        root,
+        "add",
+        "-f",
+        ".booley_project/booley.toml",
+        ".booley_project/hooks",
+        ".booley_project/tests.toml",
+    )
     _git(root, "commit", "-m", "demo")
-    criteria = {"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_toy @ smoke @ pass -> pass"]}}
     tio = TicketIO(project / "tickets", project_root=root)
-    draft = tio.create_ticket_file(
+    draft = tio.create_ticket_document(
         "demo",
-        TicketFileSpec(
-            summary="Demo",
-            ticket_type="verification",
-            branch="main",
-            scope=["rtl/toy.sv"],
-            criteria=criteria,
-            body="## Description\n\nVerify the demo.\n",
-        ),
+        "---\nsummary: Demo\ntype: verification\nbranch: main\n"
+        "scope: [rtl/toy.sv]\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {SIM: {sim_toy: {smoke: pass}}}\n"
+        "---\n\n## Description\n\nVerify the demo.\n",
     )
     assert draft is not None
     assert tio.enqueue_ticket("demo") is True
@@ -163,15 +166,12 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
     _git(root, "add", "-f", ".booley_project")
     _git(root, "commit", "-m", "initial")
     tio = TicketIO(project / "tickets", project_root=root)
-    ticket = tio.create_ticket_file(
+    ticket = tio.create_ticket_document(
         "changed-controls",
-        TicketFileSpec(
-            summary="Changed controls",
-            ticket_type="feature",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
+        "---\nsummary: Changed controls\ntype: feature\nbranch: main\n"
+        "scope: [README.md]\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+        "---\n\n## Description\n\nCheck protected inputs.\n",
     )
     assert ticket is not None
     assert tio.enqueue_ticket("changed-controls") is True
@@ -226,8 +226,7 @@ def test_executable_readiness_uses_authoritative_basis_reader(
         root,
         tickets,
         "demo",
-        {"acceptance_basis": {"schema": 1}},
-        "",
+        None,
     )
 
     assert errors == ["Acceptance Basis receipt mismatch"]

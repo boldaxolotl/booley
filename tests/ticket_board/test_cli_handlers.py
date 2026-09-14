@@ -80,6 +80,12 @@ def test_amend_command_reports_invalid_request(tmp_path, tio, capsys):
     assert "Error:" in capsys.readouterr().err
 
 
+_VALID_REVIEW_TICKET = (
+    "---\nsummary: Test\ntype: feature\nbranch: main\nscope: [toy.core]\n"
+    "on_success: []\nCRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+    "---\n\n## Description\n\nTest.\n"
+)
+
 # ---------------------------------------------------------------------------
 # _cmd_slug
 # ---------------------------------------------------------------------------
@@ -97,8 +103,9 @@ class TestCmdSlug:
 def test_validate_ticket_accepts_verilator_timescale(
     tio, tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nsummary: Test\n---\n## Description\nTest.\n", encoding="utf-8")
+    ticket = tmp_path / "drafts" / "ticket.md"
+    ticket.parent.mkdir()
+    ticket.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
     (tmp_path / ".git").mkdir()
     (tmp_path / "toy.core").write_text(
         "CAPI=2:\n"
@@ -116,7 +123,6 @@ def test_validate_ticket_accepts_verilator_timescale(
         "booley.ticket_board.workspace_ops.ensure_ticket_workspace",
         lambda *_args: SimpleNamespace(outer=tmp_path),
     )
-    monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(acceptance_targets, "_project_control_files", lambda _root: ())
     monkeypatch.setattr(
         acceptance_targets.subprocess,
@@ -124,7 +130,7 @@ def test_validate_ticket_accepts_verilator_timescale(
         lambda *_args, **_kwargs: subprocess.CompletedProcess(["git"], 0, "", ""),
     )
 
-    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=True))
+    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=False))
 
     assert rc == 0
     assert json.loads(capsys.readouterr().out) == {
@@ -134,37 +140,24 @@ def test_validate_ticket_accepts_verilator_timescale(
     }
 
 
-def test_validate_ticket_reports_missing_program_without_traceback(
+def test_validate_ticket_rejects_old_document_without_traceback(
     tio, tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    ticket = tmp_path / "ticket.md"
-    ticket.write_text("---\nsummary: Test\n---\n## Description\nTest.\n", encoding="utf-8")
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "toy.core").write_text(
-        "CAPI=2:\n"
-        "name: acme:lib:toy:1\n"
-        "scripts:\n"
-        "  prepare:\n"
-        "    cmd: [python3, hooks/missing.py]\n",
+    ticket = tmp_path / "drafts" / "ticket.md"
+    ticket.parent.mkdir()
+    ticket.write_text(
+        _VALID_REVIEW_TICKET.replace(
+            "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}",
+            "criteria: {mandatory: {review_rtl_bugs: true}}",
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_handlers, "detect_project_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        "booley.ticket_board.workspace_ops.ensure_ticket_workspace",
-        lambda *_args: SimpleNamespace(outer=tmp_path),
-    )
-    monkeypatch.setattr(cli_handlers, "validate_ticket_fields", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(acceptance_targets, "_project_control_files", lambda _root: ())
 
-    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=True))
+    rc = _cmd_validate_ticket(tio, Namespace(path=str(ticket), check_git=False))
 
     assert rc == 1
-    assert json.loads(capsys.readouterr().out) == {
-        "errors": [
-            "Acceptance input discovery failed: "
-            "referenced program is unavailable: hooks/missing.py"
-        ]
-    }
+    assert "Old Ticket format is unsupported" in json.loads(capsys.readouterr().out)["errors"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -219,13 +212,14 @@ class TestCmdReadBoard:
 
 class TestCmdParseTicket:
     def test_parse_existing_ticket(self, tio, capsys):
-        path = make_ticket_file(tio, "queue", "test-parse")
+        path = make_ticket_file(tio, "drafts", "test-parse")
+        path.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
         args = Namespace(path=str(path))
         rc = _cmd_parse_ticket(tio, args)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert "fields" in data
-        assert data["fields"]["type"] == "feature"
+        assert data["spec"]["fields"]["type"] == "feature"
+        assert data["spec"]["criteria"][0]["capability"] == "REVIEW"
 
     def test_parse_missing_file(self, tio, capsys):
         args = Namespace(path="/nonexistent/file.md")
@@ -333,17 +327,8 @@ class TestCmdShow:
         assert "empty" in capsys.readouterr().out.lower()
 
     def test_known_slug_prints_paths_and_criteria(self, tio, capsys):
-        make_ticket_file(
-            tio,
-            "queue",
-            "show-me",
-            extra_fields={
-                "criteria": {
-                    "mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]},
-                    "optional": {"lint_clean": ["lint -> pass"]},
-                },
-            },
-        )
+        path = make_ticket_file(tio, "drafts", "show-me")
+        path.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
         rc = _cmd_show(tio, Namespace(slug="show-me"))
         assert rc == 0
         out = capsys.readouterr().out
@@ -354,8 +339,20 @@ class TestCmdShow:
         rc = _cmd_show(tio, Namespace(slug="nope"))
         assert rc == 2
 
-    def test_done_ticket_reads_accepted_snapshot_after_runtime_cleanup(self, tio, capsys):
+    def test_done_ticket_reads_accepted_snapshot_after_runtime_cleanup(
+        self, tio, capsys, monkeypatch
+    ):
         make_ticket_file(tio, "done", "completed")
+        monkeypatch.setattr(
+            tio,
+            "find_ticket",
+            lambda _slug: {
+                "file": "board/done/completed.md",
+                "status": "done",
+                "branch": "main",
+                "criteria": {"mandatory": {"sim_pass": "pass"}, "optional": {}},
+            },
+        )
         state_path = existing_runtime_file(tio.logs_dir, "completed", "booley_state.json")
         state = DevelopmentState.load(state_path)
         state.slug = "completed"

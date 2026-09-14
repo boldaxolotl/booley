@@ -7,7 +7,7 @@ import re
 import subprocess
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.criteria.templates import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
 
@@ -26,6 +26,9 @@ from .validation_logs import (  # noqa: F401  # re-exported for backward compati
     format_validate_logs_report,
     validate_logs,
 )
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketSpec
 
 # ---------------------------------------------------------------------------
 # Step meta value validators (moved from constants.py)
@@ -1331,4 +1334,54 @@ def validate_ticket_fields(
     if check_git:
         errors.extend(validate_git_state(fields, project_root, allowed_dirty_paths))
 
+    return errors
+
+
+def validate_ticket_spec(
+    spec: TicketSpec,
+    *,
+    project_root: str | Path,
+    check_files: bool = True,
+    check_git: bool = False,
+    allowed_dirty_paths: Iterable[str | Path] = (),
+    provider_placeholders: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Validate a resolved v2 spec without interpreting authored Criteria again."""
+    from .acceptance_targets import validate_ticket_spec_targets
+
+    fields = dict(spec.fields)
+    errors, scope = _validate_scope(fields, check_files, project_root)
+    errors.extend(_validate_v2_sim_shape(spec, scope, Path(project_root), check_files))
+    errors.extend(
+        validate_ticket_spec_targets(
+            spec, project_root, provider_placeholders=provider_placeholders
+        )
+    )
+    if check_git:
+        errors.extend(validate_git_state(fields, project_root, allowed_dirty_paths))
+    return errors
+
+
+def _validate_v2_sim_shape(
+    spec: TicketSpec,
+    scope: list[str],
+    root: Path,
+    check_files: bool,
+) -> list[str]:
+    if not scope:
+        return []
+    rtl_prefixes = _source_prefixes(root, "rtl", "rtl")
+    tb_prefixes = _source_prefixes(root, "testbench", "tb")
+    touches_rtl = scope == ["*"] or _scope_hits_prefix(scope, rtl_prefixes)
+    touches_tb = scope == ["*"] or _scope_hits_prefix(scope, tb_prefixes)
+    if not (touches_rtl or touches_tb):
+        return []
+    errors: list[str] = []
+    if not any(row.mandatory and row.capability == "SIM" for row in spec.criteria):
+        errors.append("RTL/TB-editing tickets need a mandatory SIM Criterion")
+    if check_files and not touches_tb and not _has_existing_testbench(root, tb_prefixes):
+        errors.append(
+            "RTL/TB-editing tickets need an existing testbench, or Scope must allow "
+            "adding/modifying a testbench file"
+        )
     return errors

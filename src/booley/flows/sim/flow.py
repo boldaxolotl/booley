@@ -26,6 +26,7 @@ from booley.config.project_config import (
     lookup_target_section,
 )
 from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
+from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
 from booley.flows.plan import (
@@ -1495,6 +1496,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return [], []
         project_root = Path(self.args.work_dir)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
+        baseline_tests = self._cycle_baseline_test_names(test_names_map)
         try:
             with baseline_worktree(
                 project_root,
@@ -1504,7 +1506,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self.args.work_dir = worktree
                 units, errors = self._plan_simulation_targets(
                     baseline_targets,
-                    test_names_map,
+                    baseline_tests,
                     role="baseline",
                     revision=baseline_ref,
                 )
@@ -2378,8 +2380,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if not has_relative_threshold(params) or not isinstance(ref, str) or not ref:
                 continue
             refs.add(ref)
-            if target not in selected:
-                selected.append(target)
+            baseline = params.get(BASELINE_TARGET_PARAM, target)
+            if not isinstance(baseline, str) or not baseline:
+                return None, selected, "sim: Cycle Count baseline Target is invalid"
+            if baseline not in selected:
+                selected.append(baseline)
         if not refs:
             return None, [], None
         if len(refs) != 1:
@@ -2398,6 +2403,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return resolved, selected, None
 
+    def _cycle_baseline_test_names(
+        self, test_names_map: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Include selected relative tests on their actual baseline Targets."""
+        result = {target: list(tests) for target, tests in test_names_map.items()}
+        for key, entry in self.state.criteria.items():
+            params = entry.params or {}
+            if not key.startswith("cycle_count_") or not has_relative_threshold(params):
+                continue
+            baseline = params.get(BASELINE_TARGET_PARAM)
+            test = params.get("test")
+            if isinstance(baseline, str) and isinstance(test, str):
+                tests = result.setdefault(baseline, [])
+                if test not in tests:
+                    tests.append(test)
+        return result
+
     def _run_cycle_count_baselines(
         self,
         targets: list[str],
@@ -2411,6 +2433,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if baseline_ref is None:
             return {}
         project_root = Path(self.args.work_dir)
+        baseline_tests = self._cycle_baseline_test_names(test_names_map)
         expected_identities = {
             target: self._target_handle(target).identity for target in baseline_targets
         }
@@ -2434,7 +2457,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         result = self._run_target(
                             target,
                             self._tb_top_for_target(target),
-                            test_names_map,
+                            baseline_tests,
                             [],
                             plan_role="baseline",
                         )
@@ -2649,7 +2672,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if self.args.state_file is None:
             return
         tests = {test.name: test for test in target_result.tests}
-        baseline_tests = self._baseline_cycle_tests(target_result)
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
             if not key.startswith("cycle_count_") or not criterion_matches_target(
@@ -2661,6 +2683,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             test_name = params.get("test")
             current = tests.get(test_name) if isinstance(test_name, str) else None
             relative = has_relative_threshold(params)
+            baseline_tests = self._baseline_cycle_tests(target_result, params)
             baseline = (
                 baseline_tests.get(test_name) if relative and isinstance(test_name, str) else None
             )
@@ -2694,9 +2717,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail=detail,
             )
 
-    def _baseline_cycle_tests(self, result: TargetResult) -> dict[str, TestResult]:
+    def _baseline_cycle_tests(
+        self, result: TargetResult, params: Mapping[str, Any] | None = None
+    ) -> dict[str, TestResult]:
         """Index baseline cycle evidence for the result's durable Target."""
-        key = result.target_identity or result.target
+        key = (params or {}).get(BASELINE_TARGET_PARAM) or result.target_identity or result.target
         baseline = getattr(self, "_baseline_results", {}).get(key)
         if not isinstance(baseline, TargetResult):
             return {}

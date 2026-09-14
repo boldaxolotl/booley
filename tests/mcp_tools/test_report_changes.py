@@ -4,12 +4,12 @@ import json
 import subprocess
 
 import pytest
+import yaml
 
 from booley.harness.scope_policy import committed_deviations
 from booley.mcp.report_changes import changed_ticket_paths, validate_justifications
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-from booley.ticket_board.frontmatter import format_frontmatter
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError
 
 
@@ -59,7 +59,21 @@ def test_pinned_bases_cover_rename_deletion_and_paired_repository(tmp_path, monk
         )
     )
     ticket = tmp_path / "ticket.md"
-    ticket.write_text(format_frontmatter({"acceptance_basis": basis.as_dict()}, ""))
+    ticket_fields = {
+        "summary": "Explain changed files",
+        "type": "feature",
+        "branch": "main",
+        "scope": [],
+        "on_success": ["review"],
+        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
+        "acceptance_basis": basis.as_dict(),
+    }
+    ticket.write_text(
+        "---\n"
+        + yaml.safe_dump(ticket_fields, sort_keys=False)
+        + "---\n\n## Description\n\nExplain the changes.\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
     monkeypatch.setenv("BOOLEY_PAIRED_PROJECT_REPOSITORY", "1")
     paths = changed_ticket_paths(outer)
@@ -90,6 +104,17 @@ def test_missing_comparison_base_fails_closed(tmp_path, monkeypatch):
     init(repo)
     monkeypatch.delenv("BOOLEY_TICKET_FILE", raising=False)
     with pytest.raises(TicketWorkspaceError, match="Cannot determine changed files"):
+        changed_ticket_paths(repo)
+
+
+def test_old_ticket_cannot_supply_report_comparison_base(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    init(repo)
+    ticket = tmp_path / "old.md"
+    ticket.write_text("---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n")
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+
+    with pytest.raises(TicketWorkspaceError, match="Old Ticket format"):
         changed_ticket_paths(repo)
 
 

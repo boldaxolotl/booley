@@ -9,10 +9,9 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import (
     BoundaryError,
@@ -39,53 +38,13 @@ from .persistence import WriteOnceConflictError, atomic_write_once
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
-RECORD_SCHEMA_VERSION = 2
+CONVERTED_RECORD_SCHEMA_VERSION = 3
 TICKET_REF_PREFIX = "refs/heads/booley-generation"
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SAFE_REF_RE = re.compile(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
-_AUTHORED_FIELDS = (
-    "summary",
-    "type",
-    "branch",
-    "project_destination_ref",
-    "scope",
-    "spec",
-    "dependencies",
-    "priority",
-    "criteria",
-    "target_plan",
-    "on_success",
-    "auto_approve",
-    "synthesis",
-    "baseline_tests",
-    "scope_current",
-    "scope_new",
-)
-_GENERATED_FIELDS = frozenset(
-    {
-        "acceptance_basis",
-        "acceptance_amendment",
-        "created",
-        "feature_branch",
-        "steps_completed",
-        "stage",
-    }
-)
-_RETIRED_FIELDS = frozenset({"target_contract", "target_contract_history", "base_sha"})
-_AUTHORED_DEFAULTS: dict[str, Any] = {
-    "scope": [],
-    "spec": "",
-    "dependencies": [],
-    "priority": "medium",
-    "criteria": {},
-    "on_success": {
-        "destination": "review",
-        "merge": True,
-        "cleanup": True,
-        "triage_report": True,
-    },
-}
+if TYPE_CHECKING:
+    from .ticket_document import TicketDocument, TicketSpec
 
 
 class AcceptanceBasisError(ValueError):
@@ -252,7 +211,10 @@ class AcceptanceBasis:
 
     def with_record(self, record: Mapping[str, Any]) -> AcceptanceBasis:
         bindings = tuple(_binding_from_record(row) for row in record.get("bindings", ()))
-        frontmatter = record.get("ticket", {}).get("frontmatter", {})
+        ticket = record.get("ticket", {})
+        if record.get("schema") != CONVERTED_RECORD_SCHEMA_VERSION:
+            raise AcceptanceBasisError("old Acceptance Basis record schema is unsupported")
+        frontmatter = ticket.get("spec", {}).get("fields", {})
         if not isinstance(frontmatter, Mapping):
             raise AcceptanceBasisError("Acceptance Basis record frontmatter is invalid")
         _validate_record_routing(self, frontmatter)
@@ -353,31 +315,33 @@ def authored_ticket_record(
     removal_targets: tuple[str, ...] = (),
     providers: tuple[ProviderTargetBinding, ...] = (),
 ) -> dict[str, Any]:
-    """Build the canonical committed input record, rejecting unknown authored fields."""
-    retired = sorted(_RETIRED_FIELDS & set(fields))
-    if retired:
-        raise AcceptanceBasisError(
-            "legacy Target Contract tickets are unsupported after the hard cutoff; "
-            f"remove or recreate fields: {', '.join(retired)}"
-        )
-    unknown = sorted(set(fields) - set(_AUTHORED_FIELDS) - _GENERATED_FIELDS)
-    if unknown:
-        raise AcceptanceBasisError(f"unknown authored Ticket field(s): {', '.join(unknown)}")
-    frontmatter = _canonical_authored_fields(fields)
-    if target_plan is None and frontmatter.get("target_plan") is not None:
-        try:
-            target_plan = TargetPlan.from_value(frontmatter["target_plan"])
-        except TargetPlanError as exc:
-            raise AcceptanceBasisError(str(exc)) from exc
-    rows = [_binding_to_record(row) for row in bindings]
-    return {
-        "schema": RECORD_SCHEMA_VERSION,
-        "ticket": {"frontmatter": frontmatter, "body": body},
-        "bindings": rows,
-        "target_plan": target_plan.as_list() if target_plan is not None else [],
+    """Reject the retired schema-2 record creation interface."""
+    raise AcceptanceBasisError(
+        "old Acceptance Basis record schema is unsupported; convert the human Ticket"
+    )
+
+
+def authored_ticket_record_from_spec(
+    spec: TicketSpec,
+    bindings: Any,
+    *,
+    removal_targets: tuple[str, ...] = (),
+    providers: tuple[ProviderTargetBinding, ...] = (),
+) -> dict[str, Any]:
+    """Build a schema-3 Basis record solely from a converted authored Ticket."""
+    record = {
+        "schema": CONVERTED_RECORD_SCHEMA_VERSION,
+        "ticket": {
+            "spec": spec.semantic_record(),
+            "semantic_digest": spec.semantic_digest(),
+        },
+        "bindings": [_binding_to_record(row) for row in bindings],
+        "target_plan": spec.target_plan.as_list() if spec.target_plan is not None else [],
         "removal_targets": list(removal_targets),
         "providers": [provider.as_dict() for provider in sorted(providers)],
     }
+    _validate_converted_record(record)
+    return record
 
 
 def _binding_to_record(binding: AcceptanceTargetBinding) -> dict[str, str]:
@@ -389,37 +353,6 @@ def _binding_to_record(binding: AcceptanceTargetBinding) -> dict[str, str]:
         "candidate_identity": binding.candidate,
         "candidate_selector": binding.candidate_selector,
     }
-
-
-def _canonical_authored_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
-    canonical = {
-        name: deepcopy(value)
-        for name, value in _AUTHORED_DEFAULTS.items()
-        if name in _AUTHORED_FIELDS
-    }
-    canonical.update({name: fields[name] for name in _AUTHORED_FIELDS if name in fields})
-    from booley.core.models import OnSuccess
-
-    raw_on_success = canonical["on_success"]
-    if not isinstance(raw_on_success, Mapping):
-        raise AcceptanceBasisError("on_success must be a mapping")
-    configured = OnSuccess.from_dict(dict(raw_on_success))
-    errors = configured.validate()
-    if errors:
-        raise AcceptanceBasisError(errors[0])
-    canonical["on_success"] = {
-        "destination": configured.destination,
-        "merge": configured.merge,
-        "cleanup": configured.cleanup,
-        "triage_report": configured.triage_report,
-    }
-    if "target_plan" in canonical:
-        try:
-            plan = TargetPlan.from_value(canonical["target_plan"])
-        except TargetPlanError as exc:
-            raise AcceptanceBasisError(str(exc)) from exc
-        canonical["target_plan"] = plan.as_list()
-    return canonical
 
 
 def _binding_from_record(value: Any) -> AcceptanceTargetBinding:
@@ -513,61 +446,9 @@ def load_basis_record(
 
 
 def _validate_record(value: Any) -> None:
-    record, ticket, frontmatter, bindings, raw_plan, removals, providers = _record_components(
-        value
-    )
-    _validate_record_schema(record)
-    try:
-        require_str(ticket, "body")
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    if set(ticket) != {"frontmatter", "body"}:
-        raise AcceptanceBasisError("Acceptance Basis record.ticket has an invalid schema")
-    unknown = sorted(set(frontmatter) - set(_AUTHORED_FIELDS))
-    if unknown:
-        raise AcceptanceBasisError(
-            f"Acceptance Basis record has unknown authored field(s): {', '.join(unknown)}"
-        )
-    if _canonical_authored_fields(frontmatter) != frontmatter:
-        raise AcceptanceBasisError("Acceptance Basis record authored defaults are not canonical")
-    for binding in bindings:
-        _binding_from_record(binding)
-    provider_bindings = tuple(provider_binding_from_mapping(provider) for provider in providers)
-    if provider_bindings != tuple(sorted(set(provider_bindings))):
-        raise AcceptanceBasisError("Acceptance Basis record providers must be sorted and unique")
-    _validate_record_target_plan(frontmatter, raw_plan, removals)
-    on_success = frontmatter.get("on_success")
-    if on_success is not None and not isinstance(on_success, Mapping):
-        raise AcceptanceBasisError("Acceptance Basis record on_success must be a mapping")
-    if isinstance(on_success, Mapping):
-        from booley.core.models import OnSuccess
-
-        errors = OnSuccess.from_dict(dict(on_success)).validate()
-        if errors:
-            raise AcceptanceBasisError(f"Acceptance Basis record {errors[0]}")
-
-
-def _validate_record_schema(record: Mapping[str, Any]) -> None:
-    expected_fields = {
-        "schema",
-        "ticket",
-        "bindings",
-        "target_plan",
-        "removal_targets",
-        "providers",
-    }
-    if record.get("schema") == 3:
-        expected_fields.add("amendment")
-    if set(record) != expected_fields:
-        raise AcceptanceBasisError("Acceptance Basis record has invalid top-level fields")
-    try:
-        schema = require_int(record.get("schema"), field="Acceptance Basis record.schema")
-    except BoundaryError as exc:
-        raise AcceptanceBasisError(str(exc)) from exc
-    if schema not in {RECORD_SCHEMA_VERSION, 3}:
-        raise AcceptanceBasisError("Acceptance Basis record has an unsupported schema")
-    if schema == 3:
-        _validate_amendment_record(record.get("amendment"))
+    if not isinstance(value, Mapping) or value.get("schema") != CONVERTED_RECORD_SCHEMA_VERSION:
+        raise AcceptanceBasisError("old Acceptance Basis record schema is unsupported")
+    _validate_converted_record(value)
 
 
 def _validate_amendment_record(value: Any) -> None:
@@ -614,13 +495,13 @@ def _validate_amendment_record(value: Any) -> None:
         raise AcceptanceBasisError("Acceptance Basis optional conversions are invalid")
 
 
-def _record_components(value: Any) -> tuple:
+def _validate_converted_record(value: Any) -> None:
+    """Validate a derived schema-3 record without reading human Ticket syntax."""
     try:
         record = require_dict(value, field="Acceptance Basis record")
         ticket = require_dict(record.get("ticket"), field="Acceptance Basis record.ticket")
-        frontmatter = require_dict(
-            ticket.get("frontmatter"), field="Acceptance Basis record.ticket.frontmatter"
-        )
+        spec = require_dict(ticket.get("spec"), field="Acceptance Basis record.ticket.spec")
+        digest = require_str(ticket, "semantic_digest")
         bindings = require_list(record.get("bindings"), field="Acceptance Basis record.bindings")
         raw_plan = require_list(
             record.get("target_plan"), field="Acceptance Basis record.target_plan"
@@ -633,30 +514,72 @@ def _record_components(value: Any) -> tuple:
         )
     except BoundaryError as exc:
         raise AcceptanceBasisError(str(exc)) from exc
-    return record, ticket, frontmatter, bindings, raw_plan, removals, providers
-
-
-def _validate_record_target_plan(
-    frontmatter: Mapping[str, Any], raw_plan: list[Any], removals: list[Any]
-) -> None:
+    expected_fields = {
+        "schema",
+        "ticket",
+        "bindings",
+        "target_plan",
+        "removal_targets",
+        "providers",
+    }
+    if "amendment" in record:
+        expected_fields.add("amendment")
+        _validate_amendment_record(record["amendment"])
+    if set(record) != expected_fields or record["schema"] != CONVERTED_RECORD_SCHEMA_VERSION:
+        raise AcceptanceBasisError("Acceptance Basis record has invalid schema-3 fields")
+    if set(ticket) != {"spec", "semantic_digest"} or set(spec) != {
+        "fields",
+        "body",
+        "criteria",
+        "target_plan",
+        "on_success",
+    }:
+        raise AcceptanceBasisError("Acceptance Basis record has invalid converted Ticket fields")
+    if (
+        not isinstance(spec["fields"], dict)
+        or not isinstance(spec["body"], str)
+        or not isinstance(spec["criteria"], list)
+        or not isinstance(spec["target_plan"], list)
+        or not isinstance(spec["on_success"], list)
+    ):
+        raise AcceptanceBasisError("Acceptance Basis record converted Ticket has invalid types")
+    try:
+        calculated = hashlib.sha256(
+            json.dumps(
+                spec,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise AcceptanceBasisError("Acceptance Basis record Ticket spec is not JSON-safe") from exc
+    if digest != calculated:
+        raise AcceptanceBasisError("Acceptance Basis record authored semantic digest is invalid")
+    flags = spec["on_success"]
+    allowed_flags = {"triage_report", "review", "merge", "cleanup"}
+    if (
+        any(not isinstance(flag, str) for flag in flags)
+        or flags != sorted(set(flags))
+        or set(flags) - allowed_flags
+    ):
+        raise AcceptanceBasisError("Acceptance Basis record on_success has invalid flags")
+    if raw_plan != spec["target_plan"]:
+        raise AcceptanceBasisError("Acceptance Basis record Target Plan differs from Ticket spec")
     try:
         plan = TargetPlan.from_value(raw_plan) if raw_plan else None
     except TargetPlanError as exc:
         raise AcceptanceBasisError(f"Acceptance Basis record {exc}") from exc
-    canonical_removals = _string_tuple(removals, "Acceptance Basis record.removal_targets")
-    authored_plan = frontmatter.get("target_plan")
-    try:
-        authored = TargetPlan.from_value(authored_plan) if authored_plan is not None else None
-    except TargetPlanError as exc:
-        raise AcceptanceBasisError(f"Acceptance Basis record authored {exc}") from exc
-    if not _plan_selectors_match(authored, plan):
-        raise AcceptanceBasisError(
-            "Acceptance Basis record Target Plan differs from authored Ticket frontmatter"
-        )
-    if canonical_removals != _target_plan_removals(plan):
-        raise AcceptanceBasisError(
-            "Acceptance Basis record removal_targets do not match its Target Plan"
-        )
+    if _string_tuple(removals, "Acceptance Basis record.removal_targets") != _target_plan_removals(
+        plan
+    ):
+        raise AcceptanceBasisError("Acceptance Basis record removals differ from Target Plan")
+    for binding in bindings:
+        _binding_from_record(binding)
+    provider_bindings = tuple(provider_binding_from_mapping(row) for row in providers)
+    if provider_bindings != tuple(sorted(set(provider_bindings))):
+        raise AcceptanceBasisError("Acceptance Basis record providers must be sorted and unique")
 
 
 def selector_matches_canonical(authored: str, canonical: str) -> bool:
@@ -680,27 +603,6 @@ def selector_matches_canonical(authored: str, canonical: str) -> bool:
         len(authored_segments) <= len(canonical_segments)
         and canonical_segments[-len(authored_segments) :] == authored_segments
     )
-
-
-def _plan_selectors_match(authored: TargetPlan | None, canonical: TargetPlan | None) -> bool:
-    if authored is None or canonical is None:
-        return authored is canonical
-    remaining = list(canonical.entries)
-    for entry in authored.entries:
-        matches = [
-            candidate
-            for candidate in remaining
-            if candidate.role is entry.role
-            and selector_matches_canonical(entry.target, candidate.target)
-            and (
-                entry.role is not TargetPlanRole.REPLACEMENT
-                or selector_matches_canonical(entry.replaces, candidate.replaces)
-            )
-        ]
-        if len(matches) != 1:
-            return False
-        remaining.remove(matches[0])
-    return not remaining
 
 
 def _string_tuple(values: list[Any], field: str) -> tuple[str, ...]:
@@ -735,17 +637,20 @@ def _target_plan_removals(plan: TargetPlan | None) -> tuple[str, ...]:
 def load_acceptance_basis(
     project_root: Path | str, slug: str, fields: Mapping[str, Any], body: str | None = None
 ) -> AcceptanceBasis:
-    """Load the only supported executable Ticket format and cross-check its record."""
-    retired = sorted(_RETIRED_FIELDS & set(fields))
-    if retired:
-        raise AcceptanceBasisError(
-            "legacy Target Contract tickets are unsupported after the hard cutoff; "
-            f"remove or recreate fields: {', '.join(retired)}"
-        )
-    basis = AcceptanceBasis.from_mapping(fields.get("acceptance_basis"))
+    """Reject the retired field-based loader; the human Ticket is authoritative."""
+    raise AcceptanceBasisError(
+        "field-based Acceptance Basis loading is unsupported; convert the human Ticket"
+    )
+
+
+def load_acceptance_basis_from_document(
+    project_root: Path | str, slug: str, document: TicketDocument
+) -> AcceptanceBasis:
+    """Check executable human Ticket meaning against its frozen schema-3 record."""
+    basis = AcceptanceBasis.from_mapping(document.generated.get("acceptance_basis"))
     record = load_basis_record(project_root, slug, basis)
     amendment = record.get("amendment")
-    marker = fields.get("acceptance_amendment")
+    marker = document.generated.get("acceptance_amendment")
     if amendment is None and marker is not None:
         raise AcceptanceBasisError(f"{BLOCK_REASON}: unexpected amendment marker")
     if amendment is not None and marker != {
@@ -754,12 +659,12 @@ def load_acceptance_basis(
     }:
         raise AcceptanceBasisError(f"{BLOCK_REASON}: amendment marker mismatch")
     _validate_receipt(Path(project_root), slug, basis, record)
-    recorded_fields = record.get("ticket", {}).get("frontmatter")
-    current_fields = _canonical_authored_fields(fields)
-    if recorded_fields != current_fields:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: authored Ticket frontmatter changed")
-    if body is not None and record.get("ticket", {}).get("body") != body:
-        raise AcceptanceBasisError(f"{BLOCK_REASON}: authored Ticket body changed")
+    recorded = record["ticket"]
+    if (
+        recorded["semantic_digest"] != document.spec.semantic_digest()
+        or recorded["spec"] != document.spec.semantic_record()
+    ):
+        raise AcceptanceBasisError(f"{BLOCK_REASON}: authored Ticket meaning changed")
     return basis.with_record(record)
 
 

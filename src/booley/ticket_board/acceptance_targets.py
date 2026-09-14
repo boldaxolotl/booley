@@ -12,7 +12,7 @@ import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import (
     BoundaryError,
@@ -28,6 +28,9 @@ from booley.targets.domain import (
     FuseSocError,
     TargetInput,
 )
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketSpec
 
 _FLOW_BY_CRITERION = {
     "sim_pass": "sim",
@@ -289,6 +292,48 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
     return tuple(bindings)
 
 
+def criterion_targets_from_spec(spec: TicketSpec) -> tuple[CriterionTarget, ...]:
+    """Build Flow/Target bindings from the converter's atomic Criteria."""
+    flows = {
+        "LINT": "lint",
+        "ELAB": "sim",
+        "ELAB_STANDALONE": "sim",
+        "SIM": "sim",
+        "CYCLE_COUNT": "sim",
+        "SYNTH": "synth",
+        "FPGA": "fpga",
+        "MUTATION": "sim",
+        "COVERAGE": "sim",
+    }
+    bindings: list[CriterionTarget] = []
+    for criterion in spec.criteria:
+        flow = flows.get(criterion.capability)
+        if flow is None:
+            continue
+        targets = (
+            criterion.value
+            if criterion.capability == "ELAB_STANDALONE"
+            else (criterion.target,)
+            if criterion.target
+            else ()
+        )
+        for target in targets:
+            baseline = (
+                criterion.value.get("baseline") if isinstance(criterion.value, dict) else None
+            )
+            bindings.append(
+                CriterionTarget(
+                    "mandatory" if criterion.mandatory else "optional",
+                    criterion.identity,
+                    target,
+                    flow,
+                    baseline is not None,
+                    baseline,
+                )
+            )
+    return tuple(bindings)
+
+
 def _coverage_suite_selections(
     criteria: Any,
 ) -> Iterator[tuple[str, str, tuple[str, ...]]]:
@@ -402,6 +447,62 @@ def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | s
     for binding in criterion_targets(fields.get("criteria")):
         errors.extend(_validate_binding(binding, fields, catalog))
     errors.extend(_validate_coverage_suites(fields.get("criteria"), root))
+    return errors
+
+
+def validate_ticket_spec_targets(
+    spec: TicketSpec,
+    project_root: Path | str,
+    *,
+    provider_placeholders: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Validate converted Target bindings against the selected Project checkout."""
+    catalog = TargetCatalog.build(Path(project_root))
+    scope = {
+        "scope": [
+            *spec.fields["scope"],
+            *(f"{path} [new]" for path in sorted(provider_placeholders)),
+        ]
+    }
+    errors: list[str] = []
+    for binding in criterion_targets_from_spec(spec):
+        errors.extend(_validate_binding(binding, scope, catalog))
+    return errors
+
+
+def validate_acceptance_spec_targets(
+    spec: TicketSpec,
+    project_root: Path | str,
+    build_root: Path | str,
+    *,
+    changed_targets: Iterable[str] = (),
+    provider_placeholders: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Dry-resolve converted Target bindings and newly authored Targets."""
+    root = Path(project_root)
+    errors = validate_ticket_spec_targets(spec, root, provider_placeholders=provider_placeholders)
+    if errors:
+        return errors
+    catalog = TargetCatalog.build(root)
+    bindings = criterion_targets_from_spec(spec)
+    required = _required_targets(catalog, bindings)
+    errors.extend(_validate_required_targets(catalog, Path(build_root), required))
+    for binding in bindings:
+        if binding.baseline != binding.target and not _missing_target_sources(
+            catalog, binding.target
+        ):
+            errors.extend(_validate_comparison_basis(binding, catalog, Path(build_root)))
+    scope = {
+        "scope": [
+            *spec.fields["scope"],
+            *(f"{path} [new]" for path in sorted(provider_placeholders)),
+        ]
+    }
+    errors.extend(
+        _validate_changed_targets(
+            scope, catalog, Path(build_root), changed_targets, seen=set(required)
+        )
+    )
     return errors
 
 

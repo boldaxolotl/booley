@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
@@ -31,7 +32,7 @@ from .acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
-    authored_ticket_record,
+    authored_ticket_record_from_spec,
     canonical_json,
     materialize_basis_checkout,
     record_relative_path,
@@ -39,18 +40,16 @@ from .acceptance_basis import (
 from .acceptance_targets import (
     acceptance_control_paths,
     canonical_acceptance_bindings,
-    criterion_targets,
+    criterion_targets_from_spec,
     resolve_commit,
     scope_allows_new_path,
-    validate_acceptance_targets,
-    validate_criterion_targets,
+    validate_acceptance_spec_targets,
 )
 from .basis_publication import (
     ParticipantPreparation,
     load_basis_publication,
     publish_basis_commits,
 )
-from .frontmatter import parse_frontmatter
 from .git_status import parse_porcelain_v1_z
 from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
@@ -65,9 +64,18 @@ from .target_plan import (
     TargetPlanAnalysis,
     TargetPlanValidationError,
     TargetSurfaceFile,
-    analyze_target_plan,
+    analyze_ticket_spec_target_plan,
 )
-from .validation import validate_ticket_fields
+from .ticket_document import (
+    TicketConversionContext,
+    convert_ticket_document,
+    ticket_authoring_view,
+    ticket_conversion_context,
+)
+from .validation import validate_ticket_spec
+
+if TYPE_CHECKING:
+    from .ticket_document import TicketDocument, TicketSpec
 
 _GENERATION_PREFIX = "booley-generation"
 
@@ -109,6 +117,7 @@ class _BasisPreparation:
     project_base_sha: str
     target_plan: TargetPlanAnalysis
     providers: ProviderMaterialization
+    spec: TicketSpec
 
 
 @dataclass(frozen=True)
@@ -543,7 +552,14 @@ def ensure_ticket_workspace(
     except TicketSlugError as exc:
         raise AcceptanceBasisOperationError(str(exc)) from exc
     root = Path(project_root).resolve()
-    fields, _body = parse_frontmatter(Path(ticket_path).read_text(encoding="utf-8"))
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(Path(ticket_path).read_text(encoding="utf-8"), context)
+    if converted.preview is None or any(
+        item.code != "unresolved_target" for item in converted.diagnostics
+    ):
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise AcceptanceBasisOperationError(f"Ticket document is invalid: {details}")
+    fields = dict(converted.preview.fields)
     branch = fields.get("branch")
     if not isinstance(branch, str) or not branch:
         raise AcceptanceBasisOperationError("ticket has no destination branch")
@@ -959,84 +975,71 @@ def _staged_tree(repository: Path, paths: list[str], parent: str) -> str:
     return tree
 
 
-def _basis_validation(
-    fields: dict[str, object],
-    body: str,
-    worktree: Path,
-    changed_targets: set[str],
-    provider_placeholders: frozenset[str],
-) -> list[str]:
-    errors = validate_ticket_fields(
-        fields,
-        body,
-        check_files=False,
-        check_git=False,
-        project_root=worktree,
-        check_tb_files=False,
-    )
-    target_fields = _with_provider_placeholders(fields, provider_placeholders)
-    errors.extend(validate_criterion_targets(target_fields, worktree))
-    if errors:
-        return errors
-    with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
-        errors.extend(
-            validate_acceptance_targets(
-                target_fields,
-                worktree,
-                build_root,
-                changed_targets=sorted(changed_targets),
-            )
-        )
-    return errors
-
-
-def _with_provider_placeholders(
-    fields: dict[str, object], paths: frozenset[str]
-) -> dict[str, object]:
-    if not paths:
-        return fields
-    effective = dict(fields)
-    scope = fields.get("scope")
-    current = list(scope) if isinstance(scope, list) else []
-    effective["scope"] = [*current, *(f"{path} [new]" for path in sorted(paths))]
-    return effective
-
-
-def _prepare_basis(
-    project_root: Path | str,
-    ticket_path: Path | str,
+def _prepare_converted_basis(
+    project_root: Path,
+    ticket: Path,
     slug: str,
     *,
-    effective_fields: dict[str, object] | None = None,
     workspace: Path | None = None,
     generation: str | None = None,
     provider_materialization: ProviderMaterialization | None = None,
 ) -> _BasisPreparation:
-    root = Path(project_root).resolve()
-    ticket = Path(ticket_path)
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    if effective_fields is not None:
-        fields = dict(effective_fields)
+    """Prepare a schema-3 Basis from the durable human Ticket document."""
+    root = project_root.resolve()
     outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
     if not outer.is_dir():
         raise AcceptanceBasisOperationError(f"Ticket Workspace is not open: {outer}")
+    _prepare_workspace_project(root, outer, ticket, slug)
+    stage = "draft" if ticket.parent.name == "drafts" else "executable"
+    context = TicketConversionContext(stage, lambda _generated: ticket_authoring_view(outer))
+    converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise AcceptanceBasisOperationError(f"Ticket document is invalid: {details}")
+    spec = converted.document.spec
+    fields = dict(spec.fields)
     project, outer_changes, project_changes, outer_base, project_base = _authoring_changes(
         root, ticket, slug, outer, fields
     )
     repositories = [(outer, tuple(outer_changes), outer_base)]
     if project is not None:
         repositories.append((project, tuple(project_changes), project_base))
-    providers, target_plan = _analyze_basis_targets(
-        root,
-        ticket,
-        slug,
-        fields,
-        outer,
-        tuple(repositories),
-        generation,
-        provider_materialization,
+    try:
+        providers = provider_materialization or validate_planned_dependencies(
+            root, slug, generation or _draft_generation(root, slug), ticket
+        )
+        validate_materialized_surfaces(outer, providers)
+        target_plan = analyze_ticket_spec_target_plan(
+            spec,
+            outer,
+            target_surface_files(tuple(repositories)),
+            provider_targets=providers.materialized_targets,
+            exported_provider_targets=providers.exported_targets,
+            provider_test_tables=providers.test_tables,
+        )
+    except (PlannedDependencyError, TargetPlanValidationError) as exc:
+        raise AcceptanceBasisOperationError(f"Acceptance Basis validation failed: {exc}") from exc
+    errors = validate_ticket_spec(
+        spec,
+        project_root=outer,
+        check_files=False,
+        provider_placeholders=providers.placeholder_paths,
     )
-    _require_basis_validation(fields, body, outer, target_plan, providers)
+    if not errors:
+        with tempfile.TemporaryDirectory(prefix="booley-basis-dry-run-") as build_root:
+            errors.extend(
+                validate_acceptance_spec_targets(
+                    spec,
+                    outer,
+                    build_root,
+                    changed_targets=target_plan.authored_targets,
+                    provider_placeholders=providers.placeholder_paths,
+                )
+            )
+    if errors:
+        raise AcceptanceBasisOperationError(
+            "Acceptance Basis validation failed: " + "; ".join(errors)
+        )
     return _BasisPreparation(
         ticket,
         fields,
@@ -1048,38 +1051,32 @@ def _prepare_basis(
         project_base,
         target_plan,
         providers,
+        spec,
     )
 
 
-def validate_acceptance_basis_inputs(
-    project_root: Path | str,
-    ticket_path: Path | str,
-    slug: str,
-    *,
-    workspace: Path | None = None,
-) -> None:
-    """Run enqueue's semantic Acceptance Basis preflight without publishing it."""
-    _prepare_basis(project_root, ticket_path, slug, workspace=workspace)
-
-
-def _require_basis_validation(
-    fields: dict[str, object],
-    body: str,
-    outer: Path,
-    target_plan: TargetPlanAnalysis,
-    providers: ProviderMaterialization,
-) -> None:
-    errors = _basis_validation(
-        fields,
-        body,
-        outer,
-        set(target_plan.authored_targets),
-        providers.placeholder_paths,
+def validate_ticket_spec_authoring_inputs(
+    project_root: Path,
+    workspace: Path,
+    spec: TicketSpec,
+) -> TargetPlanAnalysis:
+    """Check v2 Target authoring against destination Git trees without publishing."""
+    if not workspace.is_dir():
+        raise AcceptanceBasisOperationError(f"Ticket Workspace is missing: {workspace}")
+    paired = paired_project_repository(workspace)
+    project = paired.worktree if paired is not None else None
+    outer_base, project_base = _pin_authoring_bases(
+        project_root, workspace, project, dict(spec.fields)
     )
-    if errors:
-        raise AcceptanceBasisOperationError(
-            "Acceptance Basis validation failed: " + "; ".join(errors)
-        )
+    outer_changes = _status_paths(workspace)
+    project_changes = _status_paths(project) if project is not None else []
+    repositories = ((workspace, tuple(outer_changes), outer_base),)
+    if project is not None:
+        repositories += ((project, tuple(project_changes), project_base),)
+    try:
+        return analyze_ticket_spec_target_plan(spec, workspace, target_surface_files(repositories))
+    except TargetPlanValidationError as exc:
+        raise AcceptanceBasisOperationError(f"Ticket Target validation failed: {exc}") from exc
 
 
 def _authoring_changes(
@@ -1142,39 +1139,6 @@ def _pin_authoring_bases(
             "paired Ticket Workspace contains commits beyond the destination baseline"
         )
     return outer_base, project_base
-
-
-def _analyze_basis_targets(
-    root: Path,
-    ticket: Path,
-    slug: str,
-    fields: dict[str, object],
-    outer: Path,
-    repositories: tuple[tuple[Path, tuple[str, ...], str], ...],
-    generation: str | None,
-    provider_materialization: ProviderMaterialization | None,
-) -> tuple[ProviderMaterialization, TargetPlanAnalysis]:
-    try:
-        providers = provider_materialization
-        if providers is None:
-            providers = validate_planned_dependencies(
-                root,
-                slug,
-                generation or _draft_generation(root, slug),
-                ticket,
-            )
-        validate_materialized_surfaces(outer, providers)
-        target_plan = analyze_target_plan(
-            fields,
-            outer,
-            target_surface_files(repositories),
-            provider_targets=providers.materialized_targets,
-            exported_provider_targets=providers.exported_targets,
-            provider_test_tables=providers.test_tables,
-        )
-    except (PlannedDependencyError, TargetPlanValidationError) as exc:
-        raise AcceptanceBasisOperationError(f"Acceptance Basis validation failed: {exc}") from exc
-    return providers, target_plan
 
 
 def target_surface_files(
@@ -1287,19 +1251,17 @@ def _write_authored_record(
     fields: dict[str, object],
     body: str,
 ) -> tuple:
-    binding_specs = criterion_targets(fields.get("criteria"))
-    bindings = canonical_acceptance_bindings(prepared.outer, binding_specs)
+    bindings = canonical_acceptance_bindings(
+        prepared.outer, criterion_targets_from_spec(prepared.spec)
+    )
     try:
-        payload = canonical_json(
-            authored_ticket_record(
-                fields,
-                body,
-                bindings,
-                target_plan=prepared.target_plan.plan,
-                removal_targets=prepared.target_plan.removal_targets,
-                providers=prepared.providers.bindings,
-            )
+        record = authored_ticket_record_from_spec(
+            prepared.spec,
+            bindings,
+            removal_targets=prepared.target_plan.removal_targets,
+            providers=prepared.providers.bindings,
         )
+        payload = canonical_json(record)
     except AcceptanceBasisError as exc:
         raise AcceptanceBasisOperationError(str(exc)) from exc
     path, project_owner = _record_path(prepared, slug)
@@ -1319,21 +1281,21 @@ def _write_authored_record(
     return bindings
 
 
-def prepare_acceptance_basis(
+def prepare_converted_acceptance_basis(
     project_root: Path | str,
     ticket_path: Path | str,
     slug: str,
-    *,
-    effective_fields: dict[str, object] | None = None,
 ) -> tuple[AcceptanceBasis, str]:
-    """Validate and commit authoring state without publishing the Board transition."""
+    """Publish a schema-3 Basis derived from durable v2 Ticket bytes only."""
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    if effective_fields is not None:
-        fields = effective_fields
-    effective_sha256 = hashlib.sha256(canonical_json({"fields": fields, "body": body})).hexdigest()
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        details = "; ".join(item.message for item in converted.diagnostics)
+        raise AcceptanceBasisOperationError(f"Ticket document is invalid: {details}")
+    effective_sha256 = converted.document.spec.semantic_digest()
     existing = load_basis_publication(root, slug)
     if existing is not None:
         return publish_basis_commits(
@@ -1343,14 +1305,9 @@ def prepare_acceptance_basis(
             effective_sha256,
             _authoring_repositories(root, slug),
         )
-    prepared = _prepare_basis(
-        project_root,
-        ticket_path,
-        slug,
-        effective_fields=fields,
-    )
-    basis_inputs = _prepare_basis_inputs(prepared, slug, fields, body)
-    bindings, removals = basis_inputs
+    prepared = _prepare_converted_basis(root, ticket, slug)
+    fields = prepared.fields
+    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, prepared.spec.body)
     participants = _participant_preparations(slug, fields, prepared)
     return publish_basis_commits(
         root,
@@ -1377,7 +1334,9 @@ def prepare_replacement_acceptance_basis(
     """Publish a refreshed basis from a prepared, destination-current workspace."""
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
-    fields, body, source_sha256, effective_sha256 = _replacement_inputs(ticket)
+    old_document, source_sha256 = _replacement_inputs(root, ticket, slug)
+    fields = dict(old_document.spec.fields)
+    effective_sha256 = old_document.spec.semantic_digest()
     repositories = _workspace_repositories(workspace)
     existing = load_basis_publication(root, slug)
     if existing is not None:
@@ -1393,16 +1352,19 @@ def prepare_replacement_acceptance_basis(
             repositories,
         )
     providers = ProviderMaterialization(bindings=provider_bindings)
-    prepared = _prepare_basis(
+    prepared = _prepare_converted_basis(
         root,
         ticket,
         slug,
-        effective_fields=fields,
         workspace=workspace.outer,
         generation=workspace.generation,
         provider_materialization=providers,
     )
-    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, body)
+    if prepared.spec.semantic_digest() != effective_sha256:
+        raise AcceptanceBasisOperationError(
+            "Ticket meaning changed during Basis Refresh; return to draft"
+        )
+    bindings, removals = _prepare_basis_inputs(prepared, slug, fields, old_document.spec.body)
     participants = _participant_preparations(slug, fields, prepared)
     return publish_basis_commits(
         root,
@@ -1417,13 +1379,17 @@ def prepare_replacement_acceptance_basis(
     )
 
 
-def _replacement_inputs(ticket: Path) -> tuple[dict, str, str, str]:
+def _replacement_inputs(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, str]:
+    from .acceptance_basis import load_acceptance_basis_from_document
+
     source_sha256 = hashlib.sha256(ticket.read_bytes()).hexdigest()
-    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
-    fields = dict(fields)
-    fields.pop("acceptance_basis", None)
-    effective = canonical_json({"fields": fields, "body": body})
-    return fields, body, source_sha256, hashlib.sha256(effective).hexdigest()
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise AcceptanceBasisOperationError(f"Ticket document is invalid: {detail}")
+    load_acceptance_basis_from_document(root, slug, converted.document)
+    return converted.document, source_sha256
 
 
 def _workspace_repositories(workspace: AuthoringWorkspace) -> dict[str, Path]:

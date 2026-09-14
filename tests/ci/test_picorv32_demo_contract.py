@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
 from picorv32_ci_inputs import PICORV32_INPUT_FILES
 
-from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
 from booley.dev_support.demo_contract import (
     DemoContract,
@@ -29,7 +28,12 @@ from booley.dev_support.demo_contract import (
     _validate_generated_input,
     load_contract,
 )
-from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
+from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
+)
 
 CONTRACT = Path(".github/contracts/picorv32-demo.toml")
 PREPARE_ACTION = Path(".github/actions/prepare-picorv32-demo/action.yml")
@@ -49,6 +53,17 @@ OUTPUT_KEYS = (
     "toolchain_url",
     "toolchain_sha256",
 )
+
+
+_SIMPLE_TICKET = (
+    "---\nsummary: Demo\ntype: feature\nbranch: main\nscope: [README.md]\n"
+    "on_success: []\nCRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+    "---\n\n## Description\n\nDo the work.\n"
+)
+
+
+def _simple_view():
+    return TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
 
 
 def _yaml_strings(value: Any) -> tuple[str, ...]:
@@ -200,13 +215,24 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 def test_repository_demo_ticket_uses_current_criteria_grammar() -> None:
     contract = load_contract(CONTRACT)
     fixture = Path(contract.ticket_fixture)
-    fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
-
-    template = CriteriaTemplate.from_yaml(fields["criteria"])
-    synthesis = next(spec for spec in template.specs if spec.name == "synthesis_ok")
-
-    assert synthesis.params["cell_count_increase_at_most"] == 11
-    assert synthesis.params["critical_path_ps_increase_at_most"] == 3
+    view = TicketAuthoringView(
+        lambda selector, _flow: selector,
+        lambda _target: ("main", "axi", "wb"),
+    )
+    converted = convert_ticket_document(
+        fixture.read_text(encoding="utf-8"),
+        TicketConversionContext("draft", lambda _generated: view),
+    )
+    assert converted.document is not None, converted.diagnostics
+    synthesis = {
+        row.parameter: row.value["threshold"]
+        for row in converted.document.spec.criteria
+        if row.capability == "SYNTH"
+    }
+    assert synthesis == {
+        "cell_count_increase_at_most": 11,
+        "critical_path_ps_increase_at_most": 3,
+    }
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
@@ -470,7 +496,8 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
         "branch: main\n"
         "project_destination_ref: refs/heads/main\n"
         "scope: [README.md]\n"
-        "criteria: {mandatory: {review_rtl_bugs: true}}\n"
+        "on_success: [review, merge, cleanup]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
         "---\n\n"
         "## Description\n\nDo the work.\n",
         encoding="utf-8",
@@ -484,7 +511,7 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
     assert fields["summary"] == "Demo"
     assert fields["acceptance_basis"]["schema"] == 1
     assert "target_contract" not in fields
-    assert "- **review_rtl_bugs**" in body
+    assert "bugs: clean" in destination.read_text(encoding="utf-8")
     assert body.endswith("## Description\n\nDo the work.")
     if os.name == "posix":
         assert destination.stat().st_mode & 0o777 == 0o644
@@ -504,33 +531,31 @@ def test_contract_exporter_emits_all_workflow_fields() -> None:
     assert outputs == {key: contract[key] for key in OUTPUT_KEYS}
 
 
-def test_required_binding_detects_scalar_mutation_criterion() -> None:
-    bindings = (RequiredBinding("criteria.optional.mutation_score", "sim_core"),)
-    fields = {"criteria": {"optional": {"mutation_score": "14/15"}}}
+def _mutation_ticket(value: str):
+    view = TicketAuthoringView(
+        lambda selector, _flow: f"acme:lib:toy:1#{selector}",
+        lambda _target: ("smoke",),
+    )
+    return convert_ticket_document(
+        "---\nsummary: Demo\ntype: feature\nbranch: main\nscope: [picorv32.v]\n"
+        "on_success: []\nCRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+        f"CRITERIA_OPTIONAL: {{MUTATION: {{sim_core: {value}}}}}\n"
+        "---\n\n## Description\n\nDo the work.\n",
+        TicketConversionContext("draft", lambda _generated: view),
+    )
 
-    assert _validate_bindings(fields, bindings) == [
-        "ticket is missing required binding criteria.optional.mutation_score -> sim_core"
-    ]
+
+def test_scalar_mutation_criterion_is_rejected_at_document_boundary() -> None:
+    converted = _mutation_ticket("14/15")
+    assert converted.document is None
+    assert "MUTATION requires a nonempty mapping" in converted.diagnostics[0].message
 
 
-def test_required_binding_accepts_structured_campaign() -> None:
-    bindings = (RequiredBinding("criteria.optional.mutation_score", "sim_core"),)
-    fields = {
-        "criteria": {
-            "optional": {
-                "mutation_score": [
-                    {
-                        "target": "sim_core",
-                        "scope": ["picorv32.v"],
-                        "min_detected": 14,
-                        "total": 15,
-                    }
-                ]
-            }
-        }
-    }
-
-    assert _validate_bindings(fields, bindings) == []
+def test_required_binding_accepts_converted_mutation_campaign() -> None:
+    converted = _mutation_ticket("{min_detected: 14, total: 15}")
+    assert converted.document is not None, converted.diagnostics
+    bindings = (RequiredBinding("CRITERIA_OPTIONAL.MUTATION", "sim_core"),)
+    assert _validate_bindings(converted.document.spec, bindings) == []
 
 
 @pytest.mark.parametrize("scope", [["firmware/ [new]"], ["firmware/**"]])
@@ -828,49 +853,78 @@ def test_checkout_ticket_and_fixture_helpers(
     with pytest.raises(DemoContractError, match="ticket 'demo' is missing"):
         demo_contract_module._ticket_fields(project, "demo")
     ticket = project / "tickets" / "board" / "queue" / "demo.md"
-    ticket.write_text("---\nsummary: Demo\n---\n\nBody\n", encoding="utf-8")
-    fields, found = demo_contract_module._ticket_fields(project, "demo")
-    assert fields["summary"] == "Demo"
+    ticket.write_text(
+        _SIMPLE_TICKET.replace(
+            "on_success: []\n", "on_success: []\nacceptance_basis: {schema: 1}\n"
+        ),
+        encoding="utf-8",
+    )
+    converted = convert_ticket_document(
+        ticket.read_text(encoding="utf-8"),
+        TicketConversionContext("executable", lambda _generated: _simple_view()),
+    )
+    assert converted.document is not None
+    monkeypatch.setattr(
+        demo_contract_module.TicketIO,
+        "load_document",
+        lambda *_args, **_kwargs: converted.document,
+    )
+    monkeypatch.setattr(
+        demo_contract_module, "ticket_authoring_view", lambda _root: _simple_view()
+    )
+    spec, found = demo_contract_module._ticket_fields(project, "demo")
+    assert spec.fields["summary"] == "Demo"
     assert found == ticket
 
     acceptance_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
     acceptance_path.parent.mkdir(parents=True)
     fixture_name = ".github/contracts/ticket.md"
     assert demo_contract_module._validate_ticket_fixture(
-        acceptance_path, fixture_name, ticket
+        acceptance_path, fixture_name, ticket, tmp_path
     ) == [f"CI-owned ticket fixture is missing: {fixture_name}"]
     fixture = tmp_path / "repo" / fixture_name
     fixture.write_text("different\n", encoding="utf-8")
     assert (
-        "does not match"
-        in demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket)[0]
+        "cannot compare"
+        in demo_contract_module._validate_ticket_fixture(
+            acceptance_path, fixture_name, ticket, tmp_path
+        )[0]
     )
-    fixture.write_bytes(ticket.read_bytes())
+    fixture.write_text(_SIMPLE_TICKET, encoding="utf-8")
     assert (
-        demo_contract_module._validate_ticket_fixture(acceptance_path, fixture_name, ticket) == []
+        demo_contract_module._validate_ticket_fixture(
+            acceptance_path, fixture_name, ticket, tmp_path
+        )
+        == []
     )
 
 
-def test_ticket_fixture_comparison_ignores_generated_publication_fields(tmp_path: Path) -> None:
+def test_ticket_fixture_comparison_ignores_generated_publication_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     contract_path = tmp_path / ".github/contracts/contract.toml"
     fixture_name = ".github/contracts/ticket.md"
     fixture = tmp_path / fixture_name
     ticket = tmp_path / "published.md"
     fixture.parent.mkdir(parents=True)
-    fixture.write_text(format_frontmatter({"summary": "Demo"}, "Body\n"), encoding="utf-8")
+    fixture.write_text(_SIMPLE_TICKET, encoding="utf-8")
     ticket.write_text(
-        format_frontmatter(
-            {
-                "summary": "Demo",
-                "created": "2026-09-05T00:00:00Z",
-                "acceptance_basis": {"schema": 1, "participants": []},
-            },
-            "Body\n",
+        _SIMPLE_TICKET.replace(
+            "on_success: []\n",
+            "on_success: []\ncreated: '2026-09-05T00:00:00Z'\n"
+            "acceptance_basis: {schema: 1, participants: []}\n",
         ),
         encoding="utf-8",
     )
-
-    assert demo_contract_module._validate_ticket_fixture(contract_path, fixture_name, ticket) == []
+    monkeypatch.setattr(
+        demo_contract_module, "ticket_authoring_view", lambda _root: _simple_view()
+    )
+    assert (
+        demo_contract_module._validate_ticket_fixture(
+            contract_path, fixture_name, ticket, tmp_path
+        )
+        == []
+    )
 
 
 def test_target_validation_handles_future_missing_invalid_and_broken_targets(
@@ -994,7 +1048,9 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     monkeypatch.setattr(demo_contract_module, "load_contract", lambda _path: _demo_contract())
     monkeypatch.setattr(demo_contract_module, "_require_checkout_ref", lambda *_args: None)
     monkeypatch.setattr(
-        demo_contract_module, "_ticket_fields", lambda *_args: ({}, tmp_path / "t")
+        demo_contract_module,
+        "_ticket_fields",
+        lambda *_args: (SimpleNamespace(fields={}), tmp_path / "t"),
     )
     statuses = iter(["", "", "dirty", ""])
     monkeypatch.setattr(demo_contract_module, "_status", lambda _root: next(statuses))

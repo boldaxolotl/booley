@@ -27,11 +27,10 @@ from .acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     ProviderTargetBinding,
-    load_acceptance_basis,
+    load_acceptance_basis_from_document,
     write_basis_receipt,
 )
 from .basis_publication import BasisPublicationError
-from .frontmatter import parse_frontmatter
 from .persistence import atomic_replace_bytes
 from .planned_dependencies import PlannedDependencyError, target_surface_sha256
 from .scanner import find_ticket_file
@@ -39,6 +38,11 @@ from .target_surface_edit import (
     TargetSurfaceEditError,
     merge_target_definition,
     toml_table_block,
+)
+from .ticket_document import (
+    TicketDocument,
+    convert_ticket_document,
+    ticket_conversion_context,
 )
 from .workspace_ops import (
     AcceptanceBasisOperationError,
@@ -58,6 +62,15 @@ _GENERATION_RE = re.compile(r"[0-9a-f]{16}")
 
 class BasisRefreshError(RuntimeError):
     """A waiting Ticket cannot be refreshed without new author approval."""
+
+
+def _converted_ticket(root: Path, ticket: Path, slug: str) -> TicketDocument:
+    with ticket_conversion_context(root, slug, "executable") as context:
+        converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
+    if converted.document is None:
+        detail = "; ".join(item.message for item in converted.diagnostics)
+        raise BasisRefreshError(f"Ticket document is invalid: {detail}")
+    return converted.document
 
 
 @dataclass(frozen=True)
@@ -282,9 +295,11 @@ def _verify_providers(
             ticket, status = find_ticket_file(tickets, binding.provider)
             if ticket is None or status != "done":
                 raise BasisRefreshError(f"provider Ticket {binding.provider!r} is not accepted")
-            fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
             try:
-                provider_basis = load_acceptance_basis(root, binding.provider, fields, body)
+                provider_document = _converted_ticket(root, ticket, binding.provider)
+                provider_basis = load_acceptance_basis_from_document(
+                    root, binding.provider, provider_document
+                )
             except AcceptanceBasisError as exc:
                 raise BasisRefreshError(
                     f"provider Ticket {binding.provider!r} has no valid accepted basis: {exc}"
@@ -314,13 +329,14 @@ def _verify_providers(
 def _resume_prepared_refresh(
     root: Path,
     slug: str,
-    fields: dict[str, Any],
-    body: str,
+    document: TicketDocument,
     journal: BasisRefreshJournal,
 ) -> tuple[AcceptanceBasis, str]:
-    candidate_fields = {**fields, "acceptance_basis": journal.new_basis}
+    candidate = TicketDocument(
+        document.spec, {**document.generated, "acceptance_basis": journal.new_basis}
+    )
     try:
-        basis = load_acceptance_basis(root, slug, candidate_fields, body)
+        basis = load_acceptance_basis_from_document(root, slug, candidate)
     except AcceptanceBasisError as exc:
         raise BasisRefreshError(str(exc)) from exc
     operation = _operation_path(root, journal.operation_id)
@@ -365,20 +381,19 @@ def prepare_waiting_basis_refresh(
 def _prepare_waiting_basis_refresh(
     root: Path, ticket_path: Path, slug: str
 ) -> tuple[AcceptanceBasis | None, str]:
-    fields, body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+    document = _converted_ticket(root, ticket_path, slug)
     pending = load_basis_refresh(root, slug)
     if pending is not None and pending.state == "prepared":
-        return _resume_prepared_refresh(root, slug, fields, body, pending)
+        return _resume_prepared_refresh(root, slug, document, pending)
     try:
-        old_basis = load_acceptance_basis(root, slug, fields, body)
+        old_basis = load_acceptance_basis_from_document(root, slug, document)
     except AcceptanceBasisError as exc:
         raise BasisRefreshError(str(exc)) from exc
     if not old_basis.providers:
         return None, ""
     journal = _new_journal(root, slug, old_basis)
     operation = _operation_path(root, journal.operation_id)
-    effective_fields = dict(fields)
-    effective_fields.pop("acceptance_basis", None)
+    effective_fields = dict(document.spec.fields)
     old = load_refresh_source_workspace(root, old_basis, slug, operation)
     workspace, provider_bindings = _build_refresh_workspace(
         _RefreshBuild(root, ticket_path, slug, effective_fields, old_basis, old, journal)

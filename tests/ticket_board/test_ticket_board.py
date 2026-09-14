@@ -8,13 +8,16 @@ Adapted for the filesystem-based ticket system (no board.json).
 """
 
 import json
+import shutil
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tests.ticket_board.conftest import publish_handoff_snapshot
 
@@ -27,7 +30,6 @@ from booley.ticket_board import (
     PROGRESS_DEFAULTS,
     STEP_ORDER,
     VALID_PRIORITIES,
-    TicketFileSpec,
     TicketIO,
     append_incident,
     attribute_tokens_to_steps,
@@ -57,7 +59,6 @@ from booley.ticket_board import (
     op_block,
     op_board_move,
     op_claim,
-    op_complete,
     op_fail,
     op_handoff,
     op_promote_waiting,
@@ -76,9 +77,13 @@ from booley.ticket_board import (
     validate_logs,
     validate_ticket_fields,
 )
+from booley.ticket_board import acceptance_basis as acceptance_basis_module
+from booley.ticket_board import scanner as scanner_module
+from booley.ticket_board import ticket_document as ticket_document_module
 
 # Internal helpers imported directly from source modules for testing
 from booley.ticket_board.analytics import _match_pricing
+from booley.ticket_board.constants import RUNTIME_FIELDS
 from booley.ticket_board.paths import (
     STEP_DIR_MAP,
     human_log_file,
@@ -129,6 +134,60 @@ def _no_ntfy(monkeypatch):
     monkeypatch.setattr("booley.ticket_board.operations.ntfy_send", lambda *a, **kw: None)
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_non_git_ticket_view(monkeypatch):
+    """Give filesystem-only Board fixtures a v2 view without a Git Basis."""
+    original_context = ticket_document_module.ticket_conversion_context
+    original_basis = acceptance_basis_module.load_acceptance_basis_from_document
+    original_validate = TicketIO._validate_enqueue_basis
+
+    @contextmanager
+    def context(root, slug, stage):
+        if (Path(root) / ".git").exists():
+            with original_context(root, slug, stage) as resolved:
+                yield resolved
+            return
+        candidates = list(Path(root).glob(f"tickets/board/*/{slug}.md"))
+        candidates.extend(Path(root).glob(f"board/*/{slug}.md"))
+        if any("acceptance_basis:" in path.read_text(encoding="utf-8") for path in candidates):
+            stage = "executable"
+        else:
+            stage = "draft"
+        view = ticket_document_module.TicketAuthoringView(
+            resolve_target=lambda selector, _flow: selector,
+            tests_for_target=lambda _target: ("smoke",),
+        )
+        yield ticket_document_module.TicketConversionContext(stage, lambda _generated: view)
+
+    def basis(root, slug, document):
+        if (Path(root) / ".git").exists():
+            return original_basis(root, slug, document)
+        return acceptance_basis_module.AcceptanceBasis(
+            (
+                acceptance_basis_module.BasisParticipant(
+                    "outer",
+                    "a" * 40,
+                    "refs/heads/booley-generation/0123456789abcdef/outer",
+                    "refs/heads/master",
+                    "a" * 40,
+                ),
+            )
+        )
+
+    monkeypatch.setattr(ticket_document_module, "ticket_conversion_context", context)
+    monkeypatch.setattr(scanner_module, "ticket_conversion_context", context)
+    monkeypatch.setattr(acceptance_basis_module, "load_acceptance_basis_from_document", basis)
+    monkeypatch.setattr(
+        TicketIO,
+        "_validate_enqueue_basis",
+        lambda self, slug, document: (
+            original_validate(self, slug, document)
+            if (self._project_root / ".git").exists()
+            else []
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -164,13 +223,11 @@ def make_ticket_file(tio, subdir, slug, content=None):
             f"summary: {slug.replace('-', ' ')}\n"
             "type: feature\n"
             "branch: master\n"
-            "scope:\n  - rtl/foo.sv\n"
-            "criteria:\n"
-            "  mandatory:\n"
-            "    sim_pass:\n"
-            "      - tb/foo_tb.sv @ default @ all @ pass -> pass\n"
-            "---\n"
-            "## Description\nSome work.\n"
+            "scope: [rtl/foo.sv]\n"
+            "on_success: [review]\n"
+            "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+            "---\n## Description\nSome work.\n"
+            "\n## Description\nSome work.\n"
         )
     # Normalize bare dir names to board/ prefix
     if not subdir.startswith("board/"):
@@ -235,12 +292,28 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
         "type": "feature",
         "branch": "master",
         "scope": ["rtl/foo.sv"],
-        "criteria": {"mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]}},
+        "on_success": ["review"],
+        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
     }
     if extra_fields:
-        fields.update(extra_fields)
+        authored = dict(extra_fields)
+        runtime = {key: authored.pop(key) for key in tuple(authored) if key in RUNTIME_FIELDS}
+        policy = authored.pop("on_success", None)
+        authored.pop("criteria", None)
+        authored.pop("target_plan", None)
+        if isinstance(policy, dict):
+            flags = ["review"] if policy.get("destination", "review") == "review" else []
+            flags.extend(
+                action
+                for action in ("triage_report", "merge", "cleanup")
+                if policy.get(action, False)
+            )
+            fields["on_success"] = flags
+        fields.update(authored)
+    else:
+        runtime = {}
 
-    content = format_frontmatter(fields, body)
+    content = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n\n" + body
 
     # Normalize bare dir names to board/ prefix
     if not subdir.startswith("board/"):
@@ -249,6 +322,8 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{slug}.md"
     p.write_text(content, encoding="utf-8")
+    if runtime:
+        make_progress(tio, slug, runtime)
     return p
 
 
@@ -1020,19 +1095,17 @@ class TestValidateTicketFields:
     def test_enqueue_rejects_invalid_ticket(self, tmp_path):
         """enqueue_ticket must refuse tickets that fail field validation."""
         tio = make_tio(tmp_path)
-        # Ticket with empty baseline_tests — should fail validation
+        # Unknown criterion is rejected before publication.
         content = (
             "---\n"
             "summary: bad ticket\ntype: feature\nbranch: master\n"
-            "scope_current:\n  - rtl/foo.sv\nscope_new: []\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/foo_tb.sv @ default @ all @ pass -> pass\n"
-            "baseline_tests: {}\n"
+            "scope: [rtl/foo.sv]\n"
+            "CRITERIA_MANDATORY: {BOGUS: {rtl: {bugs: done}}}\n"
             "---\n## Description\ntext\n"
         )
         slug = "bad-ticket"
-        make_ticket_file(tio, "board/queue", slug, content)
-        success = tio.enqueue_ticket(slug, "bad ticket", "feature", "master")
+        make_ticket_file(tio, "board/drafts", slug, content)
+        success = tio.enqueue_ticket(slug)
         assert success is False
 
 
@@ -1314,15 +1387,16 @@ class TestScanAllTickets:
             "summary: Short name with extra words that change the slug\n"
             "type: bugfix\n"
             "branch: master\n"
-            "scope_current:\n  - rtl/foo.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/foo_tb.sv @ default @ all @ pass -> pass\n"
-            "---\n"
+            "scope: [rtl/foo.sv]\n"
+            "on_success: [review]\n"
+            "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+            "---\n## Description\nSome work.\n"
         )
         make_ticket_file(tio, "queue", "short-name", content=content)
         tickets = scan_all_tickets(tio.tickets_dir)
         assert len(tickets) == 1
         # feature_branch must be filename stem, not the computed slug
+        assert "feature_branch" in tickets[0], tickets
         assert tickets[0]["feature_branch"] == "short-name"
 
 
@@ -1465,7 +1539,14 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
     if stages is None:
         stages = ["setup", "planning", "implementation", "sim-debug-loop", "summary"]
     make_ticket_in_dir(
-        tio, "active", slug, extra_fields={"step": "summary", "steps_completed": stages}
+        tio,
+        "active",
+        slug,
+        extra_fields={
+            "step": "summary",
+            "steps_completed": stages,
+            "on_success": {"destination": "review", "cleanup": True},
+        },
     )
     log_dir = tio.logs_dir / slug
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1760,18 +1841,7 @@ class TestOpHandoff:
 class TestInitTicket:
     def test_init_fresh(self, tmp_path):
         tio = make_tio(tmp_path)
-        ticket_content = (
-            "---\n"
-            "summary: Fix FSM bug\n"
-            "type: bugfix\n"
-            "branch: master\n"
-            "scope_current:\n  - rtl/fsm.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/fsm_tb.sv @ config_a @ all @ fail -> pass\n"
-            "---\n"
-            "## Description\nFix the FSM thing.\n"
-        )
-        make_ticket_file(tio, "queue", "fix-fsm-bug", content=ticket_content)
+        make_ticket_in_dir(tio, "queue", "fix-fsm-bug", extra_fields={"summary": "Fix FSM bug"})
         result = tio.init_ticket(str(tio.tickets_dir / "board" / "queue" / "fix-fsm-bug.md"))
         assert result is not None
         assert result["slug"] == "fix-fsm-bug"
@@ -1789,18 +1859,14 @@ class TestInitTicket:
         """
         tio = make_tio(tmp_path)
         # Filename is short, but summary is long enough to produce a DIFFERENT slug
-        ticket_content = (
-            "---\n"
-            "summary: Fix CM3 word count false positive for short unaligned inputs\n"
-            "type: bugfix\n"
-            "branch: master\n"
-            "scope_current:\n  - rtl/sha3.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/sha3_tb.sv @ config_a @ all @ fail -> pass\n"
-            "---\n"
-            "## Description\nFix it.\n"
+        make_ticket_in_dir(
+            tio,
+            "queue",
+            "fix-cm3-word-count-false-positive",
+            extra_fields={
+                "summary": "Fix CM3 word count false positive for short unaligned inputs"
+            },
         )
-        make_ticket_file(tio, "queue", "fix-cm3-word-count-false-positive", content=ticket_content)
         result = tio.init_ticket(
             str(tio.tickets_dir / "board" / "queue" / "fix-cm3-word-count-false-positive.md")
         )
@@ -1827,7 +1893,7 @@ class TestEnqueueTicket:
                 "created": "2026-03-15T10:00:00Z",
             },
         )
-        result = tio.enqueue_ticket("add-thing", "Add a thing", "feature", "master")
+        result = tio.enqueue_ticket("add-thing")
         # File already exists with 'created' stamp -> duplicate guard kicks in
         assert result is False
 
@@ -1841,18 +1907,16 @@ class TestEnqueueTicket:
             "type: feature\n"
             "branch: master\n"
             "scope:\n  - rtl/foo.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/foo_tb.sv @ default @ all @ pass -> pass\n"
+            "on_success: [review]\n"
+            "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
             "---\n"
             "## Description\nSome work.\n"
         )
-        queue_dir = tio.tickets_dir / "board" / "queue"
+        queue_dir = tio.tickets_dir / "board" / "drafts"
         queue_dir.mkdir(parents=True, exist_ok=True)
         (queue_dir / "add-thing.md").write_text(content, encoding="utf-8")
 
-        result = tio.enqueue_ticket(
-            "add-thing", "A completely different summary here", "feature", "master"
-        )
+        result = tio.enqueue_ticket("add-thing")
         assert result is False
         fields, _ = parse_frontmatter((queue_dir / "add-thing.md").read_text(encoding="utf-8"))
         assert fields.get("created") is None
@@ -1934,7 +1998,7 @@ class TestCLI:
             "orphaned": [],
         }
 
-    def test_parse_ticket(self, tmp_path, capsys):
+    def test_parse_ticket_rejects_old_shape(self, tmp_path, capsys):
         tickets_dir = self._patch_tickets_dir(tmp_path)
         ticket_file = tmp_path / "test.md"
         ticket_file.write_text(
@@ -1943,9 +2007,33 @@ class TestCLI:
         )
         with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
             rc = main(argv=["parse-ticket", str(ticket_file)])
+        assert rc == 2
+        result = json.loads(capsys.readouterr().out)
+        assert "missing required fields" in result["errors"][0]["message"]
+
+    def test_parse_ticket_returns_converted_spec(self, tmp_path, capsys):
+        tickets_dir = self._patch_tickets_dir(tmp_path)
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+        project = tmp_path / "project"
+        shutil.copytree(fixture, project)
+        ticket_file = project / ".booley_project" / "tickets" / "board" / "drafts" / "test.md"
+        ticket_file.parent.mkdir(parents=True)
+        ticket_file.write_text(
+            "---\nsummary: Test\ntype: bugfix\nbranch: main\n"
+            "scope: [rtl/dut.sv]\non_success: []\n"
+            "CRITERIA_MANDATORY:\n  LINT: {lint_smoke: clean}\n"
+            "---\n\n## Description\n\nCheck lint.\n",
+            encoding="utf-8",
+        )
+        with (
+            patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir),
+            patch("booley.ticket_board.cli_handlers.detect_project_root", return_value=project),
+        ):
+            rc = main(argv=["parse-ticket", str(ticket_file)])
         assert rc == 0
         result = json.loads(capsys.readouterr().out)
-        assert result["fields"]["summary"] == "Test"
+        assert result["spec"]["criteria"][0]["capability"] == "LINT"
+        assert result["spec"]["on_success"] == []
 
     def test_validate_ticket_invalid(self, tmp_path, capsys):
         tickets_dir = self._patch_tickets_dir(tmp_path)
@@ -1959,6 +2047,31 @@ class TestCLI:
         assert rc == 1
         result = json.loads(capsys.readouterr().out)
         assert len(result["errors"]) > 0
+
+    def test_validate_ticket_v2_uses_converted_sim(self, tmp_path, capsys):
+        tickets_dir = self._patch_tickets_dir(tmp_path)
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+        project = tmp_path / "project"
+        shutil.copytree(fixture, project)
+        (project / ".booley_project" / "tests.toml").write_text(
+            '[sim_smoke]\ntests = ["smoke"]\n', encoding="utf-8"
+        )
+        ticket_file = project / ".booley_project" / "tickets" / "board" / "drafts" / "test.md"
+        ticket_file.parent.mkdir(parents=True)
+        ticket_file.write_text(
+            "---\nsummary: Test\ntype: bugfix\nbranch: main\n"
+            "scope: [rtl/dut.sv]\non_success: []\n"
+            "CRITERIA_MANDATORY:\n  SIM: {sim_smoke: {smoke: pass}}\n"
+            "---\n\n## Description\n\nCheck simulation.\n",
+            encoding="utf-8",
+        )
+        with (
+            patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir),
+            patch("booley.ticket_board.cli_handlers.detect_project_root", return_value=project),
+        ):
+            rc = main(argv=["validate-ticket", str(ticket_file)])
+        assert rc == 0
+        assert json.loads(capsys.readouterr().out)["valid"] is True
 
 
 # ===========================================================================
@@ -2599,7 +2712,7 @@ class TestOpPromoteWaiting:
         assert op_promote_waiting(tio) == [{"slug": "child", "summary": "child"}]
         path, status = find_ticket_file(tio.tickets_dir, "child")
         assert status == "queued"
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        fields = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1])
         assert fields["acceptance_basis"] == refreshed.as_dict()
         assert finished == [(Path(tio._project_root), "child", "a" * 32)]
 
@@ -2775,7 +2888,7 @@ class TestOpReset:
 
         assert op_reset(tio, "legacy-queue") is False
         assert queue.exists()
-        assert "has no Acceptance Basis" in capsys.readouterr().err
+        assert "requires an Acceptance Basis pointer" in capsys.readouterr().err
 
     def test_reset_validates_authoritative_basis_before_mutation(self, tmp_path, monkeypatch):
         from booley.ticket_board import operations as operations_module
@@ -3721,18 +3834,7 @@ class TestInitAlreadyActive:
 
     def test_init_already_active(self, tmp_path):
         tio = make_tio(tmp_path)
-        ticket_content = (
-            "---\n"
-            "summary: Fix FSM bug\n"
-            "type: bugfix\n"
-            "branch: master\n"
-            "scope_current:\n  - rtl/fsm.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/fsm_tb.sv @ config_a @ all @ fail -> pass\n"
-            "---\n"
-            "## Description\nFix the FSM thing.\n"
-        )
-        make_ticket_file(tio, "active", "fix-fsm-bug", content=ticket_content)
+        make_ticket_in_dir(tio, "active", "fix-fsm-bug", extra_fields={"summary": "Fix FSM bug"})
         result = tio.init_ticket(str(tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md"))
         # Should succeed (idempotent), not crash
         assert result is not None
@@ -3746,9 +3848,9 @@ class TestEnqueueDuplicateSlug:
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "queue", "add-thing", extra_fields={"summary": "Add a thing"})
         # First enqueue succeeds (stamps frontmatter)
-        tio.enqueue_ticket("add-thing", "Add a thing", "feature", "master")
+        tio.enqueue_ticket("add-thing")
         # Second enqueue should detect existing ticket and return False
-        result = tio.enqueue_ticket("add-thing", "Add a thing again", "feature", "master")
+        result = tio.enqueue_ticket("add-thing")
         assert result is False
 
 
@@ -3865,56 +3967,6 @@ class TestFormatStageDetailIncidents:
 # ===========================================================================
 
 
-class TestEnqueueOnSuccess:
-    """Test on_success fields and retired enqueue arguments."""
-
-    def test_enqueue_rejects_integration_base_override(self, tmp_path, capsys):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "ticket-a", extra_fields={"summary": "Ticket A"})
-
-        assert tio.enqueue_ticket("ticket-a", integration_base="main~1") is False
-
-        assert "--integration-base is retired" in capsys.readouterr().err
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-a")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert "integration_base" not in fields
-
-    def test_enqueue_with_on_success(self, tmp_path):
-        tio = make_tio(tmp_path)
-        on_success = {"destination": "done", "merge": False, "cleanup": False}
-        make_ticket_in_dir(
-            tio,
-            "queue",
-            "ticket-a",
-            extra_fields={"summary": "Ticket A", "on_success": on_success},
-        )
-        tio.enqueue_ticket("ticket-a", "Ticket A", "feature", "int/enc-dec", on_success=on_success)
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-a")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"]["destination"] == "done"
-        assert fields["on_success"]["merge"] is False
-        assert fields["on_success"]["cleanup"] is False
-
-    def test_enqueue_default_no_on_success(self, tmp_path):
-        """Without on_success param, field should not be stamped by enqueue."""
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "ticket-b", extra_fields={"summary": "Ticket B"})
-        tio.enqueue_ticket("ticket-b", "Ticket B", "feature", "master")
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-b")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        # on_success may exist from create_ticket_file defaults but enqueue doesn't stamp it
-        assert "on_success" not in fields or isinstance(fields.get("on_success"), dict)
-
-    def test_enqueue_default_no_integration_base(self, tmp_path):
-        """Without integration_base, field should not appear."""
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "ticket-b", extra_fields={"summary": "Ticket B"})
-        tio.enqueue_ticket("ticket-b", "Ticket B", "feature", "master")
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-b")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert "integration_base" not in fields
-
-
 class TestOpApproveBoundary:
     """Approval cannot bypass the terminal validation boundary."""
 
@@ -3927,74 +3979,6 @@ class TestOpApproveBoundary:
 
         assert op_approve(tio, "my-ticket") is False
         assert not human_log_file(tio.logs_dir, "my-ticket", "transitions.log").exists()
-
-
-class TestCLIEnqueueOnSuccess:
-    """Test CLI --destination/--merge/--cleanup and --integration-base flags.
-
-    Note: enqueue_ticket has a duplicate guard -- if the file already exists
-    in queue/ and find_ticket_file finds it by stem, enqueue returns False.
-    These tests verify the CLI exits correctly and that the flags parse.
-    """
-
-    def test_cli_enqueue_duplicate_returns_2(self, tmp_path, capsys):
-        """Enqueue with pre-existing ticket file returns exit code 2 (duplicate guard)."""
-        tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
-            (tickets_dir / d).mkdir(parents=True, exist_ok=True)
-        (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
-
-        tio = TicketIO(tickets_dir)
-        make_ticket_in_dir(
-            tio,
-            "queue",
-            "my-slug",
-            extra_fields={"summary": "My ticket", "created": "2026-03-15T10:00:00Z"},
-        )
-
-        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
-            rc = main(
-                argv=[
-                    "enqueue",
-                    "my-slug",
-                    "--summary",
-                    "My ticket",
-                    "--type",
-                    "feature",
-                    "--branch",
-                    "int/foo",
-                    "--destination",
-                    "done",
-                    "--no-merge",
-                    "--integration-base",
-                    "devel_branch",
-                ]
-            )
-        # Duplicate guard (ticket already stamped) -> enqueue returns False -> CLI returns 2
-        assert rc == 2
-
-    def test_cli_enqueue_no_file_returns_2(self, tmp_path, capsys):
-        """Enqueue when no ticket file exists returns exit code 2."""
-        tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
-            (tickets_dir / d).mkdir(parents=True, exist_ok=True)
-        (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
-
-        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
-            rc = main(
-                argv=[
-                    "enqueue",
-                    "nonexistent",
-                    "--summary",
-                    "My ticket",
-                    "--type",
-                    "feature",
-                    "--branch",
-                    "master",
-                ]
-            )
-        # No file found -> returns 2
-        assert rc == 2
 
 
 class TestCLIApproveBoundary:
@@ -4558,260 +4542,24 @@ class TestOpReturnValues:
         assert op_complete(tio, "t1") is False
         assert "review package binding" in capsys.readouterr().err
 
-    def test_op_complete_rejects_retired_target_removal_field(self, tmp_path, capsys):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(
-            tio,
-            "review",
-            "t1",
-            extra_fields={
-                "on_success": {
-                    "destination": "review",
-                    "merge": True,
-                    "cleanup": False,
-                    "triage_report": False,
-                    "remove_targets": ["acme:lib:toy:1.0#baseline"],
-                }
-            },
-        )
-
-        assert op_complete(tio, "t1", no_merge=True) is False
-        assert "on_success.remove_targets is unsupported" in capsys.readouterr().err
-
 
 class TestDraftsDirectory:
-    """Test that drafts/ directory is used for new ticket creation."""
+    """New v2 documents begin in drafts/."""
 
-    def test_create_ticket_file_lands_in_drafts(self, tmp_path):
-        """create_ticket_file should place new tickets in board/drafts/."""
+    def test_create_ticket_document_lands_in_drafts(self, tmp_path):
         tio = make_tio(tmp_path)
-        path = tio.create_ticket_file(
-            "new-ticket",
-            TicketFileSpec(
-                summary="New ticket",
-                ticket_type="feature",
-                branch="master",
-                scope=["rtl/foo.sv"],
-                criteria={
-                    "mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]}
-                },
-            ),
+        content = (
+            "---\nsummary: New ticket\ntype: feature\nbranch: master\n"
+            "scope: [rtl/foo.sv]\non_success: [review]\n"
+            "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+            "---\n\n## Description\nSome work.\n"
         )
+        path = tio.create_ticket_document("new-ticket", content)
         assert path is not None
         assert path.parent.name == "drafts"
-        assert path.exists()
-
-    def test_create_ticket_file_preserves_explicit_on_success(self, tmp_path):
-        tio = make_tio(tmp_path)
-        on_success = {
-            "destination": "done",
-            "merge": False,
-            "cleanup": False,
-            "triage_report": False,
-        }
-        path = tio.create_ticket_file(
-            "custom-handoff",
-            TicketFileSpec(
-                summary="Custom handoff",
-                ticket_type="feature",
-                branch="master",
-                criteria={"mandatory": {"custom": True}},
-                on_success=on_success,
-            ),
-        )
-        assert path is not None
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"] == on_success
-
-    def test_create_file_cli_accepts_on_success(self, tmp_path, monkeypatch):
-        tickets_dir = tmp_path / "tickets"
-        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
-        on_success = {
-            "destination": "done",
-            "merge": False,
-            "cleanup": False,
-            "triage_report": False,
-        }
-
-        rc = main(
-            argv=[
-                "create-file",
-                "cli-defaults",
-                "--summary",
-                "CLI defaults",
-                "--type",
-                "feature",
-                "--branch",
-                "main",
-                "--criteria",
-                json.dumps({"mandatory": {"custom": True}}),
-                "--on-success",
-                json.dumps(on_success),
-            ]
-        )
-
-        assert rc == 0
-        path = tickets_dir / "board" / "drafts" / "cli-defaults.md"
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"] == on_success
-
-    def test_create_file_cli_round_trips_target_plan(self, tmp_path, monkeypatch):
-        tickets_dir = tmp_path / "tickets"
-        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
-        plan = [
-            {"target": "lint_new", "role": "persistent"},
-            {"target": "sim_new", "role": "replacement", "replaces": "sim_old"},
-            {"target": "probe", "role": "ephemeral"},
-        ]
-
-        rc = main(
-            argv=[
-                "create-file",
-                "planned-targets",
-                "--summary",
-                "Planned Targets",
-                "--type",
-                "feature",
-                "--branch",
-                "main",
-                "--target-plan",
-                json.dumps(plan),
-            ]
-        )
-
-        assert rc == 0
-        path = tickets_dir / "board" / "drafts" / "planned-targets.md"
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["target_plan"] == sorted(plan, key=lambda item: item["target"])
-
-    def test_create_file_cli_rejects_target_plan_without_merge(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        tickets_dir = tmp_path / "tickets"
-        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
-        on_success = {
-            "destination": "done",
-            "merge": False,
-            "cleanup": False,
-            "triage_report": False,
-        }
-
-        rc = main(
-            argv=[
-                "create-file",
-                "invalid-plan",
-                "--summary",
-                "Invalid plan",
-                "--type",
-                "feature",
-                "--branch",
-                "main",
-                "--target-plan",
-                '[{"target":"probe","role":"ephemeral"}]',
-                "--on-success",
-                json.dumps(on_success),
-            ]
-        )
-
-        assert rc == 2
-        assert "target_plan requires on_success.merge: true" in capsys.readouterr().err
-
-    @pytest.mark.parametrize(
-        ("on_success", "error"),
-        [
-            ("not-json", "invalid JSON"),
-            (json.dumps([]), "--on-success must be a mapping"),
-            (
-                json.dumps({"destination": "done"}),
-                "missing keys: cleanup, merge, triage_report",
-            ),
-            (
-                json.dumps(
-                    {
-                        "destination": "done",
-                        "merge": False,
-                        "cleanup": False,
-                        "triage_report": False,
-                        "remove_targets": [],
-                    }
-                ),
-                "on_success.remove_targets is unsupported",
-            ),
-            (
-                json.dumps(
-                    {
-                        "destination": "done",
-                        "merge": False,
-                        "cleanup": False,
-                        "triage_report": False,
-                        "unexpected": True,
-                    }
-                ),
-                "unknown keys: unexpected",
-            ),
-            (
-                json.dumps(
-                    {
-                        "destination": "done",
-                        "merge": "no",
-                        "cleanup": True,
-                        "triage_report": False,
-                    }
-                ),
-                "on_success.merge must be true or false",
-            ),
-        ],
-    )
-    def test_create_file_cli_rejects_invalid_on_success(
-        self, tmp_path, monkeypatch, capsys, on_success, error
-    ):
-        tickets_dir = tmp_path / "tickets"
-        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
-
-        rc = main(
-            argv=[
-                "create-file",
-                "invalid-defaults",
-                "--summary",
-                "Invalid defaults",
-                "--type",
-                "feature",
-                "--branch",
-                "main",
-                "--on-success",
-                on_success,
-            ]
-        )
-
-        assert rc == 2
-        assert error in capsys.readouterr().err
-        assert not (tickets_dir / "board" / "drafts" / "invalid-defaults.md").exists()
-
-    def test_create_ticket_file_omits_empty_legacy_and_runtime_fields(self, tmp_path):
-        """New tickets should not carry stale blank plan/runtime placeholders."""
-        tio = make_tio(tmp_path)
-        path = tio.create_ticket_file(
-            "new-ticket",
-            TicketFileSpec(
-                summary="New ticket",
-                ticket_type="feature",
-                branch="master",
-                scope=["rtl/foo.sv [new]"],
-                criteria={
-                    "mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]}
-                },
-            ),
-        )
-        assert path is not None
-        text = path.read_text(encoding="utf-8")
-
-        assert "spec:" not in text
-        assert "feature_branch:" not in text
-        assert "created:" not in text
-        assert "integration_base:" not in text
+        assert path.read_text(encoding="utf-8") == content
 
     def test_scan_draft_status(self, tmp_path):
-        """Tickets in drafts/ should scan as 'draft' status."""
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "drafts", "t1")
         tickets = scan_all_tickets(tio.tickets_dir)
@@ -4976,40 +4724,6 @@ class TestCollectAllMessagesRecovered:
         assert len(messages) == 2
         assert messages[0]["input_tokens"] == 100  # main
         assert messages[1]["input_tokens"] == 200  # subagent
-
-
-class TestEnqueueAppliesParams:
-    """Test that failed filesystem-only enqueue leaves authored input unchanged."""
-
-    def test_on_success_applied(self, tmp_path):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "t1", extra_fields={"summary": "t1"})
-        on_success = {"destination": "done", "merge": False, "cleanup": False}
-        # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
-        # In normal workflow, enqueue is called before find_ticket_file can find it.
-        with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
-            result = tio.enqueue_ticket(
-                "t1",
-                "t1",
-                "feature",
-                "master",
-                on_success=on_success,
-            )
-        path = tio.tickets_dir / "board" / "queue" / "t1.md"
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert result is False
-        assert "on_success" not in fields
-
-    def test_no_on_success_by_default(self, tmp_path):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "queue", "t2", extra_fields={"summary": "t2"})
-        # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
-        with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
-            tio.enqueue_ticket("t2", "t2", "feature", "master")
-        path = tio.tickets_dir / "board" / "queue" / "t2.md"
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        # on_success should not be stamped by enqueue when not provided
-        assert "on_success" not in fields or isinstance(fields.get("on_success"), dict)
 
 
 class TestFmtDuration:
@@ -5206,34 +4920,16 @@ class TestFrontmatterPriority:
 
 
 class TestScanTicketsPriority:
-    def test_priority_copied_from_frontmatter(self, tmp_path):
-        """scan_all_tickets picks up priority from ticket files."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "test-ticket.md"
-        ticket.write_text(
-            "---\nsummary: test\ntype: bugfix\nbranch: main\n"
-            "scope_current:\n  - rtl/x.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ pass -> pass\npriority: high\n---\n## Description\ntext\n",
-            encoding="utf-8",
-        )
+    def test_priority_copied_from_ticket_document(self, tmp_path):
+        tio = TicketIO(tmp_path, project_root=tmp_path)
+        make_ticket_in_dir(tio, "queue", "test-ticket", extra_fields={"priority": "high"})
         tickets = scan_all_tickets(tmp_path)
         assert len(tickets) == 1
         assert tickets[0]["priority"] == "high"
 
     def test_missing_priority_not_in_entry(self, tmp_path):
-        """Tickets without priority don't get a priority key in the entry."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "test-ticket.md"
-        ticket.write_text(
-            "---\nsummary: test\ntype: bugfix\nbranch: main\n"
-            "scope_current:\n  - rtl/x.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ fail -> pass\n---\n## Description\ntext\n",
-            encoding="utf-8",
-        )
+        tio = TicketIO(tmp_path, project_root=tmp_path)
+        make_ticket_in_dir(tio, "queue", "test-ticket")
         tickets = scan_all_tickets(tmp_path)
         assert "priority" not in tickets[0]
 
@@ -5333,71 +5029,22 @@ class TestYamlCommentStripping:
 
 
 class TestFeatureBranchIdentity:
-    """CRITICAL #2: scan_all_tickets uses frontmatter feature_branch when set."""
-
-    def test_frontmatter_feature_branch_preferred(self, tmp_path):
-        """When feature_branch is in frontmatter, use it over filename stem."""
-        active = tmp_path / "board" / "active"
-        active.mkdir(parents=True)
-        ticket = active / "old-slug-name.md"
-        ticket.write_text(
-            "---\nsummary: test ticket\ntype: feature\nbranch: main\n"
-            "scope_current:\n  - rtl/x.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ pass -> pass\n"
-            "feature_branch: actual-branch-name\n---\n"
-            "## Description\ntext\n",
-            encoding="utf-8",
-        )
-        tickets = scan_all_tickets(tmp_path)
-        assert len(tickets) == 1
-        assert tickets[0]["feature_branch"] == "actual-branch-name"
+    """The filename remains the canonical identity for a v2 Ticket."""
 
     def test_fallback_to_filename_stem(self, tmp_path):
-        """Without frontmatter feature_branch, fall back to filename stem."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "my-ticket.md"
-        ticket.write_text(
-            "---\nsummary: test\ntype: bugfix\nbranch: main\n"
-            "scope_current:\n  - rtl/x.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ pass -> pass\n---\n## Description\ntext\n",
-            encoding="utf-8",
-        )
+        tio = TicketIO(tmp_path, project_root=tmp_path)
+        make_ticket_in_dir(tio, "queue", "my-ticket")
         tickets = scan_all_tickets(tmp_path)
+        assert "feature_branch" in tickets[0], tickets
         assert tickets[0]["feature_branch"] == "my-ticket"
 
-    def test_dependency_resolution_uses_frontmatter_branch(self, tmp_path):
-        """classify_tickets resolves deps via feature_branch from frontmatter."""
-        done_dir = tmp_path / "board" / "done"
-        done_dir.mkdir(parents=True)
-        queue_dir = tmp_path / "board" / "queue"
-        queue_dir.mkdir(parents=True)
-
-        # Done ticket: filename is "old-name.md" but feature_branch is "real-dep"
-        (done_dir / "old-name.md").write_text(
-            "---\nsummary: dep ticket\ntype: feature\nbranch: main\n"
-            "scope_current:\n  - rtl/x.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ pass -> pass\n"
-            "feature_branch: real-dep\n---\n"
-            "## Description\ntext\n",
-            encoding="utf-8",
+    def test_dependency_resolution_uses_filename_stem(self, tmp_path):
+        tio = TicketIO(tmp_path, project_root=tmp_path)
+        make_ticket_in_dir(tio, "done", "dep-ticket")
+        make_ticket_in_dir(
+            tio, "queue", "child-ticket", extra_fields={"dependencies": ["dep-ticket"]}
         )
-        # Queued ticket depends on "real-dep"
-        (queue_dir / "child-ticket.md").write_text(
-            "---\nsummary: child\ntype: bugfix\nbranch: main\n"
-            "scope_current:\n  - rtl/y.sv\n"
-            "criteria:\n  mandatory:\n    sim_pass:\n"
-            "      - tb/tb.sv @ config_a @ all @ fail -> pass\n"
-            "dependencies:\n  - real-dep\n---\n"
-            "## Description\ntext\n",
-            encoding="utf-8",
-        )
-        tickets = scan_all_tickets(tmp_path)
-        result = classify_tickets(tickets)
-        # Child should be executable because "real-dep" is done
+        result = classify_tickets(scan_all_tickets(tmp_path))
         assert len(result["executable"]) == 1
         assert result["executable"][0]["feature_branch"] == "child-ticket"
 
@@ -5951,167 +5598,6 @@ class TestOpBoardMove:
         tio = make_tio(tmp_path)
         result = op_board_move(tio, "nonexistent", "queue")
         assert result is False
-
-
-class TestBoardMoveTerminalActionOverrides:
-    """``board move <slug> done`` honoring --no-merge/--no-cleanup.
-
-    Both flags used to be accepted, documented in --help, and then silently
-    dropped: the worktree was destroyed anyway. These pin the wiring end to
-    end and require destructive cleanup to remain journaled with merge
-    publication."""
-
-    @pytest.fixture(autouse=True)
-    def _accepted_snapshot(self, monkeypatch):
-        from booley.ticket_board.acceptance_basis import AcceptanceBasis
-
-        monkeypatch.setattr(
-            "booley.ticket_board.operations._completion_acceptance_valid",
-            lambda *_: SimpleNamespace(participant_heads=None),
-        )
-        monkeypatch.setattr(
-            TicketIO,
-            "load_basis",
-            lambda tio, slug: AcceptanceBasis.from_mapping(
-                tio.find_ticket(slug)["acceptance_basis"]
-            ),
-        )
-
-    @staticmethod
-    def _acceptance_basis():
-        return {
-            "schema": 1,
-            "participants": [
-                {
-                    "role": "outer",
-                    "authoring_sha": "a" * 40,
-                    "ticket_ref": "refs/heads/booley-generation/0123456789abcdef/my-ticket",
-                    "destination_ref": "refs/heads/main",
-                    "destination_sha": "c" * 40,
-                }
-            ],
-        }
-
-    @staticmethod
-    def _review_ticket(tmp_path, *, merge: bool, cleanup: bool):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(
-            tio,
-            "review",
-            "my-ticket",
-            extra_fields={
-                "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
-                "feature_branch": "feat/my-ticket",
-                "acceptance_basis": TestBoardMoveTerminalActionOverrides._acceptance_basis(),
-            },
-        )
-        make_progress(tio, "my-ticket", {"step": "summary"})
-        return tio
-
-    def test_no_merge_skips_the_merge_step(self, tmp_path):
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch("booley.ticket_board.completion.complete_review_ticket") as complete:
-            assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
-        complete.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "entry",
-        [
-            {"target": "acme:lib:toy:1.0#new", "role": "persistent"},
-            {
-                "target": "acme:lib:toy:1.0#new",
-                "role": "replacement",
-                "replaces": "acme:lib:toy:1.0#old",
-            },
-            {"target": "acme:lib:toy:1.0#probe", "role": "ephemeral"},
-        ],
-    )
-    def test_no_merge_rejects_target_plan(self, tmp_path, monkeypatch, capsys, entry):
-        from booley.core.models import TargetPlan
-        from booley.ticket_board.acceptance_basis import AcceptanceBasis, BasisParticipant
-
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(
-            tio,
-            "review",
-            "my-ticket",
-            extra_fields={
-                "on_success": {"destination": "review", "merge": True, "cleanup": False},
-                "acceptance_basis": self._acceptance_basis(),
-            },
-        )
-        pointer = self._acceptance_basis()
-        hydrated = AcceptanceBasis(
-            (BasisParticipant(**pointer["participants"][0]),),
-            target_plan=TargetPlan.from_value([entry]),
-        )
-        monkeypatch.setattr(tio, "load_basis", lambda _slug: hydrated)
-
-        assert op_board_move(tio, "my-ticket", "done", no_merge=True) is False
-        assert "Target Plan acceptance requires merge" in capsys.readouterr().err
-
-    def test_merge_still_runs_without_the_flag(self, tmp_path):
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch(
-            "booley.ticket_board.completion.complete_review_ticket", return_value=True
-        ) as complete:
-            assert op_board_move(tio, "my-ticket", "done") is True
-        assert complete.call_count == 1
-
-    def test_done_ticket_can_retry_journaled_merge_recovery(self, tmp_path):
-        from booley.ticket_board.operations import op_complete
-
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        review, _status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert review is not None
-        done = review.parent.parent / "done" / review.name
-        done.parent.mkdir(parents=True, exist_ok=True)
-        review.rename(done)
-
-        with patch(
-            "booley.ticket_board.completion.complete_review_ticket", return_value=True
-        ) as complete:
-            assert op_complete(tio, "my-ticket") is True
-        complete.assert_called_once()
-
-    def test_feature_branch_alias_uses_canonical_slug_for_terminal_actions(self, tmp_path):
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch(
-            "booley.ticket_board.completion.complete_review_ticket", return_value=True
-        ) as complete:
-            assert op_board_move(tio, "feat/my-ticket", "done") is True
-        assert complete.call_args.args[1] == "my-ticket"
-
-    def test_no_cleanup_skips_the_cleanup_step(self, tmp_path):
-        tio = self._review_ticket(tmp_path, merge=False, cleanup=True)
-        assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
-
-    def test_no_cleanup_keeps_the_worktree_even_when_merging(self, tmp_path):
-        """Trap: the merge step removes the worktree and branch itself, so
-        --no-cleanup has to reach into it too."""
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        with patch(
-            "booley.ticket_board.completion.complete_review_ticket", return_value=True
-        ) as complete:
-            assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
-        assert complete.call_args.args[2].cleanup is False
-
-    def test_no_merge_rejects_configured_destructive_cleanup(self, tmp_path, capsys):
-        tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
-        assert op_board_move(tio, "my-ticket", "done", no_merge=True) is False
-        assert "on_success.cleanup requires on_success.merge: true" in capsys.readouterr().err
-
-    def test_overrides_never_enable_a_declined_action(self, tmp_path):
-        """Subtractive only: a ticket that opted out of merging does not start
-        merging because the flags were left off."""
-        tio = self._review_ticket(tmp_path, merge=False, cleanup=False)
-        assert op_board_move(tio, "my-ticket", "done") is True
-
-    def test_flags_are_announced_as_ignored_on_other_edges(self, tmp_path, capsys):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(tio, "drafts", "my-ticket")
-        assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is False
-        assert "apply to the review->done move only" in capsys.readouterr().err
 
 
 class TestArchiveWithSlug:

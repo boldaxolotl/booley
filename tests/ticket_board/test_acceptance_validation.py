@@ -35,7 +35,15 @@ from booley.ticket_board.acceptance_validation import (
 from booley.ticket_board.acceptance_validation import (
     prepare_acceptance_checkout,
 )
-from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.io import TicketIO
+
+_PROJECTION_TICKET = (
+    "---\nsummary: Accept generated input\ntype: feature\nbranch: main\n"
+    "project_destination_ref: refs/heads/main\nscope: [README.md]\n"
+    "on_success: [triage_report, review, merge, cleanup]\n"
+    "CRITERIA_MANDATORY:\n  REVIEW: {rtl: {bugs: clean}}\n"
+    "---\n\n## Description\n\nAccept generated inputs.\n"
+)
 
 
 class _AcceptanceFlow(BooleyFlow):
@@ -147,15 +155,9 @@ def _enqueued_projection_ticket(
         post_setup_marker=post_setup_marker,
         marker_uses_worktree_path=marker_uses_worktree_path,
     )
-    ticket = tio.create_ticket_file(
+    ticket = tio.create_ticket_document(
         "generated-input",
-        TicketFileSpec(
-            summary="Accept generated input",
-            ticket_type="feature",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
+        _PROJECTION_TICKET.replace("project_destination_ref: refs/heads/main\n", ""),
     )
     assert ticket is not None
     assert tio.enqueue_ticket("generated-input") is True
@@ -213,16 +215,7 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, AcceptanceBas
     _git(project_dir, "add", "-A")
     _git(project_dir, "commit", "-m", "initial project")
     tio = TicketIO(project_dir / "tickets", project_root=root)
-    ticket = tio.create_ticket_file(
-        "generated-input",
-        TicketFileSpec(
-            summary="Accept paired generated input",
-            ticket_type="feature",
-            branch="main",
-            scope=["README.md"],
-            criteria={"mandatory": {"review_rtl_bugs": True}},
-        ),
-    )
+    ticket = tio.create_ticket_document("generated-input", _PROJECTION_TICKET)
     assert ticket is not None
     assert tio.enqueue_ticket("generated-input") is True
     return root, project_dir / "worktrees/generated-input", tio.load_basis("generated-input")

@@ -35,6 +35,7 @@ def _make_ctx(tmp_path: Path) -> TicketContext:
         branch="main",
         summary="test ticket",
         project_root=tmp_path,
+        on_success=OnSuccess(destination="review"),
     )
 
 
@@ -67,6 +68,10 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
         ),
         "verify_review": patch(
             "booley.ticket_board.review_lifecycle.verify_review_handoff",
+        ),
+        "basis": patch(
+            "booley.harness.developer._block_changed_acceptance_basis",
+            return_value=False,
         ),
         # Silence terminal output so tests don't spam stdout.
         "terminal_raw": patch("booley.harness.developer.terminal.raw"),
@@ -202,7 +207,7 @@ class TestResolveTicketDisposition:
     @pytest.mark.parametrize(
         ("on_success", "expected_preparations"),
         [
-            (OnSuccess(triage_report=False), 1),
+            (OnSuccess(destination="review", triage_report=False), 1),
             (OnSuccess(destination="done", triage_report=True), 0),
         ],
     )

@@ -166,22 +166,42 @@ def test_cocotb_target_rejects_false_sim_result_requirement(tmp_path, monkeypatc
 
 def test_ticket_deferred_work_cannot_be_critical(tmp_path, monkeypatch):
     """Campaign context must not override the staged Ticket slice."""
+    from booley.ticket_board.ticket_document import (
+        TicketAuthoringView,
+        TicketConversionContext,
+        convert_ticket_document,
+    )
+
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "ticket.md").write_text(
-        "---\nsummary: host registers\ntype: feature\n---\n\n"
-        "## Current\n\nRequired now: implement host-visible registers.\n\n"
+        "---\nsummary: host registers\ntype: feature\nbranch: main\n"
+        "scope: [rtl/uart.sv]\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
+        "---\n\n## Description\nRequired now: implement host-visible registers.\n\n"
         "## Deferred\n\nDeferred to later tickets: FIFOs and interrupt generation.\n"
     )
+
+    def converted_ticket():
+        path = logs / "ticket.md"
+        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
+        converted = convert_ticket_document(
+            path.read_text(encoding="utf-8"),
+            TicketConversionContext("draft", lambda _generated: view),
+        )
+        assert converted.document is not None, converted.diagnostics
+        return converted.document, str(path)
+
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     _state(tmp_path, monkeypatch, "review_rtl_bugs_done")
     leaked = _issue("bugs", "rtl/uart.sv", "FIFO and interrupt behavior is not implemented")
     leaked["ticket_clause"] = "Deferred to later tickets: FIFOs and interrupt generation."
 
     with (
+        patch("booley.specialists.reviewer._load_ticket_document", converted_ticket),
         patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
         patch(
             "booley.specialists.specialist._call_agent_sync",

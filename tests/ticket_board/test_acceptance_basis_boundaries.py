@@ -7,6 +7,8 @@ public contract without performing unsafe or platform-dependent Git mutations.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -22,6 +24,11 @@ from booley.ticket_board.acceptance_basis import (
     AcceptanceBasis,
     AcceptanceBasisError,
     BasisParticipant,
+)
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
 )
 
 
@@ -45,17 +52,20 @@ def _participant(role: str = "outer") -> BasisParticipant:
 
 
 def _record() -> dict[str, object]:
-    return acceptance_basis.authored_ticket_record(
-        {
-            "summary": "Ticket",
-            "type": "feature",
-            "branch": "main",
-            "scope": [],
-            "criteria": {"mandatory": {"review_rtl_bugs": True}},
-        },
-        "## Description\n\nTest.\n",
-        (),
+    text = (
+        "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
+        "on_success: [review]\nCRITERIA_MANDATORY:\n"
+        "  REVIEW: {rtl: {bugs: done}}\n---\n\n## Description\n\nTest.\n"
     )
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+    )
+    converted = convert_ticket_document(
+        text, TicketConversionContext("draft", lambda _generated: view)
+    )
+    assert converted.document is not None
+    return acceptance_basis.authored_ticket_record_from_spec(converted.document.spec, ())
 
 
 def test_committed_amendment_record_requires_human_and_valid_changes() -> None:
@@ -103,14 +113,14 @@ def test_basis_participant_lookup_and_record_routing_fail_loudly() -> None:
     basis = AcceptanceBasis((_participant(),))
     with pytest.raises(AcceptanceBasisError, match="no 'project'"):
         basis.participant("project")
-    with pytest.raises(AcceptanceBasisError, match="frontmatter is invalid"):
+    with pytest.raises(AcceptanceBasisError, match="old Acceptance Basis record schema"):
         basis.with_record({"bindings": [], "ticket": {"frontmatter": []}})
     record = _record()
-    record["ticket"]["frontmatter"]["branch"] = "release"  # type: ignore[index]
+    record["ticket"]["spec"]["fields"]["branch"] = "release"  # type: ignore[index]
     with pytest.raises(AcceptanceBasisError, match="outer destination disagrees"):
         basis.with_record(record)
     record = _record()
-    record["ticket"]["frontmatter"]["project_destination_ref"] = (  # type: ignore[index]
+    record["ticket"]["spec"]["fields"]["project_destination_ref"] = (  # type: ignore[index]
         "refs/heads/main"
     )
     with pytest.raises(AcceptanceBasisError, match="without a participant"):
@@ -143,12 +153,9 @@ def test_participant_parser_rejects_malformed_rows(row: object, message: str) ->
         AcceptanceBasis.from_mapping({"schema": 1, "participants": [row]})
 
 
-def test_authored_record_rejects_unknown_field_and_invalid_on_success() -> None:
-    fields = {"branch": "main", "unknown": True}
-    with pytest.raises(AcceptanceBasisError, match="unknown authored"):
-        acceptance_basis.authored_ticket_record(fields, "body", ())
-    with pytest.raises(AcceptanceBasisError, match="on_success must be a mapping"):
-        acceptance_basis.authored_ticket_record({"branch": "main", "on_success": []}, "body", ())
+def test_field_based_record_creation_is_retired() -> None:
+    with pytest.raises(AcceptanceBasisError, match="unsupported"):
+        acceptance_basis.authored_ticket_record({"branch": "main"}, "body", ())
 
 
 def test_binding_record_parser_rejects_invalid_schema() -> None:
@@ -161,20 +168,21 @@ def test_binding_record_parser_rejects_invalid_schema() -> None:
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda record: record.update(extra=True), "invalid top-level"),
-        (lambda record: record.update(schema=4), "unsupported schema"),
-        (lambda record: record["ticket"].update(extra=True), "ticket has an invalid schema"),
+        (lambda record: record.update(extra=True), "invalid schema-3 fields"),
+        (lambda record: record.update(schema=2), "old Acceptance Basis record schema"),
+        (lambda record: record.update(schema=4), "old Acceptance Basis record schema"),
+        (lambda record: record["ticket"].update(extra=True), "invalid converted Ticket fields"),
         (
-            lambda record: record["ticket"]["frontmatter"].update(extra=True),
-            "unknown authored field",
+            lambda record: record["ticket"]["spec"]["fields"].update(extra=True),
+            "semantic digest is invalid",
         ),
         (
-            lambda record: record["ticket"]["frontmatter"].pop("scope"),
-            "authored defaults are not canonical",
+            lambda record: record["ticket"]["spec"]["fields"].pop("scope"),
+            "semantic digest is invalid",
         ),
         (
-            lambda record: record["ticket"]["frontmatter"].update(on_success="bad"),
-            "on_success must be a mapping",
+            lambda record: record["ticket"]["spec"].update(on_success="bad"),
+            "converted Ticket has invalid types",
         ),
     ],
 )
@@ -208,7 +216,10 @@ def test_record_validation_rejects_noncanonical_shapes(
     [
         (subprocess.CompletedProcess(["git"], 1, b"", b"missing"), "record is unavailable"),
         (subprocess.CompletedProcess(["git"], 0, b"not json", b""), "invalid JSON"),
-        (subprocess.CompletedProcess(["git"], 0, b'{"schema":1}\n', b""), "record.ticket"),
+        (
+            subprocess.CompletedProcess(["git"], 0, b'{"schema":1}\n', b""),
+            "old Acceptance Basis record schema",
+        ),
     ],
 )
 def test_load_basis_record_reports_git_and_payload_failures(
@@ -252,12 +263,12 @@ def test_record_validation_rejects_invalid_on_success_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record = _record()
-    record["ticket"]["frontmatter"]["on_success"] = {  # type: ignore[index]
-        "destination": "invalid",
-        "merge": True,
-        "cleanup": True,
-        "triage_report": True,
-    }
+    spec = record["ticket"]["spec"]  # type: ignore[index]
+    spec["on_success"] = ["invalid"]
+    payload = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode()
+    record["ticket"]["semantic_digest"] = hashlib.sha256(payload).hexdigest()  # type: ignore[index]
     monkeypatch.setattr(acceptance_basis, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(
         acceptance_basis,
@@ -271,7 +282,7 @@ def test_record_validation_rejects_invalid_on_success_policy(
             ["git"], 0, acceptance_basis.canonical_json(record), b""
         ),
     )
-    with pytest.raises(AcceptanceBasisError, match="destination"):
+    with pytest.raises(AcceptanceBasisError, match="on_success has invalid flags"):
         acceptance_basis.load_basis_record(tmp_path, "ticket", AcceptanceBasis((_participant(),)))
 
 
@@ -549,7 +560,7 @@ def test_load_acceptance_basis_rejects_every_retired_field(
     retired_field: str,
     value: object,
 ) -> None:
-    with pytest.raises(AcceptanceBasisError, match="hard cutoff"):
+    with pytest.raises(AcceptanceBasisError, match="field-based Acceptance Basis loading"):
         acceptance_basis.load_acceptance_basis(
             tmp_path,
             "ticket",
@@ -557,18 +568,8 @@ def test_load_acceptance_basis_rejects_every_retired_field(
         )
 
 
-def test_load_acceptance_basis_rejects_authored_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    basis = AcceptanceBasis((_participant(),))
-    record = _record()
-    monkeypatch.setattr(acceptance_basis, "load_basis_record", lambda *_args: record)
-    monkeypatch.setattr(acceptance_basis, "_validate_receipt", lambda *_args: {})
-    fields = dict(record["ticket"]["frontmatter"])  # type: ignore[index]
-    fields["acceptance_basis"] = basis.as_dict()
-    fields["summary"] = "Changed"
-    with pytest.raises(AcceptanceBasisError, match="frontmatter changed"):
-        acceptance_basis.load_acceptance_basis(tmp_path, "ticket", fields)
-    fields["summary"] = "Ticket"
-    with pytest.raises(AcceptanceBasisError, match="body changed"):
-        acceptance_basis.load_acceptance_basis(tmp_path, "ticket", fields, "different")
+def test_field_based_loader_rejects_even_valid_legacy_fields(tmp_path: Path) -> None:
+    with pytest.raises(AcceptanceBasisError, match="field-based Acceptance Basis loading"):
+        acceptance_basis.load_acceptance_basis(
+            tmp_path, "ticket", {"summary": "Ticket", "branch": "main"}
+        )

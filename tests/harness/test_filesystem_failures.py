@@ -121,7 +121,14 @@ class TestOpResetAuditTrail:
         assert len(lines_before) == 3
 
         # Patch git ops to avoid real git calls
-        with patch("booley.ticket_board.operations.cleanup_worktree_and_branch"):
+        with (
+            patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
+            patch.object(
+                tio,
+                "find_ticket",
+                return_value={"file": f"board/active/{slug}.md", "status": "running"},
+            ),
+        ):
             result = op_reset(tio, slug)
 
         assert result is True
@@ -153,7 +160,14 @@ class TestOpResetAuditTrail:
         ticket_md = log_dir / "ticket.md"
         ticket_md.write_text("# Original ticket snapshot\n", encoding="utf-8")
 
-        with patch("booley.ticket_board.operations.cleanup_worktree_and_branch"):
+        with (
+            patch("booley.ticket_board.operations.cleanup_worktree_and_branch"),
+            patch.object(
+                tio,
+                "find_ticket",
+                return_value={"file": f"board/active/{slug}.md", "status": "running"},
+            ),
+        ):
             result = op_reset(tio, slug)
 
         assert result is True

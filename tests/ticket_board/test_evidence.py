@@ -21,14 +21,11 @@ def test_collect_evidence_reports_only_authoritative_ticket_data(tmp_path: Path)
             "type": "bugfix",
             "scope": ["rtl/core.sv"],
             "spec": "docs/core.md",
-            "test": {"target": "smoke"},
+            "criteria": {
+                "mandatory": {"sim_pass_core_smoke": "pass"},
+                "optional": {"lint_clean_core": "clean"},
+            },
         },
-    )
-    snapshot = tio.logs_dir / "fix-core" / "ticket.md"
-    snapshot.parent.mkdir(parents=True)
-    snapshot.write_text(
-        "## Acceptance Criteria\n- smoke passes\n- lint is clean\n## Notes\ntext\n",
-        encoding="utf-8",
     )
 
     evidence = op_collect_evidence(tio, "fix-core")
@@ -38,8 +35,8 @@ def test_collect_evidence_reports_only_authoritative_ticket_data(tmp_path: Path)
             "type": "bugfix",
             "scope": ["rtl/core.sv"],
             "spec": "docs/core.md",
-            "test": {"target": "smoke"},
-            "acceptance_criteria": ["smoke passes", "lint is clean"],
+            "test": {},
+            "acceptance_criteria": ["sim_pass_core_smoke", "lint_clean_core"],
         }
     }
 
